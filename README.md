@@ -404,6 +404,7 @@ vikunja_tasks.bulk-create({
 })
 
 // Bulk update multiple tasks with the same field value
+// (fetch+merge per task — safe against Vikunja full-replace field wipes)
 vikunja_tasks.bulk-update({
   taskIds: [123, 124, 125],
   field: "done",          // Field to update
@@ -1027,7 +1028,8 @@ This standardized format ensures:
     - Required: taskIds array, field name, value
     - Supported fields: done, priority, due_date, project_id, assignees, labels
     - Validates field types and values
-    - ⚠️ Performance: Makes API calls to fetch each updated task
+    - Uses per-task fetch+merge+update (does not call Vikunja's native bulk API, which can wipe omitted fields — see #46)
+    - ⚠️ Performance: O(n) get+update calls (n = number of tasks)
   - `bulk-delete` - Delete multiple tasks at once
     - Required: taskIds array
     - Returns deleted task details for confirmation
