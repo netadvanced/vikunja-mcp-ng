@@ -441,6 +441,7 @@ describe('Projects Tool', () => {
       });
 
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+        ...mockProject,
         title: 'Updated Title',
       });
       expect(result.content[0].type).toBe('text');
@@ -450,6 +451,63 @@ describe('Projects Tool', () => {
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('Project "Updated Title" updated successfully');
       expect(markdown).toMatch(/update[_\\]+project/);
+    });
+
+    it('should preserve parent_project_id when parentProjectId is omitted (issue #45)', async () => {
+      const childProject = {
+        ...mockProject,
+        id: 2,
+        title: 'Child Project',
+        parent_project_id: 1,
+      };
+      const updatedChild = { ...childProject, description: 'Updated description' };
+      mockClient.projects.getProject.mockResolvedValue(childProject);
+      mockClient.projects.getProjects.mockResolvedValue([mockProject, childProject]);
+      mockClient.projects.updateProject.mockResolvedValue(updatedChild);
+
+      await callTool('update', {
+        id: 2,
+        title: childProject.title,
+        description: 'Updated description',
+        // parentProjectId intentionally omitted
+      });
+
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(
+        2,
+        expect.objectContaining({
+          description: 'Updated description',
+          parent_project_id: 1,
+          title: 'Child Project',
+        }),
+      );
+    });
+
+    it('should still allow explicit parent reassignment on update', async () => {
+      const childProject = {
+        ...mockProject,
+        id: 2,
+        title: 'Child Project',
+        parent_project_id: 1,
+      };
+      const newParent = { ...mockProject, id: 3, title: 'New Parent' };
+      mockClient.projects.getProject.mockResolvedValue(childProject);
+      mockClient.projects.getProjects.mockResolvedValue([mockProject, childProject, newParent]);
+      mockClient.projects.updateProject.mockResolvedValue({
+        ...childProject,
+        parent_project_id: 3,
+      });
+
+      await callTool('update', {
+        id: 2,
+        parentProjectId: 3,
+      });
+
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(
+        2,
+        expect.objectContaining({
+          parent_project_id: 3,
+        }),
+      );
     });
 
     it('should require project ID', async () => {
@@ -469,6 +527,7 @@ describe('Projects Tool', () => {
     });
 
     it('should support updating all fields', async () => {
+      mockClient.projects.getProject.mockResolvedValue(mockProject);
       mockClient.projects.updateProject.mockResolvedValue(mockProject);
       mockClient.projects.getProjects.mockResolvedValue([
         mockProject,
@@ -485,6 +544,7 @@ describe('Projects Tool', () => {
       });
 
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+        ...mockProject,
         title: 'New Title',
         description: 'New Description',
         parent_project_id: 2,
@@ -536,6 +596,7 @@ describe('Projects Tool', () => {
         for (const { input, expected } of validColors) {
           await callTool('update', { id: 1, hexColor: input });
           expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+            ...mockProject,
             hex_color: expected,
           });
         }
@@ -621,7 +682,7 @@ describe('Projects Tool', () => {
 
       expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
-        title: 'Test Project',
+        ...mockProject,
         is_archived: true
       });
       expect(result.content[0].type).toBe('text');
@@ -698,7 +759,7 @@ describe('Projects Tool', () => {
 
       expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
       expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
-        title: 'Test Project',
+        ...archivedProject,
         is_archived: false
       });
       expect(result.content[0].type).toBe('text');
