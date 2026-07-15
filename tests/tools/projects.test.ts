@@ -482,6 +482,28 @@ describe('Projects Tool', () => {
       );
     });
 
+    it('should preserve existing title when title is omitted (issue #44)', async () => {
+      mockClient.projects.getProject.mockResolvedValue(mockProject);
+      mockClient.projects.updateProject.mockResolvedValue({
+        ...mockProject,
+        description: 'new description',
+      });
+
+      // Title intentionally omitted — Vikunja rejects updates without a title
+      await callTool('update', {
+        id: 1,
+        description: 'new description',
+      });
+
+      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({
+          title: 'Test Project',
+          description: 'new description',
+        }),
+      );
+    });
+
     it('should still allow explicit parent reassignment on update', async () => {
       const childProject = {
         ...mockProject,
