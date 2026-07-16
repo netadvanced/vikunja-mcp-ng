@@ -362,7 +362,7 @@ describe('Projects Tool', () => {
       mockClient.projects.createProject.mockRejectedValue('String error');
 
       await expect(callTool('create', { title: 'New Project' })).rejects.toThrow(
-        'Failed to create project: Unknown error',
+        'Failed to create project: String error',
       );
     });
 
@@ -897,7 +897,7 @@ describe('Projects Tool', () => {
       mockClient.projects.createLinkShare.mockRejectedValue('String error');
 
       await expect(callTool('create-share', { projectId: 1, right: 'read' })).rejects.toThrow(
-        'Failed to create share: Unknown error',
+        'Failed to create share: String error',
       );
     });
   });
@@ -1046,7 +1046,7 @@ describe('Projects Tool', () => {
       mockClient.projects.getLinkShare.mockRejectedValue(123);
 
       await expect(callTool('get-share', { projectId: 1, shareId: '1' })).rejects.toThrow(
-        'Failed to get share: Unknown error',
+        'Failed to get share: 123',
       );
     });
   });
@@ -1205,7 +1205,7 @@ describe('Projects Tool', () => {
     it('should handle unexpected errors', async () => {
       mockClient.projects.getProjects.mockRejectedValue('String error');
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list projects: Unknown error');
+      await expect(callTool('list')).rejects.toThrow('Failed to list projects: String error');
     });
 
     it('should pass through MCPError instances', async () => {
@@ -1283,7 +1283,7 @@ describe('Projects Tool', () => {
       mockAuthManager.isAuthenticated.mockReturnValue(true);
       mockClient.projects.getProjects.mockRejectedValueOnce('String error');
       await expect(callTool('get-children', { id: 1 })).rejects.toThrow(
-        'Failed to get project children: Unknown error',
+        'Failed to get project children: String error',
       );
     });
   });
@@ -1477,7 +1477,7 @@ describe('Projects Tool', () => {
       mockAuthManager.isAuthenticated.mockReturnValue(true);
       mockClient.projects.getProjects.mockRejectedValueOnce(123);
       await expect(callTool('get-breadcrumb', { id: 1 })).rejects.toThrow(
-        'Failed to get project breadcrumb: Unknown error',
+        'Failed to get project breadcrumb: 123',
       );
     });
   });
