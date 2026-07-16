@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AuthManager } from '../../src/auth/AuthManager';
 import { createMockTestableAuthManager } from '../utils/test-utils';
@@ -21,6 +21,7 @@ import { getClientFromContext } from '../../src/client';
 // Import AORP test helpers
 import { extractTasksData, extractTaskData, expectAorpSuccess, expectAorpError, getAorpData, getAorpMetadata } from '../utils/aorp-test-helpers';
 import { parseMarkdown } from '../utils/markdown';
+import * as retryUtils from '../../src/utils/retry';
 
 // Mock the modules
 jest.mock('../../src/client', () => ({
@@ -2407,6 +2408,24 @@ describe('Tasks Tool', () => {
   });
 
   describe('bulk-create subcommand', () => {
+    // The real withRetry() wraps operations in a shared opossum circuit breaker
+    // (see src/utils/retry.ts). Bulk-create invokes withRetry once per label/assignee
+    // update, and the breaker instance is reused across calls, so exercising the real
+    // implementation here would make these tests order-dependent on unrelated global
+    // breaker state. Bypass it the same way tests/tools/tasks/bulk-operations.test.ts
+    // does, so each test only exercises the mocked client call it configured.
+    let withRetrySpy: ReturnType<typeof jest.spyOn>;
+
+    beforeEach(() => {
+      withRetrySpy = jest
+        .spyOn(retryUtils, 'withRetry')
+        .mockImplementation((operation: () => Promise<unknown>) => operation());
+    });
+
+    afterEach(() => {
+      withRetrySpy.mockRestore();
+    });
+
     it('should create multiple tasks successfully', async () => {
       const tasks = [
         { title: 'Task 1', description: 'Description 1', priority: 3 },
@@ -2431,16 +2450,19 @@ describe('Tasks Tool', () => {
       });
 
       mockClient.tasks.getTask.mockImplementation(async (id) => createdTasks[id - 1]);
+      mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
+      mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue(undefined);
 
       const result = await callTool('bulk-create', { projectId: 1, tasks });
 
       expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(3);
-      expect(result.content[0].text).toContain('"success": true');
-      expect(result.content[0].text).toContain('Successfully created 3 tasks');
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(tasksData.tasks).toHaveLength(3);
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+      expect(markdown).toContain('Successfully created 3 tasks');
+      expect(markdown).toContain('**Results:** 3 item(s)');
     });
 
     it('should require projectId', async () => {
@@ -2521,13 +2543,14 @@ describe('Tasks Tool', () => {
 
       const result = await callTool('bulk-create', { projectId: 1, tasks });
 
-      expect(result.content[0].text).toContain('"success": false');
-      expect(result.content[0].text).toContain('Bulk create partially completed');
-      expect(result.content[0].text).toContain('Successfully created 2 tasks, 1 failed');
-
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(tasksData.tasks).toHaveLength(2);
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('error');
+      expect(markdown).toContain('Bulk create partially completed');
+      expect(markdown).toContain('Successfully created 2 tasks, 1 failed');
+      expect(markdown).toContain('**count:** 2');
+      expect(markdown).toContain('**FailedCount**:\n1');
     });
 
     it('should handle complete failure', async () => {
@@ -2566,6 +2589,9 @@ describe('Tasks Tool', () => {
         ],
       });
 
+      mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
+      mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue(undefined);
+
       const result = await callTool('bulk-create', { projectId: 1, tasks });
 
       expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
@@ -2577,8 +2603,12 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(tasksData.tasks[0].labels).toHaveLength(2);
-      expect(tasksData.tasks[0].assignees).toHaveLength(2);
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+      expect(markdown).toContain('Label 1');
+      expect(markdown).toContain('Label 2');
+      expect(markdown).toContain('user3');
+      expect(markdown).toContain('user4');
     });
 
     it('should clean up task if labels/assignees fail', async () => {
@@ -2598,7 +2628,7 @@ describe('Tasks Tool', () => {
           projectId: 1,
           tasks,
         }),
-      ).rejects.toThrow('Bulk create failed. Could not create any tasks');
+      ).rejects.toThrow('Label update failed');
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
     });
@@ -2631,7 +2661,7 @@ describe('Tasks Tool', () => {
           projectId: 1,
           tasks,
         }),
-      ).rejects.toThrow('Bulk create failed. Could not create any tasks');
+      ).rejects.toThrow('Label update failed');
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
     });
@@ -2647,8 +2677,11 @@ describe('Tasks Tool', () => {
 
       const result = await callTool('bulk-create', { projectId: 1, tasks });
 
-      expect(result.content[0].text).toContain('"success": true');
-      expect(result.content[0].text).toContain('Successfully created 1 tasks');
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+      expect(markdown).toContain('Successfully created 1 tasks');
     });
 
     it('should handle non-MCPError exceptions in bulk create', async () => {
@@ -2697,7 +2730,7 @@ describe('Tasks Tool', () => {
           projectId: 1,
           tasks,
         }),
-      ).rejects.toThrow('Bulk create failed. Could not create any tasks');
+      ).rejects.toThrow('Invalid user ID');
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
     });
