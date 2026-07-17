@@ -340,7 +340,7 @@ describe('Task Relations Tool', () => {
           otherTaskId: 2,
           relationKind: 'subtask',
         }),
-      ).rejects.toThrow('Failed to remove task relation: [object Object]');
+      ).rejects.toThrow('Failed to remove task relation: Unknown error');
     });
   });
 
@@ -426,7 +426,7 @@ describe('Task Relations Tool', () => {
           subcommand: 'relations',
           id: 1,
         }),
-      ).rejects.toThrow('Failed to get task relations: 12345');
+      ).rejects.toThrow('Failed to get task relations: Unknown error');
     });
   });
 
