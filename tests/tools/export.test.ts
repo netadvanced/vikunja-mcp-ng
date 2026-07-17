@@ -389,7 +389,7 @@ describe('Export Tool', () => {
     it('should register the request user export tool', () => {
       expect(mockServer.tool).toHaveBeenCalledWith(
         'vikunja_request_user_export',
-        'Request a complete export of user data for privacy and backup purposes',
+        expect.stringContaining('POST /user/export/request'),
         expect.objectContaining({
           password: expect.any(Object),
         }),
@@ -397,10 +397,10 @@ describe('Export Tool', () => {
       );
     });
 
-    it('should request user data export successfully', async () => {
+    it('should request user data export successfully, routed through vikunjaRestRequest with /api/v1 normalization', async () => {
       jest.mocked(global.fetch).mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ message: 'Export requested' }),
+        text: async () => JSON.stringify({ message: 'Export requested' }),
         statusText: 'OK',
       } as Response);
 
@@ -423,9 +423,11 @@ describe('Export Tool', () => {
       const parsed = parseMarkdown(markdown);
       expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('User data export requested successfully');
+      expect(markdown).toContain('Export requested');
 
+      // apiUrl has no /api/v1 suffix, so vikunjaRestRequest must normalize it.
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://vikunja.example.com/user/export/request',
+        'https://vikunja.example.com/api/v1/user/export/request',
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
@@ -440,7 +442,8 @@ describe('Export Tool', () => {
     it('should handle API errors when requesting export', async () => {
       jest.mocked(global.fetch).mockResolvedValueOnce({
         ok: false,
-        json: async () => ({ message: 'Invalid password' }),
+        status: 401,
+        text: async () => JSON.stringify({ message: 'Invalid password' }),
         statusText: 'Unauthorized',
       } as Response);
 
@@ -449,6 +452,24 @@ describe('Export Tool', () => {
       )?.[3];
 
       await expect(handler?.({ password: 'wrong-password' })).rejects.toThrow('Invalid password');
+    });
+
+    it('should fall back to a null serverMessage when the server returns an empty body', async () => {
+      jest.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        text: async () => '',
+        statusText: 'OK',
+      } as Response);
+
+      const handler = mockServer.tool.mock.calls.find(
+        (call) => call[0] === 'vikunja_request_user_export',
+      )?.[3];
+
+      const result = await handler?.({ password: 'test-password' });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('User data export requested successfully');
     });
 
     it('should handle missing authentication token', async () => {
@@ -464,6 +485,7 @@ describe('Export Tool', () => {
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'No authentication token available',
       );
+      expect(global.fetch).not.toHaveBeenCalled();
     });
 
     it('should validate password parameter', async () => {
@@ -480,12 +502,11 @@ describe('Export Tool', () => {
       });
     });
 
-    it('should handle JSON parse errors in error response', async () => {
+    it('should surface HTTP status details when the error body is not JSON', async () => {
       jest.mocked(global.fetch).mockResolvedValueOnce({
         ok: false,
-        json: async () => {
-          throw new Error('Invalid JSON');
-        },
+        status: 502,
+        text: async () => 'Invalid JSON',
         statusText: 'Bad Gateway',
       } as Response);
 
@@ -494,7 +515,7 @@ describe('Export Tool', () => {
       )?.[3];
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
-        'Failed to request export: Bad Gateway',
+        'HTTP 502 Bad Gateway',
       );
     });
 
@@ -510,15 +531,18 @@ describe('Export Tool', () => {
   });
 
   describe('vikunja_download_user_export', () => {
-    it('should register the download user export tool', () => {
-      expect(mockServer.tool).toHaveBeenCalledWith(
-        'vikunja_download_user_export',
-        'Download previously requested user data export files',
-        expect.objectContaining({
-          password: expect.any(Object),
-        }),
-        expect.any(Function),
+    it('should register the download tool with an honest description of the models.Message response shape', () => {
+      const toolCall = mockServer.tool.mock.calls.find(
+        (call) => call[0] === 'vikunja_download_user_export',
       );
+
+      expect(toolCall).toBeDefined();
+      expect(toolCall?.[1]).toContain('models.Message');
+      expect(toolCall?.[1]).toContain('does NOT return the export archive');
+      expect(toolCall?.[1]).toContain('MCP protocol');
+      expect(toolCall?.[2]).toMatchObject({
+        password: expect.any(Object),
+      });
     });
 
     it('should handle missing authentication token in download', async () => {
@@ -534,18 +558,13 @@ describe('Export Tool', () => {
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'No authentication token available',
       );
+      expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    it('should download user data export successfully', async () => {
-      const mockExportData = {
-        user: { id: 1, username: 'test' },
-        projects: [],
-        tasks: [],
-      };
-
+    it('should report the server confirmation message honestly, not pretend the export data was delivered', async () => {
       jest.mocked(global.fetch).mockResolvedValueOnce({
         ok: true,
-        json: async () => mockExportData,
+        text: async () => JSON.stringify({ message: 'Export is ready for download' }),
         statusText: 'OK',
       } as Response);
 
@@ -567,10 +586,14 @@ describe('Export Tool', () => {
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
       expect(markdown).toContain('## ✅ Success');
-      expect(markdown).toContain('User data export downloaded successfully');
+      // Must not claim the export file itself was delivered.
+      expect(markdown).not.toContain('User data export downloaded successfully');
+      expect(markdown).toContain('does not return the export file');
+      expect(markdown).toContain('Export is ready for download');
 
+      // apiUrl has no /api/v1 suffix, so vikunjaRestRequest must normalize it.
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://vikunja.example.com/user/export/download',
+        'https://vikunja.example.com/api/v1/user/export/download',
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
@@ -582,10 +605,29 @@ describe('Export Tool', () => {
       );
     });
 
-    it('should handle API errors when downloading export', async () => {
+    it('should fall back to a null serverMessage when the server returns an empty body', async () => {
+      jest.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        text: async () => '',
+        statusText: 'OK',
+      } as Response);
+
+      const handler = mockServer.tool.mock.calls.find(
+        (call) => call[0] === 'vikunja_download_user_export',
+      )?.[3];
+
+      const result = await handler?.({ password: 'test-password' });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('does not return the export file');
+    });
+
+    it('should handle API errors when confirming the export download', async () => {
       jest.mocked(global.fetch).mockResolvedValueOnce({
         ok: false,
-        json: async () => ({ message: 'Export not ready' }),
+        status: 404,
+        text: async () => JSON.stringify({ message: 'Export not ready' }),
         statusText: 'Not Found',
       } as Response);
 
@@ -596,12 +638,11 @@ describe('Export Tool', () => {
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow('Export not ready');
     });
 
-    it('should handle JSON parse errors gracefully', async () => {
+    it('should surface HTTP status details when the error body is not JSON', async () => {
       jest.mocked(global.fetch).mockResolvedValueOnce({
         ok: false,
-        json: async () => {
-          throw new Error('Invalid JSON');
-        },
+        status: 500,
+        text: async () => 'Invalid JSON',
         statusText: 'Server Error',
       } as Response);
 
@@ -610,7 +651,7 @@ describe('Export Tool', () => {
       )?.[3];
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
-        'Failed to download export: Server Error',
+        'HTTP 500 Server Error',
       );
     });
 
