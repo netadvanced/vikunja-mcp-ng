@@ -224,12 +224,18 @@ describe('Input Sanitization Security Tests', () => {
   });
 
   describe('HTML Attribute Sanitization', () => {
-    it('should reject HTML content that contains tags', () => {
+    it('should pass through generic non-scripting HTML tags unmodified (no render-time escaping)', () => {
+      // sanitizeString used to HTML-escape output (and, briefly, reject any string containing
+      // a bare `<`/`>`/`"` via a broad shell-metacharacter blocklist). Commit f2b0b93 removed
+      // the escaping because this boundary calls the Vikunja JSON API directly rather than
+      // rendering HTML, and escaping was corrupting ordinary text (e.g. "Jun's suffix" ->
+      // "Jun&#x27;s suffix"). A generic tag with no scripting behavior (no <script>/<iframe>,
+      // no event handler, no dangerous protocol) is therefore passed through as-is; only
+      // constructs with an actual execution vector are rejected (see other tests in this file).
       const htmlContent = '<div class="test">Content with & symbols</div>';
 
-      expect(() => {
-        sanitizeString(htmlContent);
-      }).toThrow('contains potentially dangerous content');
+      const result = sanitizeString(htmlContent);
+      expect(result).toBe(htmlContent);
     });
 
     it('should handle quotes and apostrophes correctly in safe content', () => {
@@ -311,12 +317,24 @@ describe('Input Sanitization Security Tests', () => {
 
   describe('JSON Security', () => {
     it('should sanitize JSON strings safely', () => {
-      const maliciousJson = {
-        title: '<script>alert(1)</script>',
-        desc: 'test'
+      // safeJsonStringify's contract is specifically "stringify a FilterExpression" (see its
+      // implementation, which runs validateFilterExpression on the input) — every other caller
+      // in tests/utils/validation.test.ts exercises it with FilterExpression-shaped objects.
+      // An arbitrary object like `{ title, desc }` isn't a FilterExpression and correctly fails
+      // structural validation before sanitization ever runs. Exercise the real contract instead:
+      // a valid filter expression whose condition value carries a dangerous string. Sanitization
+      // rejects that value during stringification, so it is dropped (not left in the output) and
+      // the call still succeeds rather than throwing.
+      const maliciousExpression = {
+        groups: [
+          {
+            operator: '&&',
+            conditions: [{ field: 'title', operator: '=', value: '<script>alert(1)</script>' }],
+          },
+        ],
       };
 
-      const result = safeJsonStringify(maliciousJson);
+      const result = safeJsonStringify(maliciousExpression);
       expect(result).not.toContain('<script>');
     });
 
