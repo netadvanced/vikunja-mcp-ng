@@ -84,7 +84,7 @@
     "fast-check": "^4.3.0",
     "globals": "^16.3.0",
     "jest": "^30.0.5",
-    "markdown-it": "^14.1.0",
+    "markdown-it": "^14.2.0",
     "openapi-typescript": "^7.13.0",
     "prettier": "^3.0.0",
     "swagger2openapi": "^7.0.8",
