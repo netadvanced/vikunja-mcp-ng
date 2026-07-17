@@ -395,6 +395,19 @@ export class ConfigurationManager {
     this.assignEnvValue(modules, 'templates', process.env.VIKUNJA_MCP_MODULE_TEMPLATES, true);
     this.assignEnvValue(modules, 'export', process.env.VIKUNJA_MCP_MODULE_EXPORT, true);
     this.assignEnvValue(modules, 'batchImport', process.env.VIKUNJA_MCP_MODULE_BATCH_IMPORT, true);
+    this.assignEnvValue(
+      modules,
+      'notifications',
+      process.env.VIKUNJA_MCP_MODULE_NOTIFICATIONS,
+      true
+    );
+    this.assignEnvValue(
+      modules,
+      'subscriptions',
+      process.env.VIKUNJA_MCP_MODULE_SUBSCRIPTIONS,
+      true
+    );
+    this.assignEnvValue(modules, 'reactions', process.env.VIKUNJA_MCP_MODULE_REACTIONS, true);
     this.assignEnvValue(modules, 'admin', process.env.VIKUNJA_MCP_MODULE_ADMIN, true);
     this.assignEnvValue(modules, 'userDeletion', process.env.VIKUNJA_MCP_MODULE_USER_DELETION, true);
     this.assignEnvValue(

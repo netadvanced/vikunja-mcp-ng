@@ -459,6 +459,9 @@ describe('ConfigurationManager', () => {
       expect(config.modules.templates).toBe(true);
       expect(config.modules.export).toBe(true);
       expect(config.modules.batchImport).toBe(true);
+      expect(config.modules.notifications).toBe(true);
+      expect(config.modules.subscriptions).toBe(true);
+      expect(config.modules.reactions).toBe(true);
 
       // Dangerous modules: deny-by-default
       expect(config.modules.admin).toBe(false);
@@ -580,6 +583,18 @@ describe('ConfigurationManager', () => {
       const config = await ConfigurationManager.getInstance().getConfiguration();
 
       expect(config.modules.webhooks).toBe(false);
+    });
+
+    it('should disable the notifications/subscriptions/reactions modules via env var overrides', async () => {
+      process.env.VIKUNJA_MCP_MODULE_NOTIFICATIONS = 'false';
+      process.env.VIKUNJA_MCP_MODULE_SUBSCRIPTIONS = 'false';
+      process.env.VIKUNJA_MCP_MODULE_REACTIONS = 'false';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.modules.notifications).toBe(false);
+      expect(config.modules.subscriptions).toBe(false);
+      expect(config.modules.reactions).toBe(false);
     });
 
     it('should allow enabling a reserved dangerous module explicitly', async () => {

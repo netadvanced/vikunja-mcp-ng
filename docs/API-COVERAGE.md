@@ -10,11 +10,29 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 
 | Status | Count | % |
 |---|---|---|
-| ✅ Implemented | 42 | 25% |
-| ⚠️ Implemented (bug) | 14 | 8% |
+| ✅ Implemented | 54 | 32% |
+| ⚠️ Implemented (bug) | 10 | 6% |
 | 🟡 Partial | 3 | 2% |
-| ❌ Not implemented | 110 | 65% |
+| ❌ Not implemented | 102 | 60% |
 | **Total** | **169** | 100% |
+
+> Updated 2026-07-17 (Wave D, `waveD-notifications-subscriptions`, item D1): the 8
+> `/notifications`, `/subscriptions/{entity}/{entityID}`, and
+> `/{kind}/{id}/reactions*` rows below moved from ❌ to ✅.
+>
+> Updated 2026-07-18 (Wave D, `waveD-real-saved-filters`, item D2): the 4
+> `/filters` and `/filters/{id}` rows below moved from ⚠️ Implemented (bug)
+> to ✅ Implemented — `vikunja_filters` now calls Vikunja's real saved-filter
+> endpoints instead of an in-memory fake. The corresponding HIGH-severity
+> correctness issue is resolved and removed from the Issues table. Note the
+> spec has no list-all-saved-filters endpoint (only PUT /filters and
+> GET/POST/DELETE /filters/{id} exist, so there is no separate row for it
+> here) — `vikunja_filters`'s `list` action derives its results from `GET
+> /projects`' pseudo-project entries (saved filters surface there with a
+> negative id) and verifies each candidate real filter id with a live GET
+> /filters/{id} call. Everything else in this document remains the original
+> audit snapshot (plus any other Wave D updates noted inline) described
+> above.
 
 - **✅ Implemented** — implementation matches the documented endpoint (method, path, request/response fields all checked).
 - **⚠️ Implemented (bug)** — the tool exists and calls something, but the audit found a concrete divergence from the documented contract (wrong field name, dropped required param, wrong response shape assumption, etc.). See the Issues table below.
@@ -23,7 +41,7 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 
 ## Correctness Issues
 
-42 issues found in code paths that ARE implemented (as opposed to simply missing). These are bugs, not coverage gaps.
+41 issues found in code paths that ARE implemented (as opposed to simply missing). These are bugs, not coverage gaps. (One further HIGH-severity issue — `vikunja_filters` being a complete local fake — was found by the original audit and resolved in Wave D item D2; see the endpoint table below.)
 
 | Severity | Domain | File | Description |
 |---|---|---|---|
@@ -36,7 +54,6 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 | HIGH | Labels (standalone) & Teams | `src/tools/teams.ts` | The 'members' subcommand family conflates numeric user IDs with Vikunja usernames. `userId` is always run through validateAndConvertId (which requires an integer or numeric-looking string), then that number is stringified and sent as `username` in the add-member body and as the path segment for remove-member/admin-toggle. The real API keys team membership by username string, so add/remove/admin-toggle can never correctly target a user with a non-numeric username — the parameter design makes the documented behavior unreachable. |
 | HIGH | Labels (standalone) & Teams | `src/tools/teams.ts` | 'members update' (admin toggle) constructs the URL as /teams/{id}/members/{userId} instead of the documented /teams/{id}/members/{userID}/admin, and sends a JSON body even though the spec defines no request body for this operation (only path params). This hits an undefined route and will fail. |
 | HIGH | Labels (standalone) & Teams | `src/tools/teams.ts` | 'members list' (the default when memberSubcommand is omitted) calls GET /teams/{id}/members, which does not exist anywhere in the Vikunja OpenAPI spec — team members are only obtainable via the `members` array embedded in the GET /teams/{id} response. This subcommand will 404 against a real server. |
-| HIGH | Saved filters, webhooks, subscriptions, notifications, reactions | `src/tools/filters.ts` | vikunja_filters (the 'saved filters' MCP tool) is a complete fake with respect to the Vikunja API: create/get/update/delete/list all operate on a local in-memory SimpleFilterStorage (src/storage/SimpleFilterStorage.ts) and never call node-vikunja's FilterService (client.filters.*) or the real PUT/GET/POST/DELETE /filters endpoints. The _clientFactory parameter passed into registerFiltersTool is even prefixed with an underscore, confirming it's intentionally unused. This means: (1) filters created through this tool are invisible in the Vikunja web UI and to other Vikunja clients, (2) they vanish on MCP server restart (no persistence), and (3) node-vikunja's correctly-implemented FilterService is dead code from this project's perspective. An AI assistant using this tool would reasonably believe it is creating/managing real server-side saved filters. |
 | MEDIUM | Auth, API tokens, and service/meta info | `src/tools/auth.ts` | vikunja_auth 'connect' performs no server round-trip to validate the apiUrl/apiToken (no call to GET /info or any authenticated endpoint). It always reports 'Successfully connected to Vikunja' as long as apiUrl is a syntactically valid URL and apiToken is a non-empty string, even if the URL is wrong or the token is invalid/expired. The user only discovers a bad connection when the first substantive tool call (e.g. vikunja_tasks list) fails. Calling client.system.getInfo() (node-vikunja SystemService.getInfo, GET /info, no auth required) during connect would let this fail fast and give an accurate 'connected' status, and it's already available via node-vikunja but unused anywhere in src/. |
 | MEDIUM | User account & settings | `node_modules/node-vikunja/dist/esm/services/user.service.js` | UserService.deleteCalDavToken(tokenId) sends this.request(`/user/settings/token/caldav/${tokenId}`, 'GET') instead of 'DELETE'. This is a genuine bug in the node-vikunja library itself (not currently reachable through this MCP server since no tool calls it, but would silently fail to delete the token — and would instead just fetch something — if any future tool wired it up). |
 | MEDIUM | Projects — CRUD, backgrounds, views, duplication | `src/tools/projects/` | None of the six Unsplash background endpoints (get/delete background, set unsplash background, upload background, unsplash image/thumb, unsplash search) and the duplicate-project endpoint are implemented anywhere, even though node-vikunja's ProjectService fully supports all of them (getProjectBackground, deleteProjectBackground, setUnsplashBackground, uploadProjectBackground, searchBackgrounds, getBackgroundImage, getBackgroundThumbnail, duplicateProject). Duplicate-project in particular is a simple, commonly useful, fully-supported operation with no technical blocker (unlike file-upload endpoints, which are legitimately out of scope per MCP's no-attachment constraint) — its absence looks like an oversight rather than a deliberate exclusion. |
@@ -249,10 +266,10 @@ Every documented Vikunja API operation, grouped by domain, in spec order. Sorted
 
 | Method | Path | Status | MCP Tool | Notes |
 |---|---|---|---|---|
-| PUT | `/filters` | ⚠️ Implemented (bug) | vikunja_filters (action: create) | vikunja_filters is entirely local: it stores filters in an in-memory Map (src/storage/SimpleFilterStorage.ts) via storageManager, never calling client.filters.createFilter or PUT /filters. node-vikunja's FilterService.createFilter exists and is correctly wired (PUT /filters, body=SavedFilter) but is never imported/used anywhere in src/. Filters created via this tool do not exist server-side, won't show in the Vikunja UI, and are lost on server restart. |
-| GET | `/filters/{id}` | ⚠️ Implemented (bug) | vikunja_filters (action: get) | Reads from local SimpleFilterStorage by locally-generated id, never GET /filters/{id}. node-vikunja FilterService.getFilter is unused. |
-| POST | `/filters/{id}` | ⚠️ Implemented (bug) | vikunja_filters (action: update) | Updates local in-memory storage only; never calls FilterService.updateFilter / POST /filters/{id}. Also the id format differs: server-side ids are numeric while storage.ts issues its own id scheme decoupled from Vikunja's. |
-| DELETE | `/filters/{id}` | ⚠️ Implemented (bug) | vikunja_filters (action: delete) | Deletes from local Map only; never calls FilterService.deleteFilter / DELETE /filters/{id}, so nothing is actually removed on the Vikunja server (because nothing was ever created there). |
+| PUT | `/filters` | ✅ Implemented (Wave D) | vikunja_filters (action: create) | Direct-REST PUT /filters via vikunjaRestRequest (not node-vikunja — FilterService is dead code from this project's perspective per the node-vikunja EOL decision) with body `{title, description?, is_favorite?, filters: {filter}}` matching models.SavedFilter. The `filter` query string is parsed/validated/translated (camelCase DSL -> snake_case API fields) through the existing src/utils/filters.ts pipeline before being sent. `models.SavedFilter` has no `project_id` field — filters are not project-scoped by this call. |
+| GET | `/filters/{id}` | ✅ Implemented (Wave D) | vikunja_filters (action: get) | Correct GET /filters/{id} by the filter's real numeric id. A 403/404 (the spec uses 403 for both "doesn't exist" and "no access") is mapped to a single honest NOT_FOUND message. |
+| POST | `/filters/{id}` | ✅ Implemented (Wave D) | vikunja_filters (action: update) | Correct POST /filters/{id}. This is a full-model-replace endpoint (no PATCH variant exists), so the handler fetches the current filter first and merges supplied fields onto it (fetch-merge-POST pattern, docs/ENDPOINT-PLAYBOOK.md §4) rather than sending a bare partial body. |
+| DELETE | `/filters/{id}` | ✅ Implemented (Wave D) | vikunja_filters (action: delete) | Correct DELETE /filters/{id}, fetched first so the response can report the deleted filter's title and a nonexistent id produces the same NOT_FOUND message as 'get'. |
 | GET | `/projects/{id}/webhooks` | ✅ Implemented | vikunja_webhooks (subcommand: list, get) | Correct method/path via raw fetch (node-vikunja has no webhook service at all — confirmed no webhook.js/service in node_modules). 'get' subcommand fetches the full list and filters client-side by id since the spec has no single-webhook GET; that is a reasonable workaround. Minor: page/per_page query params documented by the spec are never sent (no pagination support). |
 | PUT | `/projects/{id}/webhooks` | ✅ Implemented | vikunja_webhooks (subcommand: create) | Correct PUT to /projects/{id}/webhooks with body {target_url, events, secret?} matching models.Webhook field names. |
 | POST | `/projects/{id}/webhooks/{webhookID}` | ✅ Implemented | vikunja_webhooks (subcommand: update) | Correctly restricts update payload to {events} only, matching the spec's explicit note 'You cannot change other values of a webhook.' |
@@ -263,14 +280,14 @@ Every documented Vikunja API operation, grouped by domain, in spec order. Sorted
 | GET | `/user/settings/webhooks/events` | ❌ Not implemented | — | Not implemented; vikunja_webhooks's list-events subcommand only hits GET /webhooks/events (the project-level events list), not this user-directed variant. |
 | POST | `/user/settings/webhooks/{id}` | ❌ Not implemented | — | Not implemented anywhere. |
 | DELETE | `/user/settings/webhooks/{id}` | ❌ Not implemented | — | Not implemented anywhere. |
-| PUT | `/subscriptions/{entity}/{entityID}` | ❌ Not implemented | — | node-vikunja's SubscriptionService.subscribe (PUT /subscriptions/{entityType}/{entityId}) exists and is correctly implemented in node-vikunja, but no MCP tool calls client.subscriptions anywhere in src/tools/. |
-| DELETE | `/subscriptions/{entity}/{entityID}` | ❌ Not implemented | — | Same as above — SubscriptionService.unsubscribe exists in node-vikunja but is unused; no MCP tool exposes it. |
-| GET | `/notifications` | ❌ Not implemented | — | node-vikunja NotificationService.getNotifications (GET /notifications, pagination via convertParams) is correctly implemented but never called from src/tools/. Only a stray Notification type exists in src/types/vikunja.ts, unused for any live API call. |
-| POST | `/notifications` | ❌ Not implemented | — | NotificationService.markAllAsRead exists in node-vikunja but is unused; no MCP tool. |
-| POST | `/notifications/{id}` | ❌ Not implemented | — | NotificationService.markNotification exists in node-vikunja but is unused; no MCP tool. |
-| GET | `/{kind}/{id}/reactions` | ❌ Not implemented | — | No reaction support anywhere in src/ or node-vikunja (no reaction service/model exists in node-vikunja at all, and no direct vikunjaRestRequest call site references reactions). |
-| PUT | `/{kind}/{id}/reactions` | ❌ Not implemented | — | Not implemented; no reaction model type or tool exists. |
-| POST | `/{kind}/{id}/reactions/delete` | ❌ Not implemented | — | Not implemented; no reaction model type or tool exists. |
+| PUT | `/subscriptions/{entity}/{entityID}` | ✅ Implemented (Wave D) | vikunja_subscriptions (subcommand: subscribe) | Direct-REST call via vikunjaRestRequest (not node-vikunja — node-vikunja's SubscriptionService is dead code from this project's perspective per the node-vikunja EOL decision). Correct PUT /subscriptions/{entity}/{entityID}, entity in {project, task} enforced by Zod. |
+| DELETE | `/subscriptions/{entity}/{entityID}` | ✅ Implemented (Wave D) | vikunja_subscriptions (subcommand: unsubscribe) | Correct DELETE /subscriptions/{entity}/{entityID}. A 404 ("subscription does not exist") is treated as an idempotent no-op success rather than an error (ensure-semantics, docs/ENDPOINT-PLAYBOOK.md §1). |
+| GET | `/notifications` | ✅ Implemented (Wave D) | vikunja_notifications (subcommand: list) | Direct-REST GET /notifications with page/per_page forwarded when supplied. unreadOnly is applied client-side (the spec has no server-side unread filter). Adds a best-effort, zero-extra-request relatedTask convenience field when the (undocumented, `unknown`-typed) notification payload happens to embed one. |
+| POST | `/notifications` | ✅ Implemented (Wave D) | vikunja_notifications (subcommand: mark-all-read) | Correct POST /notifications, no body. |
+| POST | `/notifications/{id}` | ✅ Implemented (Wave D) | vikunja_notifications (subcommand: mark-read) | Correct POST /notifications/{id}. This endpoint is a pure toggle server-side (no request body to pick read vs. unread) — the tool compensates by checking the response and re-toggling once more if the first call happened to land on "unread", making mark-read idempotent regardless of the notification's starting state. |
+| GET | `/{kind}/{id}/reactions` | ✅ Implemented (Wave D) | vikunja_reactions (subcommand: list) | Correct GET /{kind}/{id}/reactions, kind in {tasks, comments} enforced by Zod. Response passed through as the spec's documented `models.ReactionMap[]` shape without reshaping. |
+| PUT | `/{kind}/{id}/reactions` | ✅ Implemented (Wave D) | vikunja_reactions (subcommand: add) | Correct PUT with body `{value}` matching models.Reaction (the spec's body parameter is misnamed "project" but its schema is models.Reaction). |
+| POST | `/{kind}/{id}/reactions/delete` | ✅ Implemented (Wave D) | vikunja_reactions (subcommand: remove) | Correct POST with body `{value}`. |
 
 ### Migration importers, testing endpoints, and MCP-only composite features (export, batch-import, templates)
 

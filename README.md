@@ -743,6 +743,54 @@ vikunja_projects.duplicate({ id: 1 })
 
 // Duplicate into a specific parent project, including its shares
 vikunja_projects.duplicate({ id: 1, parentProjectId: 5, duplicateShares: true })
+
+// --- Direct Project Sharing (users & teams) ---
+// Distinct from link shares above: grants access to a specific, named
+// account rather than anyone with a link. See docs/API-COVERAGE.md — this
+// was a HIGH-priority gap (only link sharing existed before Wave D).
+
+// Composite: share with a user by username. Resolves the username to a
+// user id, grants access, then verifies the grant actually landed.
+vikunja_projects.share-with-user({
+  projectId: 1,
+  username: "alice",
+  right: "write"   // 'read' | 'write' | 'admin', or 0 | 1 | 2
+})
+
+// Composite: share with a team by name (same resolve -> add -> verify shape).
+vikunja_projects.share-with-team({
+  projectId: 1,
+  teamName: "Engineering",
+  right: "admin"
+})
+
+// Opt into atomic rollback: if verification fails, the just-added grant is
+// removed rather than left in an unverified state. Default is best-effort
+// (the grant is left in place and reported for manual follow-up) — this is
+// still not a real transaction; see docs/ENDPOINT-PLAYBOOK.md §5.
+vikunja_projects.share-with-user({
+  projectId: 1,
+  username: "alice",
+  right: "write",
+  atomic: true
+})
+
+// Read composite: who has access to this project — direct users, direct
+// teams, and link shares — in one call.
+vikunja_projects.list-members({ projectId: 1 })
+
+// Primitives (fine-grained control; share-with-user/team are the
+// recommended path for the common case of "give this named user/team access"):
+vikunja_projects.list-project-users({ projectId: 1 })
+vikunja_projects.search-project-users({ projectId: 1, search: "ali" })
+vikunja_projects.add-project-user({ projectId: 1, username: "alice", right: "read" })
+vikunja_projects.update-project-user-permission({ projectId: 1, userId: 42, right: "admin" })
+vikunja_projects.remove-project-user({ projectId: 1, userId: 42 })
+
+vikunja_projects.list-project-teams({ projectId: 1 })
+vikunja_projects.add-project-team({ projectId: 1, teamId: 7, right: "write" })
+vikunja_projects.update-project-team-permission({ projectId: 1, teamId: 7, right: "read" })
+vikunja_projects.remove-project-team({ projectId: 1, teamId: 7 })
 ```
 
 ### Label Management Examples
@@ -909,58 +957,39 @@ vikunja_webhooks.delete({
 ### Advanced Filtering Examples
 
 ```typescript
-// Create a saved filter for high priority tasks
+// Create a real, server-side saved filter for high priority tasks
 vikunja_filters.create({
-  name: "High Priority Tasks",
+  title: "High Priority Tasks",
   description: "All undone tasks with priority 4 or 5",
   filter: "done = false && priority >= 4",
-  isGlobal: true
+  isFavorite: true
 })
+// The DSL's camelCase fields (e.g. dueDate) are parsed, validated, and
+// translated to Vikunja's snake_case Task fields (e.g. due_date) before
+// being sent to the server.
 
-// Alternative format using title and filters object
-vikunja_filters.create({
-  title: "🔥 High Priority Tasks",
-  description: "All tasks with priority 4 or 5 that are not completed",
-  filters: {
-    filter_by: ["priority"],
-    filter_value: ["5"],
-    filter_comparator: [">="],
-    filter_concat: ""
-  },
-  is_favorite: true
-})
-
-// Create a filter with multiple conditions
+// Alternative: build the filter from structured conditions instead of a string
 vikunja_filters.create({
   title: "Urgent & Incomplete",
-  filters: {
-    filter_by: ["priority", "done"],
-    filter_value: ["3", "false"],
-    filter_comparator: [">=", "="],
-    filter_concat: "&&"
-  }
+  conditions: [
+    { field: "priority", operator: ">=", value: 3 },
+    { field: "done", operator: "=", value: false }
+  ],
+  groupOperator: "&&"
 })
 
-// Create a project-specific filter
-vikunja_filters.create({
-  name: "This Week's Tasks",
-  filter: "dueDate >= now && dueDate < now+7d",
-  projectId: 1,
-  isGlobal: false
-})
-
-// List all saved filters
+// List saved filters. Vikunja has no dedicated list-all endpoint, so this
+// derives its results from GET /projects' pseudo-project entries (negative
+// ids) and verifies each one against GET /filters/{id}.
 vikunja_filters.list()
 
-// List filters for a specific project
-vikunja_filters.list({ projectId: 1 })
+// Only filters currently marked as favorite
+vikunja_filters.list({ favorite: true })
 
-// Apply a saved filter to task listing
-vikunja_tasks.list({
-  filterId: "550e8400-e29b-41d4-a716-446655440000"
-})
+// Get a specific filter by its real numeric id (not a pseudo-project id)
+vikunja_filters.get({ id: 3 })
 
-// Build a filter programmatically
+// Build a filter string programmatically without touching the server
 vikunja_filters.build({
   conditions: [
     { field: "done", operator: "=", value: false },
@@ -971,14 +1000,19 @@ vikunja_filters.build({
 })
 // Returns: { filter: "(done = false && priority >= 3 && assignees in user1, user2)", valid: true }
 
-// Update an existing filter
+// Update an existing filter. POST /filters/{id} replaces the whole
+// resource, so the tool fetches the current filter first and carries
+// forward any field you don't supply here.
 vikunja_filters.update({
-  id: "550e8400-e29b-41d4-a716-446655440000",
-  name: "Critical Tasks",
+  id: 3,
+  title: "Critical Tasks",
   filter: "done = false && priority = 5"
 })
 
-// Validate a filter string
+// Delete a saved filter
+vikunja_filters.delete({ id: 3 })
+
+// Validate a filter string without touching the server
 vikunja_filters.validate({
   filter: "done = false && priority >= 3"
 })
@@ -1162,7 +1196,7 @@ This standardized format ensures:
     - `move` - Move a project to a new parent
       - Validates against circular references
       - Enforces maximum depth of 10 levels
-  - **Project Sharing**
+  - **Project Sharing — link shares** (anonymous/password links)
     - `create-share` - Create share link with permissions
     - `list-shares` - List all shares for a project
     - `get-share` - Get share details
@@ -1184,6 +1218,14 @@ This standardized format ensures:
     - All Kanban operations auto-resolve `viewId` to the project's Kanban view when omitted
   - **Duplicate**
     - `duplicate` - Duplicate a project (tasks, files, Kanban data, assignees, comments, attachments, labels, relations, and backgrounds are copied; shares only when `duplicateShares: true`)
+  - **Project Sharing — direct user & team access** (New! Wave D)
+    - `share-with-user` - Composite: share with a user by **username** — resolves to an id, adds, then verifies the grant landed. Optional `atomic: true` removes the grant if verification fails (default best-effort; not a real transaction, see docs/ENDPOINT-PLAYBOOK.md §5)
+    - `share-with-team` - Composite: share with a team by **name** — same resolve → add → verify shape
+    - `list-members` - Read composite: direct users + direct teams + link shares for a project, in one call
+    - `list-project-users` / `search-project-users` - List users with direct access, or search for one to share with
+    - `add-project-user` / `update-project-user-permission` / `remove-project-user` - Primitives for fine-grained control
+    - `list-project-teams` - List teams with direct access
+    - `add-project-team` / `update-project-team-permission` / `remove-project-team` - Primitives for fine-grained control
 
 ### Label Management ✅
 - `vikunja_labels` - Label operations (fully implemented)
@@ -1284,29 +1326,67 @@ This standardized format ensures:
   
   **Event Validation**: When creating or updating webhooks, the provided events are automatically validated against the list of available events from the API. Invalid events will result in a clear error message showing which events are invalid and listing all valid options. Valid events are cached for 5 minutes to improve performance.
 
+### Notifications ✅
+- `vikunja_notifications` - Manage the current user's Vikunja notifications
+  - `list` - List notifications
+    - Optional: `unreadOnly` (client-side filter — the API has no server-side unread filter), `page`, `perPage`
+    - Each notification may include a best-effort `relatedTask` field (`{id, title}`) when the API's payload happens to embed one — this is a convenience extraction, not a documented API guarantee
+  - `mark-read` - Mark a single notification as read
+    - Required: `notificationId`
+    - **Idempotent**: the underlying `POST /notifications/{id}` endpoint is a pure toggle (no request body to pick read vs. unread); this tool checks the result and toggles a second time if needed so calling it repeatedly always leaves the notification read
+  - `mark-all-read` - Mark every notification as read in one call
+  - **Note**: link shares cannot have notifications (per the API); this tool requires a full user session
+
+### Subscriptions ✅
+- `vikunja_subscriptions` - Subscribe/unsubscribe the current user to/from notifications for a project or task
+  - `subscribe` - Subscribe to an entity
+    - Required: `entity` (`project` or `task`), `entityId`
+  - `unsubscribe` - Unsubscribe from an entity
+    - Required: `entity`, `entityId`
+    - **Idempotent**: unsubscribing from something you're not subscribed to succeeds as a no-op (the API's 404 "subscription does not exist" is treated as success, not an error)
+
+### Reactions ✅
+- `vikunja_reactions` - Add, remove, or list emoji/text reactions on a task or task comment
+  - `list` - List all reactions for an entity
+    - Required: `kind` (`tasks` or `comments`), `entityId`
+  - `add` - Add a reaction
+    - Required: `kind`, `entityId`, `value` (any UTF character or short text, up to 20 characters)
+  - `remove` - Remove your own reaction
+    - Required: `kind`, `entityId`, `value`
+
 ### Filter Management ✅
 
-> **⚠️ Local-only, not Vikunja's saved filters:** `list`/`get`/`create`/
-> `update`/`delete` manage filters stored in memory on this MCP server
-> process. They are **not** Vikunja's server-side saved filters (there is no
-> `/filters` API round-trip, no sync, and no persistence across a server
-> restart). Wave D wires this tool to the real server-side `/filters`
-> endpoints.
-- `vikunja_filters` - Advanced filtering for tasks (fully implemented, local-only persistence — see warning above)
-  - `list` - List locally-stored filters
-    - Optional: projectId (for project-specific filters), global flag
-  - `get` - Get a specific locally-stored filter by ID
-  - `create` - Create a new locally-stored filter
-    - Required: name, filter (query string)
-    - Optional: description, projectId, isGlobal
-  - `update` - Update an existing locally-stored filter
+> **Real, server-side saved filters:** `create`/`get`/`update`/`delete` call
+> Vikunja's actual `/filters` API (`PUT /filters`, `GET`/`POST`/`DELETE
+> /filters/{id}`) — filters persist on the server, survive an MCP restart,
+> and are visible in the Vikunja UI and to other clients. Saved filters are
+> **not** project-scoped (the API has no `project_id` field on a saved
+> filter); Vikunja instead exposes each one as a *pseudo-project* with a
+> negative id, and `isFavorite` controls whether it also shows in the
+> favorites parent alongside favorite projects. There is no dedicated
+> list-all-saved-filters endpoint, so `list` derives its results from `GET
+> /projects`' pseudo-project entries and verifies each one against `GET
+> /filters/{id}`; entries it could not verify are still returned (title
+> only) with `hydrated: false` rather than silently dropped. `build` and
+> `validate` remain pure local utilities — they construct or check a filter
+> query string without contacting the server.
+- `vikunja_filters` - Advanced filtering for tasks, backed by Vikunja's real saved filters (fully implemented)
+  - `list` - Derive the list of saved filters from `GET /projects`' pseudo-project entries
+    - Optional: page, perPage, favorite (filter to favorited filters only)
+  - `get` - Get a specific saved filter by its numeric id
     - Required: id
-    - Optional: name, description, filter, projectId, isGlobal
-  - `delete` - Delete a locally-stored filter
-  - `build` - Build a filter string from conditions
+  - `create` - Create a new saved filter (`PUT /filters`)
+    - Required: title, and one of filter (query string) or conditions (array)
+    - Optional: description, groupOperator (&&, ||), isFavorite
+  - `update` - Update an existing saved filter (`POST /filters/{id}`, a full-resource replace — omitted fields are carried forward from the current filter, not cleared)
+    - Required: id
+    - Optional: title, description, filter, conditions, groupOperator, isFavorite
+  - `delete` - Delete a saved filter (`DELETE /filters/{id}`)
+    - Required: id
+  - `build` - Build a filter string from conditions (local utility, no server call)
     - Required: conditions array
     - Optional: groupOperator (&&, ||)
-  - `validate` - Validate a filter string
+  - `validate` - Validate a filter string (local utility, no server call)
 
 ### Data Export ✅
 
