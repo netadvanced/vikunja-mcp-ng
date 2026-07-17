@@ -157,6 +157,7 @@ export function registerTasksTool(
       startDate: z.string().optional(),
       endDate: z.string().optional(),
       priority: z.number().min(0).max(5).optional(),
+      percentDone: z.number().min(0).max(1).optional(),
       labels: z.array(z.number()).optional(),
       assignees: z.array(z.number()).optional(),
       // Kanban bucket fields (set-bucket subcommand).
