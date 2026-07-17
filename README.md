@@ -1,5 +1,7 @@
 # Vikunja MCP Server
 
+> 👋 **Why this fork exists:** We rely on this project and noticed the [upstream repo](https://github.com/democratize-technology/vikunja-mcp) had gone quiet, with a growing backlog of open PRs and issues. So we've taken over active maintenance here — triaging and resolving most of that backlog (tracked [in this issue](https://github.com/netadvanced/vikunja-mcp/issues/19)). Full credit to the original authors for the foundation. If they'd like to pick it back up, we'll gladly hand the reins back — or work together.
+
 A Model Context Protocol (MCP) server that enables AI assistants to interact with Vikunja task management instances.
 
 ## Features
@@ -1068,8 +1070,9 @@ This standardized format ensures:
     - Optional: description, parentProjectId, isArchived, hexColor (format: #RRGGBB)
     - Validates parent project hierarchy depth (max 10 levels)
   - `update` - Update existing project
-    - Supports partial updates
+    - Supports partial updates (fetches current project and merges; omitted fields are preserved)
     - Can update all project fields including hexColor (format: #RRGGBB)
+    - Omitting `parentProjectId` leaves the current parent unchanged (use `move` to reparent or detach)
     - Validates parent project hierarchy depth when changing parent
   - `delete` - Delete a project by ID
   - `archive` - Archive a project
