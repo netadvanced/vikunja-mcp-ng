@@ -14,6 +14,7 @@ import { registerTools } from './tools';
 import { logger } from './utils/logger';
 import { createSecureConnectionMessage, createSecureLogConfig } from './utils/security';
 import { createVikunjaClientFactory, setGlobalClientFactory, type VikunjaClientFactory } from './client';
+import { readSecretEnv } from './config/secrets';
 
 dotenv.config({ quiet: true });
 
@@ -59,13 +60,24 @@ export const factoryInitializationPromise = initializeFactory()
     registerTools(server, authManager, undefined);
   });
 
-if (process.env.VIKUNJA_URL && process.env.VIKUNJA_API_TOKEN) {
+// Resolve VIKUNJA_API_TOKEN, honoring the VIKUNJA_API_TOKEN_FILE Docker-secrets
+// convention. Setting both the plain variable and its _FILE variant is a hard
+// startup error (see src/config/secrets.ts) rather than a silent precedence choice.
+let vikunjaApiToken: string | undefined;
+try {
+  vikunjaApiToken = readSecretEnv('VIKUNJA_API_TOKEN');
+} catch (error) {
+  logger.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
+if (process.env.VIKUNJA_URL && vikunjaApiToken) {
   const connectionMessage = createSecureConnectionMessage(
-    process.env.VIKUNJA_URL, 
-    process.env.VIKUNJA_API_TOKEN
+    process.env.VIKUNJA_URL,
+    vikunjaApiToken
   );
   logger.info(`Auto-authenticating: ${connectionMessage}`);
-  authManager.connect(process.env.VIKUNJA_URL, process.env.VIKUNJA_API_TOKEN);
+  authManager.connect(process.env.VIKUNJA_URL, vikunjaApiToken);
   const detectedAuthType = authManager.getAuthType();
   logger.info(`Using detected auth type: ${detectedAuthType}`);
 }
@@ -81,9 +93,9 @@ async function main(): Promise<void> {
   const config = createSecureLogConfig({
     mode: process.env.MCP_MODE,
     debug: process.env.DEBUG,
-    hasAuth: !!process.env.VIKUNJA_URL && !!process.env.VIKUNJA_API_TOKEN,
+    hasAuth: !!process.env.VIKUNJA_URL && !!vikunjaApiToken,
     url: process.env.VIKUNJA_URL,
-    token: process.env.VIKUNJA_API_TOKEN,
+    token: vikunjaApiToken,
   });
   
   logger.debug('Configuration loaded', config);

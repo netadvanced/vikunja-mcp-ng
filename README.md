@@ -1341,6 +1341,16 @@ FILTER_MAX_VALUE_LENGTH=200     # Maximum individual value length (default: 200)
 
 For detailed rate limiting configuration, see [`docs/RATE_LIMITING.md`](docs/RATE_LIMITING.md).
 
+#### Module Gating & Secrets
+
+Individual tool modules (tasks, projects, labels, teams, users, webhooks, filters,
+templates, export, batch-import) can be enabled/disabled via an optional
+`vikunja-mcp.config.json` file and/or `VIKUNJA_MCP_MODULE_*` environment variables
+(env always wins). Sensitive variables like `VIKUNJA_API_TOKEN` also support a
+`VIKUNJA_API_TOKEN_FILE` variant for Docker/Swarm secrets. See
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full reference, defaults,
+and a Docker Swarm example.
+
 ## Roadmap
 
 - [x] ✅ **Security hardening** - Comprehensive vulnerability fixes implemented

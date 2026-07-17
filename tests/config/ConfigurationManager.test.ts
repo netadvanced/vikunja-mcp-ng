@@ -3,15 +3,19 @@
  * Comprehensive test coverage for centralized configuration management
  */
 
-import { ConfigurationManager, Environment, ConfigurationError } from '../../src/config';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { ConfigurationManager, Environment, ConfigurationError, isModuleEnabled } from '../../src/config';
 
 describe('ConfigurationManager', () => {
   let originalEnv: NodeJS.ProcessEnv;
+  let tempDir: string;
 
   beforeEach(() => {
     // Store original environment
     originalEnv = { ...process.env };
-    
+
     // Clear environment variables that might affect tests
     delete process.env.NODE_ENV;
     delete process.env.JEST_WORKER_ID;
@@ -19,16 +23,35 @@ describe('ConfigurationManager', () => {
     delete process.env.DEBUG;
     delete process.env.VIKUNJA_URL;
     delete process.env.VIKUNJA_API_TOKEN;
+    delete process.env.VIKUNJA_API_TOKEN_FILE;
     delete process.env.RATE_LIMIT_ENABLED;
-    
+    delete process.env.VIKUNJA_MCP_CONFIG;
+    delete process.env.VIKUNJA_MCP_MODULE_TASKS;
+    delete process.env.VIKUNJA_MCP_MODULE_PROJECTS;
+    delete process.env.VIKUNJA_MCP_MODULE_LABELS;
+    delete process.env.VIKUNJA_MCP_MODULE_TEAMS;
+    delete process.env.VIKUNJA_MCP_MODULE_USERS;
+    delete process.env.VIKUNJA_MCP_MODULE_WEBHOOKS;
+    delete process.env.VIKUNJA_MCP_MODULE_FILTERS;
+    delete process.env.VIKUNJA_MCP_MODULE_TEMPLATES;
+    delete process.env.VIKUNJA_MCP_MODULE_EXPORT;
+    delete process.env.VIKUNJA_MCP_MODULE_BATCH_IMPORT;
+    delete process.env.VIKUNJA_MCP_MODULE_ADMIN;
+    delete process.env.VIKUNJA_MCP_MODULE_USER_DELETION;
+    delete process.env.VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT;
+
     // Reset singleton
     ConfigurationManager.reset();
+
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vikunja-mcp-config-test-'));
   });
 
   afterEach(() => {
     // Restore original environment
     process.env = originalEnv;
     ConfigurationManager.reset();
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   describe('Environment Detection', () => {
@@ -419,6 +442,183 @@ describe('ConfigurationManager', () => {
         // Verify we get some kind of error handling
         expect(error).toBeDefined();
       }
+    });
+  });
+
+  describe('Config File Layering', () => {
+    it('should default to modules all enabled/disabled per built-in defaults when no file or env is set', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.modules.tasks).toBe(true);
+      expect(config.modules.projects).toBe(true);
+      expect(config.modules.labels).toBe(true);
+      expect(config.modules.teams).toBe(true);
+      expect(config.modules.users).toBe(true);
+      expect(config.modules.webhooks).toBe(true);
+      expect(config.modules.filters).toBe(true);
+      expect(config.modules.templates).toBe(true);
+      expect(config.modules.export).toBe(true);
+      expect(config.modules.batchImport).toBe(true);
+
+      // Dangerous modules: deny-by-default
+      expect(config.modules.admin).toBe(false);
+      expect(config.modules.userDeletion).toBe(false);
+      expect(config.modules.tokenManagement).toBe(false);
+    });
+
+    it('should silently skip a missing default config file', async () => {
+      // No VIKUNJA_MCP_CONFIG set, and cwd (repo root) has no
+      // vikunja-mcp.config.json — loading must succeed with defaults.
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.modules.tasks).toBe(true);
+    });
+
+    it('should load module settings from an explicit config file path', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ modules: { projects: false, teams: { enabled: false } } })
+      );
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.modules.projects).toBe(false);
+      expect(isModuleEnabled(config.modules.teams)).toBe(false);
+      // Untouched modules keep their built-in defaults
+      expect(config.modules.tasks).toBe(true);
+    });
+
+    it('should apply non-module settings from the config file too', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ logging: { level: 'debug' } }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.logging.level).toBe('debug');
+    });
+
+    it('should let environment variables win over config file values', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ modules: { projects: false } }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+      process.env.VIKUNJA_MCP_MODULE_PROJECTS = 'true';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.modules.projects).toBe(true);
+    });
+
+    it('should fail fast with a clear message when the explicit config file does not exist', async () => {
+      process.env.VIKUNJA_MCP_CONFIG = path.join(tempDir, 'does-not-exist.json');
+
+      try {
+        await ConfigurationManager.getInstance().getConfiguration();
+        fail('Expected ConfigurationError to be thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConfigurationError);
+        expect((error as ConfigurationError).message).toContain('Failed to read config file');
+      }
+    });
+
+    it('should fail fast with a clear message when the config file contains invalid JSON', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, '{ this is not valid json');
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      try {
+        await ConfigurationManager.getInstance().getConfiguration();
+        fail('Expected ConfigurationError to be thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConfigurationError);
+        expect((error as ConfigurationError).message).toContain('not valid JSON');
+      }
+    });
+
+    it('should fail fast when the config file top level is not a JSON object', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify(['not', 'an', 'object']));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      try {
+        await ConfigurationManager.getInstance().getConfiguration();
+        fail('Expected ConfigurationError to be thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConfigurationError);
+        expect((error as ConfigurationError).message).toContain('JSON object');
+      }
+    });
+
+    it('should reject malformed module values via schema validation', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ modules: { tasks: 'yes-please' } }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      await expect(
+        ConfigurationManager.getInstance().getConfiguration()
+      ).rejects.toThrow(ConfigurationError);
+    });
+  });
+
+  describe('Module Gating Configuration', () => {
+    it('should resolve boolean module toggles via isModuleEnabled', () => {
+      expect(isModuleEnabled(true)).toBe(true);
+      expect(isModuleEnabled(false)).toBe(false);
+    });
+
+    it('should resolve object-form module toggles via their enabled field', () => {
+      expect(isModuleEnabled({ enabled: true })).toBe(true);
+      expect(isModuleEnabled({ enabled: false })).toBe(false);
+      // Future per-subcommand keys are tolerated and ignored by the resolver today
+      expect(isModuleEnabled({ enabled: true, delete: false })).toBe(true);
+    });
+
+    it('should disable a module via env var boolean override', async () => {
+      process.env.VIKUNJA_MCP_MODULE_WEBHOOKS = 'false';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.modules.webhooks).toBe(false);
+    });
+
+    it('should allow enabling a reserved dangerous module explicitly', async () => {
+      process.env.VIKUNJA_MCP_MODULE_ADMIN = 'true';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.modules.admin).toBe(true);
+    });
+
+    it('should return the modules config section via getModulesConfig', async () => {
+      process.env.VIKUNJA_MCP_MODULE_LABELS = 'false';
+
+      const modules = await ConfigurationManager.getInstance().getModulesConfig();
+
+      expect(modules.labels).toBe(false);
+    });
+  });
+
+  describe('Secrets: VIKUNJA_API_TOKEN_FILE', () => {
+    it('should read the token from VIKUNJA_API_TOKEN_FILE and trim whitespace', async () => {
+      const tokenPath = path.join(tempDir, 'token');
+      fs.writeFileSync(tokenPath, '  tk_from_file_123  \n');
+      process.env.VIKUNJA_API_TOKEN_FILE = tokenPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.auth.vikunjaToken).toBe('tk_from_file_123');
+    });
+
+    it('should hard-error at load time when both VIKUNJA_API_TOKEN and VIKUNJA_API_TOKEN_FILE are set', async () => {
+      const tokenPath = path.join(tempDir, 'token');
+      fs.writeFileSync(tokenPath, 'tk_from_file');
+      process.env.VIKUNJA_API_TOKEN = 'tk_plain';
+      process.env.VIKUNJA_API_TOKEN_FILE = tokenPath;
+
+      await expect(
+        ConfigurationManager.getInstance().getConfiguration()
+      ).rejects.toThrow(ConfigurationError);
     });
   });
 });

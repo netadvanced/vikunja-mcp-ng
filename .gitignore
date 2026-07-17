@@ -32,6 +32,9 @@ yarn-error.log*
 .env.local
 .env.*.local
 
+# Local module-gating config (see vikunja-mcp.config.example.json)
+vikunja-mcp.config.json
+
 # Test coverage
 coverage/
 .nyc_output/

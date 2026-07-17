@@ -2,9 +2,14 @@
  * Tests for tool registration
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { AuthManager } from '../../src/auth/AuthManager';
 import { registerTools } from '../../src/tools';
+import { ConfigurationManager } from '../../src/config';
+import { logger } from '../../src/utils/logger';
 
 // Mock all tool registration functions
 jest.mock('../../src/tools/auth', () => ({
@@ -67,8 +72,34 @@ import { registerExportTool } from '../../src/tools/export';
 describe('Tool Registration', () => {
   let mockServer: jest.Mocked<McpServer>;
   let mockAuthManager: jest.Mocked<AuthManager>;
+  let originalEnv: NodeJS.ProcessEnv;
+
+  const MODULE_ENV_VARS = [
+    'VIKUNJA_MCP_CONFIG',
+    'VIKUNJA_MCP_MODULE_TASKS',
+    'VIKUNJA_MCP_MODULE_PROJECTS',
+    'VIKUNJA_MCP_MODULE_LABELS',
+    'VIKUNJA_MCP_MODULE_TEAMS',
+    'VIKUNJA_MCP_MODULE_USERS',
+    'VIKUNJA_MCP_MODULE_WEBHOOKS',
+    'VIKUNJA_MCP_MODULE_FILTERS',
+    'VIKUNJA_MCP_MODULE_TEMPLATES',
+    'VIKUNJA_MCP_MODULE_EXPORT',
+    'VIKUNJA_MCP_MODULE_BATCH_IMPORT',
+    'VIKUNJA_MCP_MODULE_ADMIN',
+    'VIKUNJA_MCP_MODULE_USER_DELETION',
+    'VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT',
+  ];
 
   beforeEach(() => {
+    originalEnv = { ...process.env };
+    for (const key of MODULE_ENV_VARS) {
+      delete process.env[key];
+    }
+    // Ensure module gating reads a fresh config on every test rather than a
+    // config cached (and possibly stale) from a previous test in this file.
+    ConfigurationManager.reset();
+
     // Create mock instances
     mockServer = {
       tool: jest.fn(),
@@ -81,6 +112,11 @@ describe('Tool Registration', () => {
 
     // Clear all mocks
     jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    ConfigurationManager.reset();
   });
 
   describe('registerTools', () => {
@@ -266,6 +302,128 @@ describe('Tool Registration', () => {
       for (let i = 1; i < callOrder.length; i++) {
         expect(callOrder[i]).toBeGreaterThan(callOrder[i - 1]);
       }
+    });
+  });
+
+  describe('Module Gating', () => {
+    it('should not register the tasks tool family when the tasks module is disabled', () => {
+      process.env.VIKUNJA_MCP_MODULE_TASKS = 'false';
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      registerTools(mockServer, mockAuthManager, undefined);
+
+      expect(registerTasksTool).not.toHaveBeenCalled();
+      // registerAuthTool is unconditional
+      expect(registerAuthTool).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not register a disabled module tool (projects) while other modules stay registered', () => {
+      process.env.VIKUNJA_MCP_MODULE_PROJECTS = 'false';
+      const mockClientFactory = { test: 'factory' };
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerProjectsTool).not.toHaveBeenCalled();
+      expect(registerLabelsTool).toHaveBeenCalledTimes(1);
+      expect(registerTeamsTool).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not register webhooks/filters/templates/batch-import tools when disabled', () => {
+      process.env.VIKUNJA_MCP_MODULE_WEBHOOKS = 'false';
+      process.env.VIKUNJA_MCP_MODULE_FILTERS = 'false';
+      process.env.VIKUNJA_MCP_MODULE_TEMPLATES = 'false';
+      process.env.VIKUNJA_MCP_MODULE_BATCH_IMPORT = 'false';
+      const mockClientFactory = { test: 'factory' };
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerWebhooksTool).not.toHaveBeenCalled();
+      expect(registerFiltersTool).not.toHaveBeenCalled();
+      expect(registerTemplatesTool).not.toHaveBeenCalled();
+      expect(registerBatchImportTool).not.toHaveBeenCalled();
+      // Untouched modules are still registered
+      expect(registerProjectsTool).toHaveBeenCalledTimes(1);
+    });
+
+    it('should register users/export tools when JWT-authenticated and their modules stay enabled by default', () => {
+      const mockClientFactory = { test: 'factory' };
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerUsersTool).toHaveBeenCalledTimes(1);
+      expect(registerExportTool).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not register the export tool when its module is disabled, even with JWT auth', () => {
+      process.env.VIKUNJA_MCP_MODULE_EXPORT = 'false';
+      const mockClientFactory = { test: 'factory' };
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerExportTool).not.toHaveBeenCalled();
+      // Users module untouched — still registered
+      expect(registerUsersTool).toHaveBeenCalledTimes(1);
+    });
+
+    it('should NARROW but never EXPAND auth: enabling the users module cannot grant access under API-token auth', () => {
+      process.env.VIKUNJA_MCP_MODULE_USERS = 'true';
+      process.env.VIKUNJA_MCP_MODULE_EXPORT = 'true';
+      const mockClientFactory = { test: 'factory' };
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+      registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+      // Auth type still forbids these tools regardless of module config
+      expect(registerUsersTool).not.toHaveBeenCalled();
+      expect(registerExportTool).not.toHaveBeenCalled();
+    });
+
+    it('should keep dangerous/reserved modules unregistered by default (no tool wired to them yet)', () => {
+      // No VIKUNJA_MCP_MODULE_ADMIN/etc set — defaults apply (deny-by-default).
+      // There is currently no registration function for these reserved
+      // modules; this test documents that registerTools succeeds without
+      // attempting to register anything for them.
+      const mockClientFactory = { test: 'factory' };
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      expect(() => registerTools(mockServer, mockAuthManager, mockClientFactory)).not.toThrow();
+    });
+
+    it('should fail safe to default module gating (and log clearly) when config loading throws', () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vikunja-mcp-tools-index-test-'));
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, '{ not valid json');
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+
+      const mockClientFactory = { test: 'factory' };
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      expect(() => registerTools(mockServer, mockAuthManager, mockClientFactory)).not.toThrow();
+
+      // Falls back to defaults: ordinary modules stay registered
+      expect(registerProjectsTool).toHaveBeenCalledTimes(1);
+      expect(registerTasksTool).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to load module gating configuration'),
+        expect.anything()
+      );
+
+      errorSpy.mockRestore();
+      fs.rmSync(tempDir, { recursive: true, force: true });
     });
   });
 });

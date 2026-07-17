@@ -3,6 +3,8 @@
  * Replaces scattered process.env usage with type-safe configuration management
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { z } from 'zod';
 import type {
   ApplicationConfig,
@@ -11,13 +13,18 @@ import type {
   LoggingConfig,
   RateLimitConfig,
   FeatureFlagsConfig,
+  ModulesConfig,
 } from './types';
 import {
   Environment,
   ConfigurationError,
   ApplicationConfigSchema,
 } from './types';
+import { readSecretEnv } from './secrets';
 import { logger } from '../utils/logger';
+
+/** Default location of the optional JSON config file, relative to cwd. */
+const DEFAULT_CONFIG_FILE_NAME = 'vikunja-mcp.config.json';
 
 
 /**
@@ -126,25 +133,33 @@ export class ConfigurationManager {
       
       // 2. Load base configuration from environment profile
       const profileConfig = ENVIRONMENT_PROFILES[environment] || {};
-      
-      // 3. Load configuration from environment variables
+
+      // 3. Load optional JSON config file (non-sensitive, safe to mount as a
+      //    Docker config). Path is `vikunja-mcp.config.json` by default, or
+      //    overridable via VIKUNJA_MCP_CONFIG.
+      const fileConfig = this.loadFromConfigFile();
+
+      // 4. Load configuration from environment variables (always wins over
+      //    the config file — see docs/CONFIGURATION.md)
       const envConfig = this.loadFromEnvironmentVariables();
-      
-      // 4. Load configuration from additional sources
+
+      // 5. Load configuration from additional sources (programmatic/test injection)
       const sourceConfig = this.loadOptions.sources || {};
-      
-      // 5. Merge configurations using deep merge (sources override env vars, env vars override profile)
+
+      // 6. Merge configurations using deep merge. Layering, lowest to highest
+      //    priority: profile defaults -> config file -> env vars -> sources.
       const rawConfig = this.deepMerge(
         { environment },
         profileConfig,
+        fileConfig,
         envConfig,
         sourceConfig
       );
       
-      // 6. Validate and transform configuration
+      // 7. Validate and transform configuration
       this.config = this.validateConfiguration(rawConfig);
-      
-      // 7. Log configuration summary (without sensitive values)
+
+      // 8. Log configuration summary (without sensitive values)
       this.logConfigurationSummary();
       
       return this.config;
@@ -192,6 +207,11 @@ export class ConfigurationManager {
     return config.featureFlags;
   }
 
+  public async getModulesConfig(): Promise<ModulesConfig> {
+    const config = await this.getConfiguration();
+    return config.modules;
+  }
+
   /**
    * Check if a feature is enabled
    */
@@ -223,6 +243,61 @@ export class ConfigurationManager {
   }
 
   /**
+   * Load configuration from an optional JSON config file.
+   *
+   * The file location defaults to `vikunja-mcp.config.json` in the current
+   * working directory, overridable via `VIKUNJA_MCP_CONFIG`. The config file
+   * is intended for non-sensitive settings only (module gating, rate limits,
+   * feature flags, etc.) — it is safe to mount read-only as a Docker config.
+   * Secrets belong in environment variables (optionally via the `*_FILE`
+   * convention — see `./secrets.ts`), never in this file.
+   *
+   * - Explicit path (via env var) that cannot be read: hard error.
+   * - Default path that does not exist: silently skipped (file is optional).
+   * - File exists but contains invalid JSON or a non-object value: hard
+   *   error either way, so misconfiguration is never masked.
+   */
+  private loadFromConfigFile(): Partial<ApplicationConfig> {
+    const explicitPath = process.env.VIKUNJA_MCP_CONFIG;
+    const configPath = explicitPath ?? path.resolve(process.cwd(), DEFAULT_CONFIG_FILE_NAME);
+
+    let raw: string;
+    try {
+      raw = fs.readFileSync(configPath, 'utf-8');
+    } catch (error) {
+      if (explicitPath) {
+        throw new ConfigurationError(
+          'configFile',
+          `Failed to read config file at ${configPath} (from VIKUNJA_MCP_CONFIG): ` +
+            `${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      // Default config file is optional — absence is not an error.
+      return {};
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new ConfigurationError(
+        'configFile',
+        `Config file at ${configPath} is not valid JSON: ` +
+          `${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new ConfigurationError(
+        'configFile',
+        `Config file at ${configPath} must contain a JSON object at the top level.`
+      );
+    }
+
+    return parsed as Partial<ApplicationConfig>;
+  }
+
+  /**
    * Load configuration from environment variables
    * See docs/CONFIGURATION.md for the full environment variable reference.
    */
@@ -232,7 +307,8 @@ export class ConfigurationManager {
     // Authentication variables
     const auth: Record<string, unknown> = {};
     this.assignEnvValue(auth, 'vikunjaUrl', process.env.VIKUNJA_URL, false);
-    this.assignEnvValue(auth, 'vikunjaToken', process.env.VIKUNJA_API_TOKEN, false);
+    // Sensitive: supports the VIKUNJA_API_TOKEN_FILE Docker-secrets convention.
+    this.assignEnvValue(auth, 'vikunjaToken', readSecretEnv('VIKUNJA_API_TOKEN'), false);
     this.assignEnvValue(auth, 'mcpMode', process.env.MCP_MODE, false);
     if (Object.keys(auth).length > 0) {
       result.auth = auth;
@@ -304,6 +380,31 @@ export class ConfigurationManager {
     );
     if (Object.keys(featureFlags).length > 0) {
       result.featureFlags = featureFlags;
+    }
+
+    // Module gating variables. Env vars only carry the boolean shorthand —
+    // per-subcommand object-form granularity is a config-file-only feature.
+    const modules: Record<string, unknown> = {};
+    this.assignEnvValue(modules, 'tasks', process.env.VIKUNJA_MCP_MODULE_TASKS, true);
+    this.assignEnvValue(modules, 'projects', process.env.VIKUNJA_MCP_MODULE_PROJECTS, true);
+    this.assignEnvValue(modules, 'labels', process.env.VIKUNJA_MCP_MODULE_LABELS, true);
+    this.assignEnvValue(modules, 'teams', process.env.VIKUNJA_MCP_MODULE_TEAMS, true);
+    this.assignEnvValue(modules, 'users', process.env.VIKUNJA_MCP_MODULE_USERS, true);
+    this.assignEnvValue(modules, 'webhooks', process.env.VIKUNJA_MCP_MODULE_WEBHOOKS, true);
+    this.assignEnvValue(modules, 'filters', process.env.VIKUNJA_MCP_MODULE_FILTERS, true);
+    this.assignEnvValue(modules, 'templates', process.env.VIKUNJA_MCP_MODULE_TEMPLATES, true);
+    this.assignEnvValue(modules, 'export', process.env.VIKUNJA_MCP_MODULE_EXPORT, true);
+    this.assignEnvValue(modules, 'batchImport', process.env.VIKUNJA_MCP_MODULE_BATCH_IMPORT, true);
+    this.assignEnvValue(modules, 'admin', process.env.VIKUNJA_MCP_MODULE_ADMIN, true);
+    this.assignEnvValue(modules, 'userDeletion', process.env.VIKUNJA_MCP_MODULE_USER_DELETION, true);
+    this.assignEnvValue(
+      modules,
+      'tokenManagement',
+      process.env.VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT,
+      true
+    );
+    if (Object.keys(modules).length > 0) {
+      result.modules = modules;
     }
 
     return result as Partial<ApplicationConfig>;
@@ -428,6 +529,7 @@ export class ConfigurationManager {
         },
       },
       featureFlags: this.config.featureFlags,
+      modules: this.config.modules,
     };
 
     logger.info('Configuration loaded successfully', summary);
@@ -441,3 +543,4 @@ export const getLoggingConfig = (): Promise<LoggingConfig> => ConfigurationManag
 export const getRateLimitConfig = (): Promise<RateLimitConfig> => ConfigurationManager.getInstance().getRateLimitConfig();
 export const getFeatureFlagsConfig = (): Promise<FeatureFlagsConfig> => ConfigurationManager.getInstance().getFeatureFlagsConfig();
 export const isFeatureEnabled = (featureName: string): Promise<boolean> => ConfigurationManager.getInstance().isFeatureEnabled(featureName);
+export const getModulesConfig = (): Promise<ModulesConfig> => ConfigurationManager.getInstance().getModulesConfig();

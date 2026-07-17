@@ -92,6 +92,56 @@ export const FeatureFlagsConfigSchema = z.object({
 
 export type FeatureFlagsConfig = z.infer<typeof FeatureFlagsConfigSchema>;
 
+// Module Enable/Disable Configuration Schema
+//
+// A module value is a plain boolean today ({"tasks": false}), but the object
+// form ({"tasks": {"enabled": true, "delete": false}}) is accepted now so that
+// per-subcommand granularity can be introduced later without a breaking change.
+// The `.catchall(z.boolean())` allows arbitrary future subcommand keys through
+// validation; only `enabled` is interpreted today (see `isModuleEnabled`).
+export const ModuleToggleSchema = z.union([
+  z.boolean(),
+  z.object({ enabled: z.boolean() }).catchall(z.boolean()),
+]);
+
+export type ModuleToggle = z.infer<typeof ModuleToggleSchema>;
+
+/**
+ * Resolve a module toggle (boolean shorthand or object form) to its
+ * effective enabled/disabled state.
+ */
+export function isModuleEnabled(toggle: ModuleToggle): boolean {
+  return typeof toggle === 'boolean' ? toggle : toggle.enabled;
+}
+
+// Modules deliberately excluded from ordinary defaults because they are
+// dangerous/destructive in nature. These have no registered tools yet, but
+// the config keys are reserved now so future admin/user-deletion/token-
+// management tools plug into the same deny-by-default gating from day one.
+export const DANGEROUS_MODULE_KEYS = ['admin', 'userDeletion', 'tokenManagement'] as const;
+
+export const ModulesConfigSchema = z.object({
+  // Ordinary modules — default ON.
+  tasks: ModuleToggleSchema.default(true),
+  projects: ModuleToggleSchema.default(true),
+  labels: ModuleToggleSchema.default(true),
+  teams: ModuleToggleSchema.default(true),
+  users: ModuleToggleSchema.default(true),
+  webhooks: ModuleToggleSchema.default(true),
+  filters: ModuleToggleSchema.default(true),
+  templates: ModuleToggleSchema.default(true),
+  export: ModuleToggleSchema.default(true),
+  batchImport: ModuleToggleSchema.default(true),
+
+  // Dangerous modules — deny-by-default. No tools implement these yet; the
+  // keys are reserved so future work composes with this gating system.
+  admin: ModuleToggleSchema.default(false),
+  userDeletion: ModuleToggleSchema.default(false),
+  tokenManagement: ModuleToggleSchema.default(false),
+});
+
+export type ModulesConfig = z.infer<typeof ModulesConfigSchema>;
+
 // Complete Application Configuration Schema
 export const ApplicationConfigSchema = z.object({
   environment: z.nativeEnum(Environment).default(Environment.DEVELOPMENT),
@@ -99,6 +149,7 @@ export const ApplicationConfigSchema = z.object({
   logging: LoggingConfigSchema.default({}),
   rateLimiting: RateLimitConfigSchema.default({}),
   featureFlags: FeatureFlagsConfigSchema.default({}),
+  modules: ModulesConfigSchema.default({}),
 });
 
 export type ApplicationConfig = z.infer<typeof ApplicationConfigSchema>;

@@ -5,6 +5,7 @@
 
 export * from './types';
 export * from './ConfigurationManager';
+export * from './secrets';
 
 // Re-export commonly used functions for convenience
 export {
@@ -14,4 +15,5 @@ export {
   getRateLimitConfig,
   getFeatureFlagsConfig,
   isFeatureEnabled,
+  getModulesConfig,
 } from './ConfigurationManager';
