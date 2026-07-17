@@ -187,6 +187,9 @@ requiring any config migration.
 | `templates` | **ON** | |
 | `export` | **ON** | Also requires JWT authentication |
 | `batchImport` | **ON** | |
+| `notifications` | **ON** | Gates `vikunja_notifications` |
+| `subscriptions` | **ON** | Gates `vikunja_subscriptions` |
+| `reactions` | **ON** | Gates `vikunja_reactions` |
 | `admin` | **OFF** (reserved) | No tool implements this yet. Deny-by-default in case one ever does. |
 | `userDeletion` | **OFF** (reserved) | No tool implements this yet. Deny-by-default — destructive. |
 | `tokenManagement` | **OFF** (reserved) | No tool implements this yet. Deny-by-default — credential-adjacent. |
@@ -213,6 +216,9 @@ VIKUNJA_MCP_MODULE_FILTERS=true
 VIKUNJA_MCP_MODULE_TEMPLATES=true
 VIKUNJA_MCP_MODULE_EXPORT=true
 VIKUNJA_MCP_MODULE_BATCH_IMPORT=true
+VIKUNJA_MCP_MODULE_NOTIFICATIONS=true
+VIKUNJA_MCP_MODULE_SUBSCRIPTIONS=true
+VIKUNJA_MCP_MODULE_REACTIONS=true
 
 # Reserved / dangerous — deny-by-default
 VIKUNJA_MCP_MODULE_ADMIN=false

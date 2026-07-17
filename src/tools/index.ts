@@ -36,6 +36,9 @@ import { registerTemplatesTool } from './templates';
 import { registerWebhooksTool } from './webhooks';
 import { registerBatchImportTool } from './batch-import';
 import { registerExportTool } from './export';
+import { registerNotificationsTool } from './notifications';
+import { registerSubscriptionsTool } from './subscriptions';
+import { registerReactionsTool } from './reactions';
 
 // Re-export for testing
 export {
@@ -57,6 +60,9 @@ export {
   registerWebhooksTool,
   registerBatchImportTool,
   registerExportTool,
+  registerNotificationsTool,
+  registerSubscriptionsTool,
+  registerReactionsTool,
 };
 
 /**
@@ -151,6 +157,21 @@ export function registerTools(
     // Register batch import tool
     if (isModuleEnabled(modules.batchImport)) {
       registerBatchImportTool(server, authManager, clientFactory);
+    }
+
+    // Register notifications tool
+    if (isModuleEnabled(modules.notifications)) {
+      registerNotificationsTool(server, authManager, clientFactory);
+    }
+
+    // Register subscriptions tool
+    if (isModuleEnabled(modules.subscriptions)) {
+      registerSubscriptionsTool(server, authManager, clientFactory);
+    }
+
+    // Register reactions tool
+    if (isModuleEnabled(modules.reactions)) {
+      registerReactionsTool(server, authManager, clientFactory);
     }
 
     // Register user and export tools conditionally (preserving backward compatibility)
