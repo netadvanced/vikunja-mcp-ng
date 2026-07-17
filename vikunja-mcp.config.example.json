@@ -1,0 +1,21 @@
+{
+  "$comment": "Copy to vikunja-mcp.config.json (or point VIKUNJA_MCP_CONFIG at a copy elsewhere). Non-sensitive only — never put tokens/credentials in this file. See docs/CONFIGURATION.md.",
+  "modules": {
+    "tasks": true,
+    "projects": true,
+    "labels": true,
+    "teams": true,
+    "users": true,
+    "webhooks": true,
+    "filters": true,
+    "templates": true,
+    "export": true,
+    "batchImport": true,
+    "admin": false,
+    "userDeletion": false,
+    "tokenManagement": false
+  },
+  "logging": {
+    "level": "info"
+  }
+}

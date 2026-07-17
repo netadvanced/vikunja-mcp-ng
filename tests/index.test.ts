@@ -5,6 +5,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 // Mock external dependencies first
 const mockMcpServer = {
@@ -98,6 +101,7 @@ describe('Main Server Entry Point (index.ts)', () => {
     // Clear environment variables that affect startup
     delete process.env.VIKUNJA_URL;
     delete process.env.VIKUNJA_API_TOKEN;
+    delete process.env.VIKUNJA_API_TOKEN_FILE;
     delete process.env.MCP_MODE;
     delete process.env.DEBUG;
     
@@ -202,10 +206,55 @@ describe('Main Server Entry Point (index.ts)', () => {
 
     it('should not auto-authenticate when both environment variables are missing', () => {
       require('../src/index');
-      
+
       expect(mockCreateSecureConnectionMessage).not.toHaveBeenCalled();
       expect(mockAuthManager.connect).not.toHaveBeenCalled();
       expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining('Auto-authenticating'));
+    });
+  });
+
+  describe('Secrets: VIKUNJA_API_TOKEN_FILE', () => {
+    let tempDir: string;
+
+    beforeEach(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vikunja-mcp-index-test-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('should auto-authenticate using a token read from VIKUNJA_API_TOKEN_FILE', () => {
+      const tokenPath = path.join(tempDir, 'token');
+      fs.writeFileSync(tokenPath, '  tk_from_file_456  \n');
+
+      process.env.VIKUNJA_URL = 'https://vikunja.example.com/api/v1';
+      process.env.VIKUNJA_API_TOKEN_FILE = tokenPath;
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+      require('../src/index');
+
+      expect(mockAuthManager.connect).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1',
+        'tk_from_file_456'
+      );
+    });
+
+    it('should exit the process with a clear error when both VIKUNJA_API_TOKEN and VIKUNJA_API_TOKEN_FILE are set', () => {
+      const tokenPath = path.join(tempDir, 'token');
+      fs.writeFileSync(tokenPath, 'tk_from_file');
+
+      process.env.VIKUNJA_URL = 'https://vikunja.example.com/api/v1';
+      process.env.VIKUNJA_API_TOKEN = 'tk_plain';
+      process.env.VIKUNJA_API_TOKEN_FILE = tokenPath;
+
+      expect(() => require('../src/index')).toThrow('process.exit called');
+
+      expect(mockProcessExit).toHaveBeenCalledWith(1);
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Both VIKUNJA_API_TOKEN and VIKUNJA_API_TOKEN_FILE')
+      );
+      expect(mockAuthManager.connect).not.toHaveBeenCalled();
     });
   });
 

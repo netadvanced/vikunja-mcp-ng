@@ -110,18 +110,241 @@ The system automatically applies environment-specific defaults:
 
 Configuration values are resolved in the following priority order (highest to lowest):
 
-1. **Programmatic Sources** - Direct configuration objects
-2. **Environment Variables** - System environment variables
-3. **Environment Profiles** - Dev/test/production defaults
-4. **Schema Defaults** - Fallback values defined in schema
+1. **Programmatic Sources** - Direct configuration objects (used by tests / embedders)
+2. **Environment Variables** - System environment variables — **always win over the config file**
+3. **Config File** - Optional `vikunja-mcp.config.json` (see [Config File](#config-file) below)
+4. **Environment Profiles** - Dev/test/production defaults
+5. **Schema Defaults** - Fallback values defined in schema
+
+## Config File
+
+Non-sensitive configuration can be layered in from an optional JSON file. It is safe to
+commit, safe to mount read-only into a container (e.g. as a Docker `config`), and is
+**never** the place for secrets — see [Secrets Management](#secrets-management).
+
+- **Default path**: `vikunja-mcp.config.json` in the process's current working directory.
+  If it doesn't exist, it is silently skipped — the file is entirely optional.
+- **Override path**: set `VIKUNJA_MCP_CONFIG=/path/to/file.json`. When this variable is
+  set explicitly, a missing or unreadable file is a **hard startup error** (fail fast) —
+  an explicit path that can't be read is assumed to be a misconfiguration, not something
+  to silently ignore.
+- **Malformed file**: invalid JSON, or JSON whose top-level value isn't an object, is
+  always a hard startup error with a message naming the file path and the parse problem —
+  regardless of whether the path was explicit or the default.
+- **Shape**: the file mirrors `ApplicationConfig` — any of `auth` (non-secret fields
+  only), `logging`, `rateLimiting`, `featureFlags`, `modules` may be present; anything
+  omitted falls back to the environment profile / schema default.
+
+Example `vikunja-mcp.config.json`:
+
+```json
+{
+  "modules": {
+    "webhooks": false,
+    "batchImport": { "enabled": true }
+  },
+  "logging": {
+    "level": "info"
+  }
+}
+```
+
+## Module Gating
+
+Each Vikunja entity's tools live behind a **module** toggle, resolved once at
+tool-registration time (`registerTools` in `src/tools/index.ts`). A disabled module's
+tools are never registered with the MCP server — they are invisible to the client, not
+merely rejected at call time.
+
+### Module Config Shape
+
+A module's value is a plain boolean today, but the object form is accepted so
+per-subcommand granularity can be added later **without a breaking change**:
+
+```json
+{ "modules": { "tasks": false } }
+```
+
+```json
+{ "modules": { "tasks": { "enabled": true } } }
+```
+
+The object form already tolerates (and ignores, for now) extra boolean keys, so a future
+release can start honoring `{"tasks": {"enabled": true, "delete": false}}` without
+requiring any config migration.
+
+### Known Modules
+
+| Module | Default | Notes |
+|---|---|---|
+| `tasks` | **ON** | Gates the entire task tool family (CRUD, bulk, assignees, comments, reminders, labels, relations) together |
+| `projects` | **ON** | |
+| `labels` | **ON** | |
+| `teams` | **ON** | |
+| `users` | **ON** | Also requires JWT authentication — see [Composing with Auth-Type Gating](#composing-with-auth-type-gating) |
+| `webhooks` | **ON** | |
+| `filters` | **ON** | |
+| `templates` | **ON** | |
+| `export` | **ON** | Also requires JWT authentication |
+| `batchImport` | **ON** | |
+| `admin` | **OFF** (reserved) | No tool implements this yet. Deny-by-default in case one ever does. |
+| `userDeletion` | **OFF** (reserved) | No tool implements this yet. Deny-by-default — destructive. |
+| `tokenManagement` | **OFF** (reserved) | No tool implements this yet. Deny-by-default — credential-adjacent. |
+
+Ordinary modules default **ON** (matching pre-existing behavior — this system is
+additive, not a breaking change). The three reserved "dangerous" modules default **OFF**
+(deny-by-default) precisely because they don't have tools yet: when they eventually do,
+those tools ship already gated closed until an operator opts in.
+
+### Module Env Var Overrides
+
+Each module has a matching boolean-only env var override (env vars carry the boolean
+shorthand only — the object form with future per-subcommand keys is a config-file-only
+feature):
+
+```env
+VIKUNJA_MCP_MODULE_TASKS=true
+VIKUNJA_MCP_MODULE_PROJECTS=true
+VIKUNJA_MCP_MODULE_LABELS=true
+VIKUNJA_MCP_MODULE_TEAMS=true
+VIKUNJA_MCP_MODULE_USERS=true
+VIKUNJA_MCP_MODULE_WEBHOOKS=true
+VIKUNJA_MCP_MODULE_FILTERS=true
+VIKUNJA_MCP_MODULE_TEMPLATES=true
+VIKUNJA_MCP_MODULE_EXPORT=true
+VIKUNJA_MCP_MODULE_BATCH_IMPORT=true
+
+# Reserved / dangerous — deny-by-default
+VIKUNJA_MCP_MODULE_ADMIN=false
+VIKUNJA_MCP_MODULE_USER_DELETION=false
+VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT=false
+```
+
+As with every other setting, these env vars always win over the config file.
+
+### Composing with Auth-Type Gating
+
+Module config can only **narrow** what authentication already allows — it can never
+**expand** it. The `users` and `export` tools have always required JWT authentication
+(API-token auth excludes them for backward compatibility); module gating is applied *in
+addition to*, never instead of, that check:
+
+```typescript
+const jwtAuthenticated = authManager.isAuthenticated() && authManager.getAuthType() === 'jwt';
+if (jwtAuthenticated && isModuleEnabled(modules.users)) {
+  registerUsersTool(server, authManager, clientFactory);
+}
+```
+
+Setting `VIKUNJA_MCP_MODULE_USERS=true` while authenticated with an API token does
+**not** register the users tool — there is no config setting that can grant access auth
+doesn't already permit.
+
+## Secrets Management
+
+**The config file is for non-sensitive settings only.** It's designed to be safe to
+commit to source control and safe to mount as a read-only Docker/Swarm `config` — so
+credentials must never be written into it. Secrets belong in environment variables.
+
+### The `*_FILE` Convention
+
+Every sensitive environment variable also accepts a `<NAME>_FILE` variant that names a
+file whose contents are read at startup and used in place of the plain variable — the
+same convention the official `postgres`/`mysql` Docker images use
+(`POSTGRES_PASSWORD_FILE`, etc.), which plugs directly into Docker/Swarm/Kubernetes
+secrets mounted as files.
+
+Currently sensitive variables (audited against every `process.env.*` read under `src/`):
+
+| Variable | `_FILE` variant |
+|---|---|
+| `VIKUNJA_API_TOKEN` | `VIKUNJA_API_TOKEN_FILE` |
+
+Behavior:
+
+- File contents are read once at startup and **trimmed of surrounding whitespace**
+  (trailing newlines from `echo`/`printf`-created secret files are common and would
+  otherwise silently corrupt the token).
+- Setting **both** the plain variable and its `_FILE` variant is a **hard startup
+  error** — never a silent precedence choice. This matches the postgres-image
+  convention and avoids a class of bug where an operator believes they've moved a
+  secret into a file but the plain env var (e.g. left over in a `.env` file) is still
+  silently taking priority.
+- Neither set: the plain variable's absence is handled exactly as before (e.g. no
+  auto-authentication).
+
+```env
+# Use a file-mounted secret instead of the plain token
+VIKUNJA_API_TOKEN_FILE=/run/secrets/vikunja_token
+```
+
+```env
+# Hard error at startup — remove one of these
+VIKUNJA_API_TOKEN=tk_xxx
+VIKUNJA_API_TOKEN_FILE=/run/secrets/vikunja_token
+```
+
+### Docker Swarm Example
+
+Config file mounted as a `config` (non-sensitive), token mounted as a `secret`:
+
+```yaml
+version: "3.8"
+
+services:
+  vikunja-mcp:
+    image: democratize-technology/vikunja-mcp:latest
+    environment:
+      VIKUNJA_URL: "https://vikunja.example.com/api/v1"
+      VIKUNJA_API_TOKEN_FILE: /run/secrets/vikunja_api_token
+      VIKUNJA_MCP_CONFIG: /etc/vikunja-mcp/vikunja-mcp.config.json
+    configs:
+      - source: vikunja_mcp_config
+        target: /etc/vikunja-mcp/vikunja-mcp.config.json
+        mode: 0444
+    secrets:
+      - source: vikunja_api_token
+        target: vikunja_api_token
+        mode: 0400
+
+configs:
+  vikunja_mcp_config:
+    file: ./vikunja-mcp.config.json
+
+secrets:
+  vikunja_api_token:
+    file: ./secrets/vikunja_api_token.txt
+```
+
+Deploy with:
+
+```bash
+docker swarm init  # if not already a swarm manager
+docker stack deploy -c docker-compose.yml vikunja-mcp
+```
+
+The token file (`./secrets/vikunja_api_token.txt`) should contain only the token,
+optionally with a trailing newline — it will be trimmed automatically. It should never
+be committed to source control; the config file (`./vikunja-mcp.config.json`) is safe to
+commit since it contains no credentials.
 
 ## Environment Variables Reference
 
 ### Authentication Variables
 ```env
 VIKUNJA_URL=https://vikunja.example.com
-VIKUNJA_API_TOKEN=tk_your_token_here
+VIKUNJA_API_TOKEN=tk_your_token_here     # or VIKUNJA_API_TOKEN_FILE=/path/to/token — see Secrets Management
 MCP_MODE=server
+```
+
+### Config File Variable
+```env
+VIKUNJA_MCP_CONFIG=/path/to/vikunja-mcp.config.json   # optional; see Config File
+```
+
+### Module Gating Variables
+```env
+VIKUNJA_MCP_MODULE_TASKS=true               # see Module Gating for the full list and defaults
 ```
 
 ### Logging Variables
