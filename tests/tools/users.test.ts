@@ -3,7 +3,6 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AuthManager } from '../../src/auth/AuthManager';
 import { registerUsersTool } from '../../src/tools/users';
 import { MCPError, ErrorCode } from '../../src/types';
-import type { User } from 'node-vikunja';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
 
@@ -31,20 +30,33 @@ describe('Users Tool', () => {
   }
 
   // Mock data
-  const mockUser: User = {
+  // Mirrors the real Vikunja GET /user response shape (v1.UserWithSettings):
+  // id, username, email, created, updated live at the top level, while
+  // language, timezone, week_start, frontend_settings, email_reminders_enabled,
+  // overdue_tasks_reminders_enabled, overdue_tasks_reminders_time and name are
+  // nested under `settings` (models.UserGeneralSettings). Earlier versions of
+  // this mock incorrectly put all of these flat at the top level, which is how
+  // the transformUser() bug (reading them flat instead of from `settings`)
+  // went undetected.
+  const mockUser = {
     id: 1,
     username: 'testuser',
     email: 'test@example.com',
-    name: 'Test User',
-    language: 'en',
-    timezone: 'UTC',
-    week_start: 1,
-    frontend_settings: {},
-    email_reminders_enabled: true,
-    overdue_tasks_reminders_enabled: false,
-    overdue_tasks_reminders_time: '09:00',
     created: '2025-01-01T00:00:00Z',
     updated: '2025-01-01T00:00:00Z',
+    is_admin: false,
+    is_local_user: true,
+    auth_provider: '',
+    settings: {
+      name: 'Test User',
+      language: 'en',
+      timezone: 'UTC',
+      week_start: 1,
+      frontend_settings: {},
+      email_reminders_enabled: true,
+      overdue_tasks_reminders_enabled: false,
+      overdue_tasks_reminders_time: '09:00',
+    },
   };
 
   beforeEach(() => {
@@ -165,6 +177,26 @@ describe('Users Tool', () => {
 
       await expect(callTool('current')).rejects.toThrow('User operation error: String error');
     });
+
+    it('should surface settings nested under `settings` on the raw API response (B2-users-settings)', async () => {
+      // Regression test: GET /user returns v1.UserWithSettings, where
+      // language/timezone/week_start/frontend_settings/email_reminders_enabled/
+      // overdue_tasks_reminders_enabled/overdue_tasks_reminders_time/name live
+      // under `settings`, not flat on the response. Before the fix,
+      // transformUser() read these flat and they were silently dropped.
+      mockClient.users.getUser.mockResolvedValue(mockUser);
+
+      const result = await callTool('current');
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('"name": "Test User"');
+      expect(markdown).toContain('"language": "en"');
+      expect(markdown).toContain('"timezone": "UTC"');
+      expect(markdown).toContain('"week_start": 1');
+      expect(markdown).toContain('"email_reminders_enabled": true');
+      expect(markdown).toContain('"overdue_tasks_reminders_enabled": false');
+      expect(markdown).toContain('"overdue_tasks_reminders_time": "09:00"');
+    });
   });
 
   describe('search subcommand', () => {
@@ -232,6 +264,21 @@ describe('Users Tool', () => {
       expect(markdown).toContain('User settings retrieved successfully');
     });
 
+    it('should surface nested settings fields in the settings summary (B2-users-settings)', async () => {
+      mockClient.users.getUser.mockResolvedValue(mockUser);
+
+      const result = await callTool('settings');
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('"name": "Test User"');
+      expect(markdown).toContain('"language": "en"');
+      expect(markdown).toContain('"timezone": "UTC"');
+      expect(markdown).toContain('"weekStart": 1');
+      expect(markdown).toContain('"emailRemindersEnabled": true');
+      expect(markdown).toContain('"overdueTasksRemindersEnabled": false');
+      expect(markdown).toContain('"overdueTasksRemindersTime": "09:00"');
+    });
+
     it('should handle API errors', async () => {
       mockClient.users.getUser.mockRejectedValue(new Error('Failed to get settings'));
 
@@ -243,7 +290,10 @@ describe('Users Tool', () => {
 
   describe('update-settings subcommand', () => {
     it('should update user settings', async () => {
-      const updatedUser = { ...mockUser, name: 'Updated Name', language: 'es' };
+      const updatedUser = {
+        ...mockUser,
+        settings: { ...mockUser.settings, name: 'Updated Name', language: 'es' },
+      };
       mockClient.users.updateGeneralSettings.mockResolvedValue({ message: 'Success' });
       mockClient.users.getUser.mockResolvedValue(updatedUser);
 
@@ -293,9 +343,12 @@ describe('Users Tool', () => {
       mockClient.users.updateGeneralSettings.mockResolvedValue({ message: 'Success' });
       mockClient.users.getUser.mockResolvedValue({
         ...mockUser,
-        email_reminders_enabled: false,
-        overdue_tasks_reminders_enabled: true,
-        overdue_tasks_reminders_time: '08:00',
+        settings: {
+          ...mockUser.settings,
+          email_reminders_enabled: false,
+          overdue_tasks_reminders_enabled: true,
+          overdue_tasks_reminders_time: '08:00',
+        },
       });
 
       const result = await callTool('update-settings', {
