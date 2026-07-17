@@ -331,8 +331,25 @@ vikunja_tasks.unassign({
   assignees: [2, 4]  // Removes only these users
 })
 
-// List all assignees for a task
+// List all assignees for a task (calls the dedicated
+// GET /tasks/{taskID}/assignees endpoint, not GET /tasks/{id})
 vikunja_tasks.list-assignees({ id: 123 })
+
+// Search assignees by username with pagination
+vikunja_tasks.list-assignees({ id: 123, search: "ali", page: 1, perPage: 20 })
+
+// List a task's attachments
+vikunja_tasks.list-attachments({ id: 123 })
+
+// Get metadata (filename, size, mime, created, author) for one attachment
+vikunja_tasks.get-attachment-info({ id: 123, attachmentId: 5 })
+
+// Delete an attachment
+vikunja_tasks.delete-attachment({ id: 123, attachmentId: 5 })
+
+// Get a direct download URL for an attachment (MCP has no binary channel,
+// so this returns the URL + auth guidance instead of the file itself)
+vikunja_tasks.download-attachment({ id: 123, attachmentId: 5 })
 
 // Add a comment to a task
 vikunja_tasks.comment({
@@ -1135,6 +1152,8 @@ This standardized format ensures:
   - `delete` - Delete a task by ID
   - `assign` - Bulk assign users to tasks
   - `unassign` - Remove users from tasks
+  - `list-assignees` - List a task's assignees via the dedicated `GET /tasks/{taskID}/assignees` endpoint
+    - Optional: `search` (username search, `s` query param), `page`, `perPage`
   - `comment` - List or add comments to tasks
   - `bulk-update` - Update multiple tasks at once
     - Required: taskIds array, field name, value
@@ -1148,7 +1167,11 @@ This standardized format ensures:
     - Handles partial failures gracefully
     - ⚠️ Performance: Makes individual delete calls for each task
     - Recommended: Process in batches of 20 or fewer tasks
-  - `attach` - Not implemented (file handling not available in MCP)
+  - `attach` - Upload a file attachment to a task (`filePath` or base64 `fileContent`)
+  - `list-attachments` - List a task's attachments (file name, size, mime, created, author), with optional `page`/`perPage`
+  - `get-attachment-info` - Get metadata for one attachment by `attachmentId` (derived from the list response — there is no dedicated single-attachment metadata endpoint)
+  - `delete-attachment` - Delete an attachment by `attachmentId`
+  - `download-attachment` - **Cannot deliver the file itself** — MCP has no binary content channel. Returns the direct download URL (optionally with a `previewSize` of `sm`/`md`/`lg`/`xl`) plus the `Authorization: Bearer <token>` header guidance needed to fetch it yourself.
 
 ### Batch Import ✅
 - `vikunja_batch_import` - Import multiple tasks from CSV or JSON (fully implemented)
@@ -1422,7 +1445,7 @@ This standardized format ensures:
 
 ## Known Limitations
 
-1. **File Attachments**: The `attach` subcommand is not implemented due to MCP protocol limitations
+1. **File Attachments**: Upload (`attach`), list (`list-attachments`), metadata (`get-attachment-info`), and delete (`delete-attachment`) are implemented. `download-attachment` cannot deliver the file's bytes — the Vikunja API returns raw `application/octet-stream` for downloads, and MCP has no binary content channel — so it returns the direct download URL and auth guidance for the caller to fetch it themselves instead.
 2. **Team Operations**: node-vikunja only implements list/create/delete for teams, so get/update/members go through direct REST calls (see `src/utils/vikunja-rest.ts`). The admin-toggle member operation is a true toggle server-side — it cannot set an explicit admin value in one call.
 3. **Pagination**: Some endpoints may not fully support pagination parameters due to API limitations
 4. **Authentication Issues**: Some Vikunja API endpoints have known authentication issues:
