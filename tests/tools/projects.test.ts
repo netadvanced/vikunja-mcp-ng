@@ -1090,7 +1090,7 @@ describe('Projects Tool', () => {
 
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
-      expect(markdown).toContain('Retrieved share 1 for project 1');
+      expect(markdown).toContain('Retrieved link share: Share #1');
       expect(markdown).toMatch(/get[_\\]+project[_\\]+share/);
       expect(mockClient.projects.getLinkShare).toHaveBeenCalledWith(1, '1');
     });
@@ -1389,7 +1389,7 @@ describe('Projects Tool', () => {
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('get-project-tree');
       expect(markdown).toContain('Root');
-      expect(markdown).toContain('**TotalProjects**: 4');
+      expect(markdown).toContain('Retrieved project tree with 4 nodes at depth 2');
     });
 
     it('should handle circular references', async () => {
@@ -1465,7 +1465,7 @@ describe('Projects Tool', () => {
 
       const result = await callTool('get-tree', { id: 1 });
       const markdown = result.content[0].text;
-      expect(markdown).toContain('Retrieved project tree with 1 project starting from project ID 1');
+      expect(markdown).toContain('Retrieved project tree with 1 nodes at depth 0');
     });
 
     it('should handle countProjects with null node', async () => {
@@ -1505,7 +1505,10 @@ describe('Projects Tool', () => {
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('get-project-breadcrumb');
-      expect(markdown).toContain('Root > Child > Grandchild');
+      expect(markdown).toContain('Retrieved breadcrumb path with 3 items');
+      expect(markdown).toContain('"title": "Root"');
+      expect(markdown).toContain('"title": "Child"');
+      expect(markdown).toContain('"title": "Grandchild"');
     });
 
     it('should handle circular references', async () => {
