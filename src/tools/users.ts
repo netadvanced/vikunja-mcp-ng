@@ -50,10 +50,20 @@ function transformUser(rawUser: unknown): User {
       (typeof value === 'string' || typeof value === 'number' ? value.toString() : '') : '';
   };
 
+  // GET /user returns v1.UserWithSettings: language, timezone, week_start,
+  // frontend_settings, email_reminders_enabled, overdue_tasks_reminders_enabled,
+  // overdue_tasks_reminders_time and name are nested under a `settings`
+  // sub-object (models.UserGeneralSettings), NOT flat on the top-level user
+  // object. (id, username, email, created, updated remain top-level.)
+  // Search results (GET /users) return plain user.User with no `settings` key,
+  // so this safely falls back to an empty object for those.
+  const settings: Record<string, unknown> =
+    isUserObject(user.settings) ? user.settings : {};
+
   const result = {
     id: Number(user.id) || 0,
     username: safeString(user.username),
-    frontend_settings: (user.frontend_settings && typeof user.frontend_settings === 'object') ? user.frontend_settings : {},
+    frontend_settings: (settings.frontend_settings && typeof settings.frontend_settings === 'object') ? settings.frontend_settings : {},
   };
 
   const userResult: User = {
@@ -61,14 +71,15 @@ function transformUser(rawUser: unknown): User {
     username: result.username,
     frontend_settings: result.frontend_settings as Record<string, unknown>,
     ...(user.email ? { email: safeString(user.email) } : {}),
-    ...(user.name ? { name: safeString(user.name) } : {}),
+    ...(settings.name ? { name: safeString(settings.name) } : {}),
     ...(user.created ? { created: safeString(user.created) } : {}),
     ...(user.updated ? { updated: safeString(user.updated) } : {}),
-    ...(user.language ? { language: safeString(user.language) } : {}),
-    ...(user.timezone ? { timezone: safeString(user.timezone) } : {}),
-    ...(user.week_start !== undefined ? { week_start: Number(user.week_start) } : {}),
-    ...(user.email_reminders_enabled !== undefined ? { email_reminders_enabled: Boolean(user.email_reminders_enabled) } : {}),
-    ...(user.overdue_tasks_reminders_enabled !== undefined ? { overdue_tasks_reminders_enabled: Boolean(user.overdue_tasks_reminders_enabled) } : {}),
+    ...(settings.language ? { language: safeString(settings.language) } : {}),
+    ...(settings.timezone ? { timezone: safeString(settings.timezone) } : {}),
+    ...(settings.week_start !== undefined ? { week_start: Number(settings.week_start) } : {}),
+    ...(settings.email_reminders_enabled !== undefined ? { email_reminders_enabled: Boolean(settings.email_reminders_enabled) } : {}),
+    ...(settings.overdue_tasks_reminders_enabled !== undefined ? { overdue_tasks_reminders_enabled: Boolean(settings.overdue_tasks_reminders_enabled) } : {}),
+    ...(settings.overdue_tasks_reminders_time ? { overdue_tasks_reminders_time: safeString(settings.overdue_tasks_reminders_time) } : {}),
   };
 
   return userResult;
