@@ -1210,6 +1210,34 @@ This standardized format ensures:
   
   **Event Validation**: When creating or updating webhooks, the provided events are automatically validated against the list of available events from the API. Invalid events will result in a clear error message showing which events are invalid and listing all valid options. Valid events are cached for 5 minutes to improve performance.
 
+### Notifications ✅
+- `vikunja_notifications` - Manage the current user's Vikunja notifications
+  - `list` - List notifications
+    - Optional: `unreadOnly` (client-side filter — the API has no server-side unread filter), `page`, `perPage`
+    - Each notification may include a best-effort `relatedTask` field (`{id, title}`) when the API's payload happens to embed one — this is a convenience extraction, not a documented API guarantee
+  - `mark-read` - Mark a single notification as read
+    - Required: `notificationId`
+    - **Idempotent**: the underlying `POST /notifications/{id}` endpoint is a pure toggle (no request body to pick read vs. unread); this tool checks the result and toggles a second time if needed so calling it repeatedly always leaves the notification read
+  - `mark-all-read` - Mark every notification as read in one call
+  - **Note**: link shares cannot have notifications (per the API); this tool requires a full user session
+
+### Subscriptions ✅
+- `vikunja_subscriptions` - Subscribe/unsubscribe the current user to/from notifications for a project or task
+  - `subscribe` - Subscribe to an entity
+    - Required: `entity` (`project` or `task`), `entityId`
+  - `unsubscribe` - Unsubscribe from an entity
+    - Required: `entity`, `entityId`
+    - **Idempotent**: unsubscribing from something you're not subscribed to succeeds as a no-op (the API's 404 "subscription does not exist" is treated as success, not an error)
+
+### Reactions ✅
+- `vikunja_reactions` - Add, remove, or list emoji/text reactions on a task or task comment
+  - `list` - List all reactions for an entity
+    - Required: `kind` (`tasks` or `comments`), `entityId`
+  - `add` - Add a reaction
+    - Required: `kind`, `entityId`, `value` (any UTF character or short text, up to 20 characters)
+  - `remove` - Remove your own reaction
+    - Required: `kind`, `entityId`, `value`
+
 ### Filter Management ✅
 
 > **⚠️ Local-only, not Vikunja's saved filters:** `list`/`get`/`create`/

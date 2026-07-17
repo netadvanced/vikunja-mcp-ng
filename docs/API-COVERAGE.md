@@ -10,11 +10,16 @@ Vikunja documents **169** distinct API operations (method+path). Of those:
 
 | Status | Count | % |
 |---|---|---|
-| ✅ Implemented | 42 | 25% |
+| ✅ Implemented | 49 | 29% |
 | ⚠️ Implemented (bug) | 14 | 8% |
 | 🟡 Partial | 3 | 2% |
-| ❌ Not implemented | 110 | 65% |
+| ❌ Not implemented | 103 | 61% |
 | **Total** | **169** | 100% |
+
+> Updated 2026-07-17 (Wave D, `waveD-notifications-subscriptions`): the 7
+> `/notifications`, `/subscriptions/{entity}/{entityID}`, and
+> `/{kind}/{id}/reactions*` rows below moved from ❌ to ✅ — everything else
+> in this document remains the original audit snapshot described above.
 
 - **✅ Implemented** — implementation matches the documented endpoint (method, path, request/response fields all checked).
 - **⚠️ Implemented (bug)** — the tool exists and calls something, but the audit found a concrete divergence from the documented contract (wrong field name, dropped required param, wrong response shape assumption, etc.). See the Issues table below.
@@ -263,14 +268,14 @@ Every documented Vikunja API operation, grouped by domain, in spec order. Sorted
 | GET | `/user/settings/webhooks/events` | ❌ Not implemented | — | Not implemented; vikunja_webhooks's list-events subcommand only hits GET /webhooks/events (the project-level events list), not this user-directed variant. |
 | POST | `/user/settings/webhooks/{id}` | ❌ Not implemented | — | Not implemented anywhere. |
 | DELETE | `/user/settings/webhooks/{id}` | ❌ Not implemented | — | Not implemented anywhere. |
-| PUT | `/subscriptions/{entity}/{entityID}` | ❌ Not implemented | — | node-vikunja's SubscriptionService.subscribe (PUT /subscriptions/{entityType}/{entityId}) exists and is correctly implemented in node-vikunja, but no MCP tool calls client.subscriptions anywhere in src/tools/. |
-| DELETE | `/subscriptions/{entity}/{entityID}` | ❌ Not implemented | — | Same as above — SubscriptionService.unsubscribe exists in node-vikunja but is unused; no MCP tool exposes it. |
-| GET | `/notifications` | ❌ Not implemented | — | node-vikunja NotificationService.getNotifications (GET /notifications, pagination via convertParams) is correctly implemented but never called from src/tools/. Only a stray Notification type exists in src/types/vikunja.ts, unused for any live API call. |
-| POST | `/notifications` | ❌ Not implemented | — | NotificationService.markAllAsRead exists in node-vikunja but is unused; no MCP tool. |
-| POST | `/notifications/{id}` | ❌ Not implemented | — | NotificationService.markNotification exists in node-vikunja but is unused; no MCP tool. |
-| GET | `/{kind}/{id}/reactions` | ❌ Not implemented | — | No reaction support anywhere in src/ or node-vikunja (no reaction service/model exists in node-vikunja at all, and no direct vikunjaRestRequest call site references reactions). |
-| PUT | `/{kind}/{id}/reactions` | ❌ Not implemented | — | Not implemented; no reaction model type or tool exists. |
-| POST | `/{kind}/{id}/reactions/delete` | ❌ Not implemented | — | Not implemented; no reaction model type or tool exists. |
+| PUT | `/subscriptions/{entity}/{entityID}` | ✅ Implemented (Wave D) | vikunja_subscriptions (subcommand: subscribe) | Direct-REST call via vikunjaRestRequest (not node-vikunja — node-vikunja's SubscriptionService is dead code from this project's perspective per the node-vikunja EOL decision). Correct PUT /subscriptions/{entity}/{entityID}, entity in {project, task} enforced by Zod. |
+| DELETE | `/subscriptions/{entity}/{entityID}` | ✅ Implemented (Wave D) | vikunja_subscriptions (subcommand: unsubscribe) | Correct DELETE /subscriptions/{entity}/{entityID}. A 404 ("subscription does not exist") is treated as an idempotent no-op success rather than an error (ensure-semantics, docs/ENDPOINT-PLAYBOOK.md §1). |
+| GET | `/notifications` | ✅ Implemented (Wave D) | vikunja_notifications (subcommand: list) | Direct-REST GET /notifications with page/per_page forwarded when supplied. unreadOnly is applied client-side (the spec has no server-side unread filter). Adds a best-effort, zero-extra-request relatedTask convenience field when the (undocumented, `unknown`-typed) notification payload happens to embed one. |
+| POST | `/notifications` | ✅ Implemented (Wave D) | vikunja_notifications (subcommand: mark-all-read) | Correct POST /notifications, no body. |
+| POST | `/notifications/{id}` | ✅ Implemented (Wave D) | vikunja_notifications (subcommand: mark-read) | Correct POST /notifications/{id}. This endpoint is a pure toggle server-side (no request body to pick read vs. unread) — the tool compensates by checking the response and re-toggling once more if the first call happened to land on "unread", making mark-read idempotent regardless of the notification's starting state. |
+| GET | `/{kind}/{id}/reactions` | ✅ Implemented (Wave D) | vikunja_reactions (subcommand: list) | Correct GET /{kind}/{id}/reactions, kind in {tasks, comments} enforced by Zod. Response passed through as the spec's documented `models.ReactionMap[]` shape without reshaping. |
+| PUT | `/{kind}/{id}/reactions` | ✅ Implemented (Wave D) | vikunja_reactions (subcommand: add) | Correct PUT with body `{value}` matching models.Reaction (the spec's body parameter is misnamed "project" but its schema is models.Reaction). |
+| POST | `/{kind}/{id}/reactions/delete` | ✅ Implemented (Wave D) | vikunja_reactions (subcommand: remove) | Correct POST with body `{value}`. |
 
 ### Migration importers, testing endpoints, and MCP-only composite features (export, batch-import, templates)
 
