@@ -228,20 +228,45 @@ export async function handleRelationSubcommands(
         // Fetch the task with its relations
         const task = await client.tasks.getTask(args.id);
 
+        // Vikunja's API returns `related_tasks` as a map of relation kind to
+        // Task[] (models.RelatedTaskMap), not a flat array. node-vikunja's
+        // typed model incorrectly describes it as Task[], so `.length` on it
+        // was always undefined and the relation count always reported 0.
+        const relatedTasksMap = (task.related_tasks ?? {}) as unknown as Record<
+          string,
+          unknown[] | undefined
+        >;
+        const relationCounts: Record<string, number> = {};
+        let totalRelations = 0;
+        for (const [kind, kindTasks] of Object.entries(relatedTasksMap)) {
+          const count = Array.isArray(kindTasks) ? kindTasks.length : 0;
+          if (count > 0) {
+            relationCounts[kind] = count;
+          }
+          totalRelations += count;
+        }
+        const relationBreakdown = Object.entries(relationCounts)
+          .map(([kind, count]) => `${kind}: ${count}`)
+          .join(', ');
+        const relationsMessage = relationBreakdown
+          ? `Found ${totalRelations} relation(s) for task ${args.id} (${relationBreakdown})`
+          : `Found ${totalRelations} relation(s) for task ${args.id}`;
+
         const response: StandardTaskResponse = {
           success: true,
           operation: 'relations',
-          message: `Found ${task.related_tasks?.length || 0} relations for task ${args.id}`,
+          message: relationsMessage,
           task: task,
           metadata: {
             timestamp: new Date().toISOString(),
-            count: task.related_tasks?.length || 0,
+            count: totalRelations,
           },
         };
 
         logger.debug('Task relations retrieved', {
           taskId: args.id,
-          relationCount: task.related_tasks?.length || 0,
+          relationCount: totalRelations,
+          relationCounts,
         });
 
         // Convert StandardTaskResponse to proper AORP response before formatting

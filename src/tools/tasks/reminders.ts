@@ -94,11 +94,19 @@ export async function addReminder(args: {
 }
 
 /**
- * Remove a reminder from a task
+ * Remove a reminder from a task.
+ *
+ * Vikunja's API (models.TaskReminder) has no `id` field, so reminders cannot
+ * be identified the way `remove-reminder` used to (filtering by a nonexistent
+ * `reminder.id`, which always threw "not found" against a real server).
+ * Callers must instead identify the reminder to remove by its exact
+ * `reminder` date string (as shown by `list-reminders`) and/or its
+ * zero-based positional `reminderIndex` in that same listing.
  */
 export async function removeReminder(args: {
-  id?: number;
-  reminderId?: number;
+  id?: number | undefined;
+  reminderDate?: string | undefined;
+  reminderIndex?: number | undefined;
 }): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     if (!args.id) {
@@ -109,50 +117,97 @@ export async function removeReminder(args: {
     }
     validateId(args.id, 'id');
 
-    if (!args.reminderId) {
+    const hasReminderDate = args.reminderDate !== undefined;
+    const hasReminderIndex = args.reminderIndex !== undefined;
+
+    if (!hasReminderDate && !hasReminderIndex) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
-        'reminderId is required for remove-reminder operation',
+        'Either reminderDate or reminderIndex is required for remove-reminder operation',
       );
     }
-    validateId(args.reminderId, 'reminderId');
+
+    if (hasReminderDate) {
+      validateDateString(args.reminderDate as string, 'reminderDate');
+    }
+
+    if (
+      hasReminderIndex &&
+      (!Number.isInteger(args.reminderIndex) || (args.reminderIndex as number) < 0)
+    ) {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'reminderIndex must be a non-negative integer',
+      );
+    }
 
     const client = await getClientFromContext();
 
     // Get current task
     const currentTask = await client.tasks.getTask(args.id);
 
-    if (!currentTask.reminders || currentTask.reminders.length === 0) {
+    // Vikunja stores reminders under the `reminder` key (models.TaskReminder
+    // has no `id` field), the same field addReminder writes. node-vikunja's
+    // typed model still calls it `reminder_date` / `id`, so read the actual
+    // API shape rather than trusting the (drifted) library type.
+    const existingReminders = (
+      (currentTask.reminders ?? []) as unknown as TaskReminder[]
+    ).map((r: TaskReminder) => ({
+      reminder: r.reminder,
+      ...(r.relative_period !== undefined ? { relative_period: r.relative_period } : {}),
+      ...(r.relative_to !== undefined ? { relative_to: r.relative_to } : {}),
+    }));
+
+    if (existingReminders.length === 0) {
       throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Task has no reminders to remove');
     }
 
-    // Filter out the reminder to be removed
-    const updatedReminders = currentTask.reminders.filter(
-      (reminder: TaskReminder) => reminder.id !== args.reminderId,
-    );
+    let targetIndex: number;
 
-    if (updatedReminders.length === currentTask.reminders.length) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        `Reminder with id ${args.reminderId} not found in task`,
-      );
+    if (hasReminderIndex) {
+      targetIndex = args.reminderIndex as number;
+      if (targetIndex >= existingReminders.length) {
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          `reminderIndex ${targetIndex} not found in task (task has ${existingReminders.length} reminder(s))`,
+        );
+      }
+      if (hasReminderDate && existingReminders[targetIndex]?.reminder !== args.reminderDate) {
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          `Reminder at index ${targetIndex} does not match reminderDate ${args.reminderDate}`,
+        );
+      }
+    } else {
+      targetIndex = existingReminders.findIndex((r) => r.reminder === args.reminderDate);
+      if (targetIndex === -1) {
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          `Reminder with date ${args.reminderDate} not found in task`,
+        );
+      }
     }
 
-    // Update task with filtered reminders
+    const removedReminder = existingReminders[targetIndex];
+    const updatedReminders = existingReminders.filter((_, i) => i !== targetIndex);
+
+    // Update task with filtered reminders. node-vikunja's Task type does not
+    // describe the `reminder` key, so cast through to the API body it forwards.
     await client.tasks.updateTask(args.id, {
       ...currentTask,
       reminders: updatedReminders,
-    });
+    } as unknown as Parameters<typeof client.tasks.updateTask>[1]);
 
     // Fetch updated task
     await client.tasks.getTask(args.id);
 
     // Create proper AORP response
+    const removedDescription = removedReminder?.reminder ?? `index ${targetIndex}`;
     const aorpResult = createAorpFromData(
       'remove-reminder',
-      `Reminder ${args.reminderId} removed successfully`,
+      `Reminder ${removedDescription} removed successfully`,
       true,
-      `Reminder ${args.reminderId} removed successfully`
+      `Reminder ${removedDescription} removed successfully`
     );
 
     return {
@@ -193,15 +248,37 @@ export async function listReminders(args: {
 
     // Get task with reminders
     const task = await client.tasks.getTask(args.id);
-    const reminders = task.reminders || [];
+    // Vikunja stores reminders under the `reminder` key (models.TaskReminder
+    // has no `id` field); node-vikunja's typed model still calls it
+    // `reminder_date` / `id`, so read the actual API shape. See addReminder
+    // and removeReminder for the same field-name handling.
+    const reminders = ((task.reminders ?? []) as unknown as TaskReminder[]).map(
+      (r: TaskReminder) => ({
+        reminder: r.reminder,
+        ...(r.relative_period !== undefined ? { relative_period: r.relative_period } : {}),
+        ...(r.relative_to !== undefined ? { relative_to: r.relative_to } : {}),
+      }),
+    );
+
+    const summary = `Found ${reminders.length} reminder(s) for task "${task.title}"`;
+    // Surface the identifiers (reminderIndex / reminderDate) callers need
+    // to pass to remove-reminder, since the API exposes no reminder id.
+    const reminderLines = reminders
+      .map((r, index) => {
+        const parts = [`reminder: ${r.reminder}`];
+        if (r.relative_period !== undefined) {
+          parts.push(`relative_period: ${r.relative_period}`);
+        }
+        if (r.relative_to !== undefined) {
+          parts.push(`relative_to: ${r.relative_to}`);
+        }
+        return `- reminderIndex ${index}: ${parts.join(', ')}`;
+      })
+      .join('\n');
+    const details = reminderLines ? `${summary}\n\n${reminderLines}` : summary;
 
     // Create proper AORP response
-    const aorpResult = createAorpFromData(
-      'list-reminders',
-      `Found ${reminders.length} reminder(s) for task "${task.title}"`,
-      true,
-      `Found ${reminders.length} reminder(s) for task "${task.title}"`
-    );
+    const aorpResult = createAorpFromData('list-reminders', summary, true, details);
 
     return {
       content: [

@@ -144,35 +144,49 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/projects' \
 
 ---
 
-## 7. Task Reminder Field Inconsistency
+## 7. Task Reminder Field Inconsistency (node-vikunja drift, not the real API)
 
-**Description:** The Vikunja API has an inconsistency between the field names used for creating/updating reminders versus what is returned in the response.
+**Description:** node-vikunja's typed model for task reminders (`{ id, reminder_date }`) does not
+match Vikunja's actual API contract (`models.TaskReminder`, per the OpenAPI spec), which is
+`{ reminder, relative_period?, relative_to? }` — **both** on write and on read. There is no `id`
+field on either side.
 
 **Issue Details:**
-- When creating/updating a reminder, the API expects the field name `reminder`
-- When retrieving tasks, the API returns reminders with the field name `reminder_date`
-- The node-vikunja library expects `reminder_date` in its type definitions
+- Creating/updating a reminder: the API expects the field name `reminder` (an absolute ISO 8601
+  date string), with optional `relative_period` / `relative_to` for relative reminders.
+- Retrieving a task: the API returns reminders in the same shape — `reminder` (never
+  `reminder_date`), and no `id`.
+- The node-vikunja library's type definitions describe neither correctly: it types reminders as
+  `{ id: number, reminder_date: string }`, which matches nothing the server actually sends or
+  accepts.
 
-**Example:**
+**Example (actual API shape, both directions):**
 ```javascript
-// Creating a reminder - must use 'reminder'
+// Creating/updating a reminder
 {
   reminders: [
     { reminder: '2025-05-29T10:00:00Z' }
   ]
 }
 
-// Response from API - returns 'reminder_date'
+// Response from API — same shape, no id
 {
   reminders: [
-    { id: 1, reminder_date: '2025-05-29T10:00:00Z' }
+    { reminder: '2025-05-29T10:00:00Z' }
   ]
 }
 ```
 
-**Impact:** Developers must handle different field names for input vs output, leading to confusion and potential bugs.
+**Impact:** Code written against node-vikunja's types (or against a mistaken assumption that GET
+responses use `reminder_date`/`id`) will silently write zero-value reminders and can never
+successfully identify a reminder to delete — every removal-by-id attempt returns "not found"
+against a real server.
 
-**Workaround:** The MCP server now uses `reminder` when sending data to the API and expects `reminder_date` in responses.
+**Workaround:** The MCP server reads and writes the actual `reminder` field on both directions
+(never `reminder_date`), casting through `unknown` past node-vikunja's drifted `Task` type where
+necessary. Since the API exposes no reminder id, `remove-reminder` identifies the reminder to
+delete by its exact `reminder` date string and/or its zero-based position (`reminderIndex`) in
+the array returned by `list-reminders` — never by an id.
 
 ## 8. Webhook Events Endpoint Missing or Requires Special Permissions
 
