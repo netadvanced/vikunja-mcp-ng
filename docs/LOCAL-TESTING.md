@@ -86,6 +86,26 @@ MCP client config:
 
 Then follow `docs/MCP-TEST-CHECKLIST.md` for the manual walkthrough.
 
+## Inspecting the stack by hand (web UI)
+
+The `vikunja/vikunja` image serves the built frontend and the API from the
+same process on the same port, so once `npm run e2e:up` reports the stack
+healthy you can just open it in a browser:
+
+- **Web UI:** http://localhost:33456/
+- **API base:** http://localhost:33456/api/v1
+- **Login:** the bootstrap-created test user — username `e2e-test`, password
+  as set in `TEST_PASSWORD` at the top of `docker/e2e/bootstrap.sh` (a fixed,
+  throwaway, local-only credential; it's never randomized, so the value in
+  that script is always current and correct — check there rather than
+  trusting a copy of it in this doc going stale).
+
+This is a real login against the local instance, independent of the
+`tk_*` API token in `docker/e2e/.env` — useful for eyeballing whatever
+`test:mcp` (or a manual MCP client session) just created/changed in the
+`MCP-Test` project, or any other project, while the automated run's output
+is still on screen.
+
 ## Tearing the stack down
 
 ```bash
