@@ -287,7 +287,9 @@ describe('Auth Tool', () => {
   });
 
   describe('refresh subcommand', () => {
-    it('should return message that refresh is not required', async () => {
+    it('should report that API tokens (tk_*) do not need refreshing', async () => {
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+
       const result = await callTool('refresh');
 
       expect(result.content[0].type).toBe('text');
@@ -297,7 +299,53 @@ describe('Auth Tool', () => {
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('auth-refresh');
       expect(markdown).toContain('Token refresh not required');
-      expect(markdown).toContain('tokens do not expire');
+      expect(markdown).toContain('do not expire');
+      expect(markdown).toContain('API tokens');
+    });
+
+    it('should return message that refresh is not required (legacy default mock, non-jwt authType)', async () => {
+      const result = await callTool('refresh');
+
+      expect(result.content[0].type).toBe('text');
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+      expect(markdown).toContain('auth-refresh');
+      expect(markdown).toContain('Token refresh not required');
+      expect(markdown).toContain('do not expire');
+    });
+
+    it('should NOT claim JWTs do not expire, and should explain refresh is unavailable', async () => {
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      const result = await callTool('refresh');
+
+      expect(result.content[0].type).toBe('text');
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+      expect(markdown).toContain('auth-refresh');
+      // The old, false claim must be gone for JWT sessions.
+      expect(markdown).not.toContain('Token refresh not required');
+      expect(markdown).toContain('JWT tokens expire');
+      expect(markdown).toContain('/user/token/refresh');
+      expect(markdown).toContain('refresh-token cookie');
+      expect(markdown).toContain('vikunja_auth connect');
+    });
+
+    it('should require an active session before reporting refresh info', async () => {
+      const notAuthenticated = new MCPError(
+        ErrorCode.AUTH_REQUIRED,
+        'Authentication required. Please use vikunja_auth.connect first.',
+      );
+      mockAuthManager.getAuthType.mockImplementation(() => {
+        throw notAuthenticated;
+      });
+
+      await expect(callTool('refresh')).rejects.toThrow(MCPError);
+      await expect(callTool('refresh')).rejects.toThrow('Authentication required');
     });
   });
 

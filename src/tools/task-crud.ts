@@ -60,7 +60,7 @@ async function listTasks(
     const response = createSuccessResponse(
       'list-tasks',
       `Found ${tasks.length} tasks${filteringMessage}`,
-      { tasks: tasks as Task[] }, // Convert from node-vikunja Task to our Task interface
+      { tasks: tasks as unknown as Task[] }, // Convert from node-vikunja Task to our Task interface (reminders shape drifted, cast via unknown)
       {
         count: tasks.length,
         filteringMethod: filteringMetadata.serverSideFilteringUsed ? 'server-side' :

@@ -282,7 +282,10 @@ describe('Tasks Tool', () => {
         search: 'urgent',
       });
 
+      // Server-side filtering is attempted first: the raw filter string is
+      // passed straight through to the API alongside pagination.
       expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(1, {
+        filter: 'priority >= 5',
         page: 2,
         per_page: 25,
         sort_by: 'dueDate',
@@ -1552,7 +1555,7 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(response).toBeDefined();
+      expect(result).toBeDefined();
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
     });

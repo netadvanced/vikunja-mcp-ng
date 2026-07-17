@@ -8,7 +8,7 @@ import { MCPError, ErrorCode, type StandardTaskResponse } from '../types';
 import { getClientFromContext } from '../client';
 import { logger } from '../utils/logger';
 import { validateId as validateSharedId } from '../utils/validation';
-import { wrapToolError } from '../utils/error-handler';
+import { handleStatusCodeError } from '../utils/error-handler';
 import type { RelationKind } from 'node-vikunja';
 import { formatAorpAsMarkdown, createStandardResponse } from '../utils/response-factory';
 
@@ -134,7 +134,11 @@ export async function handleRelationSubcommands(
           ],
         };
       } catch (error) {
-        throw wrapToolError(error, 'vikunja_tasks_relations', 'create task relation', `${args.id}-${args.otherTaskId}`);
+        // Re-throw MCPError instances (e.g. our own validation errors) without modification
+        if (error instanceof MCPError) {
+          throw error;
+        }
+        throw handleStatusCodeError(error, 'create task relation', `${args.id}-${args.otherTaskId}`);
       }
     }
 
@@ -206,7 +210,11 @@ export async function handleRelationSubcommands(
           ],
         };
       } catch (error) {
-        throw wrapToolError(error, 'vikunja_tasks_relations', 'remove task relation', `${args.id}-${args.otherTaskId}`);
+        // Re-throw MCPError instances (e.g. our own validation errors) without modification
+        if (error instanceof MCPError) {
+          throw error;
+        }
+        throw handleStatusCodeError(error, 'remove task relation', `${args.id}-${args.otherTaskId}`);
       }
     }
 
@@ -220,20 +228,45 @@ export async function handleRelationSubcommands(
         // Fetch the task with its relations
         const task = await client.tasks.getTask(args.id);
 
+        // Vikunja's API returns `related_tasks` as a map of relation kind to
+        // Task[] (models.RelatedTaskMap), not a flat array. node-vikunja's
+        // typed model incorrectly describes it as Task[], so `.length` on it
+        // was always undefined and the relation count always reported 0.
+        const relatedTasksMap = (task.related_tasks ?? {}) as unknown as Record<
+          string,
+          unknown[] | undefined
+        >;
+        const relationCounts: Record<string, number> = {};
+        let totalRelations = 0;
+        for (const [kind, kindTasks] of Object.entries(relatedTasksMap)) {
+          const count = Array.isArray(kindTasks) ? kindTasks.length : 0;
+          if (count > 0) {
+            relationCounts[kind] = count;
+          }
+          totalRelations += count;
+        }
+        const relationBreakdown = Object.entries(relationCounts)
+          .map(([kind, count]) => `${kind}: ${count}`)
+          .join(', ');
+        const relationsMessage = relationBreakdown
+          ? `Found ${totalRelations} relation(s) for task ${args.id} (${relationBreakdown})`
+          : `Found ${totalRelations} relation(s) for task ${args.id}`;
+
         const response: StandardTaskResponse = {
           success: true,
           operation: 'relations',
-          message: `Found ${task.related_tasks?.length || 0} relations for task ${args.id}`,
+          message: relationsMessage,
           task: task,
           metadata: {
             timestamp: new Date().toISOString(),
-            count: task.related_tasks?.length || 0,
+            count: totalRelations,
           },
         };
 
         logger.debug('Task relations retrieved', {
           taskId: args.id,
-          relationCount: task.related_tasks?.length || 0,
+          relationCount: totalRelations,
+          relationCounts,
         });
 
         // Convert StandardTaskResponse to proper AORP response before formatting
@@ -253,7 +286,11 @@ export async function handleRelationSubcommands(
           ],
         };
       } catch (error) {
-        throw wrapToolError(error, 'vikunja_tasks_relations', 'get task relations', args.id);
+        // Re-throw MCPError instances (e.g. our own validation errors) without modification
+        if (error instanceof MCPError) {
+          throw error;
+        }
+        throw handleStatusCodeError(error, 'get task relations', args.id);
       }
     }
 

@@ -379,13 +379,20 @@ vikunja_tasks.add-reminder({
   reminderDate: "2024-12-25T10:00:00Z"
 })
 
-// List all reminders for a task
+// List all reminders for a task (shows each reminder's reminderIndex)
 vikunja_tasks.list-reminders({ id: 123 })
 
-// Remove a specific reminder from a task
+// Remove a specific reminder from a task. Vikunja's API has no reminder id,
+// so identify the reminder by its exact date string and/or its zero-based
+// reminderIndex from list-reminders.
 vikunja_tasks.remove-reminder({
   id: 123,
-  reminderId: 1
+  reminderDate: "2024-12-25T10:00:00Z"
+})
+// or equivalently:
+vikunja_tasks.remove-reminder({
+  id: 123,
+  reminderIndex: 0
 })
 
 // Bulk create multiple tasks at once (max 100)
@@ -518,7 +525,11 @@ vikunja_request_user_export({
   password: "your-password"  // Required for security
 })
 
-// Download a previously requested user data export
+// Confirm a previously requested user data export is ready
+// NOTE: per the Vikunja API, this endpoint returns only a confirmation
+// message, not the export file itself. The MCP protocol has no binary
+// attachment support, so the exported archive cannot be retrieved through
+// this tool -- download it from the Vikunja web UI or a direct API client.
 vikunja_download_user_export({
   password: "your-password"  // Required for security
 })
@@ -1010,7 +1021,7 @@ This standardized format ensures:
 - `vikunja_auth` - Authentication management
   - `connect` - Initialize connection with API token
   - `status` - Check authentication status
-  - `refresh` - Refresh authentication token
+  - `refresh` - Report token-refresh status: API tokens (`tk_*`) are long-lived and need no refresh; JWTs expire and must be replaced by reconnecting with a new token (Vikunja's token-refresh endpoint relies on a login cookie this server does not hold)
 
 ### Task Management ✅
 - `vikunja_tasks` - Task operations (fully implemented)
@@ -1145,16 +1156,26 @@ This standardized format ensures:
     - Creates all tasks with labels from template
 
 ### Team Management ✅
-- `vikunja_teams` - Team operations (partially implemented)
+- `vikunja_teams` - Team operations (fully implemented via direct REST calls where node-vikunja has no client method)
   - `list` - List all teams with filters
     - Support for pagination and search
   - `create` - Create new team
     - Required: name
     - Optional: description
-  - `delete` - Delete a team by ID (with fallback API support)
-  - `get` - Not yet implemented in node-vikunja
-  - `update` - Not yet implemented in node-vikunja
-  - `members` - Not yet implemented in node-vikunja
+  - `get` - Get a team by ID
+  - `update` - Update a team's name/description
+    - Required: id
+    - Optional: name, description (at least one required)
+  - `delete` - Delete a team by ID
+  - `members` - Manage team membership (keyed by **username**, not numeric user id — this is deliberate on Vikunja's part to prevent automated/enumerated user-id entry)
+    - `list` - List a team's members (read from the team's embedded `members` array; there is no standalone list-members endpoint)
+    - `add` - Add a member by username
+      - Required: username
+      - Optional: admin (initial admin flag)
+    - `remove` - Remove a member by username
+      - Required: username
+    - `toggleAdmin` - **Toggles** a member's admin status (the API endpoint takes no body and always flips the current value; it cannot set an explicit true/false)
+      - Required: username
 
 ### User Management ✅
 - `vikunja_users` - User operations (fully implemented) **[Requires JWT authentication]**
@@ -1227,11 +1248,11 @@ This standardized format ensures:
   - **Returns:** Confirmation that export has been requested
   - **Note:** You will receive an email when the export is ready
   
-- `vikunja_download_user_export` - Download previously requested user data export
+- `vikunja_download_user_export` - Confirm a previously requested user data export is ready on the server
   - **Parameters:**
     - `password` (required) - User password for security verification
-  - **Returns:** Complete user data export
-  - **Note:** Export must be requested first via `vikunja_request_user_export`
+  - **Returns:** The server's confirmation message (`models.Message`), not the export file
+  - **Note:** Export must be requested first via `vikunja_request_user_export`. Per the Vikunja API spec, this endpoint never returns the export archive's contents, and the MCP protocol has no binary-attachment support — retrieve the actual exported file from the Vikunja web UI or a direct API client using the same credentials.
 
 
 
@@ -1239,11 +1260,7 @@ This standardized format ensures:
 ## Known Limitations
 
 1. **File Attachments**: The `attach` subcommand is not implemented due to MCP protocol limitations
-2. **Team Operations**: Limited functionality due to incomplete node-vikunja API support:
-   - Cannot get team by ID
-   - Cannot update team information
-   - Cannot delete teams
-   - Cannot manage team members
+2. **Team Operations**: node-vikunja only implements list/create/delete for teams, so get/update/members go through direct REST calls (see `src/utils/vikunja-rest.ts`). The admin-toggle member operation is a true toggle server-side — it cannot set an explicit admin value in one call.
 3. **Pagination**: Some endpoints may not fully support pagination parameters due to API limitations
 4. **Authentication Issues**: Some Vikunja API endpoints have known authentication issues:
    - **User endpoints**: May fail with token errors even with valid tokens (known Vikunja API limitation)

@@ -340,13 +340,21 @@ describe('Task Relations Tool', () => {
           otherTaskId: 2,
           relationKind: 'subtask',
         }),
-      ).rejects.toThrow('Failed to remove task relation: [object Object]');
+      ).rejects.toThrow('Failed to remove task relation: Unknown error');
     });
   });
 
   describe('relations subcommand', () => {
     it('should list task relations successfully', async () => {
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
+      // Vikunja's real API shape: related_tasks is a map of relation kind ->
+      // Task[] (models.RelatedTaskMap), not a flat array.
+      mockClient.tasks.getTask.mockResolvedValue({
+        ...mockTask,
+        related_tasks: {
+          subtask: [{ id: 2, title: 'Related Task' }],
+          blocking: [{ id: 3, title: 'Blocking Task' }],
+        },
+      });
 
       const result = await server.executeTool('vikunja_tasks', {
         subcommand: 'relations',
@@ -360,13 +368,13 @@ describe('Task Relations Tool', () => {
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success'); // New format returns success for successful operations
       expect(markdown).toContain('relations');
-      expect(markdown).toContain('Found 2 relations for task 1');
+      expect(markdown).toContain('Found 2 relation(s) for task 1 (subtask: 1, blocking: 1)');
     });
 
     it('should handle tasks with no relations', async () => {
       mockClient.tasks.getTask.mockResolvedValue({
         ...mockTask,
-        related_tasks: [],
+        related_tasks: {},
       });
 
       const result = await server.executeTool('vikunja_tasks', {
@@ -378,7 +386,7 @@ describe('Task Relations Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success'); // New format returns success for successful operations
-      expect(markdown).toContain('Found 0 relations for task 1');
+      expect(markdown).toContain('Found 0 relation(s) for task 1');
     });
 
     it('should handle tasks with undefined relations', async () => {
@@ -396,7 +404,7 @@ describe('Task Relations Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success'); // New format returns success for successful operations
-      expect(markdown).toContain('Found 0 relations for task 1');
+      expect(markdown).toContain('Found 0 relation(s) for task 1');
     });
 
     it('should validate required task ID', async () => {
@@ -426,7 +434,7 @@ describe('Task Relations Tool', () => {
           subcommand: 'relations',
           id: 1,
         }),
-      ).rejects.toThrow('Failed to get task relations: 12345');
+      ).rejects.toThrow('Failed to get task relations: Unknown error');
     });
   });
 

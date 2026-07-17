@@ -19,6 +19,19 @@ import type { Project, Task, Label, User, VikunjaClient } from 'node-vikunja';
 import type { TypedVikunjaClient } from '../types/node-vikunja-extended';
 import { logger } from '../utils/logger';
 import { validateId as validateSharedId } from '../utils/validation';
+import { vikunjaRestRequest } from '../utils/vikunja-rest';
+
+/**
+ * Shape of the JSON body Vikunja returns from both `POST /user/export/request`
+ * and `POST /user/export/download`. Per the OpenAPI spec, both endpoints
+ * respond with `models.Message` — a plain `{ message: string }` confirmation
+ * — never the export archive itself. There is no documented endpoint that
+ * streams the actual export file as JSON, and the MCP protocol has no
+ * binary/file-attachment support to deliver one even if there were.
+ */
+interface VikunjaMessageResponse {
+  message?: string;
+}
 
 /**
  * Export format for project data
@@ -197,7 +210,7 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
   // Request user data export
   server.tool(
     'vikunja_request_user_export',
-    'Request a complete export of user data for privacy and backup purposes',
+    'Request a complete export of user data for privacy and backup purposes. This calls POST /user/export/request, which asks the Vikunja server to start preparing the export; it returns only a confirmation message, not the export itself. Use vikunja_download_user_export afterwards to confirm the export is ready.',
     {
       password: z.string().min(1),
     },
@@ -205,42 +218,21 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
       try {
         const { password } = args;
 
-        await getClientFromContext();
-
-        // The node-vikunja client might not have this endpoint, so we'll make a direct API call
-        const session = authManager.getSession();
-        const baseUrl = session.apiUrl;
-        const token = session.apiToken;
-
-        if (!token) {
+        if (!authManager.getSession().apiToken) {
           throw new MCPError(ErrorCode.AUTH_REQUIRED, 'No authentication token available');
         }
 
-        const httpResponse = await fetch(`${baseUrl}/user/export/request`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ password }),
-        });
-
-        if (!httpResponse.ok) {
-          const errorData = (await httpResponse.json().catch(() => ({ message: null }))) as {
-            message?: string;
-          };
-          throw new MCPError(
-            ErrorCode.API_ERROR,
-            errorData.message || `Failed to request export: ${httpResponse.statusText}`,
-          );
-        }
-
-        const result = (await httpResponse.json()) as Record<string, unknown>;
+        const result = await vikunjaRestRequest<VikunjaMessageResponse>(
+          authManager,
+          'POST',
+          '/user/export/request',
+          { password },
+        );
 
         const response = createStandardResponse(
           'success',
           'User data export requested successfully. You will receive an email when the export is ready.',
-          result,
+          { serverMessage: result?.message ?? null },
         );
 
         return {
@@ -266,10 +258,10 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
     },
   );
 
-  // Download user data export
+  // Confirm delivery of a previously requested user data export
   server.tool(
     'vikunja_download_user_export',
-    'Download previously requested user data export files',
+    "Confirm that a previously requested user data export is ready on the server. IMPORTANT: per the Vikunja API spec, POST /user/export/download returns only a confirmation message (models.Message: { message }) — it does NOT return the export archive's contents, and there is no separate JSON endpoint that does. The MCP protocol also has no binary/file-attachment support, so the exported .zip cannot be retrieved through this tool under any circumstances. To obtain the actual file, download it directly from the Vikunja web UI (Settings > Export Data) or with a direct HTTP client using the same credentials.",
     {
       password: z.string().min(1),
     },
@@ -277,43 +269,24 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
       try {
         const { password } = args;
 
-        await getClientFromContext();
-
-        // The node-vikunja client might not have this endpoint, so we'll make a direct API call
-        const session = authManager.getSession();
-        const baseUrl = session.apiUrl;
-        const token = session.apiToken;
-
-        if (!token) {
+        if (!authManager.getSession().apiToken) {
           throw new MCPError(ErrorCode.AUTH_REQUIRED, 'No authentication token available');
         }
 
-        const httpResponse = await fetch(`${baseUrl}/user/export/download`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ password }),
-        });
-
-        if (!httpResponse.ok) {
-          const errorData = (await httpResponse.json().catch(() => ({ message: null }))) as {
-            message?: string;
-          };
-          throw new MCPError(
-            ErrorCode.API_ERROR,
-            errorData.message || `Failed to download export: ${httpResponse.statusText}`,
-          );
-        }
-
-        // The response should contain the export data
-        const exportData = (await httpResponse.json()) as Record<string, unknown>;
+        const result = await vikunjaRestRequest<VikunjaMessageResponse>(
+          authManager,
+          'POST',
+          '/user/export/download',
+          { password },
+        );
 
         const response = createStandardResponse(
           'success',
-          'User data export downloaded successfully',
-          exportData,
+          'The server confirmed the export download request. The Vikunja API does not return the export file itself through this endpoint, and the MCP protocol cannot deliver binary attachments — retrieve the exported archive from the Vikunja web UI or a direct API client instead.',
+          {
+            serverMessage: result?.message ?? null,
+            fileDeliveredThroughThisTool: false,
+          },
         );
 
         return {
