@@ -851,6 +851,53 @@ vikunja_tasks.list-labels({ id: 123 })
 // Returns: Task info with detailed label data including colors and descriptions
 ```
 
+### Task Position & By-Index Lookup Examples
+
+```typescript
+// --- Task Position ---
+
+// Move a task to a new position in its project's list view
+// projectId and projectViewId auto-resolve from the task when omitted
+vikunja_tasks.set-position({ id: 123, position: 65536 })
+
+// Reposition within a specific view (e.g. the Kanban view)
+vikunja_tasks.set-position({
+  id: 123,
+  position: 5,
+  viewKind: "kanban"  // resolves the project's first Kanban view
+})
+
+// Explicit projectId/projectViewId skip auto-resolution entirely
+vikunja_tasks.set-position({
+  id: 123,
+  position: 5,
+  projectId: 5,
+  projectViewId: 10
+})
+
+// --- By-Index Lookup ---
+
+// Resolve a task by its human-facing per-project index (e.g. "PROJ-42")
+vikunja_tasks.get-by-index({ projectId: 5, index: 42 })
+// Note: indexes are reassigned when a task moves between projects — use the
+// returned task's `id` for long-lived references, not the index
+
+// --- Cross-Project Listing (direct REST GET /tasks) ---
+
+// Lists across every accessible project now call GET /tasks in one request
+// (falling back to per-project aggregation only if that call fails)
+vikunja_tasks.list({ allProjects: true, filter: "priority >= 3" })
+
+// Documented GET /tasks params forwarded for cross-project listing
+vikunja_tasks.list({
+  allProjects: true,
+  sort: "priority",
+  orderBy: "desc",
+  filterIncludeNulls: true,
+  expand: ["subtasks", "comments"]
+})
+```
+
 ### Team Management Examples
 
 ```typescript
@@ -1122,6 +1169,12 @@ This standardized format ensures:
     - Support for pagination, search, sorting
     - Filter by completion status
     - Apply saved filters with `filterId` parameter
+    - Cross-project listing (no `projectId`, or `allProjects: true`) calls the
+      documented `GET /tasks` endpoint directly (one call), falling back to
+      per-project aggregation only if that call fails
+    - `orderBy` (`'asc' | 'desc'`), `filterTimezone`, `filterIncludeNulls`,
+      and `expand` (`'subtasks' | 'buckets' | 'reactions' | 'comments'`, can
+      be repeated) are forwarded to `GET /tasks` for cross-project listing
   - `create` - Create a new task
     - Required: title, projectId
     - Optional: description, dueDate, priority, labels, assignees
@@ -1149,6 +1202,12 @@ This standardized format ensures:
     - ⚠️ Performance: Makes individual delete calls for each task
     - Recommended: Process in batches of 20 or fewer tasks
   - `attach` - Not implemented (file handling not available in MCP)
+  - `set-bucket` - Move a task into a Kanban bucket; `projectId`/`viewId` auto-resolve when omitted
+  - `set-position` - Update a task's ordering within a project view (`position` is a float — see the Vikunja docs on inserting between two existing positions)
+    - `projectId` auto-resolves from the task, `projectViewId` auto-resolves to the project's first view of `viewKind` (default `'list'`) when omitted
+  - `get-by-index` - Look up a task by its human-facing per-project index (e.g. the `42` in `PROJ-42`)
+    - Required: `projectId`, `index`
+    - Task indexes are reassigned when a task moves between projects — use the returned task's `id` for long-lived references
 
 ### Batch Import ✅
 - `vikunja_batch_import` - Import multiple tasks from CSV or JSON (fully implemented)
