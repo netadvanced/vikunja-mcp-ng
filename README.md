@@ -686,6 +686,64 @@ vikunja_projects.auth-share({
   password: "securepassword123"
 })
 
+// --- Project Views ---
+
+// List all views of a project (list, gantt, table, kanban)
+vikunja_projects.list-views({ id: 1 })
+
+// Get a single view by id
+vikunja_projects.get-view({ id: 1, viewId: 3 })
+
+// Create a new view
+vikunja_projects.create-view({
+  id: 1,
+  title: "Sprint Board",
+  viewKind: "kanban",
+  bucketConfigurationMode: "manual"
+})
+
+// Update a view (fetches current view and merges -- omitted fields are preserved)
+vikunja_projects.update-view({ id: 1, viewId: 3, title: "Renamed View" })
+
+// Delete a view
+vikunja_projects.delete-view({ id: 1, viewId: 3 })
+
+// Set a view's "done" bucket -- the only way to *set* isDoneBucket
+// (list-buckets can only read it, since it lives on the view, not the bucket)
+vikunja_projects.set-done-bucket({ id: 1, bucketId: 42 })
+// viewId is auto-resolved to the project's Kanban view when omitted
+
+// --- Kanban Buckets ---
+
+// List the Kanban buckets (columns) of a project
+vikunja_projects.list-buckets({ id: 1 })
+// viewId is auto-resolved to the project's Kanban view when omitted
+
+// Create a new bucket
+vikunja_projects.create-bucket({ id: 1, title: "In Review", limit: 5 })
+
+// Rename a bucket, referencing it by id...
+vikunja_projects.update-bucket({ id: 1, bucketId: 42, title: "In Review" })
+
+// ...or by its current title -- resolved to an id internally
+vikunja_projects.update-bucket({ id: 1, bucketTitle: "Doing", limit: 3 })
+
+// Delete a bucket (dissociates its tasks, does not delete them)
+vikunja_projects.delete-bucket({ id: 1, bucketTitle: "Backlog" })
+
+// List a view's tasks in real server-side (Kanban card) order, paginated
+vikunja_projects.list-view-tasks({ id: 1, page: 1, perPage: 50 })
+
+// --- Duplicate Project ---
+
+// Duplicate a project to the root level (tasks, labels, comments,
+// attachments, relations, and Kanban data are copied; shares are not
+// unless duplicateShares is set)
+vikunja_projects.duplicate({ id: 1 })
+
+// Duplicate into a specific parent project, including its shares
+vikunja_projects.duplicate({ id: 1, parentProjectId: 5, duplicateShares: true })
+
 // --- Direct Project Sharing (users & teams) ---
 // Distinct from link shares above: grants access to a specific, named
 // account rather than anyone with a link. See docs/API-COVERAGE.md — this
@@ -1144,6 +1202,22 @@ This standardized format ensures:
     - `get-share` - Get share details
     - `delete-share` - Remove a share link
     - `auth-share` - Authenticate to access a shared project
+  - **Project Views**
+    - `list-views` - List a project's views (list, gantt, table, kanban)
+    - `get-view` - Get a single view by id
+    - `create-view` - Create a new view
+    - `update-view` - Update a view (fetches current view and merges; omitted fields are preserved)
+    - `delete-view` - Delete a view
+    - `set-done-bucket` - Composite: set a Kanban view's done bucket (resolves the view, updates it, and verifies the change took effect)
+  - **Kanban Buckets**
+    - `list-buckets` - List the Kanban buckets (columns) of a project
+    - `create-bucket` - Create a new bucket
+    - `update-bucket` - Rename/reconfigure a bucket, referenced by `bucketId` or `bucketTitle`
+    - `delete-bucket` - Delete a bucket (dissociates its tasks, does not delete them), referenced by `bucketId` or `bucketTitle`
+    - `list-view-tasks` - List a view's tasks in real server-side (Kanban card) order, with pagination
+    - All Kanban operations auto-resolve `viewId` to the project's Kanban view when omitted
+  - **Duplicate**
+    - `duplicate` - Duplicate a project (tasks, files, Kanban data, assignees, comments, attachments, labels, relations, and backgrounds are copied; shares only when `duplicateShares: true`)
   - **Project Sharing — direct user & team access** (New! Wave D)
     - `share-with-user` - Composite: share with a user by **username** — resolves to an id, adds, then verifies the grant landed. Optional `atomic: true` removes the grant if verification fails (default best-effort; not a real transaction, see docs/ENDPOINT-PLAYBOOK.md §5)
     - `share-with-team` - Composite: share with a team by **name** — same resolve → add → verify shape

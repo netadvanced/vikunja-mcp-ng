@@ -115,6 +115,57 @@ Project sharing allows creating public or private links to share projects with e
    - Passwords cannot be retrieved after creation
    - Share permissions are fixed at creation time
 
+### Project Views (Wave D)
+
+1. **Full-Model-Replace Update Endpoint**: `POST /projects/{project}/views/{id}`
+   replaces the entire `models.ProjectView`, the same convention as the
+   project update endpoint (see "Project Operations" above). `update-view`
+   and the `set-done-bucket` composite both fetch the current view first and
+   merge requested changes onto it (`buildViewUpdatePayload` in
+   `src/tools/projects/views.ts`) rather than sending a bare partial object.
+
+2. **Setting the Done Bucket**: `models.Bucket` has no `is_done_bucket`
+   field — the done bucket is `done_bucket_id` on the `ProjectView`
+   (see "Kanban 'Done' Bucket" above, which covers *reading* it via
+   `list-buckets`). `set-done-bucket` is the only way to *set* it: resolve
+   the Kanban view (auto-resolved from the project, or an explicit
+   `viewId`), fetch-merge-POST the `done_bucket_id` change, then verify the
+   response actually reflects the requested bucket before reporting
+   success — a mismatch (e.g. a stale `updated` snapshot on a concurrently
+   edited view) raises an `API_ERROR` rather than silently claiming success.
+
+3. **Per-View Task Listing Shape**: `GET /projects/{id}/views/{view}/tasks`
+   (`list-view-tasks`) declares a flat `models.Task[]` response schema for
+   every view kind, but the endpoint's own spec description says a Kanban
+   view instead returns "a list of buckets containing the tasks" — i.e. the
+   real response for a Kanban view is bucket-shaped (each item carrying a
+   nested `tasks` array), not task-shaped. This can't be confirmed against
+   a live server from spec text alone, so `list-view-tasks` passes the
+   response through unmodified rather than guessing a shape and silently
+   coercing it — callers should check for a `tasks` field on each returned
+   item to tell which shape they got back.
+
+### Kanban Buckets (Wave D: create/update/delete)
+
+1. **Full-Model-Replace Update Endpoint**: `POST
+   /projects/{projectID}/views/{view}/buckets/{bucketID}` replaces the
+   entire `models.Bucket` (title has `minLength: 1` in the spec — an empty
+   body would be rejected). `update-bucket` fetches the bucket list first
+   (which doubles as `bucketTitle` resolution, see below) and merges
+   requested changes onto the matched bucket before POSTing.
+
+2. **Resolve-by-Title**: `update-bucket` and `delete-bucket` accept either a
+   numeric `bucketId` or a `bucketTitle` string — the same
+   resolve-by-name-internally shape as `setTaskBucket`
+   (`src/tools/tasks/buckets.ts`). `bucketId` wins when both are supplied.
+   Resolution failure (no bucket with that id/title in the view) raises
+   `NOT_FOUND`, not a generic validation error.
+
+3. **`limit` Can Legitimately Be `0`**: Unlike most numeric ids in this
+   codebase, a bucket's `limit` field means "unlimited" at `0`, so bucket
+   create/update validate it as a non-negative integer rather than using
+   the shared `validateId` helper (which rejects `0`).
+
 ## Operation Patterns
 
 ### Assignee Management

@@ -54,6 +54,36 @@ import {
 } from './sharing';
 
 import {
+  listBuckets,
+  createBucket,
+  updateBucket,
+  deleteBucket,
+  listViewTasks,
+  type ListBucketsArgs,
+  type CreateBucketArgs,
+  type UpdateBucketArgs,
+  type DeleteBucketArgs,
+  type ListViewTasksArgs,
+} from './buckets';
+
+import {
+  listViews,
+  getView,
+  createView,
+  updateView,
+  deleteView,
+  setDoneBucket,
+  type ListViewsArgs,
+  type GetViewArgs,
+  type CreateViewArgs,
+  type UpdateViewArgs,
+  type DeleteViewArgs,
+  type SetDoneBucketArgs,
+} from './views';
+
+import { duplicateProject, type DuplicateProjectArgs } from './duplicate';
+
+import {
   listProjectUsers,
   searchProjectUsers,
   addProjectUser,
@@ -80,8 +110,6 @@ import {
   type ListMembersArgs
 } from './sharing-access';
 
-import { listBuckets, type ListBucketsArgs } from './buckets';
-
 /**
  * Legacy single-tool interface for backward compatibility
  * Registers a single tool with all subcommands like the original implementation
@@ -93,12 +121,14 @@ export function registerProjectsTool(
 ): void {
   server.tool(
     'vikunja_projects',
-    'Manage projects with full CRUD operations, hierarchy management, sharing capabilities, and Kanban bucket listing',
+    'Manage projects with full CRUD operations, hierarchy management, sharing capabilities, project views, Kanban buckets, and duplication',
     {
       subcommand: z.enum(['list', 'get', 'create', 'update', 'delete', 'archive', 'unarchive',
         'get-children', 'get-tree', 'get-breadcrumb', 'move',
         'create-share', 'list-shares', 'get-share', 'delete-share', 'auth-share',
-        'list-buckets',
+        'list-buckets', 'create-bucket', 'update-bucket', 'delete-bucket',
+        'list-views', 'get-view', 'create-view', 'update-view', 'delete-view',
+        'set-done-bucket', 'list-view-tasks', 'duplicate',
         // Direct user/team sharing — primitives
         'list-project-users', 'search-project-users', 'add-project-user',
         'update-project-user-permission', 'remove-project-user',
@@ -120,10 +150,22 @@ export function registerProjectsTool(
       // Hierarchy arguments
       maxDepth: z.number().min(1).max(20).optional(),
       includeArchived: z.boolean().optional(),
-      // Kanban bucket arguments (list-buckets subcommand).
+      // Kanban bucket arguments (list-buckets, create-bucket, update-bucket,
+      // delete-bucket, list-view-tasks, set-done-bucket subcommands).
       // z.coerce tolerates MCP clients whose cached tool schema predates
       // this param and therefore send it as a string over JSON-RPC.
       viewId: z.coerce.number().positive().optional(),
+      bucketId: z.coerce.number().positive().optional(),
+      bucketTitle: z.string().optional(),
+      limit: z.coerce.number().min(0).optional(),
+      // Project view arguments (list-views, get-view, create-view,
+      // update-view, delete-view, set-done-bucket subcommands).
+      viewKind: z.enum(['list', 'gantt', 'table', 'kanban']).optional(),
+      bucketConfigurationMode: z.enum(['none', 'manual', 'filter']).optional(),
+      doneBucketId: z.coerce.number().positive().optional(),
+      defaultBucketId: z.coerce.number().positive().optional(),
+      // Duplicate-project arguments (duplicate subcommand).
+      duplicateShares: z.boolean().optional(),
       // Sharing arguments (link shares + direct user/team sharing)
       projectId: z.number().positive().optional(),
       shareId: z.string().optional(),
@@ -394,6 +436,85 @@ export function registerProjectsTool(
             validateId(args.id, 'id');
             return await listBuckets(args as ListBucketsArgs, authManager);
 
+          case 'create-bucket':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for create-bucket operation');
+            }
+            validateId(args.id, 'id');
+            return await createBucket(args as CreateBucketArgs, authManager);
+
+          case 'update-bucket':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for update-bucket operation');
+            }
+            validateId(args.id, 'id');
+            return await updateBucket(args as UpdateBucketArgs, authManager);
+
+          case 'delete-bucket':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for delete-bucket operation');
+            }
+            validateId(args.id, 'id');
+            return await deleteBucket(args as DeleteBucketArgs, authManager);
+
+          case 'list-view-tasks':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-view-tasks operation');
+            }
+            validateId(args.id, 'id');
+            return await listViewTasks(args as ListViewTasksArgs, authManager);
+
+          // Project view operations
+          case 'list-views':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-views operation');
+            }
+            validateId(args.id, 'id');
+            return await listViews(args as ListViewsArgs, authManager);
+
+          case 'get-view':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for get-view operation');
+            }
+            validateId(args.id, 'id');
+            return await getView(args as GetViewArgs, authManager);
+
+          case 'create-view':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for create-view operation');
+            }
+            validateId(args.id, 'id');
+            return await createView(args as CreateViewArgs, authManager);
+
+          case 'update-view':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for update-view operation');
+            }
+            validateId(args.id, 'id');
+            return await updateView(args as UpdateViewArgs, authManager);
+
+          case 'delete-view':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for delete-view operation');
+            }
+            validateId(args.id, 'id');
+            return await deleteView(args as DeleteViewArgs, authManager);
+
+          case 'set-done-bucket':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for set-done-bucket operation');
+            }
+            validateId(args.id, 'id');
+            return await setDoneBucket(args as SetDoneBucketArgs, authManager);
+
+          // Duplicate operation
+          case 'duplicate':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for duplicate operation');
+            }
+            validateId(args.id, 'id');
+            return await duplicateProject(args as DuplicateProjectArgs, authManager);
+
           default:
             throw new MCPError(ErrorCode.VALIDATION_ERROR, `Unknown subcommand: ${String(args.subcommand)}`);
         }
@@ -642,6 +763,18 @@ export type {
   GetShareArgs,
   DeleteShareArgs,
   AuthShareArgs,
+  ListBucketsArgs,
+  CreateBucketArgs,
+  UpdateBucketArgs,
+  DeleteBucketArgs,
+  ListViewTasksArgs,
+  ListViewsArgs,
+  GetViewArgs,
+  CreateViewArgs,
+  UpdateViewArgs,
+  DeleteViewArgs,
+  SetDoneBucketArgs,
+  DuplicateProjectArgs,
   ListProjectUsersArgs,
   SearchProjectUsersArgs,
   AddProjectUserArgs,
@@ -679,6 +812,24 @@ export {
   getProjectShare,
   deleteProjectShare,
   authProjectShare,
+
+  // Kanban buckets
+  listBuckets,
+  createBucket,
+  updateBucket,
+  deleteBucket,
+  listViewTasks,
+
+  // Project views
+  listViews,
+  getView,
+  createView,
+  updateView,
+  deleteView,
+  setDoneBucket,
+
+  // Duplicate
+  duplicateProject,
 
   // Sharing — direct user/team access
   listProjectUsers,
