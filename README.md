@@ -518,7 +518,11 @@ vikunja_request_user_export({
   password: "your-password"  // Required for security
 })
 
-// Download a previously requested user data export
+// Confirm a previously requested user data export is ready
+// NOTE: per the Vikunja API, this endpoint returns only a confirmation
+// message, not the export file itself. The MCP protocol has no binary
+// attachment support, so the exported archive cannot be retrieved through
+// this tool -- download it from the Vikunja web UI or a direct API client.
 vikunja_download_user_export({
   password: "your-password"  // Required for security
 })
@@ -1010,7 +1014,7 @@ This standardized format ensures:
 - `vikunja_auth` - Authentication management
   - `connect` - Initialize connection with API token
   - `status` - Check authentication status
-  - `refresh` - Refresh authentication token
+  - `refresh` - Report token-refresh status: API tokens (`tk_*`) are long-lived and need no refresh; JWTs expire and must be replaced by reconnecting with a new token (Vikunja's token-refresh endpoint relies on a login cookie this server does not hold)
 
 ### Task Management ✅
 - `vikunja_tasks` - Task operations (fully implemented)
@@ -1227,11 +1231,11 @@ This standardized format ensures:
   - **Returns:** Confirmation that export has been requested
   - **Note:** You will receive an email when the export is ready
   
-- `vikunja_download_user_export` - Download previously requested user data export
+- `vikunja_download_user_export` - Confirm a previously requested user data export is ready on the server
   - **Parameters:**
     - `password` (required) - User password for security verification
-  - **Returns:** Complete user data export
-  - **Note:** Export must be requested first via `vikunja_request_user_export`
+  - **Returns:** The server's confirmation message (`models.Message`), not the export file
+  - **Note:** Export must be requested first via `vikunja_request_user_export`. Per the Vikunja API spec, this endpoint never returns the export archive's contents, and the MCP protocol has no binary-attachment support — retrieve the actual exported file from the Vikunja web UI or a direct API client using the same credentials.
 
 
 

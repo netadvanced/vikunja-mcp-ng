@@ -90,12 +90,45 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
           }
 
           case 'refresh': {
-            // For now, tokens don't expire
+            // authManager.getAuthType() throws AUTH_REQUIRED when there is
+            // no active session, which wrapAuthError below turns into a
+            // clear "not authenticated" error.
+            const authType = authManager.getAuthType();
+
+            if (authType === 'jwt') {
+              // Vikunja JWTs are short-lived (unlike API tokens) and the
+              // spec documents POST /user/token/refresh to renew one. That
+              // endpoint exchanges a refresh-token cookie set at login for
+              // a new JWT -- but this server authenticates every request
+              // with a single static Bearer token supplied via
+              // vikunja_auth.connect and never establishes a cookie-based
+              // session, so it has no refresh-token cookie to send. The
+              // endpoint is therefore not usable from this server: calling
+              // it would just fail with 401 "invalid or expired refresh
+              // token". Report that accurately instead of attempting (and
+              // silently failing) the call or claiming refresh isn't
+              // needed.
+              const response = createStandardResponse(
+                'auth-refresh',
+                'JWT tokens expire and this server cannot refresh them automatically. Vikunja\'s POST /user/token/refresh endpoint requires a refresh-token cookie issued at login, but this server authenticates with a static Bearer token and holds no such cookie. When your JWT expires, obtain a new one (e.g. by logging in to Vikunja again) and call vikunja_auth connect with the new token.',
+                { refreshed: false, authType: 'jwt', tokenExpires: true },
+                {
+                  reason:
+                    'JWT refresh requires a refresh-token cookie this static-Bearer-token server does not have',
+                },
+              );
+              return {
+                content: formatMcpResponse(response),
+              };
+            }
+
+            // API tokens (tk_*) are documented as long-lived and have no
+            // refresh mechanism in the API, so this message remains accurate.
             const response = createStandardResponse(
               'auth-refresh',
-              'Token refresh not required - tokens do not expire',
-              { refreshed: false },
-              { reason: 'Tokens do not expire' },
+              'Token refresh not required for API tokens (tk_*) - they are long-lived and do not expire.',
+              { refreshed: false, authType: 'api-token', tokenExpires: false },
+              { reason: 'API tokens do not expire' },
             );
             return {
               content: formatMcpResponse(response),
