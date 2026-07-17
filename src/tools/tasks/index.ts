@@ -193,7 +193,10 @@ export function registerTasksTool(
         .optional(),
       // Reminder fields
       reminderDate: z.string().optional(),
-      reminderId: z.number().optional(),
+      // Vikunja's API has no reminder id — remove-reminder identifies the
+      // reminder to remove by its reminderDate string and/or its zero-based
+      // reminderIndex, both shown by list-reminders.
+      reminderIndex: z.number().optional(),
       // Attach subcommand fields (filePath, fileContent, filename)
       ...attachSchemaFields,
       // Add relation schema

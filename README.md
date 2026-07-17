@@ -379,13 +379,20 @@ vikunja_tasks.add-reminder({
   reminderDate: "2024-12-25T10:00:00Z"
 })
 
-// List all reminders for a task
+// List all reminders for a task (shows each reminder's reminderIndex)
 vikunja_tasks.list-reminders({ id: 123 })
 
-// Remove a specific reminder from a task
+// Remove a specific reminder from a task. Vikunja's API has no reminder id,
+// so identify the reminder by its exact date string and/or its zero-based
+// reminderIndex from list-reminders.
 vikunja_tasks.remove-reminder({
   id: 123,
-  reminderId: 1
+  reminderDate: "2024-12-25T10:00:00Z"
+})
+// or equivalently:
+vikunja_tasks.remove-reminder({
+  id: 123,
+  reminderIndex: 0
 })
 
 // Bulk create multiple tasks at once (max 100)

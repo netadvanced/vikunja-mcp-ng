@@ -68,12 +68,16 @@ describe('Tasks Tool - Reminders', () => {
     reminders: [],
   };
 
+  // Vikunja's real API shape for reminders (models.TaskReminder) is
+  // `{ reminder, relative_period?, relative_to? }` — there is no `id` field,
+  // on either write or read. node-vikunja's typed model (`{ id,
+  // reminder_date }`) does not match what the server actually returns.
   const mockTaskWithReminders: Task = {
     ...mockTask,
     reminders: [
-      { id: 1, reminder_date: '2024-12-25T10:00:00Z' },
-      { id: 2, reminder_date: '2024-12-31T23:59:00Z' },
-    ],
+      { reminder: '2024-12-25T10:00:00Z' },
+      { reminder: '2024-12-31T23:59:00Z' },
+    ] as unknown as Task['reminders'],
   };
 
   beforeEach(() => {
@@ -147,15 +151,11 @@ describe('Tasks Tool - Reminders', () => {
       mockClient.tasks.getTask.mockResolvedValueOnce(mockTask);
       mockClient.tasks.updateTask.mockResolvedValueOnce({
         ...mockTask,
-        reminders: [
-          { id: 1, reminder: '2024-12-25T10:00:00Z', reminder_date: '2024-12-25T10:00:00Z' },
-        ],
+        reminders: [{ reminder: '2024-12-25T10:00:00Z' }] as unknown as Task['reminders'],
       });
       mockClient.tasks.getTask.mockResolvedValueOnce({
         ...mockTask,
-        reminders: [
-          { id: 1, reminder: '2024-12-25T10:00:00Z', reminder_date: '2024-12-25T10:00:00Z' },
-        ],
+        reminders: [{ reminder: '2024-12-25T10:00:00Z' }] as unknown as Task['reminders'],
       });
 
       const result = await callTool('add-reminder', {
@@ -236,26 +236,26 @@ describe('Tasks Tool - Reminders', () => {
   });
 
   describe('remove-reminder', () => {
-    it('should remove a reminder from a task', async () => {
+    it('should remove a reminder from a task by reminderDate', async () => {
       mockClient.tasks.getTask.mockResolvedValueOnce(mockTaskWithReminders);
       mockClient.tasks.updateTask.mockResolvedValueOnce({
         ...mockTask,
-        reminders: [{ id: 2, reminder_date: '2024-12-31T23:59:00Z' }],
+        reminders: [{ reminder: '2024-12-31T23:59:00Z' }] as unknown as Task['reminders'],
       });
       mockClient.tasks.getTask.mockResolvedValueOnce({
         ...mockTask,
-        reminders: [{ id: 2, reminder_date: '2024-12-31T23:59:00Z' }],
+        reminders: [{ reminder: '2024-12-31T23:59:00Z' }] as unknown as Task['reminders'],
       });
 
       const result = await callTool('remove-reminder', {
         id: 1,
-        reminderId: 1,
+        reminderDate: '2024-12-25T10:00:00Z',
       });
 
       expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
         1,
         expect.objectContaining({
-          reminders: [{ id: 2, reminder_date: '2024-12-31T23:59:00Z' }],
+          reminders: [{ reminder: '2024-12-31T23:59:00Z' }],
         }),
       );
 
@@ -263,13 +263,106 @@ describe('Tasks Tool - Reminders', () => {
       const parsed = parseMarkdown(markdown);
       expect(markdown).toContain("## ✅ Success");
       expect(markdown).toContain('remove-reminder');
-      expect(markdown).toContain('Reminder 1 removed successfully');
+      expect(markdown).toContain('Reminder 2024-12-25T10:00:00Z removed successfully');
+    });
+
+    it('should remove a reminder from a task by reminderIndex', async () => {
+      mockClient.tasks.getTask.mockResolvedValueOnce(mockTaskWithReminders);
+      mockClient.tasks.updateTask.mockResolvedValueOnce({
+        ...mockTask,
+        reminders: [{ reminder: '2024-12-31T23:59:00Z' }] as unknown as Task['reminders'],
+      });
+      mockClient.tasks.getTask.mockResolvedValueOnce({
+        ...mockTask,
+        reminders: [{ reminder: '2024-12-31T23:59:00Z' }] as unknown as Task['reminders'],
+      });
+
+      const result = await callTool('remove-reminder', {
+        id: 1,
+        reminderIndex: 0,
+      });
+
+      expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({
+          reminders: [{ reminder: '2024-12-31T23:59:00Z' }],
+        }),
+      );
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('Reminder 2024-12-25T10:00:00Z removed successfully');
+    });
+
+    it('should remove a reminder by reminderIndex when reminderDate also matches', async () => {
+      mockClient.tasks.getTask.mockResolvedValueOnce(mockTaskWithReminders);
+      mockClient.tasks.updateTask.mockResolvedValueOnce(mockTask);
+      mockClient.tasks.getTask.mockResolvedValueOnce(mockTask);
+
+      const result = await callTool('remove-reminder', {
+        id: 1,
+        reminderIndex: 0,
+        reminderDate: '2024-12-25T10:00:00Z',
+      });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain("## ✅ Success");
+    });
+
+    it('should error when reminderIndex and reminderDate disagree', async () => {
+      mockClient.tasks.getTask.mockResolvedValueOnce(mockTaskWithReminders);
+
+      await expect(
+        callTool('remove-reminder', {
+          id: 1,
+          reminderIndex: 0,
+          reminderDate: '2024-12-31T23:59:00Z',
+        }),
+      ).rejects.toThrow('does not match reminderDate');
+    });
+
+    it('should error when reminderIndex is out of bounds', async () => {
+      mockClient.tasks.getTask.mockResolvedValueOnce(mockTaskWithReminders);
+
+      await expect(
+        callTool('remove-reminder', {
+          id: 1,
+          reminderIndex: 5,
+        }),
+      ).rejects.toThrow('reminderIndex 5 not found in task');
+    });
+
+    it('should error when reminderIndex is negative', async () => {
+      await expect(
+        callTool('remove-reminder', {
+          id: 1,
+          reminderIndex: -1,
+        }),
+      ).rejects.toThrow('reminderIndex must be a non-negative integer');
+    });
+
+    it('should error when reminderIndex is not an integer', async () => {
+      await expect(
+        callTool('remove-reminder', {
+          id: 1,
+          reminderIndex: 1.5,
+        }),
+      ).rejects.toThrow('reminderIndex must be a non-negative integer');
+    });
+
+    it('should validate reminderDate format', async () => {
+      await expect(
+        callTool('remove-reminder', {
+          id: 1,
+          reminderDate: 'not-a-date',
+        }),
+      ).rejects.toThrow(MCPError);
     });
 
     it('should handle removing all reminders', async () => {
       const taskWithOneReminder = {
         ...mockTask,
-        reminders: [{ id: 1, reminder_date: '2024-12-25T10:00:00Z' }],
+        reminders: [{ reminder: '2024-12-25T10:00:00Z' }] as unknown as Task['reminders'],
       };
 
       mockClient.tasks.getTask.mockResolvedValueOnce(taskWithOneReminder);
@@ -278,7 +371,7 @@ describe('Tasks Tool - Reminders', () => {
 
       const result = await callTool('remove-reminder', {
         id: 1,
-        reminderId: 1,
+        reminderDate: '2024-12-25T10:00:00Z',
       });
 
       expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
@@ -297,17 +390,17 @@ describe('Tasks Tool - Reminders', () => {
     it('should require task id', async () => {
       await expect(
         callTool('remove-reminder', {
-          reminderId: 1,
+          reminderDate: '2024-12-25T10:00:00Z',
         }),
       ).rejects.toThrow(MCPError);
     });
 
-    it('should require reminder id', async () => {
+    it('should require reminderDate or reminderIndex', async () => {
       await expect(
         callTool('remove-reminder', {
           id: 1,
         }),
-      ).rejects.toThrow(MCPError);
+      ).rejects.toThrow('Either reminderDate or reminderIndex is required');
     });
 
     it('should error if task has no reminders', async () => {
@@ -316,20 +409,20 @@ describe('Tasks Tool - Reminders', () => {
       await expect(
         callTool('remove-reminder', {
           id: 1,
-          reminderId: 1,
+          reminderDate: '2024-12-25T10:00:00Z',
         }),
       ).rejects.toThrow('Task has no reminders to remove');
     });
 
-    it('should error if reminder id not found', async () => {
+    it('should error if reminder date not found', async () => {
       mockClient.tasks.getTask.mockResolvedValueOnce(mockTaskWithReminders);
 
       await expect(
         callTool('remove-reminder', {
           id: 1,
-          reminderId: 999,
+          reminderDate: '2030-01-01T00:00:00Z',
         }),
-      ).rejects.toThrow('Reminder with id 999 not found in task');
+      ).rejects.toThrow('Reminder with date 2030-01-01T00:00:00Z not found in task');
     });
   });
 
@@ -420,7 +513,7 @@ describe('Tasks Tool - Reminders', () => {
       await expect(
         callTool('remove-reminder', {
           id: 1,
-          reminderId: 1,
+          reminderDate: '2024-12-25T10:00:00Z',
         }),
       ).rejects.toThrow('Failed to remove reminder: Update failed');
     });

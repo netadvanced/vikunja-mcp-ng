@@ -30,11 +30,14 @@ export function registerTaskRemindersTool(
       // Task and reminder identification
       id: z.number(),
       reminderDate: z.string().optional(),
-      reminderId: z.number().optional(),
+      // Vikunja's API has no reminder id — remove-reminder identifies the
+      // reminder to remove by its reminderDate string and/or its zero-based
+      // reminderIndex, both shown by list-reminders.
+      reminderIndex: z.number().optional(),
     },
     async (args) => {
       try {
-        logger.debug('Executing task reminders tool', { operation: args.operation, taskId: args.id, reminderId: args.reminderId });
+        logger.debug('Executing task reminders tool', { operation: args.operation, taskId: args.id, reminderIndex: args.reminderIndex });
 
         // Check authentication
         if (!authManager.isAuthenticated()) {
@@ -59,7 +62,8 @@ export function registerTaskRemindersTool(
           case 'remove-reminder':
             return removeReminder({
               id: args.id,
-              reminderId: args.reminderId || 0
+              reminderDate: args.reminderDate,
+              reminderIndex: args.reminderIndex
             });
 
           case 'list-reminders':

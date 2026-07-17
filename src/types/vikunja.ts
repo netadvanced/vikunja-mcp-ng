@@ -137,8 +137,13 @@ export interface Task {
 }
 
 export interface TaskReminder {
-  id: number;
-  reminder_date: string; // ISO 8601 date string
+  // Vikunja's API (models.TaskReminder) has no `id` field. Reminders are
+  // identified by their `reminder` date string (and/or their position in
+  // the task's reminders array) — never by an id, which the API does not
+  // return. See docs/VIKUNJA_API_ISSUES.md #7.
+  reminder: string; // ISO 8601 date string
+  relative_period?: number; // Relative reminder offset in seconds (when relative_to is set)
+  relative_to?: string; // Anchor field for relative reminders (e.g. 'due_date')
 }
 
 export interface TaskComment {
