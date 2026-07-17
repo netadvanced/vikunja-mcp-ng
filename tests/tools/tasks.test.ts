@@ -214,7 +214,15 @@ describe('Tasks Tool', () => {
         { ...mockTask, done: true },
         { ...mockTask, id: 2, done: false },
       ];
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      // `done` is folded into a filter expression, so this goes through the
+      // hybrid strategy: server-side getAllTasks is attempted first (and
+      // rejects, matching modern Vikunja's HTTP 400 on GET /tasks/all - see
+      // PR #22), then falls back to per-project aggregation via
+      // getProjects + getProjectTasks rather than the unreliable getAllTasks
+      // endpoint.
+      mockClient.tasks.getAllTasks.mockRejectedValue(new Error('Invalid model provided'));
+      mockClient.projects.getProjects.mockResolvedValue([{ id: 1, title: 'Project 1' }]);
+      mockClient.tasks.getProjectTasks.mockResolvedValue(mockTasks);
 
       const result = await callTool('list', { done: true });
 
@@ -235,7 +243,8 @@ describe('Tasks Tool', () => {
         labels: [{ id: 1, title: 'Important' }],
         assignees: [{ id: 1, username: 'user1' }],
       };
-      mockClient.tasks.getAllTasks.mockResolvedValue([taskWithDetails]);
+      mockClient.projects.getProjects.mockResolvedValue([{ id: 1, title: 'Project 1' }]);
+      mockClient.tasks.getProjectTasks.mockResolvedValue([taskWithDetails]);
 
       const result = await callTool('list');
 
@@ -252,11 +261,13 @@ describe('Tasks Tool', () => {
     });
     it('should list tasks with default options', async () => {
       const mockTasks: Task[] = [mockTask];
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      mockClient.projects.getProjects.mockResolvedValue([{ id: 1, title: 'Project 1' }]);
+      mockClient.tasks.getProjectTasks.mockResolvedValue(mockTasks);
 
       const result = await callTool('list');
 
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
+      expect(mockClient.projects.getProjects).toHaveBeenCalledWith({ per_page: 1000 });
+      expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(1, {
         page: 1,
         per_page: 1000,
       });
@@ -302,13 +313,14 @@ describe('Tasks Tool', () => {
 
     it('should handle multiple sort fields', async () => {
       const mockTasks: Task[] = [mockTask];
-      mockClient.tasks.getAllTasks.mockResolvedValue(mockTasks);
+      mockClient.projects.getProjects.mockResolvedValue([{ id: 1, title: 'Project 1' }]);
+      mockClient.tasks.getProjectTasks.mockResolvedValue(mockTasks);
 
       const result = await callTool('list', {
         sort: 'priority,dueDate',
       });
 
-      expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
+      expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(1, {
         page: 1,
         per_page: 1000,
         sort_by: 'priority,dueDate',
@@ -331,13 +343,16 @@ describe('Tasks Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.tasks.getAllTasks.mockRejectedValue(new Error('API Error'));
+      // Cross-project aggregation calls getProjects first; a failure there
+      // (unlike a single project's getProjectTasks, which is caught and
+      // skipped per-project) fails the whole listing.
+      mockClient.projects.getProjects.mockRejectedValue(new Error('API Error'));
 
       await expect(callTool('list')).rejects.toThrow('Failed to list tasks: API Error');
     });
 
     it('should handle non-Error API errors', async () => {
-      mockClient.tasks.getAllTasks.mockRejectedValue('String error');
+      mockClient.projects.getProjects.mockRejectedValue('String error');
 
       await expect(callTool('list')).rejects.toThrow('Failed to list tasks: String error');
     });
@@ -1152,7 +1167,12 @@ describe('Tasks Tool', () => {
     it('should handle non-Error API errors in delete', async () => {
       mockClient.tasks.deleteTask.mockRejectedValue(500);
 
-      await expect(callTool('delete', { id: 1 })).rejects.toThrow('Failed to delete task: 500');
+      // handleStatusCode only surfaces Error/string rejection values; any
+      // other shape (numbers included) is reported as "Unknown error" so
+      // arbitrary upstream payloads never leak into the user-visible
+      // message (see tests/utils/error-handler.test.ts and
+      // tests/tools/tasks-relations.test.ts for the same contract).
+      await expect(callTool('delete', { id: 1 })).rejects.toThrow('Failed to delete task: Unknown error');
     });
 
     it('should validate task ID', async () => {
@@ -1498,7 +1518,10 @@ describe('Tasks Tool', () => {
     it('should handle network errors', async () => {
       const networkError = new Error('Network error');
       (networkError as any).code = 'ECONNREFUSED';
-      mockClient.tasks.getAllTasks.mockRejectedValue(networkError);
+      // Cross-project aggregation fails the whole listing only when
+      // getProjects itself fails (per-project getProjectTasks failures are
+      // caught and skipped - see PR #22).
+      mockClient.projects.getProjects.mockRejectedValue(networkError);
 
       await expect(callTool('list')).rejects.toThrow('Failed to list tasks: Network error');
     });
@@ -1506,14 +1529,14 @@ describe('Tasks Tool', () => {
     it('should handle rate limiting', async () => {
       const rateLimitError = new Error('Rate limit exceeded');
       (rateLimitError as any).response = { status: 429 };
-      mockClient.tasks.getAllTasks.mockRejectedValue(rateLimitError);
+      mockClient.projects.getProjects.mockRejectedValue(rateLimitError);
 
       await expect(callTool('list')).rejects.toThrow('Failed to list tasks: Rate limit exceeded');
     });
 
     it('should handle malformed JSON responses', async () => {
       // This would typically happen at the node-vikunja level
-      mockClient.tasks.getAllTasks.mockRejectedValue(new SyntaxError('Unexpected token'));
+      mockClient.projects.getProjects.mockRejectedValue(new SyntaxError('Unexpected token'));
 
       await expect(callTool('list')).rejects.toThrow('Failed to list tasks: Unexpected token');
     });
@@ -1528,7 +1551,7 @@ describe('Tasks Tool', () => {
     });
 
     it('should handle empty responses gracefully', async () => {
-      mockClient.tasks.getAllTasks.mockResolvedValue([]);
+      mockClient.projects.getProjects.mockResolvedValue([]);
 
       const result = await callTool('list');
       const markdown = result.content[0].text;
@@ -1537,7 +1560,7 @@ describe('Tasks Tool', () => {
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('list-tasks');
-      expect(tasksData.tasks).toEqual([]);
+      expect(parsed.getOperationMetadata().count).toBe('0');
     });
 
     it('should handle undefined optional fields', async () => {
