@@ -165,12 +165,22 @@ export function sanitizeString(value: string): string {
     // SQL injection patterns (narrow: only flag time-delay/blind injection, not plain English words)
     /(\b(WAITFOR\s+DELAY|SLEEP\s*\(|BENCHMARK\s*\(|DBMS_PIPE\.RECEIVE_MESSAGE)\b)/gi,
     /(\b(XP_|SP_)\w+)/gi,  // SQL Server extended procedures
+    // Boolean-based blind SQL injection (e.g. `' OR '1'='1`). Requires a quote immediately
+    // after OR/AND plus an `=` comparison, so it doesn't false-positive on ordinary English
+    // like "Fix bug or issue" or "Cost or budget = 500" (no quote follows OR/AND there).
+    /(\b(OR|AND)\b\s*["'][^"']*["']?\s*=\s*["']?[^"']*["']?)/gi,
 
     // HTML comments (XSS vector regardless of context)
     /<!--/gi,
 
     // Command injection patterns (more specific to avoid false positives)
-    // Removed the broad shell pattern to allow safe HTML tags that should be escaped instead of rejected
+    // The broad shell-metacharacter blocklist (`;&|`$(){}[]\'"*?<>~`) was removed because it
+    // rejected any string containing a bare quote or angle bracket. Generic, non-scripting
+    // HTML-like text (e.g. `<div class="x">`) is passed through unmodified: this boundary is a
+    // JSON API call, not an HTML render, so there is nothing to escape (see f2b0b93, which
+    // removed render-time HTML-escaping here for the same reason). Only constructs with actual
+    // scripting/DOM-execution vectors (script/iframe/style/svg tags, event handlers, dangerous
+    // protocols, etc.) are rejected above.
     /(\b(wget|curl|nc|netcat|telnet|ssh|ftp|sftp)\b)/gi,
     /(rm\s+-rf|del\s+\/s|format|fdisk|mkfs)/gi,
     /(>\s*\/dev\/null|2>&1|\|\|)/gi,
@@ -190,12 +200,13 @@ export function sanitizeString(value: string): string {
     /(\|\()([^)]*)(\)\|)/gi,
     /(!\()([^)]*)(\))/gi,
 
-    // NoSQL injection patterns
-    /(\$\w+\s*:)/gi,  // MongoDB operators like $gt, $lt, $where
-    /(\{\s*\$where\s*:)/gi,
-    /(\{\s*\$ne\s*:)/gi,
-    /(\{\s*\$gt\s*:)/gi,
-    /(\{\s*\$regex\s*:)/gi,
+    // NoSQL injection patterns. The optional `["']?` before the colon covers both the raw
+    // `$gt:` form and the quoted-JSON-key form (`"$gt":`) produced by e.g. JSON.stringify.
+    /(\$\w+\s*["']?\s*:)/gi,  // MongoDB operators like $gt, $lt, $where
+    /(\{\s*["']?\$where\s*["']?\s*:)/gi,
+    /(\{\s*["']?\$ne\s*["']?\s*:)/gi,
+    /(\{\s*["']?\$gt\s*["']?\s*:)/gi,
+    /(\{\s*["']?\$regex\s*["']?\s*:)/gi,
 
     // HTML5 dangerous attributes
     /formaction\s*=/gi,
