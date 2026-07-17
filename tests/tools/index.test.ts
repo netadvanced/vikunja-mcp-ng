@@ -56,6 +56,18 @@ jest.mock('../../src/tools/export', () => ({
   registerExportTool: jest.fn(),
 }));
 
+jest.mock('../../src/tools/notifications', () => ({
+  registerNotificationsTool: jest.fn(),
+}));
+
+jest.mock('../../src/tools/subscriptions', () => ({
+  registerSubscriptionsTool: jest.fn(),
+}));
+
+jest.mock('../../src/tools/reactions', () => ({
+  registerReactionsTool: jest.fn(),
+}));
+
 // Import mocked functions
 import { registerAuthTool } from '../../src/tools/auth';
 import { registerTasksTool } from '../../src/tools/tasks';
@@ -68,6 +80,9 @@ import { registerTemplatesTool } from '../../src/tools/templates';
 import { registerWebhooksTool } from '../../src/tools/webhooks';
 import { registerBatchImportTool } from '../../src/tools/batch-import';
 import { registerExportTool } from '../../src/tools/export';
+import { registerNotificationsTool } from '../../src/tools/notifications';
+import { registerSubscriptionsTool } from '../../src/tools/subscriptions';
+import { registerReactionsTool } from '../../src/tools/reactions';
 
 describe('Tool Registration', () => {
   let mockServer: jest.Mocked<McpServer>;
@@ -86,6 +101,9 @@ describe('Tool Registration', () => {
     'VIKUNJA_MCP_MODULE_TEMPLATES',
     'VIKUNJA_MCP_MODULE_EXPORT',
     'VIKUNJA_MCP_MODULE_BATCH_IMPORT',
+    'VIKUNJA_MCP_MODULE_NOTIFICATIONS',
+    'VIKUNJA_MCP_MODULE_SUBSCRIPTIONS',
+    'VIKUNJA_MCP_MODULE_REACTIONS',
     'VIKUNJA_MCP_MODULE_ADMIN',
     'VIKUNJA_MCP_MODULE_USER_DELETION',
     'VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT',
@@ -145,6 +163,9 @@ describe('Tool Registration', () => {
       expect(registerBatchImportTool).not.toHaveBeenCalled();
       expect(registerUsersTool).not.toHaveBeenCalled();
       expect(registerExportTool).not.toHaveBeenCalled();
+      expect(registerNotificationsTool).not.toHaveBeenCalled();
+      expect(registerSubscriptionsTool).not.toHaveBeenCalled();
+      expect(registerReactionsTool).not.toHaveBeenCalled();
     });
 
     it('should register all tools except users and export when using API token auth with clientFactory', () => {
@@ -183,6 +204,15 @@ describe('Tool Registration', () => {
 
       expect(registerBatchImportTool).toHaveBeenCalledTimes(1);
       expect(registerBatchImportTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerNotificationsTool).toHaveBeenCalledTimes(1);
+      expect(registerNotificationsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerSubscriptionsTool).toHaveBeenCalledTimes(1);
+      expect(registerSubscriptionsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerReactionsTool).toHaveBeenCalledTimes(1);
+      expect(registerReactionsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
 
       // These should NOT be called with API token auth (backward compatibility)
       expect(registerUsersTool).not.toHaveBeenCalled();
@@ -225,6 +255,15 @@ describe('Tool Registration', () => {
 
       expect(registerBatchImportTool).toHaveBeenCalledTimes(1);
       expect(registerBatchImportTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerNotificationsTool).toHaveBeenCalledTimes(1);
+      expect(registerNotificationsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerSubscriptionsTool).toHaveBeenCalledTimes(1);
+      expect(registerSubscriptionsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerReactionsTool).toHaveBeenCalledTimes(1);
+      expect(registerReactionsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
 
       // These SHOULD be called with JWT auth
       expect(registerUsersTool).toHaveBeenCalledTimes(1);
@@ -269,6 +308,15 @@ describe('Tool Registration', () => {
       expect(registerBatchImportTool).toHaveBeenCalledTimes(1);
       expect(registerBatchImportTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
 
+      expect(registerNotificationsTool).toHaveBeenCalledTimes(1);
+      expect(registerNotificationsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerSubscriptionsTool).toHaveBeenCalledTimes(1);
+      expect(registerSubscriptionsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerReactionsTool).toHaveBeenCalledTimes(1);
+      expect(registerReactionsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+
       // These should NOT be called when not authenticated
       expect(registerUsersTool).not.toHaveBeenCalled();
       expect(registerExportTool).not.toHaveBeenCalled();
@@ -294,6 +342,9 @@ describe('Tool Registration', () => {
         (registerTemplatesTool as jest.Mock).mock.invocationCallOrder[0],
         (registerWebhooksTool as jest.Mock).mock.invocationCallOrder[0],
         (registerBatchImportTool as jest.Mock).mock.invocationCallOrder[0],
+        (registerNotificationsTool as jest.Mock).mock.invocationCallOrder[0],
+        (registerSubscriptionsTool as jest.Mock).mock.invocationCallOrder[0],
+        (registerReactionsTool as jest.Mock).mock.invocationCallOrder[0],
         (registerUsersTool as jest.Mock).mock.invocationCallOrder[0],
         (registerExportTool as jest.Mock).mock.invocationCallOrder[0],
       ];
@@ -348,6 +399,35 @@ describe('Tool Registration', () => {
       expect(registerBatchImportTool).not.toHaveBeenCalled();
       // Untouched modules are still registered
       expect(registerProjectsTool).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not register notifications/subscriptions/reactions tools when disabled', () => {
+      process.env.VIKUNJA_MCP_MODULE_NOTIFICATIONS = 'false';
+      process.env.VIKUNJA_MCP_MODULE_SUBSCRIPTIONS = 'false';
+      process.env.VIKUNJA_MCP_MODULE_REACTIONS = 'false';
+      const mockClientFactory = { test: 'factory' };
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerNotificationsTool).not.toHaveBeenCalled();
+      expect(registerSubscriptionsTool).not.toHaveBeenCalled();
+      expect(registerReactionsTool).not.toHaveBeenCalled();
+      // Untouched modules are still registered
+      expect(registerWebhooksTool).toHaveBeenCalledTimes(1);
+    });
+
+    it('should register notifications/subscriptions/reactions tools with API-token auth (not JWT-gated)', () => {
+      const mockClientFactory = { test: 'factory' };
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+      registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+      expect(registerNotificationsTool).toHaveBeenCalledTimes(1);
+      expect(registerSubscriptionsTool).toHaveBeenCalledTimes(1);
+      expect(registerReactionsTool).toHaveBeenCalledTimes(1);
     });
 
     it('should register users/export tools when JWT-authenticated and their modules stay enabled by default', () => {

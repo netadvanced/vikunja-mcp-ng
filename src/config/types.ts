@@ -132,6 +132,9 @@ export const ModulesConfigSchema = z.object({
   templates: ModuleToggleSchema.default(true),
   export: ModuleToggleSchema.default(true),
   batchImport: ModuleToggleSchema.default(true),
+  notifications: ModuleToggleSchema.default(true),
+  subscriptions: ModuleToggleSchema.default(true),
+  reactions: ModuleToggleSchema.default(true),
 
   // Dangerous modules — deny-by-default. No tools implement these yet; the
   // keys are reserved so future work composes with this gating system.
