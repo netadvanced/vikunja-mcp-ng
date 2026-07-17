@@ -155,10 +155,13 @@ class SecureErrorHandler {
     }
 
     // Real Error instances and explicitly-thrown strings contribute their
-    // message to the output (consistent with transform()). Any other shape
-    // (plain objects, null, undefined, etc.) becomes "Unknown error" so that
-    // arbitrary upstream API payloads never leak into the user-visible MCP
-    // error surface.
+    // message to the output. Any other shape (numbers, plain objects, null,
+    // undefined, etc.) becomes "Unknown error" so that arbitrary upstream
+    // API payloads never leak into the user-visible MCP error surface. This
+    // intentionally differs from transform() (which does stringify numbers/
+    // booleans) - tests/tools/tasks-relations.test.ts and
+    // tests/utils/error-handler.test.ts both assert this stricter behavior
+    // for handleStatusCode specifically.
     let message: string;
     if (error instanceof Error) {
       message = error.message;
