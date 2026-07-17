@@ -192,6 +192,59 @@ describe('Auth Tool', () => {
       expect(mockAuthManager.disconnect).toHaveBeenCalled();
     });
 
+    it('should reject a bad JWT session and mention JWT specifically', async () => {
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
+        if (path === '/info') {
+          return { version: '1.2.3' };
+        }
+        throw new Error('HTTP 401 Unauthorized');
+      });
+
+      await expect(callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.bad.signature',
+      })).rejects.toThrow('the provided JWT token was rejected');
+
+      expect(mockAuthManager.disconnect).toHaveBeenCalled();
+    });
+
+    it('should handle non-Error values thrown by the /info round trip', async () => {
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
+        if (path === '/info') {
+          // eslint-disable-next-line @typescript-eslint/no-throw-literal
+          throw 'connection refused';
+        }
+        return [];
+      });
+
+      await expect(callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123',
+      })).rejects.toThrow('Could not reach a Vikunja server at https://vikunja.example.com: connection refused');
+    });
+
+    it('should omit serverVersion from the response when /info has no version field', async () => {
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
+        if (path === '/info') {
+          return { frontend_url: 'https://vikunja.example.com' };
+        }
+        return [];
+      });
+
+      const result = await callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123',
+      });
+
+      expect(result.content[0].text).not.toContain('serverVersion');
+    });
+
     it('should return already connected message when authenticating to same URL', async () => {
       // Mock getStatus to return authenticated
       mockAuthManager.getStatus.mockReturnValue({
@@ -479,6 +532,15 @@ describe('Auth Tool', () => {
       await expect(callTool('info')).rejects.toThrow(MCPError);
       await expect(callTool('info')).rejects.toThrow('Authentication required');
       expect(mockVikunjaRestRequest).not.toHaveBeenCalled();
+    });
+
+    it('should omit serverVersion metadata when the response has no version field', async () => {
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockVikunjaRestRequest.mockResolvedValue({ frontend_url: 'https://vikunja.example.com' });
+
+      const result = await callTool('info');
+
+      expect(result.content[0].text).not.toContain('serverVersion');
     });
   });
 
