@@ -141,8 +141,10 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
       const result = await callTool('list', { filter });
 
-      // Verify that only pagination parameters are passed to the API (client-side filtering)
+      // Server-side filtering is attempted first: the raw filter string is
+      // passed straight through to the API alongside pagination.
       expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
+        filter,
         page: 1,
         per_page: 1000,
       });
@@ -180,8 +182,10 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
       const result = await callTool('list', { filter });
 
-      // Should not pass filter to API (client-side filtering)
+      // Server-side filtering is attempted first: the raw filter string is
+      // passed straight through to the API alongside pagination.
       expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
+        filter,
         page: 1,
         per_page: 1000,
       });
@@ -209,6 +213,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       const result = await callTool('list', { projectId, filter });
 
       expect(mockClient.tasks.getProjectTasks).toHaveBeenCalledWith(projectId, {
+        filter,
         page: 1,
         per_page: 1000,
       });
@@ -232,6 +237,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       });
 
       expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
+        filter,
         page: 2,
         per_page: 20,
         sort_by: 'priority',
@@ -302,7 +308,9 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
         const result = await callTool('list', { filter });
 
-        expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith(expected);
+        // Server-side filtering is attempted first: the raw filter string is
+        // passed straight through to the API alongside pagination.
+        expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({ filter, ...expected });
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);
@@ -327,7 +335,10 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
         const result = await callTool('list', { filter });
 
+        // Server-side filtering is attempted first: the raw filter string is
+        // passed straight through to the API alongside pagination.
         expect(mockClient.tasks.getAllTasks).toHaveBeenCalledWith({
+          filter,
           page: 1,
           per_page: 1000,
         });
