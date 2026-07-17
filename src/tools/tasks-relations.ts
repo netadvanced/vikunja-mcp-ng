@@ -8,7 +8,7 @@ import { MCPError, ErrorCode, type StandardTaskResponse } from '../types';
 import { getClientFromContext } from '../client';
 import { logger } from '../utils/logger';
 import { validateId as validateSharedId } from '../utils/validation';
-import { wrapToolError } from '../utils/error-handler';
+import { handleStatusCodeError } from '../utils/error-handler';
 import type { RelationKind } from 'node-vikunja';
 import { formatAorpAsMarkdown, createStandardResponse } from '../utils/response-factory';
 
@@ -134,7 +134,11 @@ export async function handleRelationSubcommands(
           ],
         };
       } catch (error) {
-        throw wrapToolError(error, 'vikunja_tasks_relations', 'create task relation', `${args.id}-${args.otherTaskId}`);
+        // Re-throw MCPError instances (e.g. our own validation errors) without modification
+        if (error instanceof MCPError) {
+          throw error;
+        }
+        throw handleStatusCodeError(error, 'create task relation', `${args.id}-${args.otherTaskId}`);
       }
     }
 
@@ -206,7 +210,11 @@ export async function handleRelationSubcommands(
           ],
         };
       } catch (error) {
-        throw wrapToolError(error, 'vikunja_tasks_relations', 'remove task relation', `${args.id}-${args.otherTaskId}`);
+        // Re-throw MCPError instances (e.g. our own validation errors) without modification
+        if (error instanceof MCPError) {
+          throw error;
+        }
+        throw handleStatusCodeError(error, 'remove task relation', `${args.id}-${args.otherTaskId}`);
       }
     }
 
@@ -253,7 +261,11 @@ export async function handleRelationSubcommands(
           ],
         };
       } catch (error) {
-        throw wrapToolError(error, 'vikunja_tasks_relations', 'get task relations', args.id);
+        // Re-throw MCPError instances (e.g. our own validation errors) without modification
+        if (error instanceof MCPError) {
+          throw error;
+        }
+        throw handleStatusCodeError(error, 'get task relations', args.id);
       }
     }
 

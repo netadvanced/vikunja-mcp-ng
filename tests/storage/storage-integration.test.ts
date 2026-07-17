@@ -250,7 +250,7 @@ describe('Storage Integration', () => {
       await storageManager.clearAll();
     });
 
-    it('should migrate data from memory to persistent storage', async () => {
+    it('should be a no-op and leave data in memory storage (persistent storage was removed)', async () => {
       // Create memory storage with test data
       const migrateStorage1 = await storageManager.getStorage('migrate-session-1');
       const migrateStorage2 = await storageManager.getStorage('migrate-session-2');
@@ -303,9 +303,6 @@ describe('Storage Integration', () => {
 
       expect(filters2[0].name).toBe('Memory Filter 3');
       expect(filters2[0].projectId).toBe(123);
-
-      await persistentStorage1.close();
-      await persistentStorage2.close();
     });
 
     it('should handle empty memory storage gracefully', async () => {
@@ -366,7 +363,7 @@ describe('Storage Integration', () => {
 
       // Verify data remains in memory storage (no migration in simplified version)
       const verifyMetadataStorage = await storageManager.getStorage('metadata-session');
-      const filters = await memoryStorage.list();
+      const filters = await verifyMetadataStorage.list();
 
       expect(filters).toHaveLength(1);
       const filter = filters[0];
