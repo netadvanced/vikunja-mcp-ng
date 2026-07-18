@@ -226,6 +226,9 @@ const USERS: ClassificationTable = {
   settings: 'read',
   'update-settings': 'write',
   timezones: 'read',
+  'get-avatar': 'read',
+  'set-avatar': 'write',
+  'upload-avatar': 'write',
 };
 
 const FILTERS: ClassificationTable = {

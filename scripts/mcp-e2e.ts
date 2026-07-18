@@ -859,6 +859,37 @@ async function testNotifications(h: McpHarness): Promise<void> {
   assertOk('list notifications', list);
 }
 
+/**
+ * `vikunja_users` (JWT-only) — including its `get-avatar`/`set-avatar`/
+ * `upload-avatar` subcommands (G5, docs/ENDPOINT-TAIL-RETRIAGE.md) — is not
+ * registered at all under this harness's API-token (`tk_*`) auth; see
+ * `EXPECTED_TOOLS_ABSENT`/`testToolList` above, and the same rationale
+ * `testAssignees` documents for resolving the self user id via
+ * `search-project-users` instead of `vikunja_users`. Calling an
+ * unregistered tool is an MCP-protocol-level error (its exact shape isn't
+ * part of this harness's contract with the SDK), so this soft-skips rather
+ * than asserting one. If the call unexpectedly *succeeds*, that means
+ * `vikunja_users` got registered anyway — a real gating regression — so
+ * that path is a hard failure, not a skip.
+ */
+async function testAvatarSettings(h: McpHarness): Promise<void> {
+  log('\n[Avatar settings (soft-skip: vikunja_users is JWT-only)]');
+  try {
+    await h.call('vikunja_users', { subcommand: 'get-avatar' });
+    fail(
+      'avatar settings gating',
+      'vikunja_users.get-avatar unexpectedly succeeded under API-token auth — JWT-only gating regression?',
+    );
+    return;
+  } catch {
+    // Expected: the tool isn't registered under tk_* auth.
+  }
+  skip(
+    'avatar settings (get-avatar/set-avatar/upload-avatar)',
+    "vikunja_users is JWT-only; this harness runs under API-token auth so it can't exercise these subcommands",
+  );
+}
+
 async function testSavedFilters(h: McpHarness, ctx: FlowContext): Promise<void> {
   log('\n[Saved filters]');
   const title = `${NAME_PREFIX}filter`;
@@ -991,6 +1022,7 @@ async function main(): Promise<void> {
       await testReminders(h, ctx);
       await testKanban(h, ctx);
       await testNotifications(h);
+      await testAvatarSettings(h);
       await testSavedFilters(h, ctx);
     } finally {
       await finalCleanup(h, ctx);
