@@ -2901,6 +2901,36 @@ describe('Tasks Tool', () => {
       expect(markdown).toContain('**Results:** 3 item(s)');
     });
 
+    // Regression test for netadvanced/vikunja-mcp-ng#116: concurrent creates
+    // hit SQLite "database is locked" 500s, whose retries re-storm the same
+    // contended pool and trip the shared circuit breaker. Creates must
+    // never overlap.
+    it('serializes create writes so no two PUT /projects/{id}/tasks calls are ever in flight at once', async () => {
+      let inFlight = 0;
+      let peakInFlight = 0;
+      mockClient.tasks.createTask.mockImplementation(async (projectId, task) => {
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        // Yield across a couple of microtask/macrotask turns so any
+        // accidental concurrency would be observable rather than the two
+        // calls happening to run back-to-back synchronously.
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+        inFlight -= 1;
+        const id = mockClient.tasks.createTask.mock.calls.length;
+        return { ...task, id, project_id: projectId };
+      });
+
+      const tasks = Array.from({ length: 12 }, (_, i) => ({ title: `Serial ${i + 1}` }));
+      const result = await callTool('bulk-create', { projectId: 1, tasks });
+
+      expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(12);
+      expect(peakInFlight).toBe(1);
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('Successfully created 12 tasks');
+    });
+
     it('should require projectId', async () => {
       await expect(
         callTool('bulk-create', {

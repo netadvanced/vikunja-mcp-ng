@@ -42,7 +42,29 @@ type BulkAssignees = components['schemas']['models.BulkAssignees'];
 const processors = {
   update: new BatchProcessor({ maxConcurrency: 5, batchSize: 10, enableMetrics: true, batchDelay: 0 }),
   delete: new BatchProcessor({ maxConcurrency: 3, batchSize: 5, enableMetrics: true, batchDelay: 100 }),
-  create: new BatchProcessor({ maxConcurrency: 8, batchSize: 15, enableMetrics: true, batchDelay: 0 }),
+  // Creates are WRITES and must run sequentially (fixes
+  // netadvanced/vikunja-mcp-ng#116 — supersedes the "safe-as-is" verdict PR
+  // #97 gave this exact call site). On SQLite-backed Vikunja (the default
+  // deployment), N concurrent task creates 500 with "database is locked";
+  // the HTTP body is a bare "Internal Server Error" so no message-based
+  // classifier can see the lock. The REST layer's 5xx retry then re-enters
+  // the still-contended pool (bounded at 8, but each of up to 3 retry
+  // attempts re-fires into that same 8-wide pool), amplifying the storm
+  // instead of draining it, and the resulting failure burst trips the
+  // shared `vikunja-rest-projects-tasks` circuit breaker — after which
+  // EVERY create, including entire subsequent bulk-create calls, fails
+  // instantly with "Breaker is open" until the reset timeout. Live repro on
+  // 2.3.0 (netadvanced/vikunja-mcp-ng#116, reported by @angusmaul): three
+  // consecutive 12-task bulk-creates at maxConcurrency 8 yielded 2/12,
+  // 0/12, 0/12. Sequential creates never storm the lock, so the existing
+  // 5xx retry (src/utils/vikunja-rest.ts's defaultRestShouldRetry) absorbs
+  // the odd transient 500 and the breaker stays closed. Same
+  // "bounded/sequential writes" rule the #97 sweep applied to its six
+  // serialized assignee-write call sites — bounded-at-8 turned out not to
+  // be enough for the create verb specifically, because it's the one bulk
+  // write path with no way to detect (via the response body) which retries
+  // are safe no-ops vs. genuine failures.
+  create: new BatchProcessor({ maxConcurrency: 1, batchSize: 15, enableMetrics: true, batchDelay: 0 }),
 };
 
 // ==================== VALIDATION WRAPPERS ====================
