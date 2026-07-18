@@ -153,6 +153,12 @@ export const ApplicationConfigSchema = z.object({
   rateLimiting: RateLimitConfigSchema.default({}),
   featureFlags: FeatureFlagsConfigSchema.default({}),
   modules: ModulesConfigSchema.default({}),
+  // Global read-only safety mode. When true, every write/destructive
+  // subcommand across every tool is rejected at dispatch (see
+  // src/utils/read-only.ts) — read subcommands continue to work normally.
+  // Config file key: `readOnly`. Env override: `VIKUNJA_MCP_READ_ONLY`
+  // (env always wins over the config file, per standard layering).
+  readOnly: z.boolean().default(false),
 });
 
 export type ApplicationConfig = z.infer<typeof ApplicationConfigSchema>;

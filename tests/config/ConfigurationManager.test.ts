@@ -39,6 +39,7 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_MODULE_ADMIN;
     delete process.env.VIKUNJA_MCP_MODULE_USER_DELETION;
     delete process.env.VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT;
+    delete process.env.VIKUNJA_MCP_READ_ONLY;
 
     // Reset singleton
     ConfigurationManager.reset();
@@ -561,6 +562,44 @@ describe('ConfigurationManager', () => {
       await expect(
         ConfigurationManager.getInstance().getConfiguration()
       ).rejects.toThrow(ConfigurationError);
+    });
+  });
+
+  describe('Global Read-Only Mode', () => {
+    it('defaults to false when neither the config file nor the env var set it', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.readOnly).toBe(false);
+      expect(ConfigurationManager.getInstance().isReadOnly()).toBe(false);
+    });
+
+    it('is settable from the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ readOnly: true }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.readOnly).toBe(true);
+      expect(ConfigurationManager.getInstance().isReadOnly()).toBe(true);
+    });
+
+    it('is settable from VIKUNJA_MCP_READ_ONLY when there is no config file', async () => {
+      process.env.VIKUNJA_MCP_READ_ONLY = 'true';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.readOnly).toBe(true);
+    });
+
+    it('lets VIKUNJA_MCP_READ_ONLY win over a config file value (env always wins)', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ readOnly: true }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+      process.env.VIKUNJA_MCP_READ_ONLY = 'false';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.readOnly).toBe(false);
     });
   });
 

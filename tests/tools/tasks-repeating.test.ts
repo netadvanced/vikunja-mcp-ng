@@ -147,11 +147,12 @@ describe('Tasks Tool - Repeating Tasks', () => {
       'vikunja_tasks',
       'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead.',
       expect.any(Object),
+      expect.any(Object), // ToolAnnotations
       expect.any(Function),
     );
     const calls = mockServer.tool.mock.calls;
     if (calls.length > 0 && calls[0] && calls[0].length > 3) {
-      toolHandler = calls[0][3];
+      toolHandler = calls[0][calls[0].length - 1];
     } else {
       throw new Error('Tool handler not found');
     }

@@ -13,6 +13,7 @@ import { logger } from '../utils/logger';
 import { setTaskLabels } from '../utils/label-bulk';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
@@ -54,10 +55,13 @@ interface TemplateData {
 export function registerTemplatesTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_templates',
-    'Manage task templates for creating consistent tasks and project structures. ' +
-      'IMPORTANT: templates are stored in memory only, scoped to this server process — ' +
-      'they are not persisted to Vikunja and are lost on server restart. Durable ' +
-      'storage is tracked as future work.',
+    withReadOnlyNote(
+      'vikunja_templates',
+      'Manage task templates for creating consistent tasks and project structures. ' +
+        'IMPORTANT: templates are stored in memory only, scoped to this server process — ' +
+        'they are not persisted to Vikunja and are lost on server restart. Durable ' +
+        'storage is tracked as future work.',
+    ),
     {
       subcommand: z.enum(['create', 'list', 'get', 'update', 'delete', 'instantiate']),
       // Template fields
@@ -71,6 +75,7 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
       parentProjectId: z.number().optional(),
       variables: z.record(z.string(), z.string()).optional(),
     },
+    getToolAnnotations('vikunja_templates'),
     async (args) => {
       try {
         // Check authentication
@@ -80,6 +85,8 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
             'Authentication required. Please use vikunja_auth.connect first.',
           );
         }
+
+        assertWriteAllowed('vikunja_templates', args.subcommand);
 
         const storage = await getSessionStorage(authManager);
 

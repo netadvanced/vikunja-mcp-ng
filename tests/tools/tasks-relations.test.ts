@@ -71,8 +71,10 @@ function createMockServer(): McpServer & { executeTool: (name: string, args: unk
   const registeredTools = new Map<string, any>();
 
   const mockServer = {
-    tool: jest.fn((name: string, description: string, schema: any, handler: any) => {
-      registeredTools.set(name, handler);
+    // The handler is always the last argument (server.tool now optionally
+    // takes a ToolAnnotations object between the schema and the handler).
+    tool: jest.fn((name: string, ...rest: any[]) => {
+      registeredTools.set(name, rest[rest.length - 1]);
     }),
     // Helper to execute a tool
     executeTool: async (name: string, args: unknown) => {
