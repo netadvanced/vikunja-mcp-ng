@@ -1,6 +1,19 @@
 /**
  * Labels Tool
  * Handles label operations for Vikunja
+ *
+ * Migrated off node-vikunja (Wave D domain migration, tracking issue #28)
+ * onto `vikunjaRestRequest` + types generated from the vendored OpenAPI
+ * spec. See docs/ENDPOINT-PLAYBOOK.md §6.
+ *
+ * Endpoints (verified against docs/vikunja-openapi.json):
+ *   - GET    /labels       list
+ *   - PUT    /labels       create
+ *   - GET    /labels/{id}  get
+ *   - PUT    /labels/{id}  update (models.Label — not full-model-replace;
+ *                          the label service's `Update` handler only applies
+ *                          fields present on the incoming struct)
+ *   - DELETE /labels/{id}  delete
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -10,12 +23,36 @@ import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
 import { validateAndConvertId } from '../utils/validation';
 import { wrapToolError } from '../utils/error-handler';
-import { getClientFromContext } from '../client';
-import type { Label } from 'node-vikunja';
-import type { TypedVikunjaClient } from '../types/node-vikunja-extended';
+import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
+import type { components } from '../types/generated/vikunja-openapi';
+// `ResponseData.labels` (src/utils/simple-response.ts) is still typed
+// against this simplified local shape (`title: string`, not optional) — the
+// REST-sourced `VikunjaLabel[]` below is cast to it at the one call site
+// that populates that field (list) since the API always returns a title in
+// practice even though the spec marks it optional.
+import type { Label as ResponseLabel } from '../types/vikunja';
+
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
+// docs/API-SPEC.md, replacing node-vikunja's `Label` type.
+type VikunjaLabel = components['schemas']['models.Label'];
 
 // Use shared validateAndConvertId from utils/validation
+
+/**
+ * Re-throws a REST-layer 404 (`vikunjaRestRequest` throws `MCPError` with
+ * `details.statusCode`, not a bare `.statusCode` property) as a friendly
+ * "Label with ID X not found" — matching the message the node-vikunja-backed
+ * implementation produced via its own thrown `.statusCode`-bearing errors.
+ * Everything else is rethrown/wrapped unchanged by the caller's
+ * `wrapToolError` fallback.
+ */
+function rethrowLabelNotFound(error: unknown, id: number): never {
+  if (error instanceof MCPError && error.details?.statusCode === 404) {
+    throw new MCPError(ErrorCode.NOT_FOUND, `Label with ID ${id} not found`);
+  }
+  throw error;
+}
 
 export function registerLabelsTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
@@ -49,28 +86,36 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
         );
       }
 
-      const client = await getClientFromContext() as TypedVikunjaClient;
-
       const subcommand = args.subcommand;
 
       try {
 
         switch (subcommand) {
           case 'list': {
-            const params: Record<string, string | number> = {};
-            if (args.page) params.page = args.page;
-            if (args.perPage) params.per_page = args.perPage;
-            if (args.search) params.s = args.search;
+            const params = new URLSearchParams();
+            if (args.page) params.set('page', String(args.page));
+            if (args.perPage) params.set('per_page', String(args.perPage));
+            if (args.search) params.set('s', args.search);
+            const query = params.toString();
 
-            const labelsResult = await client.labels.getLabels(params);
+            const labelsResult = await vikunjaRestRequest<VikunjaLabel[]>(
+              authManager,
+              'GET',
+              `/labels${query ? `?${query}` : ''}`,
+            );
             // Handle null/undefined response from API
             const labels = labelsResult ?? [];
+
+            const paramsMetadata: Record<string, string | number> = {};
+            if (args.page) paramsMetadata.page = args.page;
+            if (args.perPage) paramsMetadata.per_page = args.perPage;
+            if (args.search) paramsMetadata.s = args.search;
 
             const response = createStandardResponse(
               'list-labels',
               `Retrieved ${labels.length} label${labels.length !== 1 ? 's' : ''}`,
-              { labels },
-              { count: labels.length, params },
+              { labels: labels as unknown as ResponseLabel[] },
+              { count: labels.length, params: paramsMetadata },
             );
 
             return {
@@ -89,7 +134,12 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
             }
             validateAndConvertId(args.id, 'id');
 
-            const label = await client.labels.getLabel(args.id);
+            let label: VikunjaLabel;
+            try {
+              label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'GET', `/labels/${args.id}`);
+            } catch (error) {
+              rethrowLabelNotFound(error, args.id);
+            }
 
             const response = createStandardResponse(
               'get-label',
@@ -112,13 +162,13 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Title is required');
             }
 
-            const labelData: Partial<Label> = {
+            const labelData: VikunjaLabel = {
               title: args.title,
             };
             if (args.description) labelData.description = args.description;
             if (args.hexColor) labelData.hex_color = args.hexColor;
 
-            const label = await client.labels.createLabel(labelData as Label);
+            const label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'PUT', '/labels', labelData);
 
             const response = createStandardResponse(
               'create-label',
@@ -150,12 +200,17 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
               );
             }
 
-            const updates: Partial<Label> = {};
+            const updates: VikunjaLabel = {};
             if (args.title) updates.title = args.title;
             if (args.description !== undefined) updates.description = args.description;
             if (args.hexColor) updates.hex_color = args.hexColor;
 
-            const label = await client.labels.updateLabel(args.id, updates as Label);
+            let label: VikunjaLabel;
+            try {
+              label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'PUT', `/labels/${args.id}`, updates);
+            } catch (error) {
+              rethrowLabelNotFound(error, args.id);
+            }
 
             const response = createStandardResponse(
               'update-label',
@@ -180,7 +235,12 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
             }
             validateAndConvertId(args.id, 'id');
 
-            const result = await client.labels.deleteLabel(args.id);
+            let result: unknown;
+            try {
+              result = await vikunjaRestRequest(authManager, 'DELETE', `/labels/${args.id}`);
+            } catch (error) {
+              rethrowLabelNotFound(error, args.id);
+            }
 
             const response = createStandardResponse('delete-label', `Label deleted successfully`, {
               result,
