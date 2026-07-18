@@ -46,11 +46,11 @@ export const AssigneeOperationsService = {
       // (POST /tasks/{taskID}/assignees/bulk, models.BulkAssignees): it
       // REPLACES the whole assignee list rather than adding to it, so a bulk
       // call would silently unassign everyone instead of adding users
-      // (upstream issue #15). The per-user PUT matches Vikunja's real
-      // additive single-assign model. Sequential on purpose (post-#89
-      // pattern sweep, mirrors removeUsersFromTask below): concurrent
-      // per-user writes to the same task risk "database is locked" 500s on
-      // SQLite-backed instances.
+      // (democratize-technology/vikunja-mcp#15). The per-user PUT matches
+      // Vikunja's real additive single-assign model. Sequential on purpose
+      // (post-#89 pattern sweep, mirrors removeUsersFromTask below):
+      // concurrent per-user writes to the same task risk "database is
+      // locked" 500s on SQLite-backed instances.
       for (const userId of assigneeIds) {
         await withRetry(
           () =>

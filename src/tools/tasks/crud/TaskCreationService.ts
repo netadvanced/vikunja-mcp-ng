@@ -296,7 +296,8 @@ async function addAssigneesToTask(authManager: AuthManager, taskId: number, assi
     // /tasks/{taskID}/assignees, body { user_id }, models.TaskAssginee) rather
     // than the bulk endpoint (POST .../assignees/bulk), which REPLACES the
     // entire assignee list — a bulk call would silently unassign everyone
-    // (upstream issue #15). Sequential on purpose (post-#89 pattern sweep):
+    // (democratize-technology/vikunja-mcp#15). Sequential on purpose
+    // (post-#89 pattern sweep):
     // concurrent per-user writes to the same task risk "database is locked"
     // 500s on SQLite-backed instances, same class as the bulk-update
     // assignee-restore fix.

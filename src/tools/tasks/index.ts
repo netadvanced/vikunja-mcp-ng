@@ -38,6 +38,8 @@ import { setTaskBucket } from './buckets';
 import { setTaskPosition } from './position';
 import { getTaskByIndex } from './by-index';
 import { createSubtask, listSubtasks } from './subtasks';
+import { duplicateTask } from './duplicate';
+import { markTaskRead } from './mark-read';
 
 
 /**
@@ -132,9 +134,11 @@ export function registerTasksTool(
     'vikunja_tasks',
     withReadOnlyNote(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks). ' +
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks, duplicate, mark-read). ' +
         'download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. ' +
-        'create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5).',
+        'create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). ' +
+        'duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). ' +
+        'mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
     ),
     {
       subcommand: z.enum([
@@ -169,6 +173,8 @@ export function registerTasksTool(
         'get-by-index',
         'create-subtask',
         'list-subtasks',
+        'duplicate',
+        'mark-read',
       ]),
       // Task creation/update fields
       title: z.string().optional(),
@@ -397,6 +403,12 @@ export function registerTasksTool(
 
           case 'list-subtasks':
             return listSubtasks(args as Parameters<typeof listSubtasks>[0], authManager);
+
+          case 'duplicate':
+            return duplicateTask(args as Parameters<typeof duplicateTask>[0], authManager);
+
+          case 'mark-read':
+            return markTaskRead(args as Parameters<typeof markTaskRead>[0], authManager);
 
           default:
             throw new MCPError(

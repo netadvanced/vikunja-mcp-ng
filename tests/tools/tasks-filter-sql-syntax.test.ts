@@ -164,7 +164,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
     // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5).',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
       expect.any(Object),
       expect.any(Object), // ToolAnnotations
       expect.any(Function),

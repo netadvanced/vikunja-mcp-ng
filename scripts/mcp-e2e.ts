@@ -693,6 +693,31 @@ async function testTasks(h: McpHarness, ctx: FlowContext): Promise<void> {
       );
     }
   }
+
+  // duplicate (PUT /tasks/{taskID}/duplicate, no body) — copies the task
+  // (labels, assignees, attachments, reminders) into the same project.
+  // Cleanup: the duplicate lives in ctx.projectId, so the project-delete
+  // step at the end of the run cleans it up too; no dedicated delete here.
+  const duplicate = await h.call('vikunja_tasks', { subcommand: 'duplicate', id: ctx.taskId });
+  if (assertOk('duplicate task', duplicate)) {
+    const duplicatedTaskId = extractId(duplicate.text);
+    assertStep(
+      'duplicate task response reports a new task id distinct from the source',
+      duplicatedTaskId !== undefined && duplicatedTaskId !== ctx.taskId,
+      duplicate.text.slice(0, 300),
+    );
+  }
+
+  // mark-read (POST /tasks/{projecttask}/read) — removes the current
+  // user's unread-status entry for the task; no new resource, no cleanup.
+  const markRead = await h.call('vikunja_tasks', { subcommand: 'mark-read', id: ctx.taskId });
+  if (assertOk('mark-read task', markRead)) {
+    assertStep(
+      'mark-read response confirms the task id',
+      markRead.text.includes(String(ctx.taskId)),
+      markRead.text.slice(0, 300),
+    );
+  }
 }
 
 async function testLabels(h: McpHarness, ctx: FlowContext): Promise<void> {
