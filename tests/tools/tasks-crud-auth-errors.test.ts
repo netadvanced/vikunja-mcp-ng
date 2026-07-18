@@ -4,15 +4,19 @@
  * to achieve 95%+ test coverage requirement
  */
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { createTask, getTask, updateTask, deleteTask } from '../../src/tools/tasks/crud';
 import { MCPError, ErrorCode } from '../../src/types';
 import type { MockVikunjaClient } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
 
-// Mock the client module
+// Mock the client module. getAuthManagerFromContext is used by
+// setTaskLabels (src/utils/label-bulk.ts, migrated to direct REST) — any
+// test here that updates a task's labels needs both this and a mocked
+// global fetch (see beforeEach below).
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
 }));
 
 // Mock logger to suppress output during tests
@@ -25,18 +29,17 @@ jest.mock('../../src/utils/logger', () => ({
   },
 }));
 
-// Mock retry utility to speed up tests but preserve circuit breaker registry
+// Mock retry utility to speed up tests but preserve everything else (real
+// circuit breaker registry/createCircuitBreaker/RETRY_CONFIG) — the direct-
+// REST helper (src/utils/vikunja-rest.ts), now exercised via setTaskLabels,
+// also imports createCircuitBreaker/isRetryableError from this module, so a
+// partial mock missing them breaks REST calls with
+// "createCircuitBreaker is not a function".
 jest.mock('../../src/utils/retry', () => {
   const actual = jest.requireActual('../../src/utils/retry');
   return {
+    ...actual,
     withRetry: jest.fn().mockImplementation((fn) => fn()),
-    RETRY_CONFIG: {
-      AUTH_ERRORS: {
-        maxRetries: 3,
-      },
-    },
-    // Preserve the real circuit breaker registry for test isolation
-    circuitBreakerRegistry: actual.circuitBreakerRegistry,
   };
 });
 
@@ -45,7 +48,9 @@ import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 describe('Tasks CRUD - Authentication Error Handling', () => {
   let mockClient: MockVikunjaClient;
-  const { getClientFromContext } = require('../../src/client');
+  let fetchMock: jest.Mock;
+  let originalFetch: typeof fetch;
+  const { getClientFromContext, getAuthManagerFromContext } = require('../../src/client');
 
   // Create authentication errors with proper structure
   const createAuthError = (status: number, message?: string): Error & { status: number } => {
@@ -83,6 +88,27 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
     } as any;
 
     getClientFromContext.mockResolvedValue(mockClient);
+
+    // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
+    // helper rather than mockClient.tasks.updateTaskLabels — provide a
+    // session and a default-success global fetch so incidental label
+    // updates in these CRUD tests keep working. Tests that specifically
+    // exercise label-path auth errors override fetchMock explicitly.
+    getAuthManagerFromContext.mockResolvedValue({
+      getSession: () => ({ apiUrl: 'https://mock.vikunja.test', apiToken: 'mock-token' }),
+    });
+    originalFetch = globalThis.fetch;
+    fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: jest.fn(async () => JSON.stringify({ labels: [] })),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   describe('createTask authentication errors', () => {
@@ -230,8 +256,12 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       mockClient.tasks.updateTask.mockResolvedValue(mockTask);
       
       // Mock label update failure with 401 auth error
-      const authError = createAuthError(401, 'Unauthorized to update labels');
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(authError);
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        text: jest.fn(async () => 'Unauthorized to update labels'),
+      } as unknown as Response);
 
       await expect(
         updateTask({
@@ -259,9 +289,13 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
       mockClient.tasks.updateTask.mockResolvedValue(mockTask);
       
-      // Mock label update failure with 403 Axios-style auth error
-      const authError = createAxiosAuthError(403, 'Forbidden to update labels');
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(authError);
+      // Mock label update failure with a 403 auth error
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        text: jest.fn(async () => 'Forbidden to update labels'),
+      } as unknown as Response);
 
       await expect(
         updateTask({
@@ -428,9 +462,10 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
       mockClient.tasks.updateTask.mockResolvedValue(mockTask);
       
-      // Mock label update failure with non-auth error
-      const nonAuthError = new Error('Database connection failed');
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(nonAuthError);
+      // Mock label update failure with a non-auth (network-level) error —
+      // persistent rejection since the REST helper retries transient
+      // network failures.
+      fetchMock.mockRejectedValue(new Error('Database connection failed'));
 
       await expect(
         updateTask({

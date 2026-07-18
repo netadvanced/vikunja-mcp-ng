@@ -3,15 +3,20 @@
  * Targeting lines: 209-219, 279, 281, 363
  */
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { createTask, getTask, updateTask, deleteTask } from '../../src/tools/tasks/crud';
 import { MCPError, ErrorCode } from '../../src/types';
 import type { MockVikunjaClient } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
-// Mock the client module
+// Mock the client module. getAuthManagerFromContext is used by
+// setTaskLabels (src/utils/label-bulk.ts, migrated to direct REST) — any
+// test here that updates a task's labels needs both this and a mocked
+// global fetch (see beforeEach below).
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
 }));
 
 // Mock logger to suppress output during tests
@@ -26,7 +31,9 @@ jest.mock('../../src/utils/logger', () => ({
 
 describe('Tasks CRUD - Final Coverage', () => {
   let mockClient: MockVikunjaClient;
-  const { getClientFromContext } = require('../../src/client');
+  let fetchMock: jest.Mock;
+  let originalFetch: typeof fetch;
+  const { getClientFromContext, getAuthManagerFromContext } = require('../../src/client');
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -46,6 +53,27 @@ describe('Tasks CRUD - Final Coverage', () => {
     } as any;
 
     getClientFromContext.mockResolvedValue(mockClient);
+
+    // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
+    // helper rather than mockClient.tasks.updateTaskLabels — provide a
+    // session and a default-success global fetch so incidental label
+    // updates in these CRUD tests keep working.
+    getAuthManagerFromContext.mockResolvedValue({
+      getSession: () => ({ apiUrl: 'https://mock.vikunja.test', apiToken: 'mock-token' }),
+    });
+    originalFetch = globalThis.fetch;
+    fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: jest.fn(async () => JSON.stringify({ labels: [] })),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    circuitBreakerRegistry.clear();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   describe('getTask success path (lines 209-219)', () => {

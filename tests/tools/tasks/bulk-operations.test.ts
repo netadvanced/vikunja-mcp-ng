@@ -2,12 +2,12 @@
  * Tests for bulk operations
  */
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { bulkUpdateTasks, bulkDeleteTasks, bulkCreateTasks } from '../../../src/tools/tasks/bulk-operations';
-import { getClientFromContext } from '../../../src/client';
+import { getClientFromContext, getAuthManagerFromContext } from '../../../src/client';
 import { MCPError, ErrorCode } from '../../../src/types';
 import { isAuthenticationError } from '../../../src/utils/auth-error-handler';
-import { withRetry } from '../../../src/utils/retry';
+import { withRetry, createCircuitBreaker } from '../../../src/utils/retry';
 import { parseMarkdown } from '../../utils/markdown';
 
 jest.mock('../../../src/client');
@@ -30,11 +30,40 @@ describe('Bulk operations', () => {
     },
   };
 
+  // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
+  // helper (vikunjaRestRequest) rather than mockClient.tasks.updateTaskLabels.
+  // This file fully auto-mocks src/utils/retry (jest.mock with no factory),
+  // so vikunjaRestRequest's own createCircuitBreaker/withRetry calls need
+  // explicit implementations too, not just the outer withRetry wrapping
+  // setTaskLabels itself — otherwise `createCircuitBreaker(...)` returns
+  // undefined and `breaker.fire(...)` throws.
+  let fetchMock: jest.Mock;
+  let originalFetch: typeof fetch;
+
   beforeEach(() => {
     jest.clearAllMocks();
     (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
     (isAuthenticationError as jest.Mock).mockReturnValue(false);
     (withRetry as jest.Mock).mockImplementation((fn) => fn());
+    (createCircuitBreaker as jest.Mock).mockImplementation((action: (...args: unknown[]) => unknown) => ({
+      fire: (...args: unknown[]) => action(...args),
+    }));
+
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue({
+      getSession: () => ({ apiUrl: 'https://mock.vikunja.test', apiToken: 'mock-token' }),
+    });
+    originalFetch = globalThis.fetch;
+    fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: jest.fn(async () => JSON.stringify({ labels: [] })),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   describe('bulkUpdateTasks', () => {
@@ -347,28 +376,34 @@ describe('Bulk operations', () => {
       it('should set labels via the field-preserving fallback path', async () => {
         mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'Task 1' });
         mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'Task 1' });
-        mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'labels', value: [3, 8] });
 
         // labels must never go through the native /tasks/bulk endpoint
         expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
-        expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-          labels: [{ id: 3 }, { id: 8 }],
-        });
+        expect(fetchMock).toHaveBeenCalledWith(
+          'https://mock.vikunja.test/api/v1/tasks/1/labels/bulk',
+          expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ labels: [{ id: 3 }, { id: 8 }] }),
+          }),
+        );
         expect(result.content[0].text).toContain('## ✅ Success');
       });
 
       it('should coerce a stringified labels array', async () => {
         mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'Task 1' });
         mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'Task 1' });
-        mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'labels', value: '[3, 8]' });
 
-        expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-          labels: [{ id: 3 }, { id: 8 }],
-        });
+        expect(fetchMock).toHaveBeenCalledWith(
+          'https://mock.vikunja.test/api/v1/tasks/1/labels/bulk',
+          expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ labels: [{ id: 3 }, { id: 8 }] }),
+          }),
+        );
         expect(result.content[0].text).toContain('## ✅ Success');
       });
 
@@ -584,7 +619,6 @@ describe('Bulk operations', () => {
         const mockTask = { id: 1, title: 'Test Task', project_id: 1 };
 
         mockClient.tasks.createTask.mockResolvedValue(mockTask);
-        mockClient.tasks.updateTaskLabels.mockResolvedValue({});
         mockClient.tasks.assignUserToTask.mockResolvedValue({});
         mockClient.tasks.getTask.mockResolvedValue({
           ...mockTask,
@@ -601,9 +635,13 @@ describe('Bulk operations', () => {
           }]
         });
 
-        expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-          labels: [{ id: 1 }],
-        });
+        expect(fetchMock).toHaveBeenCalledWith(
+          'https://mock.vikunja.test/api/v1/tasks/1/labels/bulk',
+          expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ labels: [{ id: 1 }] }),
+          }),
+        );
         // Additive per-user assign, not the destructive bulk endpoint (upstream #15)
         expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
         expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
