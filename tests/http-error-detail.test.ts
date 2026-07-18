@@ -11,10 +11,13 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { extractHttpErrorDetail, extractHttpStatus } from '../src/utils/http-error-detail';
 import { updateTask } from '../src/tools/tasks/crud/TaskUpdateService';
 import { getClientFromContext } from '../src/client';
+import { vikunjaRestRequest } from '../src/utils/vikunja-rest';
 import { isAuthenticationError } from '../src/utils/auth-error-handler';
 import { MCPError } from '../src/types';
+import type { AuthManager } from '../src/auth/AuthManager';
 
 jest.mock('../src/client');
+jest.mock('../src/utils/vikunja-rest');
 jest.mock('../src/utils/auth-error-handler');
 jest.mock('../src/utils/logger');
 
@@ -107,9 +110,14 @@ describe('updateTaskLabels surfaces real HTTP status', () => {
     },
   } as Record<string, Record<string, jest.Mock>>;
 
+  const mockAuthManager = {} as AuthManager;
+
   beforeEach(() => {
     jest.clearAllMocks();
     (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
+    // Core task fetch/update now goes through vikunjaRestRequest; labels
+    // still go through the node-vikunja client (sub-resource, sibling item).
+    (vikunjaRestRequest as jest.Mock).mockResolvedValue({ ...baseTask });
     mockClient.tasks.getTask.mockResolvedValue({ ...baseTask });
     mockClient.tasks.updateTask.mockResolvedValue({ ...baseTask });
   });
@@ -124,7 +132,7 @@ describe('updateTaskLabels surfaces real HTTP status', () => {
 
     let captured: MCPError | null = null;
     try {
-      await updateTask({ id: TASK_ID, labels: [5] });
+      await updateTask({ id: TASK_ID, labels: [5] }, mockAuthManager);
     } catch (err) {
       captured = err instanceof MCPError ? err : null;
     }
@@ -143,7 +151,7 @@ describe('updateTaskLabels surfaces real HTTP status', () => {
 
     let capturedMessage = '';
     try {
-      await updateTask({ id: TASK_ID, labels: [99999] });
+      await updateTask({ id: TASK_ID, labels: [99999] }, mockAuthManager);
     } catch (err) {
       capturedMessage = err instanceof MCPError ? err.message : String(err);
     }
@@ -160,7 +168,7 @@ describe('updateTaskLabels surfaces real HTTP status', () => {
 
     let capturedMessage = '';
     try {
-      await updateTask({ id: TASK_ID, labels: [5] });
+      await updateTask({ id: TASK_ID, labels: [5] }, mockAuthManager);
     } catch (err) {
       capturedMessage = err instanceof Error ? err.message : String(err);
     }
