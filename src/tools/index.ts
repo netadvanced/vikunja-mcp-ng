@@ -141,7 +141,13 @@ export function registerTools(
   // Only register tools that require clientFactory if it's available
   if (clientFactory) {
     if (isModuleEnabled(modules.projects)) {
-      registerProjectsTool(server, authManager, clientFactory);
+      // `backgrounds` gates only three subcommands *within* this tool
+      // (remove-background/set-unsplash-background/search-unsplash — G7,
+      // opt-in cosmetic module, deny-by-default) rather than the whole
+      // tool; the resolved flag is passed down so registerProjectsTool
+      // builds its subcommand enum accordingly. See that function's doc
+      // comment and src/config/types.ts's `backgrounds` key.
+      registerProjectsTool(server, authManager, clientFactory, isModuleEnabled(modules.backgrounds));
     }
 
     if (isModuleEnabled(modules.labels)) {

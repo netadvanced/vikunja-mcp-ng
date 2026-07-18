@@ -156,6 +156,21 @@ export const ModulesConfigSchema = z.object({
   // with the same JWT-only gate as `users`/`export`/`admin` — see
   // src/tools/index.ts.
   caldavTokens: ModuleToggleSchema.default(false),
+
+  // Opt-in cosmetic module — deny-by-default for the OPPOSITE reason the
+  // dangerous keys above are: not dangerous, just low-value for a task-
+  // management assistant (project backgrounds are decorative, not
+  // functional). Gates three `vikunja_projects` subcommands
+  // (`remove-background`/`set-unsplash-background`/`search-unsplash`, see
+  // `src/tools/projects/backgrounds.ts`) rather than a whole standalone
+  // tool — see that module's doc comment and
+  // `registerProjectsTool`/`resolveBackgroundsEnabled` in
+  // `src/tools/projects/index.ts` for how a single tool's subcommand *enum*
+  // (not just its dispatch) is built conditionally so the disabled
+  // subcommands are genuinely absent from the schema, matching every other
+  // module's "invisible, not merely rejected" contract. See
+  // docs/ENDPOINT-TAIL-RETRIAGE.md item G7.
+  backgrounds: ModuleToggleSchema.default(false),
 });
 
 export type ModulesConfig = z.infer<typeof ModulesConfigSchema>;

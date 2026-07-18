@@ -191,6 +191,14 @@ const PROJECTS: ClassificationTable = {
   'delete-view': 'destructive',
   'set-done-bucket': 'write',
   duplicate: 'write',
+  // Project backgrounds (G7, opt-in `backgrounds` module — see
+  // src/tools/projects/backgrounds.ts). remove-background deletes the
+  // currently-set background (destructive); set-unsplash-background writes
+  // a new one; search-unsplash is a pure read (queries unsplash, never
+  // touches a project).
+  'remove-background': 'destructive',
+  'set-unsplash-background': 'write',
+  'search-unsplash': 'read',
 };
 
 const LABELS: ClassificationTable = {
