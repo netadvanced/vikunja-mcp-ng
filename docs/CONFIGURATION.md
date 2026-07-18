@@ -152,7 +152,8 @@ Example `vikunja-mcp.config.json`:
   },
   "logging": {
     "level": "info"
-  }
+  },
+  "readOnly": false
 }
 ```
 
@@ -263,6 +264,84 @@ API-token session, `vikunja_admin` stays unregistered regardless of the config v
 JWT-only gate — `vikunja_tokens` registers for either session type once its module key
 is enabled, since the underlying endpoints' auth requirement is a runtime server
 behavior rather than something this server enforces at registration time.
+
+## Global Read-Only Safety Mode
+
+A separate, orthogonal safety layer from module gating: instead of hiding a tool from the
+MCP client entirely (module gating), read-only mode keeps every tool **visible and
+registered**, but rejects any subcommand that writes or destroys data on the connected
+Vikunja instance — read subcommands (`list`, `get`, `status`, ...) keep working normally.
+This is useful for a read-only "explore my tasks" session, a demo environment, or any
+deployment where an operator wants to guarantee an AI assistant cannot mutate data no
+matter what a tool call asks for.
+
+- **Config file key**: `readOnly` (boolean, default `false`) at the top level of
+  `vikunja-mcp.config.json` — a peer of `modules`/`logging`/etc., not nested under either.
+- **Env override**: `VIKUNJA_MCP_READ_ONLY` (boolean shorthand, `true`/`false`) — as with
+  every other setting, the env var always wins over the config file.
+
+```json
+{ "readOnly": true }
+```
+
+```env
+VIKUNJA_MCP_READ_ONLY=true
+```
+
+### What gets rejected
+
+Rejection happens at dispatch, inside each tool's handler, via a single shared guard
+(`assertWriteAllowed` in `src/utils/read-only.ts`) that every tool dispatcher calls once,
+right after its existing auth check — not 24 copy-pasted `if (readOnly)` checks. The guard
+consults one classification table per tool (`subcommand -> read | write | destructive`),
+built from the actual Vikunja API semantics of each subcommand (see the module's doc
+comment for the full rubric and the rationale behind edge cases like the dual-purpose
+`comment` subcommand, `vikunja_batch_import`'s `dryRun`, and the fully-exempt
+`vikunja_auth` tool). A rejected call fails with a consistent, clearly-worded error:
+
+```
+server is in read-only mode: 'vikunja_tasks' subcommand 'delete' is a destructive
+operation and is rejected. Set 'readOnly' to false in vikunja-mcp.config.json
+(or unset VIKUNJA_MCP_READ_ONLY) to allow writes.
+```
+
+Notes on scope:
+
+- **`vikunja_auth`** (`connect`/`status`/`refresh`/`disconnect`/`info`) is entirely exempt
+  — those subcommands only manage the MCP server's local session, never a Vikunja
+  resource, so read-only mode never blocks them.
+- **Dynamic classification**: a small number of subcommands classify themselves based on
+  the actual call arguments rather than a fixed table entry — `vikunja_tasks`'/
+  `vikunja_task_comments`' dual-purpose `comment` subcommand (creates when text is
+  supplied, otherwise lists — classified `read` only when no comment text is given) and
+  `vikunja_batch_import` (classified `read` only when `dryRun: true`, since a dry run
+  never writes).
+- Module gating and read-only mode compose independently: a module disabled entirely
+  (§ Module Gating above) is invisible regardless of `readOnly`; a module left enabled
+  under `readOnly: true` stays visible but write/destructive calls into it are rejected.
+
+### MCP Tool Annotations
+
+The same per-tool classification tables drive the MCP SDK's `ToolAnnotations`
+(`readOnlyHint` / `destructiveHint` / `idempotentHint`), registered alongside every tool's
+schema so MCP clients can render tool cards accurately and apply their own consent/
+confirmation UX for destructive calls. Because a single MCP tool name here fans out to
+several subcommands with different semantics, the tool-level hints are derived
+conservatively:
+
+- `readOnlyHint` is `true` only when **every** subcommand on that tool is classified
+  `read` (today: `vikunja_auth` and `vikunja_export_project`).
+- `destructiveHint` is `true` when **any** subcommand is classified `destructive` (true
+  for nearly every CRUD-shaped tool, since almost all of them expose a `delete`-shaped
+  operation).
+- `idempotentHint` is set `true` only for tools on an explicit, hand-reviewed allowlist
+  where every non-read subcommand is genuinely idempotent — currently just
+  `vikunja_notifications` (`mark-read`/`mark-all-read` are ensure-semantics: marking an
+  already-read notification as read again is a no-op). It is intentionally *not* inferred
+  automatically from the read/write/destructive table, since idempotency is a semantic
+  judgment call the three-way classification doesn't capture (e.g. `vikunja_teams`'
+  `members:toggleAdmin` is a `write`, not a `delete`, but explicitly is **not**
+  idempotent — it flips a flag rather than setting it).
 
 ## Templates Persistence
 
@@ -434,6 +513,11 @@ VIKUNJA_MCP_CONFIG=/path/to/vikunja-mcp.config.json   # optional; see Config Fil
 ### Module Gating Variables
 ```env
 VIKUNJA_MCP_MODULE_TASKS=true               # see Module Gating for the full list and defaults
+```
+
+### Global Read-Only Mode Variable
+```env
+VIKUNJA_MCP_READ_ONLY=true                  # optional, default false; see Global Read-Only Safety Mode
 ```
 
 ### Templates Persistence Variable

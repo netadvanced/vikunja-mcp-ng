@@ -77,7 +77,11 @@ describe('vikunja_templates file-backed persistence', () => {
     >[0];
     registerTemplatesTool(server, authManager);
 
-    const handler = (calls[0] as unknown[])[3] as (
+    // Handler is always the last argument to server.tool(...). Indexing from
+    // the end keeps this robust against the optional ToolAnnotations argument
+    // (PR #81) that sits between the schema and the handler.
+    const firstCall = calls[0] as unknown[];
+    const handler = firstCall[firstCall.length - 1] as (
       args: Record<string, unknown>,
     ) => Promise<{ content: { text: string }[] }>;
     return handler;

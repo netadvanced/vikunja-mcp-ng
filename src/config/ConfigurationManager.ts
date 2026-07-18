@@ -219,6 +219,16 @@ export class ConfigurationManager {
   }
 
   /**
+   * Whether the server is in global read-only safety mode. Synchronous
+   * (unlike the other getters above) because `src/utils/read-only.ts`'s
+   * per-dispatch guard needs a cheap, non-async check; `loadConfiguration()`
+   * itself is synchronous and cached after the first call.
+   */
+  public isReadOnly(): boolean {
+    return this.loadConfiguration().readOnly;
+  }
+
+  /**
    * Check if a feature is enabled
    */
   public async isFeatureEnabled(featureName: string): Promise<boolean> {
@@ -426,6 +436,11 @@ export class ConfigurationManager {
       result.modules = modules;
     }
 
+    // Global read-only safety mode. Top-level (not nested under `modules`)
+    // since it gates write/destructive subcommands across every tool, not
+    // tool registration itself. See src/utils/read-only.ts.
+    this.assignEnvValue(result, 'readOnly', process.env.VIKUNJA_MCP_READ_ONLY, true);
+
     // Templates persistence path. Env var wins over the config file — see
     // docs/CONFIGURATION.md — which falls out naturally here because this
     // env-derived layer is merged after the config-file layer in
@@ -559,6 +574,7 @@ export class ConfigurationManager {
       },
       featureFlags: this.config.featureFlags,
       modules: this.config.modules,
+      readOnly: this.config.readOnly,
       templates: {
         persistenceEnabled: !!this.config.templates.persistPath,
       },
@@ -576,4 +592,5 @@ export const getRateLimitConfig = (): Promise<RateLimitConfig> => ConfigurationM
 export const getFeatureFlagsConfig = (): Promise<FeatureFlagsConfig> => ConfigurationManager.getInstance().getFeatureFlagsConfig();
 export const isFeatureEnabled = (featureName: string): Promise<boolean> => ConfigurationManager.getInstance().isFeatureEnabled(featureName);
 export const getModulesConfig = (): Promise<ModulesConfig> => ConfigurationManager.getInstance().getModulesConfig();
+export const isReadOnly = (): boolean => ConfigurationManager.getInstance().isReadOnly();
 export const getTemplatesConfig = (): Promise<TemplatesConfig> => ConfigurationManager.getInstance().getTemplatesConfig();

@@ -16,6 +16,7 @@ import { TaskFilteringOrchestrator } from './filtering';
 import type { TaskListingArgs } from './types/filters';
 import { createAuthRequiredError, handleFetchError } from '../../utils/error-handler';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../../utils/read-only';
 
 
 // Import all operation handlers
@@ -129,9 +130,12 @@ export function registerTasksTool(
 ): void {
   server.tool(
     'vikunja_tasks',
-    'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks). ' +
-      'download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. ' +
-      'create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5).',
+    withReadOnlyNote(
+      'vikunja_tasks',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks). ' +
+        'download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. ' +
+        'create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5).',
+    ),
     {
       subcommand: z.enum([
         'create',
@@ -264,6 +268,7 @@ export function registerTasksTool(
       // Session ID for AORP response tracking
       sessionId: z.string().optional(),
     },
+    getToolAnnotations('vikunja_tasks'),
     async (args) => {
       try {
         logger.debug('Executing tasks tool', { subcommand: args.subcommand, args });
@@ -272,6 +277,16 @@ export function registerTasksTool(
         if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task management features');
         }
+
+        // Global read-only safety mode gate. 'comment' is dual-purpose
+        // (creates a comment when text is supplied, otherwise lists
+        // comments — see handleComment) so its effective classification
+        // depends on whether `comment` text was actually provided.
+        assertWriteAllowed(
+          'vikunja_tasks',
+          args.subcommand,
+          args.subcommand === 'comment' ? (args.comment ? 'write' : 'read') : undefined,
+        );
 
         // Set the client factory for this request if provided
         if (clientFactory) {

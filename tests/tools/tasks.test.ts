@@ -12,6 +12,7 @@ import {
   registerTaskRelationsTool
 } from '../../src/tools/index';
 import { MCPError, ErrorCode } from '../../src/types';
+import { ConfigurationManager } from '../../src/config';
 import type { components } from '../../src/types/generated/vikunja-openapi';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 
@@ -396,11 +397,12 @@ describe('Tasks Tool', () => {
       'vikunja_tasks',
       'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5).',
       expect.any(Object),
+      expect.any(Object), // ToolAnnotations
       expect.any(Function),
     );
     const calls = mockServer.tool.mock.calls;
     if (calls.length > 0 && calls[0] && calls[0].length > 3) {
-      toolHandler = calls[0][3];
+      toolHandler = calls[0][calls[0].length - 1];
     } else {
       throw new Error('Tool handler not found');
     }
@@ -3105,12 +3107,81 @@ describe('Tasks Tool', () => {
         'vikunja_tasks',
         'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5).',
         expect.any(Object),
+        expect.any(Object), // ToolAnnotations
         expect.any(Function),
       );
     });
 
     it('should have the correct tool handler', () => {
       expect(typeof toolHandler).toBe('function');
+    });
+  });
+
+  describe('global read-only mode', () => {
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it('rejects a write subcommand (create) with a clear read-only error', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      await expect(callTool('create', { title: 'Nope' })).rejects.toThrow(
+        /server is in read-only mode/,
+      );
+    });
+
+    it('rejects a destructive subcommand (delete) with a clear read-only error', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      await expect(callTool('delete', { id: 1 })).rejects.toThrow(/server is in read-only mode/);
+    });
+
+    it('still allows a read subcommand (list) when read-only mode is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      await expect(callTool('list')).resolves.toBeDefined();
+    });
+
+    it('treats "comment" with no comment text as a read (list) even when read-only mode is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      (getAuthManagerFromContext as jest.Mock).mockResolvedValue(mockAuthManager);
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse([{ id: 1, comment: 'existing', task_id: 1 }]),
+      );
+
+      await expect(callTool('comment', { id: 1 })).resolves.toBeDefined();
+    });
+
+    it('rejects "comment" with comment text supplied when read-only mode is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      await expect(callTool('comment', { id: 1, comment: 'a new comment' })).rejects.toThrow(
+        /server is in read-only mode/,
+      );
+    });
+
+    it('does not reject a write subcommand when read-only mode is off (default)', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: false } });
+
+      // Only asserting the read-only guard doesn't fire here — full
+      // create-task success (label/assignee round trip etc.) is already
+      // covered by the 'create subcommand' describe block above.
+      let caught: unknown;
+      try {
+        await callTool('create', { title: 'Fine', projectId: 1 });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught instanceof MCPError && caught.message.includes('read-only mode')).toBe(
+        false,
+      );
     });
   });
 });

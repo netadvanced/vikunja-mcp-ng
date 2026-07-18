@@ -16,5 +16,6 @@ export {
   getFeatureFlagsConfig,
   isFeatureEnabled,
   getModulesConfig,
+  isReadOnly,
   getTemplatesConfig,
 } from './ConfigurationManager';

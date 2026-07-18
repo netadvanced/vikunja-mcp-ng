@@ -24,6 +24,7 @@ import { logger } from '../utils/logger';
 import { setTaskLabels } from '../utils/label-bulk';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
@@ -149,12 +150,15 @@ interface TemplateData {
 export function registerTemplatesTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
   server.tool(
     'vikunja_templates',
-    'Manage task templates for creating consistent tasks and project structures. ' +
-      'IMPORTANT: templates are never persisted to Vikunja itself. By default they ' +
-      "are session-only — kept in this server process's memory and lost on restart. " +
-      'Set the templates.persistPath config key (or VIKUNJA_MCP_TEMPLATES_FILE env ' +
-      'var, which wins) to make them durable across restarts via a JSON file on disk ' +
-      '— see docs/CONFIGURATION.md.',
+    withReadOnlyNote(
+      'vikunja_templates',
+      'Manage task templates for creating consistent tasks and project structures. ' +
+        'IMPORTANT: templates are never persisted to Vikunja itself. By default they ' +
+        "are session-only — kept in this server process's memory and lost on restart. " +
+        'Set the templates.persistPath config key (or VIKUNJA_MCP_TEMPLATES_FILE env ' +
+        'var, which wins) to make them durable across restarts via a JSON file on disk ' +
+        '— see docs/CONFIGURATION.md.',
+    ),
     {
       subcommand: z.enum(['create', 'list', 'get', 'update', 'delete', 'instantiate']),
       // Template fields
@@ -168,6 +172,7 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
       parentProjectId: z.number().optional(),
       variables: z.record(z.string(), z.string()).optional(),
     },
+    getToolAnnotations('vikunja_templates'),
     async (args) => {
       try {
         // Check authentication
@@ -177,6 +182,8 @@ export function registerTemplatesTool(server: McpServer, authManager: AuthManage
             'Authentication required. Please use vikunja_auth.connect first.',
           );
         }
+
+        assertWriteAllowed('vikunja_templates', args.subcommand);
 
         const storage = await getSessionStorage(authManager);
 
