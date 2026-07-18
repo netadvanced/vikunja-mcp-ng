@@ -37,19 +37,19 @@ An **AI-first MCP server for Vikunja**: not a 1:1 REST proxy, but a set of task-
   - **Final removal** (PR #73): last ~19 call-sites + 18 type-only imports migrated, client factory stripped to session plumbing, dependency dropped from `package.json`. **`grep -rn node-vikunja src/ package.json package-lock.json` → 0 hits.** Decision 2 (§3) fully executed.
 - **Wave E — repackaging** (PR #74): renamed to **`vikunja-mcp-ng`** (package/bin/MCP identity/server.json); multi-stage Dockerfile + compose example proven by a live `docker run` MCP smoke test against the local e2e stack; `docs/DOCKER-DESKTOP-MCP.md`; scenario-showcase README with every tool call verified against the code; seven `docs/samples/` pages + index; `npm pack --dry-run` publish-ready (name confirmed available on npm; not published yet — owner's call).
 
-**Live numbers as of this document (measured fresh, main @ `eb89b6c`, this worktree):**
+**Live numbers as of this document (measured fresh on `main` after the Wave F night-run merges, PRs #75–#81):**
 
 | Metric | Value |
 |---|---|
-| Test suites | 125 passed / 125 total |
-| Tests | 2,748 passed / 2,748 total, 0 failing |
-| Coverage (stmts / branches / funcs / lines) | 88.4% / 79.15% / 76.97% / 88.61% vs. ratcheted gate 87/78/76/87 |
-| Registered top-level tools | 22 (`src/tools/index.ts`), ~148 subcommands across them |
+| Test suites | 130 passed / 130 total |
+| Tests | 2,900 passed / 2,900 total, 0 failing |
+| Coverage (stmts / branches / funcs / lines) | 89.44% / 80.22% / 78% / 89.72% vs. ratcheted gate 87/78/76/87 |
+| Registered top-level tools | 22 (`src/tools/index.ts`), ~150 subcommands across them |
 | API operations covered | 73 ✅ implemented + 9 ⚠️ implemented-with-bug + 3 🟡 partial + 84 ❌ not implemented = 169 total (43% clean-implemented) — recounted row-by-row from `docs/API-COVERAGE.md` on 2026-07-18; matches its own summary table exactly, no drift found |
 | Live verification | `npm run test:mcp` 23/23 against the local Docker e2e stack; MCP-layer e2e harness 50/51 (single failure is a documented Vikunja 2.3.0 server bug, not ours) |
 
 **Known-limited today (deliberate, tracked):**
-- `vikunja_templates` persists only for the server process lifetime (in-memory storage); a sibling PR is adding an opt-in JSON file store (see §3a(b) — this is *why* SQLite was parked, not a competing effort).
+- `vikunja_templates` is session-only (in-memory) by default; opt-in JSON file persistence shipped in Wave F (PR #78) via the `templates.persistPath` config key / `VIKUNJA_MCP_TEMPLATES_FILE` env var (see §3a(b) — this is *why* SQLite was parked, not a competing effort).
 - User-data export can only trigger/report the server-side export — MCP cannot deliver binary files.
 - GitHub Actions is disabled repo-wide for now (owner's call); all gates run locally per PR — see §3b's acknowledged gap.
 
@@ -80,7 +80,7 @@ Both items below were seriously considered on 2026-07-18 and explicitly **parked
 
 *The case for:* a single static binary and a tiny distribution image (no Node runtime, no `node_modules` layer); `go-vikunja`'s own generated model structs would give us the same "types from the source of truth" property we currently get from our generated OpenAPI types, without maintaining the generation step ourselves; the MCP-contract e2e harness built in Wave D (PR #67, spawns the real stdio server via the SDK client and asserts on the wire protocol, not the implementation) is a language-agnostic safety net — it doesn't care what language answers the stdio pipe, so a Go implementation could be validated against the exact same contract tests we already have.
 
-*The case against:* the official MCP TypeScript SDK is the reference implementation the protocol spec itself is written against — a Go port inherits schema-validation and transport edge cases the TS SDK has already had shaken out. Our 2,748 verified tests (125 suites, built up over 6 waves against real audited API bugs) don't port for free — they encode hard-won knowledge (fetch-merge-not-replace on task/project updates, the assignee bulk-payload shape, id-vs-username conflation on team routes, dozens more) that would all need re-deriving and re-testing in a second language. The opportunity cost of a rewrite (weeks, minimum) directly competes with the capability-coverage and hardening work still on the roadmap (§4's 84 unimplemented operations, the post-removal polish queue).
+*The case against:* the official MCP TypeScript SDK is the reference implementation the protocol spec itself is written against — a Go port inherits schema-validation and transport edge cases the TS SDK has already had shaken out. Our 2,900 verified tests (130 suites, built up over 6 waves against real audited API bugs) don't port for free — they encode hard-won knowledge (fetch-merge-not-replace on task/project updates, the assignee bulk-payload shape, id-vs-username conflation on team routes, dozens more) that would all need re-deriving and re-testing in a second language. The opportunity cost of a rewrite (weeks, minimum) directly competes with the capability-coverage and hardening work still on the roadmap (§4's 84 unimplemented operations, the post-removal polish queue).
 
 *Reopening condition:* a bounded spike — 2–3 tools reimplemented on the official Go SDK, validated end-to-end by the existing MCP-layer e2e harness (no new test infrastructure, reuse what we have) — **if distribution pressure grows** (e.g., users routinely blocked by "no Node/Docker available" rather than by missing capability). Not reopened speculatively.
 
