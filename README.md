@@ -6,7 +6,7 @@
 [![node: 20+](https://img.shields.io/badge/node-20%2B-brightgreen.svg)](package.json)
 [![MCP](https://img.shields.io/badge/MCP-server-purple.svg)](https://modelcontextprotocol.io)
 
-> 👋 **Why this fork exists:** we rely on this project and noticed the [upstream repo](https://github.com/democratize-technology/vikunja-mcp) had gone quiet, with a growing backlog of open PRs and issues. So we've taken over active maintenance here — triaging and resolving most of that backlog (tracked in [this issue](https://github.com/netadvanced/vikunja-mcp/issues/19)). Full credit to the original authors for the foundation. If they'd like to pick it back up, we'll gladly hand the reins back — or work together.
+> 👋 **Why this fork exists:** we rely on this project and noticed the [upstream repo](https://github.com/democratize-technology/vikunja-mcp) had gone quiet, with a growing backlog of open PRs and issues. So we've taken over active maintenance here — triaging and resolving most of that backlog (tracked in [this issue](https://github.com/netadvanced/vikunja-mcp-ng/issues/19)). Full credit to the original authors for the foundation. If they'd like to pick it back up, we'll gladly hand the reins back — or work together.
 
 ---
 
@@ -31,8 +31,8 @@ More end-to-end scenarios — daily triage, team sharing, project planning, stay
 ### From source
 
 ```bash
-git clone https://github.com/netadvanced/vikunja-mcp.git
-cd vikunja-mcp
+git clone https://github.com/netadvanced/vikunja-mcp-ng.git
+cd vikunja-mcp-ng
 npm ci
 npm run build
 ```
@@ -57,8 +57,8 @@ npm run build
 There's no published image yet — build it locally:
 
 ```bash
-git clone https://github.com/netadvanced/vikunja-mcp.git
-cd vikunja-mcp
+git clone https://github.com/netadvanced/vikunja-mcp-ng.git
+cd vikunja-mcp-ng
 docker build -t ghcr.io/netadvanced/vikunja-mcp-ng:latest .
 ```
 

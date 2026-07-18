@@ -1,6 +1,6 @@
 # Agent battle-testing harness
 
-Wave item T2 (tracking issue [netadvanced/vikunja-mcp#28](https://github.com/netadvanced/vikunja-mcp/issues/28)).
+Wave item T2 (tracking issue [netadvanced/vikunja-mcp-ng#28](https://github.com/netadvanced/vikunja-mcp-ng/issues/28)).
 Part 2 of the testing plan (part 1 is the version-matrix runner, see
 `docs/LOCAL-TESTING.md`).
 

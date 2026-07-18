@@ -185,7 +185,7 @@ SECTION_TEXT="$(sed -n "${START_LINE},${END_LINE}p" "$CHANGELOG")"
 printf '%s\n' "$SECTION_TEXT" >"$NOTES_FILE"
 
 RELEASE_EXISTS=false
-if gh release view "$TAG_NAME" --repo netadvanced/vikunja-mcp >/dev/null 2>&1; then
+if gh release view "$TAG_NAME" --repo netadvanced/vikunja-mcp-ng >/dev/null 2>&1; then
   RELEASE_EXISTS=true
 fi
 
@@ -193,13 +193,13 @@ if [[ "$RELEASE_EXISTS" == true ]]; then
   echo "==> GitHub release $TAG_NAME already exists — skipping (idempotent)."
 elif [[ "$DRY_RUN" == true ]]; then
   echo "==> [dry-run] Would run:"
-  echo "    gh release create $TAG_NAME --repo netadvanced/vikunja-mcp --title \"$TAG_NAME\" --notes-file <changelog section>"
+  echo "    gh release create $TAG_NAME --repo netadvanced/vikunja-mcp-ng --title \"$TAG_NAME\" --notes-file <changelog section>"
   echo "----- notes preview -----"
   cat "$NOTES_FILE"
   echo "--------------------------"
 else
   echo "==> gh release create $TAG_NAME"
-  gh release create "$TAG_NAME" --repo netadvanced/vikunja-mcp --title "$TAG_NAME" --notes-file "$NOTES_FILE"
+  gh release create "$TAG_NAME" --repo netadvanced/vikunja-mcp-ng --title "$TAG_NAME" --notes-file "$NOTES_FILE"
 fi
 
 echo ""
