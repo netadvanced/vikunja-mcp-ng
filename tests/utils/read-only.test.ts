@@ -41,6 +41,13 @@ describe('read-only.ts', () => {
       expect(classifySubcommand('vikunja_tasks', 'delete')).toBe('destructive');
     });
 
+    it('classifies the subtask composite subcommands (PR #77)', () => {
+      // create-subtask performs a real create + relation write; list-subtasks
+      // is a pure read and must stay allowed under read-only mode.
+      expect(classifySubcommand('vikunja_tasks', 'create-subtask')).toBe('write');
+      expect(classifySubcommand('vikunja_tasks', 'list-subtasks')).toBe('read');
+    });
+
     it('fails closed to "write" for an unrecognized subcommand on a known tool', () => {
       expect(classifySubcommand('vikunja_tasks', 'not-a-real-subcommand')).toBe('write');
     });
@@ -199,6 +206,13 @@ describe('read-only.ts', () => {
       setReadOnly(true);
       expect(() => assertWriteAllowed('vikunja_tasks', 'delete')).toThrow(MCPError);
       expect(() => assertWriteAllowed('vikunja_tasks', 'delete')).toThrow(/read-only mode/);
+    });
+
+    it('rejects create-subtask but allows list-subtasks under read-only mode (PR #77)', () => {
+      setReadOnly(true);
+      expect(() => assertWriteAllowed('vikunja_tasks', 'create-subtask')).toThrow(MCPError);
+      expect(() => assertWriteAllowed('vikunja_tasks', 'create-subtask')).toThrow(/read-only mode/);
+      expect(() => assertWriteAllowed('vikunja_tasks', 'list-subtasks')).not.toThrow();
     });
 
     it('honors an explicit classificationOverride over the static table lookup', () => {

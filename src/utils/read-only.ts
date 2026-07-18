@@ -103,6 +103,10 @@ const TASKS: ClassificationTable = {
   'set-bucket': 'write',
   'set-position': 'write',
   'get-by-index': 'read',
+  // Subtask composites (PR #77). create-subtask performs a real task
+  // creation + relation write; list-subtasks is a pure read.
+  'create-subtask': 'write',
+  'list-subtasks': 'read',
 };
 
 const TASK_BULK: ClassificationTable = {
