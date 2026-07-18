@@ -3,6 +3,8 @@
  * Handles user operations for Vikunja
  */
 
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
@@ -11,7 +13,7 @@ import { MCPError, ErrorCode, createStandardResponse } from '../types';
 import type { User, ExtendedUserSettings } from '../types/vikunja';
 import { handleAuthError } from '../utils/auth-error-handler';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
-import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { vikunjaRestRequest, vikunjaRestMultipartRequest } from '../utils/vikunja-rest';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
 
@@ -25,6 +27,29 @@ type VikunjaUserWithSettings = components['schemas']['v1.UserWithSettings'];
 type VikunjaUser = components['schemas']['user.User'];
 type VikunjaUserGeneralSettings = components['schemas']['models.UserGeneralSettings'];
 type VikunjaMessage = components['schemas']['models.Message'];
+// GET/POST /user/settings/avatar exchange this JSON shape — NOT image bytes.
+// See docs/ENDPOINT-TAIL-RETRIAGE.md G5: the old "binary/blob" label for
+// these two endpoints was wrong.
+type VikunjaUserAvatarProvider = components['schemas']['v1.UserAvatarProvider'];
+
+/**
+ * The exact set of avatar provider strings the Vikunja server accepts.
+ * The OpenAPI spec documents `avatar_provider` as a freeform `string` with
+ * valid values only spelled out in prose, so this list is instead sourced
+ * from the server's own validation in the Vikunja source
+ * (`~/Projects/vikunja/pkg/user/user.go`, the avatar-provider check ahead of
+ * `ErrInvalidAvatarProvider`). Validating client-side against the same list
+ * gives a clear Zod error instead of a round-trip 400.
+ */
+const AVATAR_PROVIDERS = [
+  'gravatar',
+  'upload',
+  'initials',
+  'marble',
+  'ldap',
+  'openid',
+  'default',
+] as const;
 
 interface SearchParams {
   page?: number;
@@ -104,11 +129,20 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
     'vikunja_users',
     withReadOnlyNote(
       'vikunja_users',
-      "Manage user profiles, search users, and update user settings. Use the 'timezones' subcommand to fetch this Vikunja instance's list of valid IANA time zone names before calling 'update-settings' with a timezone value — the server rejects unrecognized zone names, and the valid set is instance-dependent (depends on the OS Vikunja runs on).",
+      "Manage user profiles, search users, and update user settings. Use the 'timezones' subcommand to fetch this Vikunja instance's list of valid IANA time zone names before calling 'update-settings' with a timezone value — the server rejects unrecognized zone names, and the valid set is instance-dependent (depends on the OS Vikunja runs on). 'get-avatar'/'set-avatar' read and write the avatar *provider* setting (JSON — one of gravatar/upload/initials/marble/ldap/openid/default), not image bytes; 'upload-avatar' uploads an actual image file and only takes effect once the provider is 'upload' (which it also sets as a side effect).",
     ),
     {
       // Operation type
-      subcommand: z.enum(['current', 'search', 'settings', 'update-settings', 'timezones']),
+      subcommand: z.enum([
+        'current',
+        'search',
+        'settings',
+        'update-settings',
+        'timezones',
+        'get-avatar',
+        'set-avatar',
+        'upload-avatar',
+      ]),
 
       // Search parameters
       search: z.string().optional(),
@@ -126,6 +160,15 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
       emailRemindersEnabled: z.boolean().optional(),
       overdueTasksRemindersEnabled: z.boolean().optional(),
       overdueTasksRemindersTime: z.string().optional(),
+
+      // Avatar settings (get-avatar/set-avatar/upload-avatar)
+      avatarProvider: z.enum(AVATAR_PROVIDERS).optional(),
+      // Local file to upload, same contract as `vikunja_tasks attach`:
+      // `filePath` (absolute path readable by the MCP server process) takes
+      // precedence over `fileContent` (base64) when both are given.
+      filePath: z.string().optional(),
+      fileContent: z.string().optional(),
+      filename: z.string().optional(),
     },
     getToolAnnotations('vikunja_users'),
     async (args) => {
@@ -358,6 +401,146 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
               `Retrieved ${timezones.length} available time zones`,
               { timezones },
               { count: timezones.length },
+            );
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: formatAorpAsMarkdown(response),
+                },
+              ],
+            };
+          }
+
+          case 'get-avatar': {
+            // GET /user/settings/avatar returns v1.UserAvatarProvider
+            // ({avatar_provider}) — JSON, not image bytes. See the type
+            // comment above and docs/ENDPOINT-TAIL-RETRIAGE.md G5.
+            const raw = await vikunjaRestRequest<VikunjaUserAvatarProvider>(
+              authManager,
+              'GET',
+              '/user/settings/avatar',
+            );
+            const avatarProvider = raw?.avatar_provider ?? '';
+
+            const response = createStandardResponse(
+              'get-avatar-provider',
+              'Avatar provider retrieved successfully',
+              { avatarProvider },
+            );
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: formatAorpAsMarkdown(response),
+                },
+              ],
+            };
+          }
+
+          case 'set-avatar': {
+            if (!args.avatarProvider) {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                `set-avatar requires avatarProvider (one of: ${AVATAR_PROVIDERS.join(', ')})`,
+              );
+            }
+
+            // POST /user/settings/avatar, body v1.UserAvatarProvider. Zod's
+            // enum check above already rejects anything outside
+            // AVATAR_PROVIDERS before the handler runs.
+            await vikunjaRestRequest<VikunjaMessage>(
+              authManager,
+              'POST',
+              '/user/settings/avatar',
+              { avatar_provider: args.avatarProvider } as VikunjaUserAvatarProvider,
+            );
+
+            const response = createStandardResponse(
+              'set-avatar-provider',
+              `Avatar provider set to '${args.avatarProvider}'` +
+                (args.avatarProvider === 'upload'
+                  ? " — call 'upload-avatar' with a file to complete the switch."
+                  : ''),
+              { avatarProvider: args.avatarProvider },
+            );
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: formatAorpAsMarkdown(response),
+                },
+              ],
+            };
+          }
+
+          case 'upload-avatar': {
+            // PUT /user/settings/avatar/upload, multipart/form-data, field
+            // name `avatar` (single file). This endpoint ALSO sets the
+            // avatar provider to 'upload' as a side effect on the server
+            // (see the Vikunja source's UploadAvatar handler) — the upload
+            // only actually shows up once the provider is 'upload', which
+            // this call itself guarantees going forward, but a *prior*
+            // 'gravatar'/'initials'/etc. provider is silently overwritten by
+            // it. Same file-input contract as `vikunja_tasks attach`:
+            // `filePath` (server-local path) or `fileContent` (base64),
+            // `filePath` wins when both are given.
+            const { filePath, fileContent, filename } = args;
+
+            let bytes: Buffer;
+            let name: string;
+            let source: 'filePath' | 'fileContent';
+
+            if (filePath) {
+              try {
+                bytes = readFileSync(filePath);
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                throw new MCPError(
+                  ErrorCode.VALIDATION_ERROR,
+                  `upload-avatar: cannot read filePath ${filePath}: ${message}`,
+                );
+              }
+              name = filename || basename(filePath);
+              source = 'filePath';
+            } else if (fileContent) {
+              const decoded = Buffer.from(fileContent, 'base64');
+              if (decoded.length === 0) {
+                throw new MCPError(
+                  ErrorCode.VALIDATION_ERROR,
+                  'upload-avatar: decoded fileContent is empty (not valid base64 or empty input)',
+                );
+              }
+              bytes = decoded;
+              name = filename || 'avatar.png';
+              source = 'fileContent';
+            } else {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'upload-avatar requires filePath or fileContent',
+              );
+            }
+
+            // Strip any directory component a caller might inject via `filename`.
+            name = basename(name);
+
+            const form = new FormData();
+            form.append('avatar', new Blob([bytes]), name);
+
+            const data = await vikunjaRestMultipartRequest<VikunjaMessage>(
+              authManager,
+              'PUT',
+              '/user/settings/avatar/upload',
+              form,
+            );
+
+            const response = createStandardResponse(
+              'upload-avatar',
+              `Avatar uploaded (${bytes.length} bytes) and provider set to 'upload'`,
+              { filename: name, bytes: bytes.length, source, response: data },
             );
 
             return {

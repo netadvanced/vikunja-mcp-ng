@@ -245,6 +245,9 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
   - `settings` - Get current user settings
   - `update-settings` - Update user settings (optional: name, language, timezone, weekStart, frontendSettings)
   - `timezones` - List the Vikunja instance's valid IANA time zone names (`GET /user/timezones`). Call this before `update-settings` with a `timezone` value — the valid set is instance-dependent (it depends on the OS Vikunja runs on) and the server rejects unrecognized zone names.
+  - `get-avatar` - Get the current user's avatar *provider* setting (`GET /user/settings/avatar` → JSON `{avatar_provider}`, **not** image bytes)
+  - `set-avatar` - Set the avatar provider (required: `avatarProvider`, one of `gravatar`/`upload`/`initials`/`marble`/`ldap`/`openid`/`default` — validated against the exact set the Vikunja server accepts). Setting it to `upload` alone does not attach an image — call `upload-avatar` to actually supply one.
+  - `upload-avatar` - Upload an avatar image (`PUT /user/settings/avatar/upload`, multipart). Accepts a local file the same way `vikunja_tasks attach` does: `filePath` (server-local path) or `fileContent` (base64), with `filePath` taking precedence when both are given; optional `filename`. This call also sets the avatar provider to `upload` as a side effect on the server, overwriting whatever provider was set before.
   - **Note:** User operations require JWT authentication. When using API token authentication, this tool is not registered at all.
 
 ## Webhook Management

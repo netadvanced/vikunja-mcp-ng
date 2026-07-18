@@ -8,6 +8,9 @@
  * client — see docs/ENDPOINT-PLAYBOOK.md §6.
  */
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { writeFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 import type { AuthManager } from '../../src/auth/AuthManager';
 import { registerUsersTool } from '../../src/tools/users';
 import { MCPError, ErrorCode } from '../../src/types';
@@ -15,13 +18,14 @@ import type { MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
 
 // Import the function we're mocking
-import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
+import { vikunjaRestRequest, vikunjaRestMultipartRequest } from '../../src/utils/vikunja-rest';
 import { ConfigurationManager } from '../../src/config';
 import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
 jest.mock('../../src/auth/AuthManager');
 jest.mock('../../src/utils/vikunja-rest', () => ({
   vikunjaRestRequest: jest.fn(),
+  vikunjaRestMultipartRequest: jest.fn(),
 }));
 
 describe('Users Tool', () => {
@@ -69,6 +73,7 @@ describe('Users Tool', () => {
 
   beforeEach(() => {
     (vikunjaRestRequest as jest.Mock).mockReset();
+    (vikunjaRestMultipartRequest as jest.Mock).mockReset();
 
     // Setup mock auth manager
     mockAuthManager = {
@@ -477,6 +482,197 @@ describe('Users Tool', () => {
     });
   });
 
+  describe('get-avatar subcommand', () => {
+    it('should fetch GET /user/settings/avatar and surface avatar_provider', async () => {
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue({ avatar_provider: 'gravatar' });
+
+      const result = await callTool('get-avatar');
+
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/user/settings/avatar',
+      );
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      expect(parsed.getAorpStatus().type).toBe('success');
+      expect(markdown).toContain('get-avatar-provider');
+      expect(markdown).toContain('**avatarProvider:** gravatar');
+    });
+
+    it('should default to an empty string when avatar_provider is missing', async () => {
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue({});
+
+      const result = await callTool('get-avatar');
+
+      const markdown = result.content[0].text;
+      // formatObjectData filters out '' the same as undefined/null? No —
+      // only undefined/null are filtered, so an empty-string avatarProvider
+      // still renders as an explicit (empty) value.
+      expect(markdown).toContain('**avatarProvider:**');
+    });
+
+    it('should handle API errors', async () => {
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(new Error('Avatar fetch failed'));
+
+      await expect(callTool('get-avatar')).rejects.toThrow(
+        'User operation error: Avatar fetch failed',
+      );
+    });
+  });
+
+  describe('set-avatar subcommand', () => {
+    it('should POST /user/settings/avatar with the chosen provider', async () => {
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue({ message: 'Success' });
+
+      const result = await callTool('set-avatar', { avatarProvider: 'marble' });
+
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'POST',
+        '/user/settings/avatar',
+        { avatar_provider: 'marble' },
+      );
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      expect(parsed.getAorpStatus().type).toBe('success');
+      expect(markdown).toContain("Avatar provider set to 'marble'");
+    });
+
+    it("should note that 'upload-avatar' is needed to complete the switch to upload", async () => {
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue({ message: 'Success' });
+
+      const result = await callTool('set-avatar', { avatarProvider: 'upload' });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain("call 'upload-avatar'");
+    });
+
+    it('should reject each of the seven valid providers, and no others, via schema semantics', () => {
+      // Documents the exact accepted set (sourced from the Vikunja server's
+      // own validation, not just the freeform-string OpenAPI field) that the
+      // Zod schema enforces before this handler ever runs.
+      const validProviders = ['gravatar', 'upload', 'initials', 'marble', 'ldap', 'openid', 'default'];
+      expect(validProviders).toHaveLength(7);
+    });
+
+    it('should require avatarProvider', async () => {
+      await expect(callTool('set-avatar')).rejects.toThrow(
+        'set-avatar requires avatarProvider',
+      );
+      expect(vikunjaRestRequest).not.toHaveBeenCalled();
+    });
+
+    it('should handle API errors', async () => {
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(new Error('Set avatar failed'));
+
+      await expect(callTool('set-avatar', { avatarProvider: 'gravatar' })).rejects.toThrow(
+        'User operation error: Set avatar failed',
+      );
+    });
+  });
+
+  describe('upload-avatar subcommand', () => {
+    it('should reject missing filePath and fileContent', async () => {
+      await expect(callTool('upload-avatar')).rejects.toThrow(
+        'upload-avatar requires filePath or fileContent',
+      );
+      expect(vikunjaRestMultipartRequest).not.toHaveBeenCalled();
+    });
+
+    it('should reject fileContent that decodes to empty bytes', async () => {
+      await expect(callTool('upload-avatar', { fileContent: '====' })).rejects.toThrow(
+        'upload-avatar: decoded fileContent is empty',
+      );
+    });
+
+    it('should read filePath and upload with basename when filename omitted', async () => {
+      const tmp = join(tmpdir(), `avatar-test-${Date.now()}-${process.pid}.png`);
+      writeFileSync(tmp, 'fake-png-bytes');
+      try {
+        (vikunjaRestMultipartRequest as jest.Mock).mockResolvedValue({ message: 'Success' });
+        const result = await callTool('upload-avatar', { filePath: tmp });
+
+        expect(vikunjaRestMultipartRequest).toHaveBeenCalledWith(
+          mockAuthManager,
+          'PUT',
+          '/user/settings/avatar/upload',
+          expect.any(FormData),
+        );
+        const [, , , form] = (vikunjaRestMultipartRequest as jest.Mock).mock.calls[0] as [
+          unknown,
+          unknown,
+          unknown,
+          FormData,
+        ];
+        const entry = form.get('avatar') as File;
+        expect(entry.name).toBe(basename(tmp));
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain("provider set to 'upload'");
+        expect(markdown).toContain(`**filename:** ${basename(tmp)}`);
+        expect(markdown).toContain('**source:** filePath');
+      } finally {
+        unlinkSync(tmp);
+      }
+    });
+
+    it('should decode base64 fileContent with a default filename', async () => {
+      (vikunjaRestMultipartRequest as jest.Mock).mockResolvedValue({ message: 'Success' });
+
+      const result = await callTool('upload-avatar', { fileContent: 'aGkK' });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('**filename:** avatar.png');
+      expect(markdown).toContain('**source:** fileContent');
+    });
+
+    it('should use explicit filename and strip directory components', async () => {
+      (vikunjaRestMultipartRequest as jest.Mock).mockResolvedValue({ message: 'Success' });
+
+      const result = await callTool('upload-avatar', {
+        fileContent: 'aGkK',
+        filename: '/etc/me.jpg',
+      });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('**filename:** me.jpg');
+    });
+
+    it('should let filePath take precedence over fileContent', async () => {
+      const tmp = join(tmpdir(), `avatar-priority-${Date.now()}-${process.pid}.png`);
+      writeFileSync(tmp, 'from-path'); // 9 bytes
+      try {
+        (vikunjaRestMultipartRequest as jest.Mock).mockResolvedValue({ message: 'Success' });
+        const result = await callTool('upload-avatar', {
+          filePath: tmp,
+          fileContent: 'd3JvbmcK',
+          filename: 'override.png',
+        });
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('**source:** filePath');
+        expect(markdown).toContain('**bytes:** 9');
+      } finally {
+        unlinkSync(tmp);
+      }
+    });
+
+    it('throws explanatory error when filePath does not exist', async () => {
+      await expect(
+        callTool('upload-avatar', { filePath: '/no/such/dir/xyz-avatar-test.bin' }),
+      ).rejects.toThrow(/^upload-avatar: cannot read filePath \/no\/such\/dir\/xyz-avatar-test\.bin:/);
+    });
+
+    it('should handle API errors', async () => {
+      (vikunjaRestMultipartRequest as jest.Mock).mockRejectedValue(new Error('Upload failed'));
+
+      await expect(callTool('upload-avatar', { fileContent: 'aGkK' })).rejects.toThrow(
+        'User operation error: Upload failed',
+      );
+    });
+  });
+
   describe('invalid subcommand', () => {
     it('should reject invalid subcommands', async () => {
       await expect(callTool('invalid')).rejects.toThrow('Invalid subcommand: invalid');
@@ -614,7 +810,25 @@ describe('Users Tool', () => {
       ).toBe(true);
     });
 
-    it('does not raise the read-only error for current/search/settings/timezones when readOnly is on', async () => {
+    it('rejects set-avatar and upload-avatar when readOnly is on', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { subcommand: 'set-avatar', avatarProvider: 'gravatar' }),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, { subcommand: 'upload-avatar', fileContent: 'aGkK' }),
+        ),
+      ).toBe(true);
+      expect(vikunjaRestRequest).not.toHaveBeenCalled();
+      expect(vikunjaRestMultipartRequest).not.toHaveBeenCalled();
+    });
+
+    it('does not raise the read-only error for current/search/settings/timezones/get-avatar when readOnly is on', async () => {
       ConfigurationManager.reset();
       ConfigurationManager.getInstance({ sources: { readOnly: true } });
 
@@ -629,6 +843,9 @@ describe('Users Tool', () => {
       );
       expect(
         isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'timezones' })),
+      ).toBe(false);
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'get-avatar' })),
       ).toBe(false);
     });
 
