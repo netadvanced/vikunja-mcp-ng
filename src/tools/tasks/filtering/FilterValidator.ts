@@ -116,7 +116,16 @@ export const FilterValidator = {
 
       // Serialise the final expression for Vikunja's server-side `filter`
       // query param. When `done` was not folded in, keep the user's original
-      // string verbatim.
+      // string verbatim - tasks-filter-sql-syntax.test.ts pins this as a
+      // deliberate contract (raw filter syntax, quoting, and spacing pass
+      // through to the API unmodified) that a full expressionToString
+      // round-trip would disturb (added parens, always-double-quoted `like`
+      // values, normalized array spacing). This is a separate, narrower
+      // concern from `vikunja_filters build`'s output casing (this item's
+      // scope): a caller-supplied camelCase field name in a raw filter
+      // string still reaches the server untranslated in this branch,
+      // matching the battle-testing report's secondary finding (noted, not
+      // fixed, in this item's PR).
       if (filterExpression) {
         filterString =
           args.done === undefined ? userFilter : expressionToString(filterExpression);

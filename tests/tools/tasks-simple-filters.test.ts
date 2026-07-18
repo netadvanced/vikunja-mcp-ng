@@ -133,10 +133,21 @@ describe('Filter Parsing and Application', () => {
       expect(error?.message).toBe('Filter string cannot be empty');
     });
 
-    it('should reject a legacy snake_case field name (due_date is not a valid field)', () => {
+    // Reversed by the filter-casing-roundtrip fix: due_date (the underlying
+    // Vikunja Task JSON's own field spelling) is now accepted as an alias
+    // for the DSL's canonical camelCase dueDate and normalized on parse,
+    // rather than rejected - see FILTER_FIELD_ALIASES in src/utils/filters.ts.
+    // This was the exact friction battle-testing finding #2 identified: an
+    // agent reaching for due_date first, failing, and only succeeding after
+    // switching to dueDate.
+    it('accepts the snake_case alias due_date, normalizing it to the canonical dueDate field', () => {
       const { expression, error } = parseFilterString('due_date < 2024-01-31');
-      expect(expression).toBeNull();
-      expect(error).toBeDefined();
+      expect(error).toBeUndefined();
+      expect(expression?.groups[0]?.conditions[0]).toEqual({
+        field: 'dueDate',
+        operator: '<',
+        value: '2024-01-31',
+      });
     });
   });
 
