@@ -719,6 +719,59 @@ async function testTasks(h: McpHarness, ctx: FlowContext): Promise<void> {
   }
 }
 
+async function testSubtaskComposites(h: McpHarness, ctx: FlowContext): Promise<void> {
+  log('\n[Subtask composites]');
+  if (!ctx.taskId) {
+    skip('subtask composites flow', 'no task id from earlier step to use as parent');
+    return;
+  }
+
+  // create-subtask: single composite (resolve parent -> create -> relate ->
+  // verify). Cleanup: the new subtask lives in ctx.projectId, so the
+  // project-delete step at the end of the run cleans it up too.
+  const createSubtask = await h.call('vikunja_tasks', {
+    subcommand: 'create-subtask',
+    parentTaskId: ctx.taskId,
+    title: `${NAME_PREFIX}subtask-1`,
+  });
+  if (assertOk('create-subtask', createSubtask)) {
+    assertStep(
+      'create-subtask response reports the parent task id',
+      createSubtask.text.includes(String(ctx.taskId)),
+      createSubtask.text.slice(0, 300),
+    );
+  }
+
+  // bulk-create-subtasks (E3, battle-campaign friction #4): resolves the
+  // parent's project ONCE, then creates + relates several subtasks
+  // sequentially, reporting per-subtask created/related/failed status.
+  const bulkCreateSubtasks = await h.call('vikunja_tasks', {
+    subcommand: 'bulk-create-subtasks',
+    parentTaskId: ctx.taskId,
+    subtasks: [
+      { title: `${NAME_PREFIX}bulk-subtask-1` },
+      { title: `${NAME_PREFIX}bulk-subtask-2` },
+    ],
+  });
+  if (assertOk('bulk-create-subtasks', bulkCreateSubtasks)) {
+    assertStep(
+      'bulk-create-subtasks response reports both subtasks created',
+      bulkCreateSubtasks.text.includes('2 subtask'),
+      bulkCreateSubtasks.text.slice(0, 400),
+    );
+  }
+
+  const listSubtasks = await h.call('vikunja_tasks', { subcommand: 'list-subtasks', id: ctx.taskId });
+  if (assertOk('list-subtasks', listSubtasks)) {
+    assertStep(
+      'list-subtasks reports at least the 3 subtasks created above',
+      /Found (\d+) subtask/.test(listSubtasks.text) &&
+        Number(/Found (\d+) subtask/.exec(listSubtasks.text)?.[1] ?? 0) >= 3,
+      listSubtasks.text.slice(0, 300),
+    );
+  }
+}
+
 async function testLabels(h: McpHarness, ctx: FlowContext): Promise<void> {
   log('\n[Labels]');
   if (!ctx.taskId) {
@@ -956,6 +1009,17 @@ async function testKanban(h: McpHarness, ctx: FlowContext): Promise<void> {
       pass('update with bucketId (honestly reported in affectedFields)');
     }
   }
+
+  // bulk-set-bucket (E3): move the same task into the same bucket again via
+  // the batched composite — resolves the project/view once and applies the
+  // move sequentially. A single-task batch is enough to exercise the
+  // dispatch + resolution path without needing a second disposable task.
+  const bulkSetBucket = await h.call('vikunja_tasks', {
+    subcommand: 'bulk-set-bucket',
+    taskIds: [ctx.taskId],
+    bucketId: ctx.bucketId,
+  });
+  assertOk('bulk-set-bucket', bulkSetBucket);
 }
 
 async function testNotifications(h: McpHarness): Promise<void> {
@@ -1186,6 +1250,7 @@ async function main(): Promise<void> {
       await testProjects(h, ctx);
       await testProjectBackgroundsAbsence(h, ctx);
       await testTasks(h, ctx);
+      await testSubtaskComposites(h, ctx);
       await testLabels(h, ctx);
       await testAssignees(h, ctx);
       await testComments(h, ctx);

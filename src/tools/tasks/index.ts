@@ -34,10 +34,10 @@ import {
   downloadAttachment,
   type AttachmentSubcommandArgs,
 } from './attachments';
-import { setTaskBucket } from './buckets';
+import { setTaskBucket, bulkSetTaskBucket } from './buckets';
 import { setTaskPosition } from './position';
 import { getTaskByIndex } from './by-index';
-import { createSubtask, listSubtasks } from './subtasks';
+import { createSubtask, listSubtasks, bulkCreateSubtasks } from './subtasks';
 import { duplicateTask } from './duplicate';
 import { markTaskRead } from './mark-read';
 
@@ -134,9 +134,11 @@ export function registerTasksTool(
     'vikunja_tasks',
     withReadOnlyNote(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks, duplicate, mark-read). ' +
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). ' +
         'download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. ' +
         'create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). ' +
+        'bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). ' +
+        'bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). ' +
         'duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). ' +
         'mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
     ),
@@ -169,9 +171,11 @@ export function registerTasksTool(
         'remove-label',
         'list-labels',
         'set-bucket',
+        'bulk-set-bucket',
         'set-position',
         'get-by-index',
         'create-subtask',
+        'bulk-create-subtasks',
         'list-subtasks',
         'duplicate',
         'mark-read',
@@ -273,13 +277,29 @@ export function registerTasksTool(
       previewSize: z.enum(['sm', 'md', 'lg', 'xl']).optional(),
       // Add relation schema
       ...relationSchema,
-      // Subtask composite fields (create-subtask). title/description/dueDate/
-      // priority/labels/assignees/bucketId are shared with the generic
-      // create/set-bucket fields above.
+      // Subtask composite fields (create-subtask, bulk-create-subtasks).
+      // title/description/dueDate/priority/labels/assignees/bucketId are
+      // shared with the generic create/set-bucket fields above.
       parentTaskId: z.number().optional(),
-      // Opt into atomic rollback for create-subtask (default best-effort) —
-      // see docs/ENDPOINT-PLAYBOOK.md §5.
+      // Opt into atomic rollback for create-subtask / bulk-create-subtasks
+      // (default best-effort; bulk-create-subtasks applies it PER SUBTASK,
+      // never across the batch) — see docs/ENDPOINT-PLAYBOOK.md §5.
       atomic: z.boolean().optional(),
+      // bulk-create-subtasks: array of subtask specs, same per-item shape as
+      // create-subtask's own fields.
+      subtasks: z
+        .array(
+          z.object({
+            title: z.string(),
+            description: z.string().optional(),
+            dueDate: z.string().optional(),
+            priority: z.number().min(0).max(5).optional(),
+            labels: z.array(z.number()).optional(),
+            assignees: z.array(z.number()).optional(),
+            bucketId: z.coerce.number().optional(),
+          }),
+        )
+        .optional(),
       // Session ID for AORP response tracking
       sessionId: z.string().optional(),
     },
@@ -401,6 +421,9 @@ export function registerTasksTool(
           case 'set-bucket':
             return setTaskBucket(args as Parameters<typeof setTaskBucket>[0], authManager);
 
+          case 'bulk-set-bucket':
+            return bulkSetTaskBucket(args as Parameters<typeof bulkSetTaskBucket>[0], authManager);
+
           case 'set-position':
             return setTaskPosition(args as Parameters<typeof setTaskPosition>[0], authManager);
 
@@ -409,6 +432,9 @@ export function registerTasksTool(
 
           case 'create-subtask':
             return createSubtask(args as Parameters<typeof createSubtask>[0], authManager);
+
+          case 'bulk-create-subtasks':
+            return bulkCreateSubtasks(args as Parameters<typeof bulkCreateSubtasks>[0], authManager);
 
           case 'list-subtasks':
             return listSubtasks(args as Parameters<typeof listSubtasks>[0], authManager);

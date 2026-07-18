@@ -110,12 +110,14 @@ interface StandardResponse {
   - `add-reminder` / `remove-reminder` / `list-reminders` - Manage task reminders — same underlying handlers as the standalone `vikunja_task_reminders` tool below
   - `apply-label` / `remove-label` / `list-labels` - Apply/remove/list a task's labels — same underlying handlers as the standalone `vikunja_task_labels` tool below
   - `set-bucket` - Move a task into a Kanban bucket; `projectId`/`viewId` auto-resolve when omitted
+  - `bulk-set-bucket` - Move several tasks into the same Kanban bucket in one call (`taskIds`, `bucketId`, optional `projectId`/`viewId` overrides). Resolves the project (from `projectId`, or from the first task in `taskIds` when omitted) and the Kanban view once, then applies each move sequentially (SQLite lock discipline). Reports the count from confirmed per-task successes; `failedIds` on a partial result. Same underlying handler as `vikunja_task_bulk`'s `bulk-set-bucket` operation below
   - `set-position` - Update a task's ordering within a project view (`position` is a float — see the Vikunja docs on inserting between two existing positions)
     - `projectId` auto-resolves from the task, `projectViewId` auto-resolves to the project's first view of `viewKind` (default `'list'`) when omitted
   - `get-by-index` - Look up a task by its human-facing per-project index (e.g. the `42` in `PROJ-42`)
     - Required: `projectId`, `index`
     - Task indexes are reassigned when a task moves between projects — use the returned task's `id` for long-lived references
   - `create-subtask` - Composite: create a new task as a subtask of an existing task (`parentTaskId`, `title`, optional `description`/`dueDate`/`priority`/`labels`/`assignees`/`bucketId`). Resolves the parent to inherit its project, creates the task, optionally attaches labels/assignees and places it in a Kanban bucket (reuses the `set-bucket` path), relates it to the parent (Vikunja's `subtask`/`parenttask` relation kinds — the parent is always the "base" task of the relation), then re-reads the parent to verify the relation landed. Best-effort by default: a failure after the task was created is reported honestly (including the orphaned task id) rather than silently rolled back; `atomic: true` opts into best-effort rollback (deletes the created task) per `CompositeOperation`'s design — see [ENDPOINT-PLAYBOOK.md §5](ENDPOINT-PLAYBOOK.md)
+  - `bulk-create-subtasks` - Composite: create several subtasks under the same parent in one call (`parentTaskId`, `subtasks` array of `{title, description?, dueDate?, priority?, labels?, assignees?, bucketId?}` — same per-item shape as `create-subtask`). Resolves the parent's project ONCE, then runs `create-subtask`'s own create -> label -> assign -> relate -> bucket -> verify sequence per subtask, sequentially, each with its own independent rollback scope — one subtask failing never blocks the rest of the batch. `atomic: true` opts into per-subtask best-effort rollback (never across subtasks). Response lists which subtasks were created/related/failed, with the reported success count derived from confirmed per-subtask successes
   - `list-subtasks` - Read composite: summarizes a task's subtasks (id/title/done/assignees) from the `"subtask"` slice of its `related_tasks`, in one call (`id`)
   - `duplicate` - Copy a task (labels, assignees, attachments, reminders) into the same project via `PUT /tasks/{taskID}/duplicate` (no request body). Creates a "copied from" relation between the new and original task. Direct parallel to `vikunja_projects`' `duplicate`
     - Required: `id` (the task to duplicate)
@@ -125,7 +127,7 @@ interface StandardResponse {
 Several task sub-resources also register as their own standalone tools (same
 handlers, `operation` field instead of `subcommand`, useful when you want a
 narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
-`bulk-create`/`bulk-update`/`bulk-delete`), `vikunja_task_assignees`
+`bulk-create`/`bulk-update`/`bulk-delete`/`bulk-set-bucket`), `vikunja_task_assignees`
 (`operation`: `assign`/`unassign`/`list-assignees`), `vikunja_task_comments`
 (`operation`: `comment`/`list`/`get`/`update`/`delete`),
 `vikunja_task_reminders` (`operation`: `add-reminder`/`remove-reminder`/`list-reminders`),
