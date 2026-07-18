@@ -1,105 +1,72 @@
 /**
  * Labels Tool Tests
+ *
+ * Migrated off node-vikunja (Wave D domain migration, tracking issue #28)
+ * onto `vikunjaRestRequest`. Mocks the REST layer directly (fetch), not a
+ * node-vikunja client — see docs/ENDPOINT-PLAYBOOK.md §6: mocks are built
+ * from the OpenAPI spec's response shape (models.Label), and every write
+ * asserts the actual outgoing request body.
  */
 
-import { jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { AuthManager } from '../../src/auth/AuthManager';
 import { registerLabelsTool } from '../../src/tools/labels';
 import { MCPError, ErrorCode } from '../../src/types';
-import { getClientFromContext } from '../../src/client';
-import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
+import type { MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
-// Mock the modules
-jest.mock('../../src/client', () => ({
-  getClientFromContext: jest.fn(),
-}));
-jest.mock('../../src/auth/AuthManager');
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
+
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  body?: unknown;
+  text?: string;
+}): Response {
+  const { ok = true, status = 200, statusText = 'OK' } = opts;
+  const text = opts.text !== undefined ? opts.text : JSON.stringify(opts.body ?? {});
+  return {
+    ok,
+    status,
+    statusText,
+    text: jest.fn(async () => text),
+  } as unknown as Response;
+}
 
 describe('Labels Tool', () => {
   let mockServer: MockServer;
   let mockAuthManager: MockAuthManager;
   let mockHandler: (args: any) => Promise<any>;
-  let mockClient: MockVikunjaClient;
 
   beforeEach(() => {
-    // Reset all mocks
     jest.clearAllMocks();
+    mockFetch.mockReset();
+    circuitBreakerRegistry.clear();
 
-    // Create mock client with labels service
-    mockClient = {
-      getToken: jest.fn().mockReturnValue('test-token'),
-      tasks: {
-        getAllTasks: jest.fn(),
-        getProjectTasks: jest.fn(),
-        createTask: jest.fn(),
-        getTask: jest.fn(),
-        updateTask: jest.fn(),
-        deleteTask: jest.fn(),
-        getTaskComments: jest.fn(),
-        createTaskComment: jest.fn(),
-        updateTaskLabels: jest.fn(),
-        bulkAssignUsersToTask: jest.fn(),
-        removeUserFromTask: jest.fn(),
-        bulkUpdateTasks: jest.fn(),
-      },
-      projects: {
-        getProjects: jest.fn(),
-        createProject: jest.fn(),
-        getProject: jest.fn(),
-        updateProject: jest.fn(),
-        deleteProject: jest.fn(),
-        createLinkShare: jest.fn(),
-        getLinkShares: jest.fn(),
-        getLinkShare: jest.fn(),
-        deleteLinkShare: jest.fn(),
-      },
-      labels: {
-        getLabels: jest.fn(),
-        getLabel: jest.fn(),
-        createLabel: jest.fn(),
-        updateLabel: jest.fn(),
-        deleteLabel: jest.fn(),
-      },
-      users: {
-        getAll: jest.fn(),
-      },
-      teams: {
-        getAll: jest.fn(),
-        create: jest.fn(),
-        delete: jest.fn(),
-      },
-      shares: {
-        getShareAuth: jest.fn(),
-      },
-    } as MockVikunjaClient;
-
-    // Mock auth manager
     mockAuthManager = {
       isAuthenticated: jest.fn().mockReturnValue(true),
-      getSession: jest.fn(),
+      getSession: jest.fn().mockReturnValue({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'test-token',
+      }),
       setSession: jest.fn(),
       clearSession: jest.fn(),
       connect: jest.fn(),
       getStatus: jest.fn(),
       isConnected: jest.fn(),
       disconnect: jest.fn(),
-    } as MockAuthManager;
+    } as unknown as MockAuthManager;
 
-    // Mock getClientFromContext and getClientFromContext
-    (getClientFromContext as jest.Mock).mockReturnValue(mockClient);
-    (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
-
-    // Mock server
     mockServer = {
       tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
     } as MockServer;
 
-    // Register the tool
-    registerLabelsTool(mockServer, mockAuthManager);
+    registerLabelsTool(mockServer, mockAuthManager as unknown as AuthManager);
 
-    // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_labels',
       expect.any(String),
@@ -136,8 +103,6 @@ describe('Labels Tool', () => {
         ),
       );
     });
-
-    // Remove this test as it's no longer applicable - getClientFromContext throws if not authenticated
   });
 
   describe('List Labels', () => {
@@ -154,21 +119,24 @@ describe('Labels Tool', () => {
         { id: 1, title: 'Bug', hex_color: '#ff0000' },
         { id: 2, title: 'Feature', hex_color: '#00ff00' },
       ];
-      mockClient.labels.getLabels.mockResolvedValue(mockLabels);
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabels }));
 
       const result = await mockHandler({ subcommand: 'list' });
 
-      expect(mockClient.labels.getLabels).toHaveBeenCalledWith({});
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/labels',
+        expect.objectContaining({ method: 'GET' }),
+      );
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('list-labels');
       expect(markdown).toContain('Retrieved 2 labels');
     });
 
     it('should list labels with pagination', async () => {
       const mockLabels = [{ id: 1, title: 'Bug' }];
-      mockClient.labels.getLabels.mockResolvedValue(mockLabels);
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabels }));
 
       const result = await mockHandler({
         subcommand: 'list',
@@ -176,33 +144,34 @@ describe('Labels Tool', () => {
         perPage: 10,
       });
 
-      expect(mockClient.labels.getLabels).toHaveBeenCalledWith({
-        page: 2,
-        per_page: 10,
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/labels?page=2&per_page=10',
+        expect.objectContaining({ method: 'GET' }),
+      );
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** list-labels");
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** list-labels');
       expect(markdown).toContain('Retrieved 1 label');
     });
 
     it('should list labels with search', async () => {
       const mockLabels = [{ id: 3, title: 'Security' }];
-      mockClient.labels.getLabels.mockResolvedValue(mockLabels);
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabels }));
 
       const result = await mockHandler({
         subcommand: 'list',
         search: 'sec',
       });
 
-      expect(mockClient.labels.getLabels).toHaveBeenCalledWith({
-        s: 'sec',
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/labels?s=sec',
+        expect.objectContaining({ method: 'GET' }),
+      );
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** list-labels");
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** list-labels');
       expect(markdown).toContain('Retrieved 1 label');
     });
   });
@@ -232,25 +201,28 @@ describe('Labels Tool', () => {
         description: 'Bug reports',
         hex_color: '#ff0000',
       };
-      mockClient.labels.getLabel.mockResolvedValue(mockLabel);
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabel }));
 
       const result = await mockHandler({
         subcommand: 'get',
         id: 1,
       });
 
-      expect(mockClient.labels.getLabel).toHaveBeenCalledWith(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/labels/1',
+        expect.objectContaining({ method: 'GET' }),
+      );
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('get-label');
       expect(markdown).toContain('Retrieved label "Bug"');
     });
 
     it('should throw NOT_FOUND error when label does not exist', async () => {
-      const error = new Error('Not found');
-      (error as any).statusCode = 404;
-      mockClient.labels.getLabel.mockRejectedValue(error);
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+      );
 
       await expect(
         mockHandler({
@@ -275,19 +247,22 @@ describe('Labels Tool', () => {
         id: 1,
         title: 'New Label',
       };
-      mockClient.labels.createLabel.mockResolvedValue(mockLabel);
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabel }));
 
       const result = await mockHandler({
         subcommand: 'create',
         title: 'New Label',
       });
 
-      expect(mockClient.labels.createLabel).toHaveBeenCalledWith({
-        title: 'New Label',
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/labels',
+        expect.objectContaining({ method: 'PUT' }),
+      );
+      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({ title: 'New Label' });
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-label');
       expect(markdown).toContain('Label "New Label" created successfully');
     });
@@ -299,7 +274,7 @@ describe('Labels Tool', () => {
         description: 'Priority tasks',
         hex_color: '#ff0000',
       };
-      mockClient.labels.createLabel.mockResolvedValue(mockLabel);
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabel }));
 
       const result = await mockHandler({
         subcommand: 'create',
@@ -308,37 +283,23 @@ describe('Labels Tool', () => {
         hexColor: '#ff0000',
       });
 
-      expect(mockClient.labels.createLabel).toHaveBeenCalledWith({
+      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({
         title: 'Priority',
         description: 'Priority tasks',
         hex_color: '#ff0000',
       });
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-label');
       expect(markdown).toContain('Label "Priority" created successfully');
     });
 
-    it('should validate hex color format', async () => {
-      // Test invalid hex color by checking the error at runtime
-      // The schema validation will prevent invalid hex colors
-      const invalidHexError = new Error('Invalid hex color');
-      mockClient.labels.createLabel.mockRejectedValue(invalidHexError);
-
-      await expect(
-        mockHandler({
-          subcommand: 'create',
-          title: 'Test Label',
-          hexColor: '#ff0000', // Valid hex color
-        }),
-      ).rejects.toThrow('vikunja_labels.create label failed: Invalid hex color');
-    });
-
-    it('should throw INVALID_PARAMS for bad request', async () => {
-      const error = new Error('Invalid hex color');
-      (error as any).statusCode = 400;
-      mockClient.labels.createLabel.mockRejectedValue(error);
+    it('should throw API_ERROR for bad request', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 400, statusText: 'Bad Request', text: 'Invalid hex color' }),
+      );
 
       await expect(
         mockHandler({
@@ -346,7 +307,7 @@ describe('Labels Tool', () => {
           title: 'Bad Label',
           hexColor: '#invalid',
         }),
-      ).rejects.toThrow(new MCPError(ErrorCode.API_ERROR, 'Failed to create label: Invalid hex color'));
+      ).rejects.toThrow('HTTP 400');
     });
   });
 
@@ -375,7 +336,7 @@ describe('Labels Tool', () => {
         title: 'Updated Label',
         hex_color: '#00ff00',
       };
-      mockClient.labels.updateLabel.mockResolvedValue(mockLabel);
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabel }));
 
       const result = await mockHandler({
         subcommand: 'update',
@@ -383,12 +344,15 @@ describe('Labels Tool', () => {
         title: 'Updated Label',
       });
 
-      expect(mockClient.labels.updateLabel).toHaveBeenCalledWith(1, {
-        title: 'Updated Label',
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/labels/1',
+        expect.objectContaining({ method: 'PUT' }),
+      );
+      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({ title: 'Updated Label' });
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('update-label');
       expect(markdown).toContain('Label "Updated Label" updated successfully');
     });
@@ -400,7 +364,7 @@ describe('Labels Tool', () => {
         description: 'New description',
         hex_color: '#0000ff',
       };
-      mockClient.labels.updateLabel.mockResolvedValue(mockLabel);
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabel }));
 
       const result = await mockHandler({
         subcommand: 'update',
@@ -410,14 +374,15 @@ describe('Labels Tool', () => {
         hexColor: '#0000ff',
       });
 
-      expect(mockClient.labels.updateLabel).toHaveBeenCalledWith(1, {
+      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({
         title: 'Complete Update',
         description: 'New description',
         hex_color: '#0000ff',
       });
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('update-label');
       expect(markdown).toContain('Label "Complete Update" updated successfully');
     });
@@ -428,7 +393,7 @@ describe('Labels Tool', () => {
         title: 'Label',
         description: '',
       };
-      mockClient.labels.updateLabel.mockResolvedValue(mockLabel);
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabel }));
 
       const result = await mockHandler({
         subcommand: 'update',
@@ -436,20 +401,24 @@ describe('Labels Tool', () => {
         description: '',
       });
 
-      expect(mockClient.labels.updateLabel).toHaveBeenCalledWith(1, {
-        description: '',
-      });
+      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({ description: '' });
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('update-label');
       expect(markdown).toContain('Label "Label" updated successfully');
     });
 
     it('should throw API_ERROR for permission errors', async () => {
-      const error = new Error('You do not have permission to perform this action');
-      (error as any).statusCode = 403;
-      mockClient.labels.updateLabel.mockRejectedValue(error);
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          ok: false,
+          status: 403,
+          statusText: 'Forbidden',
+          text: 'You do not have permission to perform this action',
+        }),
+      );
 
       await expect(
         mockHandler({
@@ -457,9 +426,21 @@ describe('Labels Tool', () => {
           id: 1,
           title: 'Forbidden Update',
         }),
-      ).rejects.toThrow(
-        new MCPError(ErrorCode.API_ERROR, 'Failed to update label: You do not have permission to perform this action'),
+      ).rejects.toThrow('HTTP 403');
+    });
+
+    it('should throw NOT_FOUND error when label does not exist', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
       );
+
+      await expect(
+        mockHandler({
+          subcommand: 'update',
+          id: 999,
+          title: 'New Title',
+        }),
+      ).rejects.toThrow(new MCPError(ErrorCode.NOT_FOUND, 'Label with ID 999 not found'));
     });
   });
 
@@ -473,26 +454,30 @@ describe('Labels Tool', () => {
     });
 
     it('should delete a label by ID', async () => {
-      const mockMessage = { message: 'Label deleted successfully' };
-      mockClient.labels.deleteLabel.mockResolvedValue(mockMessage);
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: { id: 1, title: 'Bug' } }),
+      );
 
       const result = await mockHandler({
         subcommand: 'delete',
         id: 1,
       });
 
-      expect(mockClient.labels.deleteLabel).toHaveBeenCalledWith(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/labels/1',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      parseMarkdown(markdown);
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('delete-label');
       expect(markdown).toContain('Label deleted successfully');
     });
 
     it('should throw NOT_FOUND error when label does not exist', async () => {
-      const error = new Error('Not found');
-      (error as any).statusCode = 404;
-      mockClient.labels.deleteLabel.mockRejectedValue(error);
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+      );
 
       await expect(
         mockHandler({
@@ -513,51 +498,30 @@ describe('Labels Tool', () => {
     });
 
     it('should handle generic errors', async () => {
-      mockClient.labels.getLabels.mockRejectedValue(new Error('Network error'));
+      // A 500 is retried by the REST helper's built-in retry loop — use a
+      // persistent mock (not `Once`) so the retried attempts still resolve
+      // instead of hitting jest's default `undefined` return.
+      mockFetch.mockResolvedValue(
+        mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'Network error' }),
+      );
 
       await expect(
         mockHandler({
           subcommand: 'list',
         }),
-      ).rejects.toThrow(
-        new MCPError(ErrorCode.API_ERROR, 'vikunja_labels.list label failed: Network error'),
-      );
+      ).rejects.toThrow('HTTP 500');
     });
 
-    it('should handle errors without response property', async () => {
-      mockClient.labels.getLabel.mockRejectedValue(new Error('Connection refused'));
+    it('should handle network-level fetch failures', async () => {
+      // Network-level failures are also retried — see above.
+      mockFetch.mockRejectedValue(new Error('Connection refused'));
 
       await expect(
         mockHandler({
           subcommand: 'get',
           id: 1,
         }),
-      ).rejects.toThrow(
-        new MCPError(ErrorCode.API_ERROR, 'vikunja_labels.get label failed: Connection refused'),
-      );
-    });
-
-    it('should use default message for 400 errors without message', async () => {
-      mockClient.labels.createLabel.mockRejectedValue({
-        statusCode: 400,
-      });
-
-      await expect(
-        mockHandler({
-          subcommand: 'create',
-          title: 'Bad Label',
-        }),
-      ).rejects.toThrow(new MCPError(ErrorCode.API_ERROR, 'Failed to create label: Unknown error'));
-    });
-
-    it('should handle non-Error exceptions', async () => {
-      mockClient.labels.getLabels.mockRejectedValue('String error');
-
-      await expect(
-        mockHandler({
-          subcommand: 'list',
-        }),
-      ).rejects.toThrow('vikunja_labels.list label failed: Unknown error');
+      ).rejects.toThrow('Connection refused');
     });
   });
 });

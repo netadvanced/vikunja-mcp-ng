@@ -8,7 +8,12 @@ import { getDefaultVerbosity } from '../../transforms/base';
 import type { ResponseMetadata } from '../../types/responses';
 import type { ResponseData } from '../../utils/simple-response';
 import type { AorpFactoryResult, AorpVerbosityLevel } from '../../types';
-import type { Project } from 'node-vikunja';
+import type { components } from '../../types/generated/vikunja-openapi';
+
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
+// docs/API-SPEC.md, replacing node-vikunja's `Project` type (Wave D domain
+// migration, tracking issue #28).
+type Project = components['schemas']['models.Project'];
 
 /**
  * Project tree node interface

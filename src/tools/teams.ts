@@ -8,13 +8,16 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
-import { getClientFromContext } from '../client';
 import { wrapToolError } from '../utils/error-handler';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
-import type { Team } from 'node-vikunja';
-import type { TypedVikunjaClient } from '../types/node-vikunja-extended';
 import { validateAndConvertId } from '../utils/validation';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
+import type { components } from '../types/generated/vikunja-openapi';
+
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
+// docs/API-SPEC.md, replacing node-vikunja's `Team` type (Wave D domain
+// migration, tracking issue #28).
+type Team = components['schemas']['models.Team'];
 
 interface TeamListParams {
   page?: number;
@@ -103,7 +106,6 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
         );
       }
 
-      const client = await getClientFromContext() as TypedVikunjaClient;
       const subcommand = args.subcommand;
 
       try {
@@ -115,7 +117,18 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
             if (args.perPage !== undefined) params.per_page = args.perPage;
             if (args.search !== undefined) params.s = args.search;
 
-            const teams = await client.teams.getTeams(params);
+            const query = new URLSearchParams();
+            if (params.page !== undefined) query.set('page', String(params.page));
+            if (params.per_page !== undefined) query.set('per_page', String(params.per_page));
+            if (params.s !== undefined) query.set('s', params.s);
+            const queryString = query.toString();
+
+            const teamsResult = await vikunjaRestRequest<Team[]>(
+              authManager,
+              'GET',
+              `/teams${queryString ? `?${queryString}` : ''}`,
+            );
+            const teams = teamsResult ?? [];
 
             const response = createStandardResponse(
               'list-teams',
@@ -146,7 +159,7 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
               teamData.description = args.description;
             }
 
-            const team = await client.teams.createTeam(teamData as Team);
+            const team = await vikunjaRestRequest<Team>(authManager, 'PUT', '/teams', teamData);
 
             const response = createStandardResponse(
               'create-team',
@@ -172,8 +185,6 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
 
             const teamId = validateAndConvertId(args.id, 'id');
 
-            // node-vikunja's TeamService has no getTeam method; call the
-            // endpoint directly. GET /teams/{id} is the correct path/verb.
             const team = await vikunjaRestRequest<Team>(
               authManager,
               'GET',
@@ -249,9 +260,11 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
 
             const teamId = validateAndConvertId(args.id, 'id');
 
-            // node-vikunja's TeamService.deleteTeam always exists in the
-            // pinned client version, so no fallback path is reachable/testable.
-            const result = await client.teams.deleteTeam(teamId);
+            const result = await vikunjaRestRequest<{ message?: string }>(
+              authManager,
+              'DELETE',
+              `/teams/${teamId}`,
+            );
 
             const response = createStandardResponse(
               'delete-team',

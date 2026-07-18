@@ -203,67 +203,67 @@ export function registerProjectsTool(
           switch (args.subcommand) {
             // CRUD operations
             case 'list':
-              return await listProjects(args as ListProjectsArgs);
+              return await listProjects(args as ListProjectsArgs, authManager);
 
             case 'get':
               if (args.id === undefined || args.id === null) {
                 throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
               }
               validateId(args.id, 'id');
-              return await getProject(args as GetProjectArgs);
+              return await getProject(args as GetProjectArgs, authManager);
 
             case 'create':
               if (!args.title) {
                 throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project title is required for create operation');
               }
-              return await createProject(args as CreateProjectArgs);
+              return await createProject(args as CreateProjectArgs, authManager);
 
           case 'update':
             if (!args.id) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for update operation');
             }
-            return await updateProject(args as UpdateProjectArgs);
+            return await updateProject(args as UpdateProjectArgs, authManager);
 
           case 'delete':
             if (!args.id) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for delete operation');
             }
-            return await deleteProject(args as DeleteProjectArgs);
+            return await deleteProject(args as DeleteProjectArgs, authManager);
 
           case 'archive':
             if (!args.id) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for archive operation');
             }
-            return await archiveProject(args as ArchiveProjectArgs);
+            return await archiveProject(args as ArchiveProjectArgs, authManager);
 
           case 'unarchive':
             if (!args.id) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for unarchive operation');
             }
-            return await unarchiveProject(args as ArchiveProjectArgs);
+            return await unarchiveProject(args as ArchiveProjectArgs, authManager);
 
           // Hierarchy operations
           case 'get-children':
             if (!args.id) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for get-children operation');
             }
-            return await getProjectChildren(args as GetChildrenArgs, context);
+            return await getProjectChildren(args as GetChildrenArgs, context, authManager);
 
           case 'get-tree':
-            return await getProjectTree(args as GetTreeArgs, context);
+            return await getProjectTree(args as GetTreeArgs, context, authManager);
 
           case 'get-breadcrumb':
             if (!args.id) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for get-breadcrumb operation');
             }
-            return await getProjectBreadcrumb(args as GetBreadcrumbArgs, context);
+            return await getProjectBreadcrumb(args as GetBreadcrumbArgs, context, authManager);
 
           case 'move':
             if (args.id === undefined || args.id === null) {
               throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for move operation');
             }
             validateId(args.id, 'id');
-            return await moveProject(args as MoveProjectArgs, context);
+            return await moveProject(args as MoveProjectArgs, context, authManager);
 
           // Sharing operations — link shares
           case 'create-share':

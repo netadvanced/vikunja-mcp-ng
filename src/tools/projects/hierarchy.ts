@@ -1,16 +1,24 @@
 /**
  * Project Hierarchy Operations Module
  * Handles complex hierarchical operations like tree building, breadcrumbs, and moves
+ *
+ * Migrated off node-vikunja (Wave D domain migration, tracking issue #28)
+ * onto `vikunjaRestRequest` + types generated from the vendored OpenAPI spec.
+ * `moveProject` reuses `buildProjectUpdatePayload` from `crud.ts` — see that
+ * module's doc comment and docs/API_NOTES.md "Project Operations" for why an
+ * omitted `parentProjectId` on move means "move to root" rather than "leave
+ * untouched" (the one exception to the merge-preserves-untouched-fields
+ * default).
  */
 
-import type { Project } from 'node-vikunja';
 import { MCPError, ErrorCode } from '../../types';
-import { getClientFromContext } from '../../client';
-import { transformApiError, handleStatusCodeError } from '../../utils/error-handler';
+import { vikunjaRestRequest } from '../../utils/vikunja-rest';
+import type { AuthManager } from '../../auth/AuthManager';
+import { transformApiError } from '../../utils/error-handler';
 import { validateId, validateMoveConstraints } from './validation';
 import { createProjectResponse, createProjectTreeResponse, createBreadcrumbResponse } from './response-formatter';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
-import { buildProjectUpdatePayload } from './crud';
+import { buildProjectUpdatePayload, fetchAllProjects, type VikunjaProject } from './crud';
 
 // MCP response type
 type McpResponse = {
@@ -67,7 +75,7 @@ export interface MoveProjectArgs {
 /**
  * Project tree node interface
  */
-interface ProjectTreeNode extends Project {
+interface ProjectTreeNode extends VikunjaProject {
   children: ProjectTreeNode[];
   depth: number;
 }
@@ -77,24 +85,23 @@ interface ProjectTreeNode extends Project {
  */
 export async function getProjectChildren(
   args: GetChildrenArgs,
-  _context: unknown
+  _context: unknown,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { id, includeArchived = false, verbosity, useOptimizedFormat, useAorp } = args;
 
   try {
     validateId(id, 'project id');
 
-    const client = await getClientFromContext();
-
     // Verify the project exists
-    await client.projects.getProject(id);
+    await vikunjaRestRequest<VikunjaProject>(authManager, 'GET', `/projects/${id}`);
 
     // Get all projects and filter for children
-    const allProjects = await client.projects.getProjects({ per_page: 1000 });
-    let children = allProjects.filter((p: Project) => p.parent_project_id === id);
+    const allProjects = await fetchAllProjects(authManager);
+    let children = allProjects.filter((p: VikunjaProject) => p.parent_project_id === id);
 
     if (!includeArchived) {
-      children = children.filter((p: Project) => !p.is_archived);
+      children = children.filter((p: VikunjaProject) => !p.is_archived);
     }
 
     const childWord = children.length === 1 ? 'child project' : 'child projects';
@@ -129,7 +136,8 @@ export async function getProjectChildren(
  */
 export async function getProjectTree(
   args: GetTreeArgs,
-  _context: unknown
+  _context: unknown,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { id, maxDepth = 10, includeArchived = false, verbosity, useOptimizedFormat, useAorp } = args;
 
@@ -140,12 +148,10 @@ export async function getProjectTree(
   validateId(id, 'id');
 
   try {
-    const client = await getClientFromContext();
-
     // Get all projects
-    const allProjects = await client.projects.getProjects({ per_page: 1000 });
+    const allProjects = await fetchAllProjects(authManager);
 
-    const rootProjects = allProjects.filter((p: Project) => !p.parent_project_id);
+    const rootProjects = allProjects.filter((p: VikunjaProject) => !p.parent_project_id);
 
     // If specific ID is provided, find that project and its subtree
     let rootNode: ProjectTreeNode | null;
@@ -155,7 +161,7 @@ export async function getProjectTree(
 
     if (id) {
       validateId(id, 'project id');
-      const rootProject = allProjects.find((p: Project) => p.id === id);
+      const rootProject = allProjects.find((p: VikunjaProject) => p.id === id);
       if (!rootProject) {
         throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${id} not found`);
       }
@@ -173,7 +179,7 @@ export async function getProjectTree(
     } else {
       // Build forest of all root projects
       treeData = rootProjects
-        .map((project: Project) => buildProjectTree(project, allProjects, 0, maxDepth, includeArchived))
+        .map((project: VikunjaProject) => buildProjectTree(project, allProjects, 0, maxDepth, includeArchived))
         .filter(Boolean) as ProjectTreeNode[];
 
       totalNodes = treeData.reduce((sum, node) => sum + countTreeNodes(node), 0);
@@ -223,18 +229,17 @@ export async function getProjectTree(
  */
 export async function getProjectBreadcrumb(
   args: GetBreadcrumbArgs,
-  _context: unknown
+  _context: unknown,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { id, verbosity, useOptimizedFormat, useAorp } = args;
 
   try {
     validateId(id, 'project id');
 
-    const client = await getClientFromContext();
-
     // Get all projects for navigation
-    const allProjects = await client.projects.getProjects({ per_page: 1000 });
-    const targetProject = allProjects.find((p: Project) => p.id === id);
+    const allProjects = await fetchAllProjects(authManager);
+    const targetProject = allProjects.find((p: VikunjaProject) => p.id === id);
 
     if (!targetProject) {
       throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${id} not found`);
@@ -283,21 +288,20 @@ export async function getProjectBreadcrumb(
  */
 export async function moveProject(
   args: MoveProjectArgs,
-  _context: unknown
+  _context: unknown,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { id, parentProjectId, verbosity, useOptimizedFormat, useAorp } = args;
 
   try {
     validateId(id, 'project id');
 
-    const client = await getClientFromContext();
-
     // Fetch all projects once: this both validates that the project exists
     // and provides the hierarchy data validateMoveConstraints needs, so a
     // separate getProject(id) round-trip isn't required.
-    const allProjects = await client.projects.getProjects({ per_page: 1000 });
+    const allProjects = await fetchAllProjects(authManager);
 
-    const currentProject = allProjects.find((p: Project) => p.id === id);
+    const currentProject = allProjects.find((p: VikunjaProject) => p.id === id);
     if (!currentProject) {
       throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${id} not found`);
     }
@@ -312,7 +316,7 @@ export async function moveProject(
 
     // If parent is specified, validate it exists
     if (parentProjectId) {
-      const parentProject = allProjects.find((p: Project) => p.id === parentProjectId);
+      const parentProject = allProjects.find((p: VikunjaProject) => p.id === parentProjectId);
       if (!parentProject) {
         throw new MCPError(ErrorCode.NOT_FOUND, `Parent project with ID ${parentProjectId} not found`);
       }
@@ -327,7 +331,12 @@ export async function moveProject(
     const updateData = buildProjectUpdatePayload(currentProject, {
       parentProjectId: parentProjectId ?? 0,
     });
-    const updatedProject = await client.projects.updateProject(id, updateData);
+    const updatedProject = await vikunjaRestRequest<VikunjaProject>(
+      authManager,
+      'POST',
+      `/projects/${id}`,
+      updateData,
+    );
 
     const parentInfo = parentProjectId
       ? ` to parent project ${parentProjectId}`
@@ -356,10 +365,20 @@ export async function moveProject(
       ]
     };
   } catch (error) {
+    // `vikunjaRestRequest` throws MCPError with the HTTP status under
+    // `details.statusCode` (not a bare `.statusCode` property
+    // `handleStatusCodeError` looks for), so a REST-layer 404 from the
+    // terminal update call is translated explicitly here — matching
+    // crud.ts's `rethrowProjectNotFound`. Errors already thrown above as
+    // MCPError (e.g. the NOT_FOUND checks against the fetched project list)
+    // carry no `details.statusCode` and pass through unchanged.
     if (error instanceof MCPError) {
+      if (error.details?.statusCode === 404) {
+        throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${id} not found`);
+      }
       throw error;
     }
-    throw handleStatusCodeError(error, 'move project', id, `Project with ID ${id} not found`);
+    throw transformApiError(error, 'Failed to move project');
   }
 }
 
@@ -367,8 +386,8 @@ export async function moveProject(
  * Builds a project tree recursively
  */
 function buildProjectTree(
-  project: Project,
-  allProjects: Project[],
+  project: VikunjaProject,
+  allProjects: VikunjaProject[],
   currentDepth: number,
   maxDepth: number,
   includeArchived: boolean = false
@@ -378,9 +397,9 @@ function buildProjectTree(
   }
 
   const children = allProjects
-    .filter((p: Project) => p.parent_project_id === project.id)
-    .filter((p: Project) => includeArchived || !p.is_archived)
-    .map((child: Project) =>
+    .filter((p: VikunjaProject) => p.parent_project_id === project.id)
+    .filter((p: VikunjaProject) => includeArchived || !p.is_archived)
+    .map((child: VikunjaProject) =>
       buildProjectTree(child, allProjects, currentDepth + 1, maxDepth, includeArchived)
     )
     .filter(Boolean) as ProjectTreeNode[];
@@ -412,8 +431,8 @@ function getTreeDepth(node: ProjectTreeNode): number {
 /**
  * Builds breadcrumb path from root to target project
  */
-function buildBreadcrumb(targetId: number, allProjects: Project[]): Project[] {
-  const breadcrumb: Project[] = [];
+function buildBreadcrumb(targetId: number, allProjects: VikunjaProject[]): VikunjaProject[] {
+  const breadcrumb: VikunjaProject[] = [];
   const visited = new Set<number>();
   let currentId: number | undefined = targetId;
 
@@ -425,7 +444,7 @@ function buildBreadcrumb(targetId: number, allProjects: Project[]): Project[] {
       );
     }
 
-    const project = allProjects.find((p: Project) => p.id === currentId);
+    const project = allProjects.find((p: VikunjaProject) => p.id === currentId);
     if (!project) {
       break;
     }

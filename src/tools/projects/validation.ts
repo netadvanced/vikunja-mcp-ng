@@ -4,8 +4,13 @@
  */
 
 import { MCPError, ErrorCode } from '../../types';
-import type { Project } from 'node-vikunja';
+import type { components } from '../../types/generated/vikunja-openapi';
 import { validateId as validateSharedId } from '../../utils/validation';
+
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
+// docs/API-SPEC.md, replacing node-vikunja's `Project` type (Wave D domain
+// migration, tracking issue #28).
+type Project = components['schemas']['models.Project'];
 
 /**
  * Maximum allowed depth for project hierarchy to prevent excessive nesting

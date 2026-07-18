@@ -8,11 +8,22 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
-import { getClientFromContext } from '../client';
 import type { User, ExtendedUserSettings } from '../types/vikunja';
 import { handleAuthError } from '../utils/auth-error-handler';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import type { components } from '../types/generated/vikunja-openapi';
+
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
+// docs/API-SPEC.md, replacing node-vikunja's types (Wave D domain migration,
+// tracking issue #28). GET /user returns v1.UserWithSettings (id/username/
+// email/created/updated flat, everything else nested under `settings` —
+// see transformUser below and docs/API_NOTES.md). GET /users (search)
+// returns plain user.User with no `settings` key at all.
+type VikunjaUserWithSettings = components['schemas']['v1.UserWithSettings'];
+type VikunjaUser = components['schemas']['user.User'];
+type VikunjaUserGeneralSettings = components['schemas']['models.UserGeneralSettings'];
+type VikunjaMessage = components['schemas']['models.Message'];
 
 interface SearchParams {
   page?: number;
@@ -28,7 +39,8 @@ function isUserObject(obj: unknown): obj is Record<string, unknown> {
 }
 
 /**
- * Safely transforms a node-vikunja User to our extended User interface
+ * Safely transforms a raw REST user object (v1.UserWithSettings or
+ * user.User) to our extended User interface
  */
 function transformUser(rawUser: unknown): User {
   if (!isUserObject(rawUser)) {
@@ -127,17 +139,15 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
         );
       }
 
-      const client = await getClientFromContext();
-
       try {
         const subcommand = args.subcommand;
 
         switch (subcommand) {
           case 'current': {
-            const rawUser = await client.users.getUser();
+            const rawUser = await vikunjaRestRequest<VikunjaUserWithSettings>(authManager, 'GET', '/user');
 
-            // Safely transform the node-vikunja User to our extended User interface
-            // Extended properties may not be available from all Vikunja API versions
+            // Safely transform the raw REST user response to our extended User
+            // interface. Extended properties may not be available from all Vikunja API versions
             const enhancedUser: User = transformUser(rawUser);
 
             const response = createStandardResponse(
@@ -162,7 +172,22 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
             if (args.page !== undefined) params.page = args.page;
             if (args.perPage !== undefined) params.per_page = args.perPage;
 
-            const users = await client.users.getUsers(params);
+            // GET /users only accepts the `s` query param per the spec (no
+            // page/per_page) — node-vikunja's UserSearchParams type includes
+            // pagination fields the real endpoint doesn't support, so the
+            // request only ever sent `s` server-side even before this
+            // migration. `params`/`paramsMetadata` still record whatever the
+            // caller passed for the response metadata below.
+            const query = new URLSearchParams();
+            if (params.s !== undefined) query.set('s', params.s);
+            const queryString = query.toString();
+
+            const usersResult = await vikunjaRestRequest<VikunjaUser[]>(
+              authManager,
+              'GET',
+              `/users${queryString ? `?${queryString}` : ''}`,
+            );
+            const users = usersResult ?? [];
 
             const paramsMetadata: Record<string, string | number> = {};
             if (args.search !== undefined) paramsMetadata.search = args.search;
@@ -188,9 +213,9 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
 
           case 'settings': {
             // Get current user first to get their settings
-            const rawUser = await client.users.getUser();
+            const rawUser = await vikunjaRestRequest<VikunjaUserWithSettings>(authManager, 'GET', '/user');
 
-            // Safely transform the node-vikunja User to our extended User interface
+            // Safely transform the raw REST user response to our extended User interface
             const user: User = transformUser(rawUser);
 
             // Handle the actual API response format gracefully
@@ -277,16 +302,17 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
               affectedFields.push('overdueTasksRemindersTime');
             }
 
-            // Use type assertion to bypass node-vikunja's limited UserSettings type
-            // The API accepts these additional fields even if the TypeScript types don't include them
-            await client.users.updateGeneralSettings(
-              settings as unknown as Parameters<typeof client.users.updateGeneralSettings>[0],
+            await vikunjaRestRequest<VikunjaMessage>(
+              authManager,
+              'POST',
+              '/user/settings/general',
+              settings as unknown as VikunjaUserGeneralSettings,
             );
 
             // Get updated user info
-            const rawUpdatedUser = await client.users.getUser();
+            const rawUpdatedUser = await vikunjaRestRequest<VikunjaUserWithSettings>(authManager, 'GET', '/user');
 
-            // Safely transform the node-vikunja User to our extended User interface
+            // Safely transform the raw REST user response to our extended User interface
             const updatedUser: User = transformUser(rawUpdatedUser);
 
             const response = createStandardResponse(
@@ -345,6 +371,23 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
         }
       } catch (error) {
         if (error instanceof MCPError) {
+          // A REST-layer 401/403 on a user endpoint is the documented
+          // Vikunja API quirk (docs/API_NOTES.md "User Endpoint
+          // Authentication"): the same token that works everywhere else can
+          // be rejected on `/user`/`/users`. Route it through the same
+          // friendly auth-error translation node-vikunja-sourced exceptions
+          // used to get — `vikunjaRestRequest` throws `MCPError` with the
+          // HTTP status under `details.statusCode`, not a `.message` string
+          // `handleAuthError`'s pattern matching recognizes, so this has to
+          // be detected structurally rather than by message content.
+          const statusCode = error.details?.statusCode;
+          if (statusCode === 401 || statusCode === 403) {
+            handleAuthError(
+              new Error(`${statusCode} ${error.message}`),
+              `user.${args.subcommand}`,
+              `User operation error: ${error.message}`,
+            );
+          }
           throw error;
         }
 

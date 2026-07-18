@@ -3,21 +3,17 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AuthManager } from '../../src/auth/AuthManager';
 import { registerTeamsTool } from '../../src/tools/teams';
 import { MCPError, ErrorCode } from '../../src/types';
-import type { Team } from 'node-vikunja';
-import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
+import type { MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
-
-// Import the function we're mocking
-import { getClientFromContext } from '../../src/client';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 
-// Mock the modules
-jest.mock('../../src/client', () => ({
-  getClientFromContext: jest.fn(),
-  setGlobalClientFactory: jest.fn(),
-  clearGlobalClientFactory: jest.fn(),
-}));
-jest.mock('../../src/auth/AuthManager');
+interface Team {
+  id?: number;
+  name?: string;
+  description?: string;
+  created?: string;
+  updated?: string;
+}
 
 /** Minimal Response-like object for the vikunjaRestRequest helper. */
 function mockFetchResponse(opts: {
@@ -38,7 +34,6 @@ function mockFetchResponse(opts: {
 }
 
 describe('Teams Tool', () => {
-  let mockClient: MockVikunjaClient;
   let mockAuthManager: MockAuthManager;
   let mockServer: MockServer;
   let toolHandler: (args: any) => Promise<any>;
@@ -66,57 +61,7 @@ describe('Teams Tool', () => {
     // deliberately failing scenario doesn't trip the breaker for a later
     // test sharing the same auto-derived breaker name.
     circuitBreakerRegistry.clear();
-
-    // Setup mock client
-    mockClient = {
-      getToken: jest.fn().mockReturnValue('test-token'),
-      tasks: {
-        getAllTasks: jest.fn(),
-        getProjectTasks: jest.fn(),
-        createTask: jest.fn(),
-        getTask: jest.fn(),
-        updateTask: jest.fn(),
-        deleteTask: jest.fn(),
-        getTaskComments: jest.fn(),
-        createTaskComment: jest.fn(),
-        updateTaskLabels: jest.fn(),
-        bulkAssignUsersToTask: jest.fn(),
-        removeUserFromTask: jest.fn(),
-        bulkUpdateTasks: jest.fn(),
-      },
-      projects: {
-        getProjects: jest.fn(),
-        createProject: jest.fn(),
-        getProject: jest.fn(),
-        updateProject: jest.fn(),
-        deleteProject: jest.fn(),
-        createLinkShare: jest.fn(),
-        getLinkShares: jest.fn(),
-        getLinkShare: jest.fn(),
-        deleteLinkShare: jest.fn(),
-      },
-      labels: {
-        getLabels: jest.fn(),
-        getLabel: jest.fn(),
-        createLabel: jest.fn(),
-        updateLabel: jest.fn(),
-        deleteLabel: jest.fn(),
-      },
-      users: {
-        getAll: jest.fn(),
-      },
-      teams: {
-        getAll: jest.fn(),
-        create: jest.fn(),
-        delete: jest.fn(),
-        getTeams: jest.fn(),
-        createTeam: jest.fn(),
-        deleteTeam: jest.fn(),
-      },
-      shares: {
-        getShareAuth: jest.fn(),
-      },
-    } as MockVikunjaClient;
+    (global.fetch as jest.Mock | undefined)?.mockReset?.();
 
     // Setup mock auth manager
     mockAuthManager = {
@@ -132,10 +77,6 @@ describe('Teams Tool', () => {
       isConnected: jest.fn(),
       disconnect: jest.fn(),
     } as MockAuthManager;
-
-    // Mock getClientFromContext
-    (getClientFromContext as jest.Mock).mockReturnValue(mockClient);
-    (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
 
     // Setup mock server
     mockServer = {
@@ -173,11 +114,17 @@ describe('Teams Tool', () => {
   describe('list subcommand', () => {
     it('should list all teams', async () => {
       const mockTeams = [mockTeam, { ...mockTeam, id: 2, name: 'Team 2' }];
-      mockClient.teams.getTeams.mockResolvedValue(mockTeams);
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: mockTeams })) as any;
 
       const result = await callTool('list');
 
-      expect(mockClient.teams.getTeams).toHaveBeenCalledWith({});
+      expect(global.fetch).toHaveBeenCalledWith('https://vikunja.example.com/api/v1/teams', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
+        },
+      });
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -187,51 +134,52 @@ describe('Teams Tool', () => {
     });
 
     it('should support pagination parameters', async () => {
-      mockClient.teams.getTeams.mockResolvedValue([mockTeam]);
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: [mockTeam] })) as any;
 
       await callTool('list', { page: 2, perPage: 10 });
 
-      expect(mockClient.teams.getTeams).toHaveBeenCalledWith({
-        page: 2,
-        per_page: 10,
-      });
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/teams?page=2&per_page=10',
+        expect.objectContaining({ method: 'GET' }),
+      );
     });
 
     it('should support search parameter', async () => {
-      mockClient.teams.getTeams.mockResolvedValue([mockTeam]);
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: [mockTeam] })) as any;
 
       await callTool('list', { search: 'test' });
 
-      expect(mockClient.teams.getTeams).toHaveBeenCalledWith({
-        s: 'test',
-      });
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/teams?s=test',
+        expect.objectContaining({ method: 'GET' }),
+      );
     });
 
     it('should handle API errors', async () => {
-      mockClient.teams.getTeams.mockRejectedValue(new Error('API Error'));
+      global.fetch = jest.fn().mockResolvedValue(
+        mockFetchResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+      ) as any;
 
-      await expect(callTool('list')).rejects.toThrow('vikunja_teams.list team failed: API Error');
-    });
-
-    it('should handle non-Error API errors', async () => {
-      mockClient.teams.getTeams.mockRejectedValue('String error');
-
-      await expect(callTool('list')).rejects.toThrow('vikunja_teams.list team failed: Unknown error');
+      await expect(callTool('list')).rejects.toThrow('HTTP 500');
     });
   });
 
   describe('create subcommand', () => {
     it('should create a team', async () => {
-      mockClient.teams.createTeam.mockResolvedValue(mockTeam);
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: mockTeam })) as any;
 
       const result = await callTool('create', {
         name: 'Test Team',
         description: 'Test team description',
       });
 
-      expect(mockClient.teams.createTeam).toHaveBeenCalledWith({
-        name: 'Test Team',
-        description: 'Test team description',
+      expect(global.fetch).toHaveBeenCalledWith('https://vikunja.example.com/api/v1/teams', {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: 'Test Team', description: 'Test team description' }),
       });
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
@@ -246,11 +194,11 @@ describe('Teams Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.teams.createTeam.mockRejectedValue(new Error('Creation failed'));
+      global.fetch = jest.fn().mockResolvedValue(
+        mockFetchResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'Creation failed' }),
+      ) as any;
 
-      await expect(callTool('create', { name: 'New Team' })).rejects.toThrow(
-        'vikunja_teams.create team failed: Creation failed',
-      );
+      await expect(callTool('create', { name: 'New Team' })).rejects.toThrow('HTTP 500');
     });
   });
 
@@ -394,11 +342,17 @@ describe('Teams Tool', () => {
 
     it('should delete a team successfully', async () => {
       const mockResponse = { message: 'The team was successfully deleted.' };
-      mockClient.teams.deleteTeam = jest.fn().mockResolvedValue(mockResponse);
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: mockResponse })) as any;
 
       const result = await callTool('delete', { id: 1 });
 
-      expect(mockClient.teams.deleteTeam).toHaveBeenCalledWith(1);
+      expect(global.fetch).toHaveBeenCalledWith('https://vikunja.example.com/api/v1/teams/1', {
+        method: 'DELETE',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
+        },
+      });
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
       expect(markdown).toContain("## ✅ Success");
@@ -408,11 +362,14 @@ describe('Teams Tool', () => {
 
     it('should handle string ID', async () => {
       const mockResponse = { message: 'The team was successfully deleted.' };
-      mockClient.teams.deleteTeam = jest.fn().mockResolvedValue(mockResponse);
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: mockResponse })) as any;
 
       const result = await callTool('delete', { id: '5' });
 
-      expect(mockClient.teams.deleteTeam).toHaveBeenCalledWith(5);
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/teams/5',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
       expect(markdown).toContain("## ✅ Success");
@@ -420,11 +377,11 @@ describe('Teams Tool', () => {
     });
 
     it('should handle team not found error', async () => {
-      mockClient.teams.deleteTeam = jest.fn().mockRejectedValue(new Error('Team not found'));
+      global.fetch = jest.fn().mockResolvedValue(
+        mockFetchResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Team not found' }),
+      ) as any;
 
-      await expect(callTool('delete', { id: 999 })).rejects.toThrow(
-        'vikunja_teams.delete team failed: Team not found',
-      );
+      await expect(callTool('delete', { id: 999 })).rejects.toThrow('HTTP 404');
     });
   });
 
@@ -699,28 +656,30 @@ describe('Teams Tool', () => {
 
   describe('error handling', () => {
     it('should pass through MCPError instances', async () => {
-      const customError = new MCPError(ErrorCode.API_ERROR, 'Custom error');
-      mockClient.teams.getTeams.mockRejectedValue(customError);
+      // vikunjaRestRequest always throws MCPError, so a fetch-level failure
+      // ends up here as an MCPError already — wrapToolError returns it
+      // unchanged (see src/utils/error-handler.ts's `wrap()`).
+      global.fetch = jest.fn().mockRejectedValue(new MCPError(ErrorCode.API_ERROR, 'Custom error')) as any;
 
       await expect(callTool('list')).rejects.toThrow('Custom error');
     });
 
     it('should handle non-MCPError objects in catch block', async () => {
-      // Mock getTeams to throw a non-MCPError
-      mockClient.teams.getTeams = jest.fn().mockImplementation(() => {
-        throw new Error('Unexpected error');
-      });
+      // A raw Error thrown by fetch is wrapped by vikunjaRestRequestRaw into
+      // an MCPError carrying the original message.
+      global.fetch = jest.fn().mockRejectedValue(new Error('Unexpected error')) as any;
 
-      await expect(callTool('list')).rejects.toThrow('vikunja_teams.list team failed: Unexpected error');
+      await expect(callTool('list')).rejects.toThrow('Unexpected error');
     });
 
     it('should handle non-Error thrown values in main handler', async () => {
-      // Mock getTeams to throw a non-Error value
-      mockClient.teams.getTeams = jest.fn().mockImplementation(() => {
-        throw 'String error thrown';
-      });
+      // A non-Error rejection is stringified by vikunjaRestRequestRaw rather
+      // than becoming "Unknown error" (that fallback lives in wrapToolError,
+      // which never sees this — the REST layer already wrapped it as an
+      // MCPError by the time it gets there).
+      global.fetch = jest.fn().mockRejectedValue('String error thrown') as any;
 
-      await expect(callTool('list')).rejects.toThrow('vikunja_teams.list team failed: Unknown error');
+      await expect(callTool('list')).rejects.toThrow('String error thrown');
     });
   });
 

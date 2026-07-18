@@ -1,15 +1,37 @@
 /**
  * Project CRUD Operations Module
  * Handles basic Create, Read, Update, Delete operations for projects
+ *
+ * Migrated off node-vikunja (Wave D domain migration, tracking issue #28)
+ * onto `vikunjaRestRequest` + types generated from the vendored OpenAPI spec.
+ * `POST /projects/{id}` is a full-model-replace endpoint (see
+ * docs/ENDPOINT-PLAYBOOK.md §4 and docs/API_NOTES.md "Project Operations"):
+ * `buildProjectUpdatePayload` fetches the current project and merges the
+ * caller's changes onto it before every update-shaped write
+ * (updateProject/archiveProject/unarchiveProject/moveProject) so omitted
+ * fields survive the round trip — this merge semantics is load-bearing and
+ * must not change shape during this migration.
+ *
+ * Endpoints (verified against docs/vikunja-openapi.json):
+ *   - GET  /projects       list
+ *   - PUT  /projects       create
+ *   - GET  /projects/{id}  get
+ *   - POST /projects/{id}  update (full-model-replace)
+ *   - DELETE /projects/{id} delete
  */
 
-import type { Project, ProjectListParams } from 'node-vikunja';
+import type { AuthManager } from '../../auth/AuthManager';
 import { MCPError, ErrorCode, type CreateProjectRequest } from '../../types';
-import { getClientFromContext } from '../../client';
-import { transformApiError, handleStatusCodeError } from '../../utils/error-handler';
+import { transformApiError } from '../../utils/error-handler';
+import { vikunjaRestRequest } from '../../utils/vikunja-rest';
 import { validateId, validateHexColor, validateProjectData, calculateProjectDepth } from './validation';
 import { createProjectResponse, createProjectListResponse } from './response-formatter';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
+import type { components } from '../../types/generated/vikunja-openapi';
+
+// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
+// docs/API-SPEC.md. All fields are optional per the spec.
+export type VikunjaProject = components['schemas']['models.Project'];
 
 // MCP response type
 export type McpResponse = {
@@ -97,7 +119,7 @@ export interface ArchiveProjectArgs {
  * model, so omitted fields would otherwise be cleared (e.g. parent_project_id → 0).
  */
 export function buildProjectUpdatePayload(
-  currentProject: Project,
+  currentProject: VikunjaProject,
   updates: {
     title?: string;
     description?: string;
@@ -105,7 +127,7 @@ export function buildProjectUpdatePayload(
     isArchived?: boolean;
     hexColor?: string;
   }
-): Project {
+): VikunjaProject {
   return {
     ...currentProject,
     ...(updates.title !== undefined && { title: updates.title.trim() }),
@@ -117,31 +139,65 @@ export function buildProjectUpdatePayload(
 }
 
 /**
+ * Re-throws a REST-layer 404 (`vikunjaRestRequest` throws `MCPError` with
+ * `details.statusCode`, not the bare `.statusCode` property node-vikunja's
+ * errors carried, so the shared `handleStatusCodeError`/`wrapToolError` 404
+ * detection no longer fires) as the same friendly "Project with ID X not
+ * found" message the node-vikunja-backed implementation produced — the same
+ * translation `rethrowProjectNotFound` in `sharing.ts` established for this
+ * domain in an earlier Wave D PR. Everything else (MCPError or not) is
+ * rethrown/wrapped unchanged.
+ */
+function rethrowProjectNotFound(error: unknown, id: number, context: string): never {
+  if (error instanceof MCPError) {
+    if (error.details?.statusCode === 404) {
+      throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${id} not found`);
+    }
+    throw error;
+  }
+  throw transformApiError(error, context);
+}
+
+/**
+ * Fetches all projects (single large page) for hierarchy validation
+ * (depth/parent checks). Failures are swallowed by callers that treat this
+ * as best-effort — see the original node-vikunja-backed behavior this
+ * preserves.
+ */
+async function fetchAllProjects(authManager: AuthManager): Promise<VikunjaProject[]> {
+  const response = await vikunjaRestRequest<VikunjaProject[]>(
+    authManager,
+    'GET',
+    '/projects?per_page=1000',
+  );
+  return Array.isArray(response) ? response : [];
+}
+
+/**
  * Lists projects with pagination and filtering
  */
 export async function listProjects(
-  args: ListProjectsArgs
+  args: ListProjectsArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { page = 1, perPage = 50, search, isArchived, verbosity, useOptimizedFormat, useAorp } = args;
 
   try {
-    const client = await getClientFromContext();
-
-    // Build params object, only including defined properties to satisfy exactOptionalPropertyTypes
-    const params: ProjectListParams = {
-      page,
-      per_page: perPage,
-    };
-
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('per_page', String(perPage));
     if (search !== undefined) {
-      params.s = search;
+      params.set('s', search);
     }
-
     if (isArchived !== undefined) {
-      params.is_archived = isArchived;
+      params.set('is_archived', String(isArchived));
     }
 
-    const response = await client.projects.getProjects(params);
+    const response = await vikunjaRestRequest<VikunjaProject[]>(
+      authManager,
+      'GET',
+      `/projects?${params.toString()}`,
+    );
 
     // GET /projects returns a bare array — there is no {data, total} envelope
     // (see docs/API_NOTES.md). Total item/page counts are therefore unknown;
@@ -191,15 +247,15 @@ export async function listProjects(
  * Gets a single project by ID
  */
 export async function getProject(
-  args: GetProjectArgs
+  args: GetProjectArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { id, verbosity, useOptimizedFormat, useAorp } = args;
 
   try {
     validateId(id, 'project id');
 
-    const client = await getClientFromContext();
-    const project = await client.projects.getProject(id);
+    const project = await vikunjaRestRequest<VikunjaProject>(authManager, 'GET', `/projects/${id}`);
 
     const result = createProjectResponse(
       'get_project',
@@ -220,10 +276,10 @@ export async function getProject(
       ]
     };
   } catch (error) {
-    if (error instanceof MCPError) {
+    if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
       throw error;
     }
-    throw handleStatusCodeError(error, 'get project', id, `Project with ID ${id} not found`);
+    rethrowProjectNotFound(error, id, 'Failed to get project');
   }
 }
 
@@ -231,7 +287,8 @@ export async function getProject(
  * Creates a new project
  */
 export async function createProject(
-  args: CreateProjectArgs
+  args: CreateProjectArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const {
     title,
@@ -262,14 +319,11 @@ export async function createProject(
 
     validateProjectData(validationData);
 
-    const client = await getClientFromContext();
-
     // Get all projects to validate hierarchy if parent is specified
-    let allProjects: Project[] = [];
+    let allProjects: VikunjaProject[] = [];
     if (parentProjectId) {
       try {
-        const allProjectsResponse = await client.projects.getProjects({ per_page: 1000 });
-        allProjects = Array.isArray(allProjectsResponse) ? allProjectsResponse : [allProjectsResponse];
+        allProjects = await fetchAllProjects(authManager);
       } catch {
         // Continue with validation if we can't get all projects
       }
@@ -315,7 +369,12 @@ export async function createProject(
       projectData.hex_color = normalizedColor;
     }
 
-    const createdProject = await client.projects.createProject(projectData as Project);
+    const createdProject = await vikunjaRestRequest<VikunjaProject>(
+      authManager,
+      'PUT',
+      '/projects',
+      projectData,
+    );
 
     const result = createProjectResponse(
       'create_project',
@@ -347,7 +406,8 @@ export async function createProject(
  * Updates an existing project
  */
 export async function updateProject(
-  args: UpdateProjectArgs
+  args: UpdateProjectArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const {
     id,
@@ -382,17 +442,14 @@ export async function updateProject(
       validateHexColor(hexColor);
     }
 
-    const client = await getClientFromContext();
-
     // Get current project
-    const currentProject = await client.projects.getProject(id);
+    const currentProject = await vikunjaRestRequest<VikunjaProject>(authManager, 'GET', `/projects/${id}`);
 
     // Get all projects for hierarchy validation
-    let allProjects: Project[] = [];
+    let allProjects: VikunjaProject[] = [];
     if (parentProjectId !== undefined || (currentProject && currentProject.parent_project_id)) {
       try {
-        const allProjectsResponse = await client.projects.getProjects({ per_page: 1000 });
-        allProjects = Array.isArray(allProjectsResponse) ? allProjectsResponse : [allProjectsResponse];
+        allProjects = await fetchAllProjects(authManager);
       } catch {
         // Continue if we can't get all projects
       }
@@ -446,7 +503,12 @@ export async function updateProject(
 
     const updateData = buildProjectUpdatePayload(currentProject, fieldUpdates);
 
-    const updatedProject = await client.projects.updateProject(id, updateData);
+    const updatedProject = await vikunjaRestRequest<VikunjaProject>(
+      authManager,
+      'POST',
+      `/projects/${id}`,
+      updateData,
+    );
 
     const result = createProjectResponse(
       'update_project',
@@ -467,15 +529,10 @@ export async function updateProject(
       ]
     };
   } catch (error) {
-    if (error instanceof MCPError) {
+    if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
       throw error;
     }
-    throw handleStatusCodeError(
-      error,
-      'update project',
-      id,
-      `Project with ID ${id} not found`
-    );
+    rethrowProjectNotFound(error, id, 'Failed to update project');
   }
 }
 
@@ -483,19 +540,18 @@ export async function updateProject(
  * Deletes a project
  */
 export async function deleteProject(
-  args: DeleteProjectArgs
+  args: DeleteProjectArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { id, verbosity, useOptimizedFormat, useAorp } = args;
 
   try {
     validateId(id, 'project id');
 
-    const client = await getClientFromContext();
-
     // Get project details before deletion
-    const project = await client.projects.getProject(id);
+    const project = await vikunjaRestRequest<VikunjaProject>(authManager, 'GET', `/projects/${id}`);
 
-    await client.projects.deleteProject(id);
+    await vikunjaRestRequest(authManager, 'DELETE', `/projects/${id}`);
 
     const result = createProjectResponse(
       'delete_project',
@@ -516,15 +572,10 @@ export async function deleteProject(
       ]
     };
   } catch (error) {
-    if (error instanceof MCPError) {
+    if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
       throw error;
     }
-    throw handleStatusCodeError(
-      error,
-      'delete project',
-      id,
-      `Project with ID ${id} not found`
-    );
+    rethrowProjectNotFound(error, id, 'Failed to delete project');
   }
 }
 
@@ -532,17 +583,16 @@ export async function deleteProject(
  * Archives a project
  */
 export async function archiveProject(
-  args: ArchiveProjectArgs
+  args: ArchiveProjectArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { id, verbosity, useOptimizedFormat, useAorp } = args;
 
   try {
     validateId(id, 'project id');
 
-    const client = await getClientFromContext();
-
     // Get current project first
-    const currentProject = await client.projects.getProject(id);
+    const currentProject = await vikunjaRestRequest<VikunjaProject>(authManager, 'GET', `/projects/${id}`);
 
     // Check if project is already archived
     if (currentProject.is_archived) {
@@ -567,9 +617,11 @@ export async function archiveProject(
     }
 
     // Archive the project (merge so parent/other fields are not wiped)
-    const project = await client.projects.updateProject(
-      id,
-      buildProjectUpdatePayload(currentProject, { isArchived: true })
+    const project = await vikunjaRestRequest<VikunjaProject>(
+      authManager,
+      'POST',
+      `/projects/${id}`,
+      buildProjectUpdatePayload(currentProject, { isArchived: true }),
     );
 
     const result = createProjectResponse(
@@ -591,15 +643,10 @@ export async function archiveProject(
       ]
     };
   } catch (error) {
-    if (error instanceof MCPError) {
+    if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
       throw error;
     }
-    throw handleStatusCodeError(
-      error,
-      'archive project',
-      id,
-      `Project with ID ${id} not found`
-    );
+    rethrowProjectNotFound(error, id, 'Failed to archive project');
   }
 }
 
@@ -607,17 +654,16 @@ export async function archiveProject(
  * Unarchives a project
  */
 export async function unarchiveProject(
-  args: ArchiveProjectArgs
+  args: ArchiveProjectArgs,
+  authManager: AuthManager,
 ): Promise<McpResponse> {
   const { id, verbosity, useOptimizedFormat, useAorp } = args;
 
   try {
     validateId(id, 'project id');
 
-    const client = await getClientFromContext();
-
     // Get current project first
-    const currentProject = await client.projects.getProject(id);
+    const currentProject = await vikunjaRestRequest<VikunjaProject>(authManager, 'GET', `/projects/${id}`);
 
     // Check if project is already active (not archived)
     if (!currentProject.is_archived) {
@@ -642,9 +688,11 @@ export async function unarchiveProject(
     }
 
     // Unarchive the project (merge so parent/other fields are not wiped)
-    const project = await client.projects.updateProject(
-      id,
-      buildProjectUpdatePayload(currentProject, { isArchived: false })
+    const project = await vikunjaRestRequest<VikunjaProject>(
+      authManager,
+      'POST',
+      `/projects/${id}`,
+      buildProjectUpdatePayload(currentProject, { isArchived: false }),
     );
 
     const result = createProjectResponse(
@@ -666,14 +714,14 @@ export async function unarchiveProject(
       ]
     };
   } catch (error) {
-    if (error instanceof MCPError) {
+    if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
       throw error;
     }
-    throw handleStatusCodeError(
-      error,
-      'unarchive project',
-      id,
-      `Project with ID ${id} not found`
-    );
+    rethrowProjectNotFound(error, id, 'Failed to unarchive project');
   }
 }
+
+// Internal helper re-exported for hierarchy.ts (fetches the full project
+// list for depth/parent validation, matching the per_page: 1000 convention
+// the node-vikunja-backed implementation used).
+export { fetchAllProjects };

@@ -1,29 +1,28 @@
+/**
+ * Users Tool Tests
+ *
+ * Migrated off node-vikunja (Wave D domain migration, tracking issue #28)
+ * onto `vikunjaRestRequest`. Mocks the REST layer directly (module-level
+ * mock of `vikunjaRestRequest`, the same approach the pre-existing
+ * 'timezones' subcommand test already used) rather than a node-vikunja
+ * client — see docs/ENDPOINT-PLAYBOOK.md §6.
+ */
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AuthManager } from '../../src/auth/AuthManager';
 import { registerUsersTool } from '../../src/tools/users';
 import { MCPError, ErrorCode } from '../../src/types';
-import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
+import type { MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
 
 // Import the function we're mocking
-import { getClientFromContext } from '../../src/client';
 import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
 
-// Mock the modules
-jest.mock('../../src/client', () => ({
-  getClientFromContext: jest.fn(),
-}));
 jest.mock('../../src/auth/AuthManager');
-// 'timezones' calls GET /user/timezones via the direct-REST helper (not
-// node-vikunja — see docs/ENDPOINT-PLAYBOOK.md §3), unlike every other
-// subcommand in this file which goes through the mocked node-vikunja client.
 jest.mock('../../src/utils/vikunja-rest', () => ({
   vikunjaRestRequest: jest.fn(),
 }));
 
 describe('Users Tool', () => {
-  let mockClient: MockVikunjaClient;
   let mockAuthManager: MockAuthManager;
   let mockServer: MockServer;
   let toolHandler: (args: any) => Promise<any>;
@@ -69,22 +68,6 @@ describe('Users Tool', () => {
   beforeEach(() => {
     (vikunjaRestRequest as jest.Mock).mockReset();
 
-    // Setup mock client
-    mockClient = {
-      getToken: jest.fn(),
-      tasks: {} as any,
-      projects: {} as any,
-      labels: {} as any,
-      teams: {} as any,
-      shares: {} as any,
-      users: {
-        getAll: jest.fn(),
-        getUser: jest.fn(),
-        getUsers: jest.fn(),
-        updateGeneralSettings: jest.fn(),
-      } as any,
-    } as MockVikunjaClient;
-
     // Setup mock auth manager
     mockAuthManager = {
       isAuthenticated: jest.fn().mockReturnValue(true),
@@ -100,17 +83,13 @@ describe('Users Tool', () => {
       clearSession: jest.fn(),
     } as MockAuthManager;
 
-    // Mock getClientFromContext
-    (getClientFromContext as jest.Mock).mockReturnValue(mockClient);
-    (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
-
     // Setup mock server
     mockServer = {
       tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
     } as MockServer;
 
     // Register the tool
-    registerUsersTool(mockServer, mockAuthManager);
+    registerUsersTool(mockServer, mockAuthManager as unknown as AuthManager);
 
     // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
@@ -148,7 +127,7 @@ describe('Users Tool', () => {
     it('should allow operations with JWT authentication', async () => {
       mockAuthManager.isAuthenticated.mockReturnValue(true);
       mockAuthManager.getAuthType.mockReturnValue('jwt');
-      mockClient.users.getUser.mockResolvedValue(mockUser);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue(mockUser);
 
       const result = await callTool('current');
 
@@ -162,11 +141,11 @@ describe('Users Tool', () => {
 
   describe('current subcommand', () => {
     it('should get current user info', async () => {
-      mockClient.users.getUser.mockResolvedValue(mockUser);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue(mockUser);
 
       const result = await callTool('current');
 
-      expect(mockClient.users.getUser).toHaveBeenCalled();
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/user');
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -176,13 +155,13 @@ describe('Users Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.users.getUser.mockRejectedValue(new Error('API Error'));
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(new Error('API Error'));
 
       await expect(callTool('current')).rejects.toThrow('User operation error: API Error');
     });
 
     it('should handle non-Error API errors', async () => {
-      mockClient.users.getUser.mockRejectedValue('String error');
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue('String error');
 
       await expect(callTool('current')).rejects.toThrow('User operation error: String error');
     });
@@ -193,7 +172,7 @@ describe('Users Tool', () => {
       // overdue_tasks_reminders_enabled/overdue_tasks_reminders_time/name live
       // under `settings`, not flat on the response. Before the fix,
       // transformUser() read these flat and they were silently dropped.
-      mockClient.users.getUser.mockResolvedValue(mockUser);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue(mockUser);
 
       const result = await callTool('current');
 
@@ -211,11 +190,11 @@ describe('Users Tool', () => {
   describe('search subcommand', () => {
     it('should search for users', async () => {
       const mockUsers = [mockUser, { ...mockUser, id: 2, username: 'user2' }];
-      mockClient.users.getUsers.mockResolvedValue(mockUsers);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue(mockUsers);
 
       const result = await callTool('search');
 
-      expect(mockClient.users.getUsers).toHaveBeenCalledWith({});
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/users');
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -225,34 +204,33 @@ describe('Users Tool', () => {
     });
 
     it('should support search parameter', async () => {
-      mockClient.users.getUsers.mockResolvedValue([mockUser]);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([mockUser]);
 
       const result = await callTool('search', { search: 'test' });
 
-      expect(mockClient.users.getUsers).toHaveBeenCalledWith({
-        s: 'test',
-      });
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/users?s=test');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
       expect(markdown).toContain("## ✅ Success");
       expect(markdown).toContain("**Operation:** search-users");
     });
 
-    it('should support pagination parameters', async () => {
-      mockClient.users.getUsers.mockResolvedValue([mockUser]);
+    it('should accept pagination parameters without sending them (GET /users has no page/per_page)', async () => {
+      // GET /users only accepts `s` per the OpenAPI spec — node-vikunja's
+      // SearchParams type modeled page/per_page but the real endpoint has no
+      // such query params. page/perPage are still accepted as tool arguments
+      // (surfaced in response metadata) but are not sent over the wire.
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([mockUser]);
 
       const result = await callTool('search', { page: 2, perPage: 10 });
 
-      expect(mockClient.users.getUsers).toHaveBeenCalledWith({
-        page: 2,
-        per_page: 10,
-      });
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/users');
       const markdown = result.content[0].text;
-      expect(markdown).toContain('2'); // page number
+      expect(markdown).toContain('2'); // page number surfaced in metadata
     });
 
     it('should handle API errors', async () => {
-      mockClient.users.getUsers.mockRejectedValue(new Error('Search failed'));
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(new Error('Search failed'));
 
       await expect(callTool('search')).rejects.toThrow('User operation error: Search failed');
     });
@@ -260,11 +238,11 @@ describe('Users Tool', () => {
 
   describe('settings subcommand', () => {
     it('should get user settings', async () => {
-      mockClient.users.getUser.mockResolvedValue(mockUser);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue(mockUser);
 
       const result = await callTool('settings');
 
-      expect(mockClient.users.getUser).toHaveBeenCalled();
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/user');
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -274,7 +252,7 @@ describe('Users Tool', () => {
     });
 
     it('should surface nested settings fields in the settings summary (B2-users-settings)', async () => {
-      mockClient.users.getUser.mockResolvedValue(mockUser);
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue(mockUser);
 
       const result = await callTool('settings');
 
@@ -289,7 +267,7 @@ describe('Users Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.users.getUser.mockRejectedValue(new Error('Failed to get settings'));
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(new Error('Failed to get settings'));
 
       await expect(callTool('settings')).rejects.toThrow(
         'User operation error: Failed to get settings',
@@ -303,18 +281,23 @@ describe('Users Tool', () => {
         ...mockUser,
         settings: { ...mockUser.settings, name: 'Updated Name', language: 'es' },
       };
-      mockClient.users.updateGeneralSettings.mockResolvedValue({ message: 'Success' });
-      mockClient.users.getUser.mockResolvedValue(updatedUser);
+      (vikunjaRestRequest as jest.Mock)
+        .mockResolvedValueOnce({ message: 'Success' })
+        .mockResolvedValueOnce(updatedUser);
 
       const result = await callTool('update-settings', {
         name: 'Updated Name',
         language: 'es',
       });
 
-      expect(mockClient.users.updateGeneralSettings).toHaveBeenCalledWith({
-        name: 'Updated Name',
-        language: 'es',
-      });
+      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(
+        1,
+        mockAuthManager,
+        'POST',
+        '/user/settings/general',
+        { name: 'Updated Name', language: 'es' },
+      );
+      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(2, mockAuthManager, 'GET', '/user');
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -324,8 +307,9 @@ describe('Users Tool', () => {
     });
 
     it('should update all settings fields', async () => {
-      mockClient.users.updateGeneralSettings.mockResolvedValue({ message: 'Success' });
-      mockClient.users.getUser.mockResolvedValue(mockUser);
+      (vikunjaRestRequest as jest.Mock)
+        .mockResolvedValueOnce({ message: 'Success' })
+        .mockResolvedValueOnce(mockUser);
 
       const result = await callTool('update-settings', {
         name: 'New Name',
@@ -335,13 +319,19 @@ describe('Users Tool', () => {
         frontendSettings: { theme: 'dark' },
       });
 
-      expect(mockClient.users.updateGeneralSettings).toHaveBeenCalledWith({
-        name: 'New Name',
-        language: 'fr',
-        timezone: 'Europe/Paris',
-        week_start: 0,
-        frontend_settings: { theme: 'dark' },
-      });
+      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(
+        1,
+        mockAuthManager,
+        'POST',
+        '/user/settings/general',
+        {
+          name: 'New Name',
+          language: 'fr',
+          timezone: 'Europe/Paris',
+          week_start: 0,
+          frontend_settings: { theme: 'dark' },
+        },
+      );
       const markdown = result.content[0].text;
       expect(markdown).toContain('name');
       expect(markdown).toContain('language');
@@ -349,16 +339,17 @@ describe('Users Tool', () => {
     });
 
     it('should update notification preferences', async () => {
-      mockClient.users.updateGeneralSettings.mockResolvedValue({ message: 'Success' });
-      mockClient.users.getUser.mockResolvedValue({
-        ...mockUser,
-        settings: {
-          ...mockUser.settings,
-          email_reminders_enabled: false,
-          overdue_tasks_reminders_enabled: true,
-          overdue_tasks_reminders_time: '08:00',
-        },
-      });
+      (vikunjaRestRequest as jest.Mock)
+        .mockResolvedValueOnce({ message: 'Success' })
+        .mockResolvedValueOnce({
+          ...mockUser,
+          settings: {
+            ...mockUser.settings,
+            email_reminders_enabled: false,
+            overdue_tasks_reminders_enabled: true,
+            overdue_tasks_reminders_time: '08:00',
+          },
+        });
 
       const result = await callTool('update-settings', {
         emailRemindersEnabled: false,
@@ -366,19 +357,26 @@ describe('Users Tool', () => {
         overdueTasksRemindersTime: '08:00',
       });
 
-      expect(mockClient.users.updateGeneralSettings).toHaveBeenCalledWith({
-        email_reminders_enabled: false,
-        overdue_tasks_reminders_enabled: true,
-        overdue_tasks_reminders_time: '08:00',
-      });
+      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(
+        1,
+        mockAuthManager,
+        'POST',
+        '/user/settings/general',
+        {
+          email_reminders_enabled: false,
+          overdue_tasks_reminders_enabled: true,
+          overdue_tasks_reminders_time: '08:00',
+        },
+      );
       const markdown = result.content[0].text;
       expect(markdown).toContain('emailRemindersEnabled');
       expect(markdown).toContain('overdueTasksRemindersEnabled');
     });
 
     it('should update mixed settings including notifications', async () => {
-      mockClient.users.updateGeneralSettings.mockResolvedValue({ message: 'Success' });
-      mockClient.users.getUser.mockResolvedValue(mockUser);
+      (vikunjaRestRequest as jest.Mock)
+        .mockResolvedValueOnce({ message: 'Success' })
+        .mockResolvedValueOnce(mockUser);
 
       const result = await callTool('update-settings', {
         name: 'Updated Name',
@@ -386,11 +384,17 @@ describe('Users Tool', () => {
         overdueTasksRemindersTime: '10:00',
       });
 
-      expect(mockClient.users.updateGeneralSettings).toHaveBeenCalledWith({
-        name: 'Updated Name',
-        email_reminders_enabled: true,
-        overdue_tasks_reminders_time: '10:00',
-      });
+      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(
+        1,
+        mockAuthManager,
+        'POST',
+        '/user/settings/general',
+        {
+          name: 'Updated Name',
+          email_reminders_enabled: true,
+          overdue_tasks_reminders_time: '10:00',
+        },
+      );
       const markdown = result.content[0].text;
       expect(markdown).toContain('name');
       expect(markdown).toContain('emailRemindersEnabled');
@@ -403,20 +407,25 @@ describe('Users Tool', () => {
     });
 
     it('should handle weekStart as 0', async () => {
-      mockClient.users.updateGeneralSettings.mockResolvedValue({ message: 'Success' });
-      mockClient.users.getUser.mockResolvedValue(mockUser);
+      (vikunjaRestRequest as jest.Mock)
+        .mockResolvedValueOnce({ message: 'Success' })
+        .mockResolvedValueOnce(mockUser);
 
       const result = await callTool('update-settings', { weekStart: 0 });
 
-      expect(mockClient.users.updateGeneralSettings).toHaveBeenCalledWith({
-        week_start: 0,
-      });
+      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(
+        1,
+        mockAuthManager,
+        'POST',
+        '/user/settings/general',
+        { week_start: 0 },
+      );
       const markdown = result.content[0].text;
       expect(markdown).toContain('weekStart');
     });
 
     it('should handle API errors', async () => {
-      mockClient.users.updateGeneralSettings.mockRejectedValue(new Error('Update failed'));
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(new Error('Update failed'));
 
       await expect(callTool('update-settings', { name: 'New Name' })).rejects.toThrow(
         'User operation error: Update failed',
@@ -474,34 +483,36 @@ describe('Users Tool', () => {
   describe('error handling', () => {
     it('should pass through MCPError instances', async () => {
       const customError = new MCPError(ErrorCode.API_ERROR, 'Custom error');
-      mockClient.users.getUser.mockRejectedValue(customError);
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(customError);
 
       await expect(callTool('current')).rejects.toThrow('Custom error');
     });
 
     it('should handle non-MCPError objects in catch block', async () => {
-      // Mock getUser to throw a non-MCPError
-      mockClient.users.getUser = jest.fn().mockImplementation(() => {
-        throw new Error('Unexpected error');
-      });
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(new Error('Unexpected error'));
 
       await expect(callTool('current')).rejects.toThrow('User operation error: Unexpected error');
     });
 
     it('should handle non-Error thrown values in main handler', async () => {
-      // Mock getUser to throw a non-Error value
-      mockClient.users.getUser = jest.fn().mockImplementation(() => {
-        throw 'String error thrown';
-      });
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue('String error thrown');
 
       await expect(callTool('current')).rejects.toThrow(
         'User operation error: String error thrown',
       );
     });
 
-    it('should handle authentication errors for current user endpoint', async () => {
-      // Mock getUser to throw an authentication error
-      mockClient.users.getUser.mockRejectedValue(new Error('401 Unauthorized: Invalid auth token'));
+    it('should handle authentication errors for current user endpoint (documented Vikunja API limitation, see docs/API_NOTES.md)', async () => {
+      // vikunjaRestRequest throws MCPError with details.statusCode set from
+      // the HTTP response, not a `.message` string — this is the documented
+      // "same token works everywhere except /user" quirk (API_NOTES.md
+      // "User Endpoint Authentication"), detected structurally in the
+      // catch block (see src/tools/users.ts) rather than by message pattern.
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(
+        new MCPError(ErrorCode.API_ERROR, 'Vikunja REST request failed (GET /user): HTTP 401 Unauthorized', {
+          statusCode: 401,
+        }),
+      );
 
       await expect(callTool('current')).rejects.toThrow(
         'User endpoint authentication error. This is a known Vikunja API limitation. ' +
@@ -511,8 +522,7 @@ describe('Users Tool', () => {
     });
 
     it('should handle token-related errors for current user endpoint', async () => {
-      // Mock getUser to throw a token error
-      mockClient.users.getUser.mockRejectedValue(new Error('Token validation failed'));
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(new Error('Token validation failed'));
 
       await expect(callTool('current')).rejects.toThrow(
         'User operation error: Token validation failed'
@@ -520,7 +530,11 @@ describe('Users Tool', () => {
     });
 
     it('should handle auth errors for search operation', async () => {
-      mockClient.users.getUsers.mockRejectedValue(new Error('403 Forbidden'));
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(
+        new MCPError(ErrorCode.API_ERROR, 'Vikunja REST request failed (GET /users): HTTP 403 Forbidden', {
+          statusCode: 403,
+        }),
+      );
 
       await expect(callTool('search')).rejects.toThrow(
         'User endpoint authentication error. This is a known Vikunja API limitation.',
@@ -528,7 +542,11 @@ describe('Users Tool', () => {
     });
 
     it('should handle auth errors for settings operation', async () => {
-      mockClient.users.getUser.mockRejectedValue(new Error('unauthorized'));
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(
+        new MCPError(ErrorCode.API_ERROR, 'Vikunja REST request failed (GET /user): HTTP 401 Unauthorized', {
+          statusCode: 401,
+        }),
+      );
 
       await expect(callTool('settings')).rejects.toThrow(
         'User endpoint authentication error. This is a known Vikunja API limitation.',
@@ -536,7 +554,13 @@ describe('Users Tool', () => {
     });
 
     it('should handle auth errors for update-settings operation', async () => {
-      mockClient.users.updateGeneralSettings.mockRejectedValue(new Error('Auth token expired'));
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(
+        new MCPError(
+          ErrorCode.API_ERROR,
+          'Vikunja REST request failed (POST /user/settings/general): HTTP 401 Unauthorized — token expired',
+          { statusCode: 401 },
+        ),
+      );
 
       await expect(callTool('update-settings', { name: 'New Name' })).rejects.toThrow(
         'JWT token has expired',

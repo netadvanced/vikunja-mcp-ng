@@ -1,56 +1,103 @@
+/**
+ * Tests for project CRUD + hierarchy operations (list/get/create/update/
+ * delete/archive/unarchive, get-children/get-tree/get-breadcrumb/move),
+ * migrated off node-vikunja onto `vikunjaRestRequest` (Wave D domain
+ * migration, tracking issue #28).
+ *
+ * Mocks the REST layer directly (fetch), not a node-vikunja client — see
+ * docs/ENDPOINT-PLAYBOOK.md §6. A small route table keyed by
+ * "METHOD pathname" (query strings ignored) stands in for the real API;
+ * every write test also asserts the outgoing request body.
+ */
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AuthManager } from '../../src/auth/AuthManager';
 import { registerProjectsTool } from '../../src/tools/projects';
-import type { Project, User } from 'node-vikunja';
-import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
+import type { MockAuthManager, MockServer } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
-// Import the function we're mocking
-import { getClientFromContext } from '../../src/client';
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
 
-// Mock the modules
-jest.mock('../../src/client', () => ({
-  getClientFromContext: jest.fn(),
-}));
-jest.mock('../../src/auth/AuthManager');
+/** Minimal Response-like object for the vikunjaRestRequest helper. */
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  body?: unknown;
+  text?: string;
+}): Response {
+  const { ok = true, status = 200, statusText = 'OK' } = opts;
+  const text = opts.text !== undefined ? opts.text : JSON.stringify(opts.body ?? {});
+  return {
+    ok,
+    status,
+    statusText,
+    text: jest.fn(async () => text),
+  } as unknown as Response;
+}
+
+/**
+ * Routes `fetch` calls by `METHOD pathname` (the query string is ignored —
+ * `/projects` is hit both by `list` with pagination params and by the
+ * `per_page=1000` "fetch all projects" helper used for hierarchy/depth
+ * validation, but no single test exercises both, so this is unambiguous in
+ * practice). A route may be a single Response (reused for every call to that
+ * key) or an array (consumed in order, the last entry repeating once
+ * exhausted).
+ */
+function routeFetch(routes: Record<string, Response | Response[]>): void {
+  const counters: Record<string, number> = {};
+  mockFetch.mockImplementation(async (url: unknown, init?: RequestInit) => {
+    const u = new URL(String(url));
+    const pathname = u.pathname.replace(/^\/api\/v\d+/, '');
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const key = `${method} ${pathname}`;
+    const entry = routes[key];
+    if (!entry) {
+      throw new Error(`Unmocked fetch call in test: ${key}`);
+    }
+    if (Array.isArray(entry)) {
+      const idx = counters[key] ?? 0;
+      counters[key] = idx + 1;
+      return entry[Math.min(idx, entry.length - 1)];
+    }
+    return entry;
+  });
+}
+
+/** Finds the body sent on the (n-th, 1-indexed) call matching method+pathname. */
+function bodyOf(method: string, pathname: string, occurrence = 1): unknown {
+  const calls = mockFetch.mock.calls as [string, RequestInit][];
+  const matches = calls.filter(([url, init]) => {
+    const u = new URL(String(url));
+    const p = u.pathname.replace(/^\/api\/v\d+/, '');
+    return (init?.method ?? 'GET').toUpperCase() === method && p === pathname;
+  });
+  const call = matches[occurrence - 1];
+  if (!call?.[1]?.body) return undefined;
+  return JSON.parse(call[1].body as string);
+}
 
 describe('Projects Tool', () => {
-  let mockClient: MockVikunjaClient;
   let mockAuthManager: MockAuthManager;
   let mockServer: MockServer;
   let toolHandler: (args: any) => Promise<any>;
 
-  // Helper function to call a tool
   async function callTool(subcommand: string, args: Record<string, any> = {}) {
     if (typeof toolHandler !== 'function') {
       throw new Error('toolHandler is not a function in callTool');
     }
-
-    return toolHandler({
-      subcommand,
-      ...args,
-    });
+    return toolHandler({ subcommand, ...args });
   }
 
-  // Mock data
-  const mockUser: User = {
-    id: 1,
-    username: 'testuser',
-    email: 'test@example.com',
-    name: 'Test User',
-    created: new Date().toISOString(),
-    updated: new Date().toISOString(),
-  };
-
-  const mockProject: Project = {
+  const mockProject = {
     id: 1,
     title: 'Test Project',
     description: 'Test Description',
-    parent_project_id: undefined,
     is_archived: false,
     hex_color: '#4287f5',
-    owner: mockUser,
     created: new Date().toISOString(),
     updated: new Date().toISOString(),
     position: 1,
@@ -59,59 +106,15 @@ describe('Projects Tool', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFetch.mockReset();
+    circuitBreakerRegistry.clear();
 
-    // Setup mock client
-    mockClient = {
-      getToken: jest.fn().mockReturnValue('test-token'),
-      tasks: {
-        getAllTasks: jest.fn(),
-        getProjectTasks: jest.fn(),
-        createTask: jest.fn(),
-        getTask: jest.fn(),
-        updateTask: jest.fn(),
-        deleteTask: jest.fn(),
-        getTaskComments: jest.fn(),
-        createTaskComment: jest.fn(),
-        updateTaskLabels: jest.fn(),
-        bulkAssignUsersToTask: jest.fn(),
-        removeUserFromTask: jest.fn(),
-        bulkUpdateTasks: jest.fn(),
-      },
-      projects: {
-        getProjects: jest.fn(),
-        createProject: jest.fn(),
-        getProject: jest.fn(),
-        updateProject: jest.fn(),
-        deleteProject: jest.fn(),
-        createLinkShare: jest.fn(),
-        getLinkShares: jest.fn(),
-        getLinkShare: jest.fn(),
-        deleteLinkShare: jest.fn(),
-      },
-      labels: {
-        getLabels: jest.fn(),
-        getLabel: jest.fn(),
-        createLabel: jest.fn(),
-        updateLabel: jest.fn(),
-        deleteLabel: jest.fn(),
-      },
-      users: {
-        getAll: jest.fn(),
-      },
-      teams: {
-        getAll: jest.fn(),
-        create: jest.fn(),
-        delete: jest.fn(),
-      },
-      shares: {
-        getShareAuth: jest.fn(),
-      },
-    } as MockVikunjaClient;
-
-    // Setup mock auth manager
     mockAuthManager = {
       isAuthenticated: jest.fn().mockReturnValue(true),
-      getSession: jest.fn(),
+      getSession: jest.fn().mockReturnValue({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'test-token',
+      }),
       setSession: jest.fn(),
       clearSession: jest.fn(),
       connect: jest.fn(),
@@ -120,35 +123,23 @@ describe('Projects Tool', () => {
       disconnect: jest.fn(),
     } as MockAuthManager;
 
-    // Setup mock server
     mockServer = {
       tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
     } as MockServer;
 
-    // Mock getClientFromContext
-    (getClientFromContext as jest.Mock).mockReturnValue(mockClient);
-    (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
+    registerProjectsTool(mockServer, mockAuthManager as unknown as AuthManager);
 
-    try {
-      // Register the tool
-      registerProjectsTool(mockServer, mockAuthManager);
-
-      // Get the tool handler
-      expect(mockServer.tool).toHaveBeenCalledWith(
-        'vikunja_projects',
-        expect.any(String),
-        expect.any(Object),
-        expect.any(Function),
-      );
-      const calls = mockServer.tool.mock.calls;
-      if (calls.length > 0 && calls[0] && calls[0].length > 3) {
-        toolHandler = calls[0][3];
-      } else {
-        throw new Error('Tool handler not found');
-      }
-    } catch (error) {
-      console.error('Error setting up projects tool test:', error);
-      throw error;
+    expect(mockServer.tool).toHaveBeenCalledWith(
+      'vikunja_projects',
+      expect.any(String),
+      expect.any(Object),
+      expect.any(Function),
+    );
+    const calls = mockServer.tool.mock.calls;
+    if (calls.length > 0 && calls[0] && calls[0].length > 3) {
+      toolHandler = calls[0][3];
+    } else {
+      throw new Error('Tool handler not found');
     }
   });
 
@@ -164,27 +155,16 @@ describe('Projects Tool', () => {
         'delete',
         'archive',
         'unarchive',
-        'create-share',
-        'list-shares',
-        'get-share',
-        'delete-share',
-        'auth-share',
-        'list-project-users',
-        'search-project-users',
-        'add-project-user',
-        'update-project-user-permission',
-        'remove-project-user',
-        'list-project-teams',
-        'add-project-team',
-        'update-project-team-permission',
-        'remove-project-team',
-        'share-with-user',
-        'share-with-team',
-        'list-members',
+        'get-children',
+        'get-tree',
+        'get-breadcrumb',
+        'move',
       ];
 
       for (const subcommand of subcommands) {
-        await expect(callTool(subcommand)).rejects.toThrow('Authentication required');
+        await expect(callTool(subcommand, { id: 1, title: 'x' })).rejects.toThrow(
+          /Authentication required/,
+        );
       }
     });
   });
@@ -192,14 +172,12 @@ describe('Projects Tool', () => {
   describe('list subcommand', () => {
     it('should list all projects', async () => {
       const mockProjects = [mockProject, { ...mockProject, id: 2, title: 'Project 2' }];
-      mockClient.projects.getProjects.mockResolvedValue(mockProjects);
+      routeFetch({ 'GET /projects': mockResponse({ body: mockProjects }) });
 
       const result = await callTool('list');
 
-      expect(mockClient.projects.getProjects).toHaveBeenCalledWith({
-        page: 1,
-        per_page: 50,
-      });
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe('https://vikunja.example.com/api/v1/projects?page=1&per_page=50');
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -211,18 +189,16 @@ describe('Projects Tool', () => {
     });
 
     it('should support pagination parameters', async () => {
-      mockClient.projects.getProjects.mockResolvedValue([mockProject]);
+      routeFetch({ 'GET /projects': mockResponse({ body: [mockProject] }) });
 
       await callTool('list', { page: 2, perPage: 10 });
 
-      expect(mockClient.projects.getProjects).toHaveBeenCalledWith({
-        page: 2,
-        per_page: 10,
-      });
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe('https://vikunja.example.com/api/v1/projects?page=2&per_page=10');
     });
 
     it('should handle singular project in message', async () => {
-      mockClient.projects.getProjects.mockResolvedValue([mockProject]);
+      routeFetch({ 'GET /projects': mockResponse({ body: [mockProject] }) });
 
       const result = await callTool('list');
       const markdown = result.content[0].text;
@@ -230,43 +206,44 @@ describe('Projects Tool', () => {
     });
 
     it('should support search parameter', async () => {
-      mockClient.projects.getProjects.mockResolvedValue([mockProject]);
+      routeFetch({ 'GET /projects': mockResponse({ body: [mockProject] }) });
 
       await callTool('list', { search: 'test' });
 
-      expect(mockClient.projects.getProjects).toHaveBeenCalledWith({
-        page: 1,
-        per_page: 50,
-        s: 'test',
-      });
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe('https://vikunja.example.com/api/v1/projects?page=1&per_page=50&s=test');
     });
 
     it('should support archived filter', async () => {
-      mockClient.projects.getProjects.mockResolvedValue([]);
+      routeFetch({ 'GET /projects': mockResponse({ body: [] }) });
 
       await callTool('list', { isArchived: true });
 
-      expect(mockClient.projects.getProjects).toHaveBeenCalledWith({
-        page: 1,
-        per_page: 50,
-        is_archived: true,
-      });
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe(
+        'https://vikunja.example.com/api/v1/projects?page=1&per_page=50&is_archived=true',
+      );
     });
 
     it('should handle API errors', async () => {
-      mockClient.projects.getProjects.mockRejectedValue(new Error('API Error'));
+      routeFetch({
+        'GET /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+      });
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list projects: API Error');
+      await expect(callTool('list')).rejects.toThrow('HTTP 500');
     });
   });
 
   describe('get subcommand', () => {
     it('should get a project by ID', async () => {
-      mockClient.projects.getProject.mockResolvedValue(mockProject);
+      routeFetch({ 'GET /projects/1': mockResponse({ body: mockProject }) });
 
       const result = await callTool('get', { id: 1 });
 
-      expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/projects/1',
+        expect.objectContaining({ method: 'GET' }),
+      );
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -287,31 +264,25 @@ describe('Projects Tool', () => {
     });
 
     it('should handle 404 errors', async () => {
-      const error: any = new Error('Not found');
-      error.statusCode = 404;
-      mockClient.projects.getProject.mockRejectedValue(error);
+      routeFetch({
+        'GET /projects/999': mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+      });
 
       await expect(callTool('get', { id: 999 })).rejects.toThrow('Project with ID 999 not found');
     });
 
     it('should handle other API errors', async () => {
-      mockClient.projects.getProject.mockRejectedValue(new Error('API Error'));
+      routeFetch({
+        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+      });
 
-      await expect(callTool('get', { id: 1 })).rejects.toThrow('Failed to get project: API Error');
-    });
-
-    it('should handle non-Error API errors in get', async () => {
-      mockClient.projects.getProject.mockRejectedValue({ error: 'Unknown' });
-
-      await expect(callTool('get', { id: 1 })).rejects.toThrow(
-        'Failed to get project: Unknown error',
-      );
+      await expect(callTool('get', { id: 1 })).rejects.toThrow('HTTP 500');
     });
   });
 
   describe('create subcommand', () => {
     it('should create a project', async () => {
-      mockClient.projects.createProject.mockResolvedValue(mockProject);
+      routeFetch({ 'PUT /projects': mockResponse({ body: mockProject }) });
 
       const result = await callTool('create', {
         title: 'Test Project',
@@ -319,7 +290,7 @@ describe('Projects Tool', () => {
         hexColor: '#4287f5',
       });
 
-      expect(mockClient.projects.createProject).toHaveBeenCalledWith({
+      expect(bodyOf('PUT', '/projects')).toEqual({
         title: 'Test Project',
         description: 'Test Description',
         hex_color: '#4287f5',
@@ -338,49 +309,43 @@ describe('Projects Tool', () => {
     });
 
     it('should support parent project ID', async () => {
-      mockClient.projects.createProject.mockResolvedValue(mockProject);
-      mockClient.projects.getProjects.mockResolvedValue([mockProject]); // Add this for depth validation
+      routeFetch({
+        'GET /projects': mockResponse({ body: [mockProject] }),
+        'PUT /projects': mockResponse({ body: mockProject }),
+      });
 
       await callTool('create', {
         title: 'Child Project',
         parentProjectId: 1,
       });
 
-      expect(mockClient.projects.createProject).toHaveBeenCalledWith({
+      expect(bodyOf('PUT', '/projects')).toEqual({
         title: 'Child Project',
         parent_project_id: 1,
       });
     });
 
     it('should default isArchived to false', async () => {
-      mockClient.projects.createProject.mockResolvedValue(mockProject);
+      routeFetch({ 'PUT /projects': mockResponse({ body: mockProject }) });
 
       await callTool('create', { title: 'New Project' });
 
-      expect(mockClient.projects.createProject).toHaveBeenCalledWith({
-        title: 'New Project',
-      });
+      expect(bodyOf('PUT', '/projects')).toEqual({ title: 'New Project' });
     });
 
     it('should handle API errors', async () => {
-      mockClient.projects.createProject.mockRejectedValue(new Error('API Error'));
+      routeFetch({
+        'PUT /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+      });
 
-      await expect(callTool('create', { title: 'New Project' })).rejects.toThrow(
-        'Failed to create project: API Error',
-      );
-    });
-
-    it('should handle non-Error API errors in create', async () => {
-      mockClient.projects.createProject.mockRejectedValue('String error');
-
-      await expect(callTool('create', { title: 'New Project' })).rejects.toThrow(
-        'Failed to create project: String error',
-      );
+      await expect(callTool('create', { title: 'New Project' })).rejects.toThrow('HTTP 500');
     });
 
     it('should support all optional fields', async () => {
-      mockClient.projects.createProject.mockResolvedValue(mockProject);
-      mockClient.projects.getProjects.mockResolvedValue([mockProject]); // Add this for depth validation
+      routeFetch({
+        'GET /projects': mockResponse({ body: [mockProject] }),
+        'PUT /projects': mockResponse({ body: mockProject }),
+      });
 
       await callTool('create', {
         title: 'Full Project',
@@ -390,7 +355,7 @@ describe('Projects Tool', () => {
         hexColor: '#FF0000',
       });
 
-      expect(mockClient.projects.createProject).toHaveBeenCalledWith({
+      expect(bodyOf('PUT', '/projects')).toEqual({
         title: 'Full Project',
         description: 'Full description',
         parent_project_id: 1,
@@ -401,7 +366,7 @@ describe('Projects Tool', () => {
 
     describe('hex color validation', () => {
       it('should accept valid hex colors and normalize to lowercase', async () => {
-        mockClient.projects.createProject.mockResolvedValue(mockProject);
+        routeFetch({ 'PUT /projects': mockResponse({ body: mockProject }) });
 
         const validColors = [
           { input: '#4287f5', expected: '#4287f5' },
@@ -414,7 +379,7 @@ describe('Projects Tool', () => {
 
         for (const { input, expected } of validColors) {
           await callTool('create', { title: 'Project', hexColor: input });
-          expect(mockClient.projects.createProject).toHaveBeenCalledWith({
+          expect(bodyOf('PUT', '/projects', mockFetch.mock.calls.length)).toEqual({
             title: 'Project',
             hex_color: expected,
           });
@@ -444,15 +409,17 @@ describe('Projects Tool', () => {
   describe('update subcommand', () => {
     it('should update a project', async () => {
       const updatedProject = { ...mockProject, title: 'Updated Title' };
-      mockClient.projects.getProject.mockResolvedValue(mockProject);
-      mockClient.projects.updateProject.mockResolvedValue(updatedProject);
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: mockProject }),
+        'POST /projects/1': mockResponse({ body: updatedProject }),
+      });
 
       const result = await callTool('update', {
         id: 1,
         title: 'Updated Title',
       });
 
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+      expect(bodyOf('POST', '/projects/1')).toEqual({
         ...mockProject,
         title: 'Updated Title',
       });
@@ -473,9 +440,11 @@ describe('Projects Tool', () => {
         parent_project_id: 1,
       };
       const updatedChild = { ...childProject, description: 'Updated description' };
-      mockClient.projects.getProject.mockResolvedValue(childProject);
-      mockClient.projects.getProjects.mockResolvedValue([mockProject, childProject]);
-      mockClient.projects.updateProject.mockResolvedValue(updatedChild);
+      routeFetch({
+        'GET /projects/2': mockResponse({ body: childProject }),
+        'GET /projects': mockResponse({ body: [mockProject, childProject] }),
+        'POST /projects/2': mockResponse({ body: updatedChild }),
+      });
 
       await callTool('update', {
         id: 2,
@@ -484,8 +453,7 @@ describe('Projects Tool', () => {
         // parentProjectId intentionally omitted
       });
 
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(
-        2,
+      expect(bodyOf('POST', '/projects/2')).toEqual(
         expect.objectContaining({
           description: 'Updated description',
           parent_project_id: 1,
@@ -530,10 +498,9 @@ describe('Projects Tool', () => {
     });
 
     it('should preserve existing title when title is omitted (issue #44)', async () => {
-      mockClient.projects.getProject.mockResolvedValue(mockProject);
-      mockClient.projects.updateProject.mockResolvedValue({
-        ...mockProject,
-        description: 'new description',
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: mockProject }),
+        'POST /projects/1': mockResponse({ body: { ...mockProject, description: 'new description' } }),
       });
 
       // Title intentionally omitted — Vikunja rejects updates without a title
@@ -542,8 +509,7 @@ describe('Projects Tool', () => {
         description: 'new description',
       });
 
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(
-        1,
+      expect(bodyOf('POST', '/projects/1')).toEqual(
         expect.objectContaining({
           title: 'Test Project',
           description: 'new description',
@@ -559,11 +525,10 @@ describe('Projects Tool', () => {
         parent_project_id: 1,
       };
       const newParent = { ...mockProject, id: 3, title: 'New Parent' };
-      mockClient.projects.getProject.mockResolvedValue(childProject);
-      mockClient.projects.getProjects.mockResolvedValue([mockProject, childProject, newParent]);
-      mockClient.projects.updateProject.mockResolvedValue({
-        ...childProject,
-        parent_project_id: 3,
+      routeFetch({
+        'GET /projects/2': mockResponse({ body: childProject }),
+        'GET /projects': mockResponse({ body: [mockProject, childProject, newParent] }),
+        'POST /projects/2': mockResponse({ body: { ...childProject, parent_project_id: 3 } }),
       });
 
       await callTool('update', {
@@ -571,8 +536,7 @@ describe('Projects Tool', () => {
         parentProjectId: 3,
       });
 
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(
-        2,
+      expect(bodyOf('POST', '/projects/2')).toEqual(
         expect.objectContaining({
           parent_project_id: 3,
         }),
@@ -596,12 +560,13 @@ describe('Projects Tool', () => {
     });
 
     it('should support updating all fields', async () => {
-      mockClient.projects.getProject.mockResolvedValue(mockProject);
-      mockClient.projects.updateProject.mockResolvedValue(mockProject);
-      mockClient.projects.getProjects.mockResolvedValue([
-        mockProject,
-        { id: 2, title: 'Parent', parent_project_id: undefined },
-      ]); // Add this for depth validation
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: mockProject }),
+        'GET /projects': mockResponse({
+          body: [mockProject, { id: 2, title: 'Parent', parent_project_id: undefined }],
+        }),
+        'POST /projects/1': mockResponse({ body: mockProject }),
+      });
 
       await callTool('update', {
         id: 1,
@@ -612,7 +577,7 @@ describe('Projects Tool', () => {
         hexColor: '#ff0000',
       });
 
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+      expect(bodyOf('POST', '/projects/1')).toEqual({
         ...mockProject,
         title: 'New Title',
         description: 'New Description',
@@ -623,9 +588,9 @@ describe('Projects Tool', () => {
     });
 
     it('should handle 404 errors', async () => {
-      const error: any = new Error('Not found');
-      error.statusCode = 404;
-      mockClient.projects.updateProject.mockRejectedValue(error);
+      routeFetch({
+        'GET /projects/999': mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+      });
 
       await expect(callTool('update', { id: 999, title: 'New Title' })).rejects.toThrow(
         'Project with ID 999 not found',
@@ -633,25 +598,19 @@ describe('Projects Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.projects.updateProject.mockRejectedValue(new Error('API Error'));
+      routeFetch({
+        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+      });
 
-      await expect(callTool('update', { id: 1, title: 'New Title' })).rejects.toThrow(
-        'Failed to update project: API Error',
-      );
-    });
-
-    it('should handle non-Error API errors in update', async () => {
-      mockClient.projects.updateProject.mockRejectedValue(null);
-
-      await expect(callTool('update', { id: 1, title: 'New Title' })).rejects.toThrow(
-        'Failed to update project: Unknown error',
-      );
+      await expect(callTool('update', { id: 1, title: 'New Title' })).rejects.toThrow('HTTP 500');
     });
 
     describe('hex color validation', () => {
       it('should accept valid hex colors in update and normalize to lowercase', async () => {
-        mockClient.projects.getProject.mockResolvedValue(mockProject);
-        mockClient.projects.updateProject.mockResolvedValue(mockProject);
+        routeFetch({
+          'GET /projects/1': mockResponse({ body: mockProject }),
+          'POST /projects/1': mockResponse({ body: mockProject }),
+        });
 
         const validColors = [
           { input: '#4287f5', expected: '#4287f5' },
@@ -664,7 +623,13 @@ describe('Projects Tool', () => {
 
         for (const { input, expected } of validColors) {
           await callTool('update', { id: 1, hexColor: input });
-          expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+          const calls = (mockFetch.mock.calls as [string, RequestInit][]).filter(
+            ([url, init]) =>
+              (init?.method ?? 'GET') === 'POST' &&
+              new URL(url).pathname.replace(/^\/api\/v\d+/, '') === '/projects/1',
+          );
+          const lastBody = JSON.parse(calls[calls.length - 1][1].body as string);
+          expect(lastBody).toEqual({
             ...mockProject,
             hex_color: expected,
           });
@@ -691,13 +656,21 @@ describe('Projects Tool', () => {
 
   describe('delete subcommand', () => {
     it('should delete a project', async () => {
-      mockClient.projects.getProject.mockResolvedValue(mockProject);
-      mockClient.projects.deleteProject.mockResolvedValue({ message: 'Success' });
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: mockProject }),
+        'DELETE /projects/1': mockResponse({ body: { message: 'Success' } }),
+      });
 
       const result = await callTool('delete', { id: 1 });
 
-      expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
-      expect(mockClient.projects.deleteProject).toHaveBeenCalledWith(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/projects/1',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/projects/1',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -715,9 +688,9 @@ describe('Projects Tool', () => {
     });
 
     it('should handle 404 errors', async () => {
-      const error: any = new Error('Not found');
-      error.statusCode = 404;
-      mockClient.projects.deleteProject.mockRejectedValue(error);
+      routeFetch({
+        'GET /projects/999': mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+      });
 
       await expect(callTool('delete', { id: 999 })).rejects.toThrow(
         'Project with ID 999 not found',
@@ -725,34 +698,27 @@ describe('Projects Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.projects.deleteProject.mockRejectedValue(new Error('API Error'));
+      routeFetch({
+        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+      });
 
-      await expect(callTool('delete', { id: 1 })).rejects.toThrow(
-        'Failed to delete project: API Error',
-      );
-    });
-
-    it('should handle non-Error API errors in delete', async () => {
-      mockClient.projects.deleteProject.mockRejectedValue(false);
-
-      await expect(callTool('delete', { id: 1 })).rejects.toThrow(
-        'Failed to delete project: Unknown error',
-      );
+      await expect(callTool('delete', { id: 1 })).rejects.toThrow('HTTP 500');
     });
   });
 
   describe('archive subcommand', () => {
     it('should archive a project successfully', async () => {
       const archivedProject = { ...mockProject, is_archived: true };
-      mockClient.projects.getProject.mockResolvedValue(mockProject); // Not archived yet
-      mockClient.projects.updateProject.mockResolvedValue(archivedProject);
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: mockProject }), // Not archived yet
+        'POST /projects/1': mockResponse({ body: archivedProject }),
+      });
 
       const result = await callTool('archive', { id: 1 });
 
-      expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+      expect(bodyOf('POST', '/projects/1')).toEqual({
         ...mockProject,
-        is_archived: true
+        is_archived: true,
       });
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
@@ -765,12 +731,11 @@ describe('Projects Tool', () => {
 
     it('should return already archived message if project is already archived', async () => {
       const archivedProject = { ...mockProject, is_archived: true };
-      mockClient.projects.getProject.mockResolvedValue(archivedProject);
+      routeFetch({ 'GET /projects/1': mockResponse({ body: archivedProject }) });
 
       const result = await callTool('archive', { id: 1 });
 
-      expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
-      expect(mockClient.projects.updateProject).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -791,9 +756,9 @@ describe('Projects Tool', () => {
     });
 
     it('should handle 404 errors', async () => {
-      const error: any = new Error('Not found');
-      error.statusCode = 404;
-      mockClient.projects.getProject.mockRejectedValue(error);
+      routeFetch({
+        'GET /projects/999': mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+      });
 
       await expect(callTool('archive', { id: 999 })).rejects.toThrow(
         'Project with ID 999 not found',
@@ -801,19 +766,11 @@ describe('Projects Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.projects.getProject.mockRejectedValue(new Error('API Error'));
+      routeFetch({
+        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+      });
 
-      await expect(callTool('archive', { id: 1 })).rejects.toThrow(
-        'Failed to archive project: API Error',
-      );
-    });
-
-    it('should handle non-Error API errors', async () => {
-      mockClient.projects.getProject.mockRejectedValue('string error');
-
-      await expect(callTool('archive', { id: 1 })).rejects.toThrow(
-        'Failed to archive project: string error',
-      );
+      await expect(callTool('archive', { id: 1 })).rejects.toThrow('HTTP 500');
     });
   });
 
@@ -821,15 +778,16 @@ describe('Projects Tool', () => {
     it('should unarchive a project successfully', async () => {
       const archivedProject = { ...mockProject, is_archived: true };
       const unarchivedProject = { ...mockProject, is_archived: false };
-      mockClient.projects.getProject.mockResolvedValue(archivedProject); // Currently archived
-      mockClient.projects.updateProject.mockResolvedValue(unarchivedProject);
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: archivedProject }), // Currently archived
+        'POST /projects/1': mockResponse({ body: unarchivedProject }),
+      });
 
       const result = await callTool('unarchive', { id: 1 });
 
-      expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+      expect(bodyOf('POST', '/projects/1')).toEqual({
         ...archivedProject,
-        is_archived: false
+        is_archived: false,
       });
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
@@ -841,12 +799,11 @@ describe('Projects Tool', () => {
     });
 
     it('should return already active message if project is not archived', async () => {
-      mockClient.projects.getProject.mockResolvedValue(mockProject); // Not archived
+      routeFetch({ 'GET /projects/1': mockResponse({ body: mockProject }) }); // Not archived
 
       const result = await callTool('unarchive', { id: 1 });
 
-      expect(mockClient.projects.getProject).toHaveBeenCalledWith(1);
-      expect(mockClient.projects.updateProject).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -867,9 +824,9 @@ describe('Projects Tool', () => {
     });
 
     it('should handle 404 errors', async () => {
-      const error: any = new Error('Not found');
-      error.statusCode = 404;
-      mockClient.projects.getProject.mockRejectedValue(error);
+      routeFetch({
+        'GET /projects/999': mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+      });
 
       await expect(callTool('unarchive', { id: 999 })).rejects.toThrow(
         'Project with ID 999 not found',
@@ -877,19 +834,11 @@ describe('Projects Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      mockClient.projects.getProject.mockRejectedValue(new Error('API Error'));
+      routeFetch({
+        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+      });
 
-      await expect(callTool('unarchive', { id: 1 })).rejects.toThrow(
-        'Failed to unarchive project: API Error',
-      );
-    });
-
-    it('should handle non-Error API errors', async () => {
-      mockClient.projects.getProject.mockRejectedValue('string error');
-
-      await expect(callTool('unarchive', { id: 1 })).rejects.toThrow(
-        'Failed to unarchive project: string error',
-      );
+      await expect(callTool('unarchive', { id: 1 })).rejects.toThrow('HTTP 500');
     });
   });
 
@@ -901,16 +850,11 @@ describe('Projects Tool', () => {
 
   describe('error handling', () => {
     it('should handle unexpected errors', async () => {
-      mockClient.projects.getProjects.mockRejectedValue('String error');
+      routeFetch({
+        'GET /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'String error' }),
+      });
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list projects: String error');
-    });
-
-    it('should pass through MCPError instances', async () => {
-      const customError = new Error('Custom API Error');
-      mockClient.projects.getProjects.mockRejectedValue(customError);
-
-      await expect(callTool('list')).rejects.toThrow('Failed to list projects: Custom API Error');
+      await expect(callTool('list')).rejects.toThrow('HTTP 500');
     });
 
     it('should handle non-MCPError objects in catch block', async () => {
@@ -934,12 +878,14 @@ describe('Projects Tool', () => {
 
   describe('get-children subcommand', () => {
     it('should get child projects', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const childProjects = [
         { ...mockProject, id: 2, title: 'Child 1', parent_project_id: 1 },
         { ...mockProject, id: 3, title: 'Child 2', parent_project_id: 1 },
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce([mockProject, ...childProjects]);
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: mockProject }),
+        'GET /projects': mockResponse({ body: [mockProject, ...childProjects] }),
+      });
 
       const result = await callTool('get-children', { id: 1 });
       const markdown = result.content[0].text;
@@ -952,50 +898,42 @@ describe('Projects Tool', () => {
     });
 
     it('should require project ID', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       await expect(callTool('get-children')).rejects.toThrow('Project ID is required');
     });
 
     it('should validate project ID', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       await expect(callTool('get-children', { id: -1 })).rejects.toThrow('id must be a positive integer');
     });
 
     it('should handle API errors', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProjects.mockRejectedValueOnce(new Error('API error'));
-      await expect(callTool('get-children', { id: 1 })).rejects.toThrow('Failed to get project children');
+      routeFetch({
+        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API error' }),
+      });
+      await expect(callTool('get-children', { id: 1 })).rejects.toThrow('HTTP 500');
     });
 
     it('should handle singular child project in message', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const childProject = { ...mockProject, id: 2, title: 'Only Child', parent_project_id: 1 };
-      mockClient.projects.getProjects.mockResolvedValueOnce([mockProject, childProject]);
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: mockProject }),
+        'GET /projects': mockResponse({ body: [mockProject, childProject] }),
+      });
 
       const result = await callTool('get-children', { id: 1 });
       const markdown = result.content[0].text;
       expect(markdown).toContain('Found 1 child project for project ID 1');
     });
-
-    it('should handle non-Error API errors in get-children', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProjects.mockRejectedValueOnce('String error');
-      await expect(callTool('get-children', { id: 1 })).rejects.toThrow(
-        'Failed to get project children: String error',
-      );
-    });
   });
 
   describe('get-tree subcommand', () => {
     it('should get project tree', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const projects = [
         { ...mockProject, id: 1, title: 'Root', parent_project_id: undefined },
         { ...mockProject, id: 2, title: 'Child 1', parent_project_id: 1 },
         { ...mockProject, id: 3, title: 'Child 2', parent_project_id: 1 },
         { ...mockProject, id: 4, title: 'Grandchild', parent_project_id: 2 },
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       const result = await callTool('get-tree', { id: 1 });
       const markdown = result.content[0].text;
@@ -1008,12 +946,11 @@ describe('Projects Tool', () => {
     });
 
     it('should handle circular references', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const projects = [
         { ...mockProject, id: 1, title: 'Project 1', parent_project_id: 2 },
         { ...mockProject, id: 2, title: 'Project 2', parent_project_id: 1 },
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       const result = await callTool('get-tree', { id: 1 });
       const markdown = result.content[0].text;
@@ -1026,34 +963,31 @@ describe('Projects Tool', () => {
     });
 
     it('should require project ID', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       await expect(callTool('get-tree')).rejects.toThrow('Project ID is required');
     });
 
     it('should validate project ID', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       await expect(callTool('get-tree', { id: 0 })).rejects.toThrow('id must be a positive integer');
     });
 
     it('should handle project not found', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProjects.mockResolvedValueOnce([]);
+      routeFetch({ 'GET /projects': mockResponse({ body: [] }) });
       await expect(callTool('get-tree', { id: 999 })).rejects.toThrow('Project with ID 999 not found');
     });
 
     it('should handle API errors', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProjects.mockRejectedValueOnce(new Error('API error'));
-      await expect(callTool('get-tree', { id: 1 })).rejects.toThrow('Failed to get project tree');
+      routeFetch({
+        'GET /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API error' }),
+      });
+      await expect(callTool('get-tree', { id: 1 })).rejects.toThrow('HTTP 500');
     });
 
     it('should handle projects without IDs', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const projects = [
         { ...mockProject, id: 1, title: 'Root', parent_project_id: undefined },
         { ...mockProject, id: undefined, title: 'No ID', parent_project_id: 1 },
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       const result = await callTool('get-tree', { id: 1 });
       const markdown = result.content[0].text;
@@ -1063,20 +997,9 @@ describe('Projects Tool', () => {
       expect(markdown).toContain('Root');
     });
 
-    it('should handle non-Error API errors in get-tree', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProjects.mockRejectedValueOnce({ notAnError: true });
-      await expect(callTool('get-tree', { id: 1 })).rejects.toThrow(
-        'Failed to get project tree: Unknown error',
-      );
-    });
-
     it('should handle singular project in tree message', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      const projects = [
-        { ...mockProject, id: 1, title: 'Root', parent_project_id: undefined },
-      ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
+      const projects = [{ ...mockProject, id: 1, title: 'Root', parent_project_id: undefined }];
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       const result = await callTool('get-tree', { id: 1 });
       const markdown = result.content[0].text;
@@ -1084,14 +1007,13 @@ describe('Projects Tool', () => {
     });
 
     it('should handle countProjects with null node', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       // Create a scenario where we have nested projects
       const projects = [
         { ...mockProject, id: 1, title: 'Root', parent_project_id: undefined },
         { ...mockProject, id: 2, title: 'Child', parent_project_id: 1 },
         { ...mockProject, id: undefined, title: 'Child without ID', parent_project_id: 2 },
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       const result = await callTool('get-tree', { id: 1 });
       const markdown = result.content[0].text;
@@ -1106,13 +1028,12 @@ describe('Projects Tool', () => {
 
   describe('get-breadcrumb subcommand', () => {
     it('should get project breadcrumb', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const projects = [
         { ...mockProject, id: 1, title: 'Root', parent_project_id: undefined },
         { ...mockProject, id: 2, title: 'Child', parent_project_id: 1 },
         { ...mockProject, id: 3, title: 'Grandchild', parent_project_id: 2 },
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       const result = await callTool('get-breadcrumb', { id: 3 });
       const markdown = result.content[0].text;
@@ -1127,22 +1048,20 @@ describe('Projects Tool', () => {
     });
 
     it('should handle circular references', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const projects = [
         { ...mockProject, id: 1, title: 'Project 1', parent_project_id: 2 },
         { ...mockProject, id: 2, title: 'Project 2', parent_project_id: 1 },
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       await expect(callTool('get-breadcrumb', { id: 1 })).rejects.toThrow('Circular reference detected');
     });
 
     it('should handle orphaned projects', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const projects = [
         { ...mockProject, id: 2, title: 'Child', parent_project_id: 999 }, // Parent doesn't exist
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       const result = await callTool('get-breadcrumb', { id: 2 });
       const markdown = result.content[0].text;
@@ -1153,47 +1072,35 @@ describe('Projects Tool', () => {
     });
 
     it('should require project ID', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       await expect(callTool('get-breadcrumb')).rejects.toThrow('Project ID is required');
     });
 
     it('should validate project ID', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       await expect(callTool('get-breadcrumb', { id: -5 })).rejects.toThrow('id must be a positive integer');
     });
 
     it('should handle project not found', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProjects.mockResolvedValueOnce([]);
+      routeFetch({ 'GET /projects': mockResponse({ body: [] }) });
       await expect(callTool('get-breadcrumb', { id: 999 })).rejects.toThrow('Project with ID 999 not found');
     });
 
     it('should handle API errors', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProjects.mockRejectedValueOnce(new Error('API error'));
-      await expect(callTool('get-breadcrumb', { id: 1 })).rejects.toThrow('Failed to get project breadcrumb');
-    });
-
-    it('should handle non-Error API errors in get-breadcrumb', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProjects.mockRejectedValueOnce(123);
-      await expect(callTool('get-breadcrumb', { id: 1 })).rejects.toThrow(
-        'Failed to get project breadcrumb: 123',
-      );
+      routeFetch({
+        'GET /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API error' }),
+      });
+      await expect(callTool('get-breadcrumb', { id: 1 })).rejects.toThrow('HTTP 500');
     });
   });
 
   describe('move subcommand', () => {
     it('should move project to new parent', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const projects = [
         { ...mockProject, id: 1, title: 'Parent', parent_project_id: undefined },
         { ...mockProject, id: 2, title: 'Project to Move', parent_project_id: undefined },
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
-      mockClient.projects.updateProject.mockResolvedValueOnce({
-        ...projects[1],
-        parent_project_id: 1,
+      routeFetch({
+        'GET /projects': mockResponse({ body: projects }),
+        'POST /projects/2': mockResponse({ body: { ...projects[1], parent_project_id: 1 } }),
       });
 
       const result = await callTool('move', { id: 2, parentProjectId: 1 });
@@ -1207,21 +1114,17 @@ describe('Projects Tool', () => {
       // full-model-replace endpoint, so the payload must carry every field
       // of the current project, not just a bare { parent_project_id } that
       // would wipe title/description/hex_color/etc. on the server.
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(2, {
+      expect(bodyOf('POST', '/projects/2')).toEqual({
         ...projects[1],
         parent_project_id: 1,
       });
     });
 
     it('should move project to root', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      const projects = [
-        { ...mockProject, id: 1, title: 'Project', parent_project_id: 2 },
-      ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
-      mockClient.projects.updateProject.mockResolvedValueOnce({
-        ...projects[0],
-        parent_project_id: undefined,
+      const projects = [{ ...mockProject, id: 1, title: 'Project', parent_project_id: 2 }];
+      routeFetch({
+        'GET /projects': mockResponse({ body: projects }),
+        'POST /projects/1': mockResponse({ body: { ...projects[0], parent_project_id: undefined } }),
       });
 
       const result = await callTool('move', { id: 1, parentProjectId: undefined });
@@ -1230,37 +1133,31 @@ describe('Projects Tool', () => {
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('Moved project "Project" to root level');
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+      expect(bodyOf('POST', '/projects/1')).toEqual({
         ...projects[0],
         parent_project_id: 0,
       });
     });
 
     it('should prevent self-parent', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      const projects = [
-        { ...mockProject, id: 1, title: 'Project', parent_project_id: undefined },
-      ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
+      const projects = [{ ...mockProject, id: 1, title: 'Project', parent_project_id: undefined }];
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       await expect(callTool('move', { id: 1, parentProjectId: 1 })).rejects.toThrow('Cannot move a project to be its own parent');
     });
 
     it('should prevent circular references', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const projects = [
         { ...mockProject, id: 1, title: 'Parent', parent_project_id: undefined },
         { ...mockProject, id: 2, title: 'Child', parent_project_id: 1 },
         { ...mockProject, id: 3, title: 'Grandchild', parent_project_id: 2 },
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
-      mockClient.projects.getProject.mockResolvedValueOnce(projects[0]); // Mock project 1 lookup
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       await expect(callTool('move', { id: 1, parentProjectId: 3 })).rejects.toThrow('Move would create a circular reference in project hierarchy');
     });
 
     it('should prevent exceeding max depth', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       // Create a deep hierarchy
       const projects = [];
       for (let i = 1; i <= 9; i++) {
@@ -1291,77 +1188,56 @@ describe('Projects Tool', () => {
         parent_project_id: 11,
       });
 
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
-      mockClient.projects.getProject.mockResolvedValueOnce(projects.find(p => p.id === 10)); // Mock project 10 lookup
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       await expect(callTool('move', { id: 10, parentProjectId: 9 })).rejects.toThrow('exceed the maximum depth');
     });
 
     it('should require project ID', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       await expect(callTool('move')).rejects.toThrow('Project ID is required');
     });
 
     it('should validate project ID', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       await expect(callTool('move', { id: 0 })).rejects.toThrow('id must be a positive integer');
     });
 
     it('should validate parent project ID', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProject.mockResolvedValueOnce(mockProject); // Mock the current project lookup
-      mockClient.projects.getProjects.mockResolvedValueOnce([mockProject]); // Mock all projects lookup
+      routeFetch({ 'GET /projects': mockResponse({ body: [mockProject] }) });
       await expect(callTool('move', { id: 1, parentProjectId: -1 })).rejects.toThrow('parentProjectId must be a positive integer');
     });
 
     it('should handle project not found', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProjects.mockResolvedValueOnce([]);
+      routeFetch({ 'GET /projects': mockResponse({ body: [] }) });
       await expect(callTool('move', { id: 999 })).rejects.toThrow('Project with ID 999 not found');
     });
 
     it('should handle parent project not found', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      const projects = [
-        { ...mockProject, id: 1, title: 'Project', parent_project_id: undefined },
-      ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
-      mockClient.projects.getProject.mockResolvedValueOnce(mockProject); // Mock the current project lookup
+      const projects = [{ ...mockProject, id: 1, title: 'Project', parent_project_id: undefined }];
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
       await expect(callTool('move', { id: 1, parentProjectId: 999 })).rejects.toThrow('Parent project with ID 999 not found');
     });
 
     it('should handle API errors', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProject.mockResolvedValueOnce(mockProject); // Mock the current project lookup
-      mockClient.projects.getProjects.mockRejectedValueOnce(new Error('API error'));
-      await expect(callTool('move', { id: 1 })).rejects.toThrow('Failed to move project');
-    });
-
-    it('should handle non-Error API errors in move', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
-      mockClient.projects.getProject.mockResolvedValueOnce(mockProject); // Mock the current project lookup
-      mockClient.projects.getProjects.mockRejectedValueOnce(null);
-      await expect(callTool('move', { id: 1 })).rejects.toThrow(
-        'Failed to move project: Unknown error',
-      );
+      routeFetch({
+        'GET /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API error' }),
+      });
+      await expect(callTool('move', { id: 1 })).rejects.toThrow('HTTP 500');
     });
   });
 
   describe('depth validation edge cases', () => {
     it('should detect circular reference in calculateProjectDepth', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const circularProjects = [
         { ...mockProject, id: 1, title: 'Project 1', parent_project_id: 3 },
         { ...mockProject, id: 2, title: 'Project 2', parent_project_id: 1 },
         { ...mockProject, id: 3, title: 'Project 3', parent_project_id: 2 },
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(circularProjects);
+      routeFetch({ 'GET /projects': mockResponse({ body: circularProjects }) });
 
       await expect(callTool('create', { title: 'New Project', parentProjectId: 1 })).rejects.toThrow('Circular reference detected');
     });
 
     it('should handle edge case where project has multiple children with same ID', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       // Create a corrupted dataset where the same project ID appears multiple times
       const projects = [
         { ...mockProject, id: 1, title: 'Root', parent_project_id: undefined },
@@ -1376,18 +1252,11 @@ describe('Projects Tool', () => {
         { ...mockProject, id: 6, title: 'Child of 5 Again', parent_project_id: 7 },
       ];
 
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
-      mockClient.projects.getProject.mockResolvedValueOnce({
-        ...mockProject,
-        id: 5,
-        title: 'Project to Move',
-        parent_project_id: undefined,
-      });
-      mockClient.projects.updateProject.mockResolvedValueOnce({
-        ...mockProject,
-        id: 5,
-        title: 'Project to Move',
-        parent_project_id: 1,
+      routeFetch({
+        'GET /projects': mockResponse({ body: projects }),
+        'POST /projects/5': mockResponse({
+          body: { ...mockProject, id: 5, title: 'Project to Move', parent_project_id: 1 },
+        }),
       });
 
       const result = await callTool('move', { id: 5, parentProjectId: 1 });
@@ -1399,7 +1268,6 @@ describe('Projects Tool', () => {
     });
 
     it('should handle projects without IDs in getMaxSubtreeDepth', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       // Create projects where some don't have IDs
       const projects = [
         { ...mockProject, id: 1, title: 'Project with mixed children', parent_project_id: undefined },
@@ -1409,18 +1277,11 @@ describe('Projects Tool', () => {
         { ...mockProject, id: 4, title: 'Target Parent', parent_project_id: undefined },
       ];
 
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
-      mockClient.projects.getProject.mockResolvedValueOnce({
-        ...mockProject,
-        id: 1,
-        title: 'Project with mixed children',
-        parent_project_id: undefined,
-      });
-      mockClient.projects.updateProject.mockResolvedValueOnce({
-        ...mockProject,
-        id: 1,
-        title: 'Project with mixed children',
-        parent_project_id: 4,
+      routeFetch({
+        'GET /projects': mockResponse({ body: projects }),
+        'POST /projects/1': mockResponse({
+          body: { ...mockProject, id: 1, title: 'Project with mixed children', parent_project_id: 4 },
+        }),
       });
 
       const result = await callTool('move', { id: 1, parentProjectId: 4 });
@@ -1432,16 +1293,14 @@ describe('Projects Tool', () => {
     });
 
     it('should handle missing project in calculateProjectDepth', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const projects = [
         { ...mockProject, id: 1, title: 'Project 1', parent_project_id: 999 }, // Parent doesn't exist
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
-      mockClient.projects.createProject.mockResolvedValueOnce({
-        ...mockProject,
-        id: 2,
-        title: 'New Project',
-        parent_project_id: 1,
+      routeFetch({
+        'GET /projects': mockResponse({ body: projects }),
+        'PUT /projects': mockResponse({
+          body: { ...mockProject, id: 2, title: 'New Project', parent_project_id: 1 },
+        }),
       });
 
       const result = await callTool('create', { title: 'New Project', parentProjectId: 1 });
@@ -1453,7 +1312,6 @@ describe('Projects Tool', () => {
     });
 
     it('should enforce max depth on create', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       // Create a hierarchy at max depth
       const projects = [];
       for (let i = 1; i <= 10; i++) {
@@ -1464,13 +1322,12 @@ describe('Projects Tool', () => {
           parent_project_id: i > 1 ? i - 1 : undefined,
         });
       }
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
       await expect(callTool('create', { title: 'Too Deep', parentProjectId: 10 })).rejects.toThrow('Maximum allowed depth is 10 levels');
     });
 
     it('should enforce max depth on update', async () => {
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       // Create a hierarchy at max depth
       const projects = [];
       for (let i = 1; i <= 10; i++) {
@@ -1488,7 +1345,10 @@ describe('Projects Tool', () => {
         title: 'Project to Update',
         parent_project_id: undefined,
       });
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
+      routeFetch({
+        'GET /projects/11': mockResponse({ body: projects[projects.length - 1] }),
+        'GET /projects': mockResponse({ body: projects }),
+      });
 
       await expect(callTool('update', { id: 11, parentProjectId: 10 })).rejects.toThrow('Maximum allowed depth is 10 levels');
     });
@@ -1499,17 +1359,15 @@ describe('Projects Tool', () => {
       // That code path no longer exists (validateMoveConstraints now uses
       // recursive DFS — see getMaxSubtreeDepth), so this just verifies the
       // move itself succeeds and reports the new parent.
-      mockAuthManager.isAuthenticated.mockReturnValue(true);
       const projects = [
         { ...mockProject, id: 1, parent_project_id: undefined },
         { ...mockProject, id: 2, parent_project_id: undefined },
         { ...mockProject, id: 3, parent_project_id: 1 },
         { ...mockProject, id: 4, parent_project_id: 1 },
       ];
-      mockClient.projects.getProjects.mockResolvedValueOnce(projects);
-      mockClient.projects.updateProject.mockResolvedValueOnce({
-        ...projects[0],
-        parent_project_id: 2,
+      routeFetch({
+        'GET /projects': mockResponse({ body: projects }),
+        'POST /projects/1': mockResponse({ body: { ...projects[0], parent_project_id: 2 } }),
       });
 
       // Move project 1 to be under project 2 (not a descendant, so should succeed)
@@ -1519,7 +1377,7 @@ describe('Projects Tool', () => {
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('move_project');
-      expect(mockClient.projects.updateProject).toHaveBeenCalledWith(1, {
+      expect(bodyOf('POST', '/projects/1')).toEqual({
         ...projects[0],
         parent_project_id: 2,
       });
