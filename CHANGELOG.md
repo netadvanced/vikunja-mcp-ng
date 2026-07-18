@@ -12,6 +12,11 @@ Nothing yet.
 
 
 
+
+## [0.4.1] - 2026-07-18
+
+README-only patch so the npm package page reflects the published state: adds the "From npm" Quick Start (`npx -y vikunja-mcp-ng`), the npm version badge, and the post-rename repository links. No code changes.
+
 ## [0.4.0] - 2026-07-18
 
 A capability batch: 20 newly implemented API operations (API coverage now 123/169, 73%), a native single-request bulk-update, and two new local test harnesses. No breaking changes; four new tool surfaces are disabled by default and opt-in via module config.
