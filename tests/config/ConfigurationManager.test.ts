@@ -471,6 +471,9 @@ describe('ConfigurationManager', () => {
       expect(config.modules.userDeletion).toBe(false);
       expect(config.modules.tokenManagement).toBe(false);
       expect(config.modules.caldavTokens).toBe(false);
+
+      // Opt-in cosmetic module: deny-by-default (not dangerous, just low-value)
+      expect(config.modules.backgrounds).toBe(false);
     });
 
     it('should honor VIKUNJA_MCP_MODULE_CALDAV_TOKENS=true to enable the reserved caldavTokens module', async () => {
@@ -699,6 +702,27 @@ describe('ConfigurationManager', () => {
       const modules = await ConfigurationManager.getInstance().getModulesConfig();
 
       expect(modules.labels).toBe(false);
+    });
+
+    it('should allow opting into the backgrounds module explicitly', async () => {
+      process.env.VIKUNJA_MCP_MODULE_BACKGROUNDS = 'true';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(config.modules.backgrounds).toBe(true);
+    });
+
+    it('should support the object form for the backgrounds module toggle', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ modules: { backgrounds: { enabled: true } } })
+      );
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+
+      expect(isModuleEnabled(config.modules.backgrounds)).toBe(true);
     });
   });
 

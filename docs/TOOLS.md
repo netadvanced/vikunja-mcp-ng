@@ -192,6 +192,17 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
     - `list-project-teams` - List teams with direct access
     - `add-project-team` / `update-project-team-permission` / `remove-project-team` - Primitives for fine-grained control (`projectId`, `teamId`, `right`)
     - `right` accepts `'read' | 'write' | 'admin'` or the numeric `0 | 1 | 2`
+  - **Backgrounds (opt-in `backgrounds` module, disabled by default — see [docs/CONFIGURATION.md#module-gating](CONFIGURATION.md#module-gating))**
+    - > These three subcommands only exist on `vikunja_projects` when the `backgrounds`
+      > module is explicitly enabled (`{"modules": {"backgrounds": true}}` or
+      > `VIKUNJA_MCP_MODULE_BACKGROUNDS=true`) — deliberately the opposite of every
+      > other domain module here, which defaults ON. Disabled (the default), calling
+      > them fails MCP schema validation (unrecognized subcommand), not just a runtime
+      > rejection — they are genuinely absent from the tool's schema.
+    - `remove-background` - Remove a project's background, regardless of which provider set it (`id`). No-op (not an error) if the project has no background.
+    - `set-unsplash-background` - Set an unsplash photo as a project's background (`id`, `unsplashImageId` — the photo id from `search-unsplash`)
+    - `search-unsplash` - Search unsplash for candidate background photos (optional `unsplashQuery`, optional `page`). Only works when the connected Vikunja server has an Unsplash provider configured server-side; when it doesn't, the error is rewritten into a friendly explanation rather than the server's raw error text
+    - The binary image bytes themselves (upload, and fetching the actual image/thumbnail) stay parked — no MCP content channel for them; see [docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md) item G7
 
 ## Label Management
 

@@ -206,7 +206,7 @@ describe('Tool Registration', () => {
       expect(registerTasksTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
 
       expect(registerProjectsTool).toHaveBeenCalledTimes(1);
-      expect(registerProjectsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+      expect(registerProjectsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory, false);
 
       expect(registerLabelsTool).toHaveBeenCalledTimes(1);
       expect(registerLabelsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
@@ -257,7 +257,7 @@ describe('Tool Registration', () => {
       expect(registerTasksTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
 
       expect(registerProjectsTool).toHaveBeenCalledTimes(1);
-      expect(registerProjectsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+      expect(registerProjectsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory, false);
 
       expect(registerLabelsTool).toHaveBeenCalledTimes(1);
       expect(registerLabelsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
@@ -309,7 +309,7 @@ describe('Tool Registration', () => {
       expect(registerTasksTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
 
       expect(registerProjectsTool).toHaveBeenCalledTimes(1);
-      expect(registerProjectsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
+      expect(registerProjectsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory, false);
 
       expect(registerLabelsTool).toHaveBeenCalledTimes(1);
       expect(registerLabelsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory);
@@ -726,6 +726,42 @@ describe('Tool Registration', () => {
         registerTools(mockServer, mockAuthManager, undefined);
 
         expect(registerUserDeletionTool).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('backgrounds module (opt-in, deny-by-default cosmetic module)', () => {
+      it('should resolve backgrounds to false by default and pass it through to registerProjectsTool', () => {
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerProjectsTool).toHaveBeenCalledTimes(1);
+        expect(registerProjectsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory, false);
+      });
+
+      it('should pass through true when explicitly enabled via env var', () => {
+        process.env.VIKUNJA_MCP_MODULE_BACKGROUNDS = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerProjectsTool).toHaveBeenCalledWith(mockServer, mockAuthManager, mockClientFactory, true);
+      });
+
+      it('should not register vikunja_projects at all (and so not pass anything) when the projects module itself is disabled', () => {
+        process.env.VIKUNJA_MCP_MODULE_PROJECTS = 'false';
+        process.env.VIKUNJA_MCP_MODULE_BACKGROUNDS = 'true';
+        const mockClientFactory = { test: 'factory' };
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+        registerTools(mockServer, mockAuthManager, mockClientFactory);
+
+        expect(registerProjectsTool).not.toHaveBeenCalled();
       });
     });
 

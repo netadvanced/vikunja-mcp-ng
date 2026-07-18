@@ -82,6 +82,12 @@ describe('read-only.ts', () => {
       expect(classifySubcommand('vikunja_user_deletion', 'confirm')).toBe('destructive');
       expect(classifySubcommand('vikunja_user_deletion', 'cancel')).toBe('write');
     });
+
+    it('classifies the project backgrounds subcommands (G7)', () => {
+      expect(classifySubcommand('vikunja_projects', 'remove-background')).toBe('destructive');
+      expect(classifySubcommand('vikunja_projects', 'set-unsplash-background')).toBe('write');
+      expect(classifySubcommand('vikunja_projects', 'search-unsplash')).toBe('read');
+    });
   });
 
   describe('TOOL_CLASSIFICATIONS completeness', () => {

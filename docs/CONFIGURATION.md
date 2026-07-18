@@ -202,13 +202,48 @@ requiring any config migration.
 | `userDeletion` | **OFF** ⚠️⚠️ | Gates `vikunja_user_deletion` (`request`/`confirm`/`cancel` self-deletion of the **currently authenticated account**). Deny-by-default AND JWT-only — see [Composing with Auth-Type Gating](#composing-with-auth-type-gating). `request` and `confirm` additionally require an explicit `confirm: true` tool argument; both are genuinely irreversible once the emailed confirmation token is used — do not enable this module unless you specifically want an AI assistant able to delete the connected Vikunja account. `cancel` (the safe undo) does not require `confirm: true`. |
 | `tokenManagement` | **OFF** ⚠️ | Gates `vikunja_tokens` (API token list/create/delete for the connected account). Deny-by-default — credential-adjacent. No auth-type restriction at registration time (unlike `admin`/`users`/`export`), but the underlying `/tokens` endpoints may reject API-token sessions server-side — see `src/tools/tokens.ts`. |
 | `caldavTokens` | **OFF** ⚠️ | Gates `vikunja_caldav_tokens` (CalDAV token list/create/delete for the connected account). Deny-by-default — credential-adjacent, and a created token's secret is shown only once. Unlike `tokenManagement`, the underlying `/user/settings/token/caldav*` endpoints ARE JWT-only per the vendored OpenAPI spec, so registration composes with the same JWT-only gate as `users`/`export`/`admin` — see [Composing with Auth-Type Gating](#composing-with-auth-type-gating) and `src/tools/caldav-tokens.ts`. |
+| `backgrounds` | **OFF** (opt-in) | Gates three `vikunja_projects` subcommands — `remove-background`, `set-unsplash-background`, `search-unsplash` (G7, project backgrounds) — **not** a whole tool. Deny-by-default for the opposite reason to `admin`/`userDeletion`/`tokenManagement`: not dangerous, just low-value/cosmetic for a task-management assistant. See [Subcommand-Level Gating: `backgrounds`](#subcommand-level-gating-backgrounds) below. |
 
 Ordinary modules default **ON** (matching pre-existing behavior — this system is
 additive, not a breaking change). The four reserved "dangerous" modules default **OFF**
 (deny-by-default): `admin`, `tokenManagement`, `caldavTokens`, and `userDeletion` now all
 have tools wired to them and ship already gated closed until an operator opts in.
 `userDeletion` deserves particular caution — read its row above in full before enabling
-it.
+it. `backgrounds` is also **OFF** by default, but as an **opt-in cosmetic** module rather
+than a dangerous one — see below.
+
+### Subcommand-Level Gating: `backgrounds`
+
+Every module above gates a whole standalone tool at registration time. `backgrounds` is
+the one exception: it gates only three subcommands *within* the always-registered
+`vikunja_projects` tool (`remove-background`, `set-unsplash-background`,
+`search-unsplash`), because bundling low-value cosmetic operations into their own tool
+would be worse ergonomics than adding them to the tool that already owns project state.
+
+The same "invisible to the client, not merely rejected at call time" contract still
+holds — it is just enforced one level down. `registerProjectsTool`
+(`src/tools/projects/index.ts`) builds `vikunja_projects`'s subcommand **enum** itself
+conditionally on whether `backgrounds` is enabled: when it isn't (the default), those
+three strings are not present in the enum at all, so a call naming one of them fails
+MCP schema validation (an unrecognized enum value) rather than reaching any handler
+logic. Enable the module and the enum includes them; disable it and they vanish from
+the schema again — exactly mirroring what module gating does for a whole tool.
+
+```json
+{ "modules": { "backgrounds": true } }
+```
+
+```env
+VIKUNJA_MCP_MODULE_BACKGROUNDS=true
+```
+
+Two of the three subcommands (`set-unsplash-background`, `search-unsplash`) only work
+when the connected Vikunja server itself has an Unsplash provider configured
+(an admin-side API key) — when it doesn't, the server's error is recognized and
+rewritten into a friendly, actionable message rather than surfaced as opaque server
+text. The binary image bytes (upload, and fetching the actual image/thumbnail) stay
+parked — MCP has no content channel for them; see
+[docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md) item G7.
 
 ### Module Env Var Overrides
 
@@ -236,6 +271,9 @@ VIKUNJA_MCP_MODULE_ADMIN=false
 VIKUNJA_MCP_MODULE_USER_DELETION=false
 VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT=false
 VIKUNJA_MCP_MODULE_CALDAV_TOKENS=false
+
+# Opt-in cosmetic — deny-by-default (not dangerous, just low-value)
+VIKUNJA_MCP_MODULE_BACKGROUNDS=false
 ```
 
 As with every other setting, these env vars always win over the config file.

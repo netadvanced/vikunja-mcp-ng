@@ -12,6 +12,8 @@ import type { McpResponse } from './crud';
 import { createAuthRequiredError, wrapToolError } from '../../utils/error-handler';
 import { validateId } from './validation';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../../utils/read-only';
+import { ConfigurationManager, isModuleEnabled } from '../../config';
+import { logger } from '../../utils/logger';
 
 // Import all submodule operations
 import {
@@ -85,6 +87,15 @@ import {
 import { duplicateProject, type DuplicateProjectArgs } from './duplicate';
 
 import {
+  removeProjectBackground,
+  setUnsplashBackground,
+  searchUnsplashBackgrounds,
+  type RemoveBackgroundArgs,
+  type SetUnsplashBackgroundArgs,
+  type SearchUnsplashArgs,
+} from './backgrounds';
+
+import {
   listProjectUsers,
   searchProjectUsers,
   addProjectUser,
@@ -111,6 +122,51 @@ import {
   type ListMembersArgs
 } from './sharing-access';
 
+// The three project-backgrounds subcommands (G7,
+// docs/ENDPOINT-TAIL-RETRIAGE.md) live behind the opt-in, deny-by-default
+// `backgrounds` module config key (src/config/types.ts) — the deliberate
+// opposite of every other default-ON domain module. Every other module in
+// this codebase gates a whole standalone tool at registration time so a
+// disabled module's tools are "invisible to the client, not merely
+// rejected at call time" (docs/CONFIGURATION.md). `backgrounds` gates only
+// three subcommands *within* the always-registered `vikunja_projects` tool,
+// so that same "genuinely absent from the schema" contract is reproduced
+// here at the subcommand-enum level instead: the enum literally does not
+// contain these three strings when the module is disabled, so a call
+// naming one of them fails MCP schema validation (an unrecognized enum
+// value) rather than being accepted and then rejected by handler logic.
+const BACKGROUND_SUBCOMMANDS = [
+  'remove-background',
+  'set-unsplash-background',
+  'search-unsplash',
+] as const;
+
+/**
+ * Resolves whether the `backgrounds` module is enabled, failing safe to
+ * disabled (matching the schema default and the "opt-in" contract) rather
+ * than fatal — same fail-safe rationale as `resolveModulesConfig` in
+ * `src/tools/index.ts`. `override` lets `registerTools` pass down a value
+ * it already computed once (avoiding a second `loadConfiguration()` call);
+ * omitted, this resolves independently — used by direct unit-test call
+ * sites that instantiate `registerProjectsTool` without going through
+ * `registerTools`.
+ */
+export function resolveBackgroundsEnabled(override?: boolean): boolean {
+  if (override !== undefined) {
+    return override;
+  }
+  try {
+    return isModuleEnabled(ConfigurationManager.getInstance().loadConfiguration().modules.backgrounds);
+  } catch (error) {
+    logger.error(
+      'Failed to load module gating configuration while resolving the backgrounds module; ' +
+        'defaulting to disabled (opt-in, deny-by-default):',
+      error,
+    );
+    return false;
+  }
+}
+
 /**
  * Legacy single-tool interface for backward compatibility
  * Registers a single tool with all subcommands like the original implementation
@@ -118,29 +174,40 @@ import {
 export function registerProjectsTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
+  backgroundsEnabledOverride?: boolean,
 ): void {
+  const backgroundsEnabled = resolveBackgroundsEnabled(backgroundsEnabledOverride);
+  const baseSubcommands = [
+    'list', 'get', 'create', 'update', 'delete', 'archive', 'unarchive',
+    'get-children', 'get-tree', 'get-breadcrumb', 'move',
+    'create-share', 'list-shares', 'get-share', 'delete-share', 'auth-share',
+    'list-buckets', 'create-bucket', 'update-bucket', 'delete-bucket',
+    'list-views', 'get-view', 'create-view', 'update-view', 'delete-view',
+    'set-done-bucket', 'list-view-tasks', 'duplicate',
+    // Direct user/team sharing — primitives
+    'list-project-users', 'search-project-users', 'add-project-user',
+    'update-project-user-permission', 'remove-project-user',
+    'list-project-teams', 'add-project-team',
+    'update-project-team-permission', 'remove-project-team',
+    // Direct user/team sharing — composites
+    'share-with-user', 'share-with-team', 'list-members',
+  ];
+  const subcommandValues = (
+    backgroundsEnabled ? [...baseSubcommands, ...BACKGROUND_SUBCOMMANDS] : baseSubcommands
+  ) as [string, ...string[]];
+
   server.tool(
     'vikunja_projects',
     withReadOnlyNote(
       'vikunja_projects',
-      'Manage projects with full CRUD operations, hierarchy management, sharing capabilities, project views, Kanban buckets, and duplication',
+      'Manage projects with full CRUD operations, hierarchy management, sharing capabilities, project views, Kanban buckets, and duplication'
+      + (backgroundsEnabled
+        ? '. The opt-in backgrounds module adds remove-background/set-unsplash-background/search-unsplash'
+        : ''),
     ),
     {
-      subcommand: z.enum(['list', 'get', 'create', 'update', 'delete', 'archive', 'unarchive',
-        'get-children', 'get-tree', 'get-breadcrumb', 'move',
-        'create-share', 'list-shares', 'get-share', 'delete-share', 'auth-share',
-        'list-buckets', 'create-bucket', 'update-bucket', 'delete-bucket',
-        'list-views', 'get-view', 'create-view', 'update-view', 'delete-view',
-        'set-done-bucket', 'list-view-tasks', 'duplicate',
-        // Direct user/team sharing — primitives
-        'list-project-users', 'search-project-users', 'add-project-user',
-        'update-project-user-permission', 'remove-project-user',
-        'list-project-teams', 'add-project-team',
-        'update-project-team-permission', 'remove-project-team',
-        // Direct user/team sharing — composites
-        'share-with-user', 'share-with-team', 'list-members',
-      ]),
+      subcommand: z.enum(subcommandValues),
       // CRUD arguments
       id: z.number().positive().optional(),
       title: z.string().optional(),
@@ -186,6 +253,12 @@ export function registerProjectsTool(
       // CompositeOperation (src/utils/composite-operation.ts) and
       // docs/ENDPOINT-PLAYBOOK.md §5. Default false (best-effort).
       atomic: z.boolean().optional(),
+      // Project backgrounds arguments (opt-in `backgrounds` module —
+      // set-unsplash-background / search-unsplash subcommands). `page`
+      // above is reused for search-unsplash's pagination (maps to the
+      // API's `p` query param).
+      unsplashImageId: z.string().optional(),
+      unsplashQuery: z.string().optional(),
       // Session ID for AORP response tracking
       sessionId: z.string().optional(),
     },
@@ -522,6 +595,32 @@ export function registerProjectsTool(
             validateId(args.id, 'id');
             return await duplicateProject(args as DuplicateProjectArgs, authManager);
 
+          // Project backgrounds (G7, opt-in `backgrounds` module). Only
+          // reachable when the module is enabled — see
+          // BACKGROUND_SUBCOMMANDS above; the zod enum itself excludes
+          // these subcommand strings when the module is disabled, so an
+          // unrecognized-subcommand rejection happens at schema validation
+          // time in that case, never reaching this switch.
+          case 'remove-background':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for remove-background operation');
+            }
+            validateId(args.id, 'id');
+            return await removeProjectBackground(args as RemoveBackgroundArgs, authManager);
+
+          case 'set-unsplash-background':
+            if (!args.id) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for set-unsplash-background operation');
+            }
+            validateId(args.id, 'id');
+            if (!args.unsplashImageId) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'unsplashImageId is required for set-unsplash-background operation');
+            }
+            return await setUnsplashBackground(args as SetUnsplashBackgroundArgs, authManager);
+
+          case 'search-unsplash':
+            return await searchUnsplashBackgrounds(args as SearchUnsplashArgs, authManager);
+
           default:
             throw new MCPError(ErrorCode.VALIDATION_ERROR, `Unknown subcommand: ${String(args.subcommand)}`);
         }
@@ -584,7 +683,10 @@ export type {
   RemoveProjectTeamArgs,
   ShareWithUserArgs,
   ShareWithTeamArgs,
-  ListMembersArgs
+  ListMembersArgs,
+  RemoveBackgroundArgs,
+  SetUnsplashBackgroundArgs,
+  SearchUnsplashArgs
 };
 
 // Export all functions for direct use if needed
@@ -641,5 +743,10 @@ export {
   removeProjectTeam,
   shareProjectWithUser,
   shareProjectWithTeam,
-  listProjectMembers
+  listProjectMembers,
+
+  // Backgrounds (opt-in `backgrounds` module)
+  removeProjectBackground,
+  setUnsplashBackground,
+  searchUnsplashBackgrounds
 };

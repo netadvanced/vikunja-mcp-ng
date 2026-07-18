@@ -438,6 +438,7 @@ export class ConfigurationManager {
       process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS,
       true
     );
+    this.assignEnvValue(modules, 'backgrounds', process.env.VIKUNJA_MCP_MODULE_BACKGROUNDS, true);
     if (Object.keys(modules).length > 0) {
       result.modules = modules;
     }

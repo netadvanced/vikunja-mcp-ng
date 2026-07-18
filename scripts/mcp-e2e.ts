@@ -558,6 +558,50 @@ async function testProjects(h: McpHarness, ctx: FlowContext): Promise<void> {
   }
 }
 
+// G7 (docs/ENDPOINT-TAIL-RETRIAGE.md): project backgrounds
+// (remove-background/set-unsplash-background/search-unsplash) are gated
+// behind the opt-in, deny-by-default `backgrounds` module config key — the
+// e2e stack's config leaves it at its default (disabled), and there is no
+// Unsplash provider key configured on it either way, so these subcommands
+// are NEVER exercised live here. This only asserts default-absence: with
+// the module disabled, the three subcommand names are not part of
+// `vikunja_projects`'s schema at all, so calling them must fail with a
+// schema/protocol-level error (MCP SDK's `Invalid arguments` /
+// `InvalidParams`), not merely a handler-level rejection.
+async function testProjectBackgroundsAbsence(h: McpHarness, ctx: FlowContext): Promise<void> {
+  log('\n[Project backgrounds — default-absence (opt-in `backgrounds` module, off by default)]');
+
+  const attempts: Array<{ name: string; args: Record<string, unknown> }> = [
+    { name: 'remove-background', args: { subcommand: 'remove-background', id: ctx.projectId ?? 1 } },
+    {
+      name: 'set-unsplash-background',
+      args: { subcommand: 'set-unsplash-background', id: ctx.projectId ?? 1, unsplashImageId: 'test' },
+    },
+    { name: 'search-unsplash', args: { subcommand: 'search-unsplash' } },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const result = await h.call('vikunja_projects', attempt.args);
+      // If the call somehow succeeded (or returned an ordinary isError
+      // response instead of a schema rejection), the module is enabled on
+      // this stack — that's a real config drift worth flagging, not a pass.
+      fail(
+        `${attempt.name} subcommand is absent by default`,
+        `expected a schema-validation rejection (backgrounds module disabled) but got ` +
+          `isError=${result.isError}: ${result.text.slice(0, 200)}`,
+      );
+    } catch (e) {
+      const message = (e as Error).message || String(e);
+      assertStep(
+        `${attempt.name} subcommand is absent by default`,
+        /invalid|unrecognized|enum/i.test(message),
+        message.slice(0, 300),
+      );
+    }
+  }
+}
+
 async function testTasks(h: McpHarness, ctx: FlowContext): Promise<void> {
   log('\n[Tasks]');
   if (!ctx.projectId) {
@@ -1085,6 +1129,7 @@ async function main(): Promise<void> {
       await cleanupByPrefix(h);
       await testAuth(h);
       await testProjects(h, ctx);
+      await testProjectBackgroundsAbsence(h, ctx);
       await testTasks(h, ctx);
       await testLabels(h, ctx);
       await testAssignees(h, ctx);
