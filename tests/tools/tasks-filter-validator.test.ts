@@ -80,4 +80,33 @@ describe('FilterValidator.validateAndParseFilter — done folding', () => {
 
     expect(result.filterString).toBe('(priority >= 4 || priority = 3) && done = false');
   });
+
+  // Battle-testing finding #2: an agent reaching for the snake_case Task
+  // JSON field spelling (due_date) in vikunja_tasks list's `filter` argument
+  // used to fail here with "Invalid filter syntax: Expected condition after
+  // logical operator" — this is the exact entry point that error came
+  // through. It must now succeed, normalizing to the canonical dueDate
+  // field, exactly as if the caller had spelled it correctly the first time.
+  it('accepts a snake_case field alias (due_date) in the filter string, normalizing to dueDate', async () => {
+    const result = await FilterValidator.validateAndParseFilter(
+      { filter: 'priority >= 4 && due_date < now+14d' } as TaskListingArgs,
+      storage,
+    );
+
+    expect(result.filterString).toBe('priority >= 4 && due_date < now+14d');
+    expect(result.filterExpression).not.toBeNull();
+    expect(result.filterExpression?.groups[0]?.conditions).toEqual([
+      { field: 'priority', operator: '>=', value: 4 },
+      { field: 'dueDate', operator: '<', value: 'now+14d' },
+    ]);
+  });
+
+  it('still surfaces a helpful, casing-consistent error for a genuinely unrecognized field', async () => {
+    await expect(
+      FilterValidator.validateAndParseFilter(
+        { filter: 'notARealField = 1' } as TaskListingArgs,
+        storage,
+      ),
+    ).rejects.toThrow(/Invalid filter syntax:.*Expected condition.*dueDate.*snake_case/is);
+  });
 });

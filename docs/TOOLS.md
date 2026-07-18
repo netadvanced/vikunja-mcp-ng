@@ -71,6 +71,10 @@ interface StandardResponse {
     - Support for pagination, search, sorting
     - Filter by completion status
     - Apply saved filters with `filterId` parameter
+    - `filter` fields use camelCase (`dueDate`, `percentDone`, `project`,
+      etc. — see `vikunja_filters`' field-casing note under Filter
+      Management below); snake_case aliases (`due_date`, etc.) are also
+      accepted and normalized
     - Cross-project listing (no `projectId`, or `allProjects: true`) calls the
       documented `GET /tasks` endpoint directly (one call), falling back to
       per-project aggregation only if that call fails
@@ -319,6 +323,17 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 > only) with `hydrated: false` rather than silently dropped. `build` and
 > `validate` remain pure local utilities — they construct or check a filter
 > query string without contacting the server.
+>
+> **Field casing:** filter fields are camelCase (`dueDate`, `percentDone`,
+> `startDate`, `endDate`, `doneAt`, `project`, plus `done`/`priority`/
+> `assignees`/`labels`/`created`/`updated`/`title`/`description`, which are
+> spelled the same either way) — this is the casing `build` emits and the
+> casing `vikunja_tasks list`'s own `filter` argument accepts as canonical.
+> Snake_case aliases (`due_date`, `percent_done`, `project_id`, etc. — the
+> underlying Vikunja Task JSON's own field spelling) are also accepted
+> everywhere a field name is given (the `filter` string, `build`/`create`/
+> `update`'s `conditions` array) and are normalized to camelCase
+> automatically, so either spelling works.
 
 - `vikunja_filters` - Advanced filtering for tasks, backed by Vikunja's real saved filters. Uses `action` instead of `subcommand`.
   - `list` - Derive the list of saved filters from `GET /projects`' pseudo-project entries (optional: page, perPage, favorite)
@@ -326,7 +341,7 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
   - `create` - Create a new saved filter (`PUT /filters`) (required: title, and one of filter (query string) or conditions (array); optional: description, groupOperator (`&&`/`||`), isFavorite)
   - `update` - Update an existing saved filter (`POST /filters/{id}`, a full-resource replace — omitted fields are carried forward from the current filter, not cleared) (required: id)
   - `delete` - Delete a saved filter (`DELETE /filters/{id}`) (required: id)
-  - `build` - Build a filter string from conditions (local utility, no server call) (required: conditions array; optional: groupOperator)
+  - `build` - Build a filter string from conditions (local utility, no server call) (required: conditions array; optional: groupOperator). Output uses camelCase field names (e.g. `dueDate < now`), the same casing `vikunja_tasks list`'s `filter` argument accepts — pass it straight through without a casing conversion.
   - `validate` - Validate a filter string (local utility, no server call)
 
 ## Data Export

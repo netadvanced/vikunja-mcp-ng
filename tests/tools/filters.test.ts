@@ -550,6 +550,90 @@ describe('vikunja_filters tool', () => {
       expect(markdown).toContain('(priority = 5 || priority = 1)');
       expect(mockFetch).not.toHaveBeenCalled();
     });
+
+    it('emits camelCase field names (dueDate), not the API snake_case (due_date) - regression for the build/validate casing round-trip bug', async () => {
+      const result = await toolHandler({
+        action: 'build',
+        parameters: {
+          conditions: [
+            { field: 'priority', operator: '>=', value: 4 },
+            { field: 'dueDate', operator: '<', value: 'now+14d' },
+          ],
+          groupOperator: '&&',
+        },
+      });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('(priority >= 4 && dueDate < now+14d)');
+      expect(markdown).not.toContain('due_date');
+    });
+
+    it("build's output round-trips cleanly through validate (the real failure mode: build's own output rejected by the validator)", async () => {
+      const buildResult = await toolHandler({
+        action: 'build',
+        parameters: {
+          conditions: [
+            { field: 'done', operator: '=', value: false },
+            { field: 'priority', operator: '>=', value: 4 },
+            { field: 'dueDate', operator: '<', value: 'now+14d' },
+          ],
+          groupOperator: '&&',
+        },
+      });
+
+      const filterMatch = /\*\*filter:\*\*\s*(.+)/.exec(buildResult.content[0].text);
+      expect(filterMatch).not.toBeNull();
+      const builtFilter = (filterMatch as RegExpExecArray)[1]?.trim() as string;
+
+      const validateResult = await toolHandler({ action: 'validate', parameters: { filter: builtFilter } });
+      const validateMarkdown = validateResult.content[0].text;
+      expect(parseMarkdown(validateMarkdown).hasHeading(2, /Success/)).toBe(true);
+      expect(validateMarkdown).toContain('Filter is valid');
+    });
+
+    it('accepts snake_case field aliases in structured conditions (build is one of the entry points an agent reaching for due_date hits first)', async () => {
+      const result = await toolHandler({
+        action: 'build',
+        parameters: {
+          conditions: [{ field: 'due_date', operator: '<', value: 'now+14d' }],
+        },
+      });
+
+      const markdown = result.content[0].text;
+      expect(parseMarkdown(markdown).hasHeading(2, /Success/)).toBe(true);
+      expect(markdown).toContain('dueDate < now+14d');
+      expect(markdown).not.toContain('due_date');
+    });
+
+    it('round-trips every DSL field through build -> validate without a casing failure', async () => {
+      const fields: Array<{ field: string; operator: string; value: unknown }> = [
+        { field: 'done', operator: '=', value: false },
+        { field: 'priority', operator: '>=', value: 3 },
+        { field: 'percentDone', operator: '>=', value: 50 },
+        { field: 'dueDate', operator: '<', value: 'now' },
+        { field: 'startDate', operator: '>=', value: '2024-01-01' },
+        { field: 'endDate', operator: '<=', value: '2024-12-31' },
+        { field: 'doneAt', operator: '!=', value: 'now' },
+        { field: 'project', operator: '=', value: 4 },
+        { field: 'assignees', operator: 'in', value: [1, 2] },
+        { field: 'labels', operator: 'in', value: [1, 2] },
+        { field: 'created', operator: '>=', value: '2024-01-01' },
+        { field: 'updated', operator: '>=', value: '2024-01-01' },
+        { field: 'title', operator: '=', value: 'x' },
+        { field: 'description', operator: '=', value: 'x' },
+      ];
+
+      for (const condition of fields) {
+        const buildResult = await toolHandler({ action: 'build', parameters: { conditions: [condition] } });
+        const filterMatch = /\*\*filter:\*\*\s*(.+)/.exec(buildResult.content[0].text);
+        expect(filterMatch).not.toBeNull();
+        const builtFilter = (filterMatch as RegExpExecArray)[1]?.trim() as string;
+
+        const validateResult = await toolHandler({ action: 'validate', parameters: { filter: builtFilter } });
+        const validateMarkdown = validateResult.content[0].text;
+        expect(parseMarkdown(validateMarkdown).hasHeading(2, /Success/)).toBe(true);
+      }
+    });
   });
 
   describe('validate action (local utility, no server call)', () => {

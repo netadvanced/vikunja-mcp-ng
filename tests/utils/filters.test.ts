@@ -18,11 +18,16 @@ import {
   conditionToString,
   groupToString,
   expressionToString,
+  conditionToDslString,
+  groupToDslString,
+  expressionToDslString,
   parseFilterString,
   FilterBuilder,
   SecurityValidator,
+  FILTER_FIELD_ALIASES,
 } from '../../src/utils/filters';
-import type { FilterCondition, FilterExpression, FilterGroup } from '../../src/types/index';
+import { FIELD_TYPES } from '../../src/types/filters';
+import type { FilterCondition, FilterExpression, FilterField, FilterGroup } from '../../src/types/index';
 
 describe('Consolidated Filter Utilities', () => {
   describe('validateCondition', () => {
@@ -397,6 +402,112 @@ describe('Consolidated Filter Utilities', () => {
     });
   });
 
+  describe('conditionToDslString / groupToDslString / expressionToDslString', () => {
+    // These are the DSL-casing (camelCase) counterparts to
+    // conditionToString/groupToString/expressionToString above - they must
+    // NEVER apply FILTER_FIELD_TO_API_FIELD's snake_case translation, since
+    // their whole purpose (backing `vikunja_filters build`'s output) is to
+    // hand back a string in the same casing parseFilterString/`vikunja_tasks
+    // list`'s `filter` argument accept as canonical. This is exactly the
+    // battle-testing regression this item fixes: `build` used to emit
+    // conditionToString's snake_case (due_date), which the validator it had
+    // just accepted camelCase input through then rejected right back.
+    it.each<[FilterCondition['field'], string, FilterCondition['value'], string]>([
+      ['percentDone', '>=', 75, 'percentDone >= 75'],
+      ['dueDate', '<', 'now', 'dueDate < now'],
+      ['startDate', '>=', '2024-01-01', 'startDate >= 2024-01-01'],
+      ['endDate', '<=', '2024-12-31', 'endDate <= 2024-12-31'],
+      ['doneAt', '!=', 'now', 'doneAt != now'],
+      ['project', '=', 4, 'project = 4'],
+    ])('conditionToDslString keeps %s in DSL casing, unlike conditionToString', (field, operator, value, expected) => {
+      const condition: FilterCondition = { field, operator: operator as FilterCondition['operator'], value };
+      expect(conditionToDslString(condition)).toBe(expected);
+      // Sanity check that this genuinely differs from the API-casing sibling
+      // for every field where the two casings diverge - otherwise this test
+      // wouldn't actually be exercising the bug it targets.
+      expect(conditionToDslString(condition)).not.toBe(conditionToString(condition));
+    });
+
+    it('groupToDslString wraps a multi-condition group without translating field names', () => {
+      const group: FilterGroup = {
+        operator: '&&',
+        conditions: [
+          { field: 'dueDate', operator: '<', value: 'now' },
+          { field: 'percentDone', operator: '>=', value: 50 },
+        ],
+      };
+      expect(groupToDslString(group)).toBe('(dueDate < now && percentDone >= 50)');
+    });
+
+    it('expressionToDslString translates a full expression while keeping camelCase field names', () => {
+      const expression: FilterExpression = {
+        groups: [
+          {
+            operator: '&&',
+            conditions: [
+              { field: 'dueDate', operator: '<', value: 'now' },
+              { field: 'startDate', operator: '>=', value: '2024-01-01' },
+              { field: 'endDate', operator: '<=', value: '2024-12-31' },
+              { field: 'doneAt', operator: '!=', value: 'now' },
+              { field: 'percentDone', operator: '>=', value: 50 },
+              { field: 'project', operator: '=', value: 4 },
+            ],
+          },
+        ],
+      };
+
+      expect(expressionToDslString(expression)).toBe(
+        '(dueDate < now && startDate >= 2024-01-01 && endDate <= 2024-12-31 && doneAt != now && percentDone >= 50 && project = 4)',
+      );
+      // And the API-casing sibling must still translate, so the two
+      // functions are genuinely serving different purposes rather than one
+      // having quietly become a no-op alias of the other.
+      expect(expressionToString(expression)).toBe(
+        '(due_date < now && start_date >= 2024-01-01 && end_date <= 2024-12-31 && done_at != now && percent_done >= 50 && project_id = 4)',
+      );
+    });
+  });
+
+  describe('round-trip: every supported field survives build -> parse in DSL casing', () => {
+    // The core regression test for this fix: whatever `expressionToDslString`
+    // (and therefore `FilterBuilder.toDslString()` and `vikunja_filters
+    // build`'s output) emits for a field must be re-parseable by
+    // `parseFilterString` - the exact validator `vikunja_tasks list`'s
+    // `filter` argument runs - without the caller having to change casing.
+    const sampleValueFor = (field: FilterField): FilterCondition['value'] => {
+      switch (FIELD_TYPES[field]) {
+        case 'boolean':
+          return true;
+        case 'number':
+          return 3;
+        case 'array':
+          return ['1', '2'];
+        case 'date':
+          return 'now';
+        case 'string':
+        default:
+          return 'sample';
+      }
+    };
+
+    it.each(Object.keys(FIELD_TYPES) as FilterField[])('round-trips the %s field', (field) => {
+      const operator = FIELD_TYPES[field] === 'array' ? 'in' : '=';
+      const value = sampleValueFor(field);
+      const builder = new FilterBuilder().where(field, operator, value);
+      const dslString = builder.toDslString();
+
+      // Emitted string uses the canonical camelCase spelling verbatim.
+      expect(dslString.startsWith(field)).toBe(true);
+
+      const parseResult = parseFilterString(dslString);
+      expect(parseResult.error).toBeUndefined();
+      expect(parseResult.expression?.groups[0]?.conditions[0]?.field).toBe(field);
+
+      const validation = validateFilterExpression(parseResult.expression as FilterExpression);
+      expect(validation.valid).toBe(true);
+    });
+  });
+
   describe('parseFilterString', () => {
     it('should reject non-string input', () => {
       const result = parseFilterString(123 as unknown as string);
@@ -443,6 +554,56 @@ describe('Consolidated Filter Utilities', () => {
         field: 'labels',
         operator: 'in',
         value: ['1', '2'],
+      });
+    });
+
+    describe('snake_case field aliases are accepted and normalized to camelCase', () => {
+      // The exact friction from battle-testing finding #2: an agent tries
+      // the snake_case Task JSON spelling (due_date) before the DSL's
+      // camelCase spelling (dueDate) and gets rejected. Accepting the alias
+      // and normalizing it removes that failure class entirely rather than
+      // just wording the error message better.
+      it.each<[string, FilterField, FilterCondition['value']]>([
+        ['due_date < now', 'dueDate', 'now'],
+        ['percent_done >= 50', 'percentDone', 50],
+        ['start_date >= 2024-01-01', 'startDate', '2024-01-01'],
+        ['end_date <= 2024-12-31', 'endDate', '2024-12-31'],
+        ['done_at != now', 'doneAt', 'now'],
+        ['project_id = 4', 'project', 4],
+      ])('normalizes %s to the %s field', (filterStr, expectedField, expectedValue) => {
+        const result = parseFilterString(filterStr);
+        expect(result.error).toBeUndefined();
+        expect(result.expression?.groups[0]?.conditions[0]).toEqual({
+          field: expectedField,
+          operator: filterStr.includes('!=') ? '!=' : filterStr.includes('>=') ? '>=' : filterStr.includes('<=') ? '<=' : filterStr.includes('<') ? '<' : '=',
+          value: expectedValue,
+        });
+      });
+
+      it('accepts a snake_case alias combined with a canonical camelCase field in the same expression', () => {
+        const result = parseFilterString('due_date < now && priority >= 3');
+        expect(result.error).toBeUndefined();
+        expect(result.expression?.groups[0]?.conditions).toEqual([
+          { field: 'dueDate', operator: '<', value: 'now' },
+          { field: 'priority', operator: '>=', value: 3 },
+        ]);
+      });
+
+      it('exposes every alias mapping to a canonical FilterField declared in FIELD_TYPES (no dangling aliases)', () => {
+        for (const canonical of Object.values(FILTER_FIELD_ALIASES)) {
+          expect(Object.keys(FIELD_TYPES)).toContain(canonical);
+        }
+      });
+
+      it('still rejects a genuinely unrecognized field, with a camelCase-and-alias hint in the error', () => {
+        const result = parseFilterString('notARealField = 1');
+        expect(result.expression).toBeNull();
+        expect(result.error?.message).toContain('Expected condition');
+        // Casing-consistency audit: the hint must show canonical camelCase
+        // examples (dueDate) and explicitly acknowledge snake_case aliases,
+        // never the other way around.
+        expect(result.error?.message).toContain('dueDate');
+        expect(result.error?.message).toMatch(/snake_case/i);
       });
     });
   });

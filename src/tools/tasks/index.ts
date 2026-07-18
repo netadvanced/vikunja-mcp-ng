@@ -208,7 +208,16 @@ export function registerTasksTool(
       repeatMode: z.enum(['day', 'week', 'month', 'year']).optional(),
       // Query fields
       id: z.number().optional(),
-      filter: z.string().optional(),
+      filter: z
+        .string()
+        .optional()
+        .describe(
+          'Filter query string (e.g. "priority >= 4 && dueDate < now+14d"). Fields use ' +
+            'camelCase (dueDate, percentDone, startDate, endDate, doneAt, project, plus ' +
+            'done/priority/assignees/labels/created/updated/title/description); ' +
+            'snake_case aliases (due_date, percent_done, etc.) are also accepted and ' +
+            'normalized automatically. Build one with vikunja_filters build/validate.',
+        ),
       filterId: z.string().optional(),
       page: z.number().optional(),
       perPage: z.number().optional(),

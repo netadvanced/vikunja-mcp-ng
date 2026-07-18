@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { FIELD_TYPES } from '../types/filters';
 import type {
   FilterCondition,
   FilterExpression,
@@ -266,22 +267,73 @@ function parseOperator(state: ParseState): FilterOperator | null {
 }
 
 /**
+ * Snake_case aliases for the filter DSL's canonical camelCase field names,
+ * accepted at parse time and normalized to their canonical form before the
+ * rest of the pipeline ever sees them. This is the *input-side* counterpart
+ * to `FILTER_FIELD_TO_API_FIELD` below (which translates the other
+ * direction, canonical DSL -> API query param, for the outgoing server-side
+ * `filter` string): the underlying Vikunja Task JSON field names are
+ * snake_case (`due_date`, `percent_done`, ...), so agents composing a
+ * filter string reach for that spelling first even though this DSL's
+ * canonical, documented, and error-message-advertised spelling is camelCase
+ * (`dueDate`). Accepting both kills that friction rather than just
+ * documenting around it (battle-testing finding: filter grammar casing
+ * mismatch - agent tried `due_date`, was rejected twice, only succeeded
+ * after switching to `dueDate`).
+ *
+ * Fields not listed here are already spelled identically in both casings
+ * (`done`, `priority`, `assignees`, `labels`, `created`, `updated`, `title`,
+ * `description`) and need no alias entry.
+ */
+export const FILTER_FIELD_ALIASES: Readonly<Record<string, FilterField>> = {
+  percent_done: 'percentDone',
+  due_date: 'dueDate',
+  start_date: 'startDate',
+  end_date: 'endDate',
+  done_at: 'doneAt',
+  project_id: 'project',
+};
+
+/**
+ * Every token `parseField` will recognize - canonical camelCase field names
+ * plus their snake_case aliases - sorted longest-first so a longer token is
+ * never shadowed by a shorter prefix of itself (e.g. `doneAt`/`done_at`
+ * before `done`, `project_id` before `project`). Computed once at module
+ * load rather than per-call.
+ */
+const FIELD_TOKEN_CANDIDATES: ReadonlyArray<{ token: string; field: FilterField }> = [
+  ...(Object.keys(FIELD_TYPES) as FilterField[]).map((field) => ({ token: field as string, field })),
+  ...Object.entries(FILTER_FIELD_ALIASES).map(([token, field]) => ({ token, field })),
+].sort((a, b) => b.token.length - a.token.length);
+
+/**
+ * Appended to "Expected condition"-class parse errors (the ones raised when
+ * a field name wasn't recognized at all - see `parseCondition`/`parseGroup`)
+ * so a genuinely invalid/misspelled field name gets an actionable,
+ * casing-consistent hint instead of a bare "Expected condition". Lists the
+ * canonical camelCase spellings only - the snake_case aliases are mentioned
+ * separately so the primary, error-message-advertised casing stays
+ * unambiguous.
+ */
+const FIELD_NAME_HINT = `Valid fields (camelCase): ${(Object.keys(FIELD_TYPES) as FilterField[]).join(', ')}. Snake_case aliases (e.g. due_date, percent_done, project_id) are also accepted and normalized.`;
+
+/**
  * Parse field name
  */
 function parseField(state: ParseState): FilterField | null {
-  // Longest-first so 'doneAt' is matched before 'done' and 'startDate'/'endDate'
-  // before any shorter prefix. parseField does a substring match with a
-  // word-boundary check; without ordering 'done' would shadow 'doneAt'.
-  const fields: FilterField[] = ['percentDone', 'startDate', 'endDate', 'doneAt', 'dueDate',
-                                 'priority', 'assignees', 'project', 'labels', 'created', 'updated',
-                                 'title', 'description', 'done'];
-
-  for (const field of fields) {
-    const substr = state.input.substring(state.position, state.position + field.length);
-    if (substr === field &&
-        (state.position + field.length >= state.length ||
-         /[\s=!<>]/.test(state.input[state.position + field.length] || ''))) {
-      state.position += field.length;
+  // Word-boundary substring match against every recognized token (canonical
+  // camelCase names and their snake_case aliases, see FIELD_TOKEN_CANDIDATES
+  // above). Alias tokens resolve to their canonical camelCase FilterField,
+  // so everything downstream (convertValue, validateFilterExpression,
+  // expressionToString/expressionToDslString) only ever sees canonical
+  // field names - snake_case input is a pure convenience at the parsing
+  // boundary, never a second internal representation.
+  for (const { token, field } of FIELD_TOKEN_CANDIDATES) {
+    const substr = state.input.substring(state.position, state.position + token.length);
+    if (substr === token &&
+        (state.position + token.length >= state.length ||
+         /[\s=!<>]/.test(state.input[state.position + token.length] || ''))) {
+      state.position += token.length;
       return field;
     }
   }
@@ -433,7 +485,7 @@ function parseGroup(state: ParseState): FilterGroup {
   // Parse first condition
   const firstCondition = parseCondition(state);
   if (firstCondition === null) {
-    throw new Error('Expected condition');
+    throw new Error(`Expected condition. ${FIELD_NAME_HINT}`);
   }
   conditions.push(firstCondition);
 
@@ -459,7 +511,7 @@ function parseGroup(state: ParseState): FilterGroup {
     // Parse next condition
     const nextCondition = parseCondition(state);
     if (nextCondition === null) {
-      throw new Error('Expected condition after logical operator');
+      throw new Error(`Expected condition after logical operator. ${FIELD_NAME_HINT}`);
     }
     conditions.push(nextCondition);
 
@@ -892,6 +944,56 @@ export function expressionToString(expression: FilterExpression): string {
 }
 
 /**
+ * Convert a single condition to its DSL-casing string representation - i.e.
+ * the canonical camelCase field spelling (`dueDate`, never `due_date`) that
+ * `parseFilterString`/`parseField` accept as canonical and that every
+ * filter-related error message in this codebase advertises. Unlike
+ * `conditionToString`, this does NOT apply `FILTER_FIELD_TO_API_FIELD` - it
+ * is not for the outgoing server-side `filter` query param, it is for
+ * handing a filter string back to a caller so they can paste it straight
+ * into another tool's `filter` argument (e.g. `vikunja_tasks list`) without
+ * a casing round-trip. See `vikunja_filters build`, whose entire purpose is
+ * producing exactly that string.
+ */
+export function conditionToDslString(condition: FilterCondition): string {
+  const { field, operator, value } = condition;
+
+  let valueStr: string;
+  if (Array.isArray(value)) {
+    valueStr = value.join(', ');
+  } else if (typeof value === 'string' && operator === 'like') {
+    valueStr = `"${value}"`;
+  } else if (typeof value === 'boolean') {
+    valueStr = value.toString();
+  } else {
+    valueStr = String(value);
+  }
+
+  return `${field} ${operator} ${valueStr}`;
+}
+
+/**
+ * Convert group to its DSL-casing string representation. See
+ * `conditionToDslString`.
+ */
+export function groupToDslString(group: FilterGroup): string {
+  const conditions = group.conditions.map(conditionToDslString);
+  return conditions.length > 1
+    ? `(${conditions.join(` ${group.operator} `)})`
+    : conditions[0] || '';
+}
+
+/**
+ * Convert expression to its DSL-casing string representation (canonical
+ * camelCase field names throughout). See `conditionToDslString`.
+ */
+export function expressionToDslString(expression: FilterExpression): string {
+  const groups = expression.groups.map(groupToDslString);
+  const operator = expression.operator || '&&';
+  return groups.join(` ${operator} `);
+}
+
+/**
  * Filter builder class for fluent construction
  */
 export class FilterBuilder {
@@ -948,6 +1050,16 @@ export class FilterBuilder {
 
   toString(): string {
     return expressionToString(this.build());
+  }
+
+  /**
+   * DSL-casing counterpart to `toString()` - canonical camelCase field
+   * names throughout (`dueDate`, never `due_date`), suitable for handing
+   * straight back to a caller as a `filter` argument for another tool. See
+   * `expressionToDslString`/`conditionToDslString`.
+   */
+  toDslString(): string {
+    return expressionToDslString(this.build());
   }
 
   validate(config?: FilterValidationConfig): FilterValidationResult {

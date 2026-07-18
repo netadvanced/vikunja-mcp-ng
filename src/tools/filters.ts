@@ -50,6 +50,7 @@ import {
   validateFilterExpression,
   parseFilterString,
   expressionToString,
+  FILTER_FIELD_ALIASES,
 } from '../utils/filters';
 import type { FilterField, FilterOperator } from '../types/filters';
 import { logger } from '../utils/logger';
@@ -87,8 +88,25 @@ const FILTER_FIELD_VALUES = [
 
 const FILTER_OPERATOR_VALUES = ['=', '!=', '>', '>=', '<', '<=', 'like', 'in', 'not in'] as const;
 
+/**
+ * `field` accepts the canonical camelCase enum values above (`dueDate`) AND
+ * their snake_case aliases (`due_date`, see `FILTER_FIELD_ALIASES` in
+ * `src/utils/filters.ts` - the same table `parseField` uses so the string
+ * (`filter`) and structured (`conditions`) entry points behave identically).
+ * The preprocess step normalizes a recognized alias to its canonical form
+ * before the enum check runs, so validation errors on a genuinely invalid
+ * field still show only the canonical camelCase values, never a duplicated
+ * or ambiguous set.
+ */
+const FilterFieldWithAliasesSchema = z.preprocess((value) => {
+  if (typeof value === 'string' && Object.prototype.hasOwnProperty.call(FILTER_FIELD_ALIASES, value)) {
+    return FILTER_FIELD_ALIASES[value];
+  }
+  return value;
+}, z.enum(FILTER_FIELD_VALUES));
+
 const ConditionSchema = z.object({
-  field: z.enum(FILTER_FIELD_VALUES),
+  field: FilterFieldWithAliasesSchema,
   operator: z.enum(FILTER_OPERATOR_VALUES),
   value: z.union([z.string(), z.number(), z.boolean(), z.array(z.union([z.string(), z.number()]))]),
 });
@@ -127,9 +145,10 @@ const CreateFilterSchema = z
       .string()
       .optional()
       .describe(
-        "Filter query string in this server's DSL (camelCase fields, e.g. dueDate). " +
-          'Parsed, validated, and translated to the API\'s snake_case field names ' +
-          '(e.g. due_date) before being sent to Vikunja.',
+        "Filter query string in this server's DSL (canonical fields are camelCase, " +
+          'e.g. dueDate; snake_case aliases like due_date are also accepted and ' +
+          'normalized). Parsed, validated, and translated to the API\'s snake_case ' +
+          'field names (e.g. due_date) before being sent to Vikunja.',
       ),
     conditions: z
       .array(ConditionSchema)
@@ -194,11 +213,12 @@ type ConditionInput = {
  * the snake_case query string Vikunja's API expects.
  *
  * This is the "existing validated pipeline" the filters tool must route
- * through: `parseFilterString` (secure Zod-backed parser),
- * `validateFilterExpression` (field/operator/value semantics), and
- * `expressionToString` (applies `FILTER_FIELD_TO_API_FIELD`, e.g.
- * `dueDate` -> `due_date`) — see src/utils/filters.ts. Without the last
- * step, a DSL field name sent verbatim is not a Task field Vikunja
+ * through: `parseFilterString` (secure Zod-backed parser - accepts both
+ * canonical camelCase field names and their snake_case aliases, see
+ * `FILTER_FIELD_ALIASES`), `validateFilterExpression` (field/operator/value
+ * semantics), and `expressionToString` (applies `FILTER_FIELD_TO_API_FIELD`,
+ * e.g. `dueDate` -> `due_date`) — see src/utils/filters.ts. Without the
+ * last step, a DSL field name sent verbatim is not a Task field Vikunja
  * recognizes.
  *
  * @throws {MCPError} VALIDATION_ERROR when the filter fails to parse/validate
@@ -380,7 +400,12 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
         "entries that could not be verified are still returned (title only) " +
         "with hydrated:false rather than silently dropped. 'build'/'validate' " +
         'remain pure local utilities - they construct or check a filter query ' +
-        'string without contacting the server or touching any saved filter.',
+        'string without contacting the server or touching any saved filter. ' +
+        'Filter fields use camelCase (e.g. dueDate, percentDone, project) - the ' +
+        "same casing 'build' emits and vikunja_tasks list's own filter argument " +
+        'accepts; snake_case aliases (due_date, percent_done, project_id, etc.) ' +
+        'are also accepted everywhere a field name is given and are normalized ' +
+        'to camelCase automatically.',
     ),
     {
       action: z.enum(['list', 'get', 'create', 'update', 'delete', 'build', 'validate']),
@@ -571,7 +596,15 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
               builder.where(condition.field, condition.operator, condition.value);
             });
 
-            const filterString = builder.toString();
+            // DSL casing (camelCase, e.g. dueDate) - the same casing
+            // parseFilterString/`vikunja_tasks list`'s `filter` argument
+            // accept as canonical - NOT builder.toString()'s snake_case API
+            // casing. This string is meant to be pasted straight into
+            // another tool's `filter` argument; emitting the API's
+            // snake_case here would send the caller right back to the
+            // casing the validator just rejected (see the module doc
+            // comment on `expressionToDslString` in src/utils/filters.ts).
+            const filterString = builder.toDslString();
 
             const response = createStandardResponse(
               'build-filter',
