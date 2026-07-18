@@ -107,6 +107,15 @@ const TASKS: ClassificationTable = {
   // creation + relation write; list-subtasks is a pure read.
   'create-subtask': 'write',
   'list-subtasks': 'read',
+  // duplicate copies a task (labels, assignees, attachments, reminders)
+  // into a brand-new task — a genuine write, direct parallel to
+  // vikunja_projects' duplicate below.
+  duplicate: 'write',
+  // mark-read mutates state (deletes the unread-status row for the current
+  // user) even though the task's own fields are unchanged — a write-ish
+  // state change, not a pure read. Classified 'write' (not 'destructive':
+  // no resource/relationship is removed from the caller's perspective).
+  'mark-read': 'write',
 };
 
 const TASK_BULK: ClassificationTable = {

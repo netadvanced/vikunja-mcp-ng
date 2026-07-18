@@ -26,6 +26,16 @@ import type { BulkUpdateArgs, BulkDeleteArgs, BulkCreateArgs, BulkCreateTaskData
 type Task = components['schemas']['models.Task'];
 /** `models.BulkTask` per the OpenAPI spec — request/response shape for POST /tasks/bulk. */
 type BulkTask = components['schemas']['models.BulkTask'];
+/**
+ * `models.BulkAssignees` per the OpenAPI spec — request body for
+ * `POST /tasks/{taskID}/assignees/bulk`. REPLACE semantics: the task's
+ * assignees become exactly this list. Used ONLY for the post-bulk-update
+ * assignee restore below, where that's exactly what's wanted (a complete
+ * snapshot is being restored) — see the comment at the call site and
+ * docs/ENDPOINT-TAIL-RETRIAGE.md line ~87 for why the additive per-user
+ * loop remains the default everywhere else.
+ */
+type BulkAssignees = components['schemas']['models.BulkAssignees'];
 
 // ==================== BATCH PROCESSORS ====================
 
@@ -81,16 +91,28 @@ function resolveBulkUpdateValue(field: string | undefined, value: unknown): unkn
  * types) is `{ task_ids, fields: string[], values: models.Task }` — the server
  * applies exactly the listed fields and preserves everything else. The old
  * belief that the endpoint full-replaces tasks came from node-vikunja's stale
- * `{ task_ids, field, value }` type (upstream #46): with that malformed payload
- * the server sees `fields: null` and applies a zero-value task. A single
- * request also sidesteps the `database is locked` partial failures that
- * concurrent per-task updates hit on SQLite-backed instances (upstream #79).
+ * `{ task_ids, field, value }` type (democratize-technology/vikunja-mcp#46):
+ * with that malformed payload the server sees `fields: null` and applies a
+ * zero-value task. A single request also sidesteps the `database is locked`
+ * partial failures that concurrent per-task updates hit on SQLite-backed
+ * instances (democratize-technology/vikunja-mcp#79).
  *
- * Two server-side caveats handled here (verified against live 2.3.0):
- * - the bulk endpoint clears assignees even for a correctly-scoped update, so
- *   assignees are snapshotted first and re-added afterwards;
- * - assignees/labels cannot be set through the bulk endpoint at all, so those
- *   fields use the per-task path.
+ * Two server-side caveats handled here — source-verified against
+ * go-vikunja/vikunja's `pkg/models/tasks.go` and `task_assignees.go`, not
+ * just observed live behavior:
+ * - **Assignees**: `updateSingleTask()` calls `updateTaskAssignees(s,
+ *   t.Assignees, a)` *before* the `fields`-allowlist gate is even evaluated,
+ *   reconciling to whatever `values.assignees` decoded to. A scalar-only
+ *   bulk request never sets that field, so it decodes to `nil`, which trips
+ *   the unconditional full-delete branch in `task_assignees.go` for every
+ *   task in `task_ids` — regardless of what `fields` lists. So assignees are
+ *   snapshotted first and restored afterwards (see below).
+ * - **Labels**: genuinely inert, not merely unscoped — the label-sync call
+ *   in that same `updateSingleTask()` is literally commented out upstream
+ *   (`// Maybe FIXME:`, an acknowledged, unresolved refactor need), for both
+ *   `POST /tasks/bulk` and single-task `POST /tasks/{id}`. So labels always
+ *   use the dedicated per-task label endpoint, not because the bulk
+ *   endpoint clears them, but because it never touches them at all.
  */
 export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthManager): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
@@ -117,10 +139,10 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthMan
               // Per-user additive assign (PUT /tasks/{taskID}/assignees, body
               // { user_id }, models.TaskAssginee) instead of the bulk endpoint,
               // which REPLACES the whole list and would silently unassign
-              // everyone (upstream issue #15). Sequential on purpose (post-#89
-              // pattern sweep, mirrors the removal loop directly below):
-              // concurrent per-user writes to the same task risk "database is
-              // locked" 500s on SQLite-backed instances.
+              // everyone (democratize-technology/vikunja-mcp#15). Sequential
+              // on purpose (post-#89 pattern sweep, mirrors the removal loop
+              // directly below): concurrent per-user writes to the same task
+              // risk "database is locked" 500s on SQLite-backed instances.
               for (const userId of args.value as number[]) {
                 await withRetry(() => vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }), { ...RETRY_CONFIG.AUTH_ERRORS, shouldRetry: isAuthenticationError });
               }
@@ -171,8 +193,12 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthMan
     }
 
     try {
-      // Snapshot assignees first: the bulk endpoint clears them server-side
-      // even for a correctly-scoped update (verified against 2.3.0).
+      // Snapshot assignees first. Verified mechanism (not just observed
+      // behavior): `updateTaskAssignees` runs before the `fields` gate and
+      // reconciles to `values.assignees`, which is `nil` for a scalar-only
+      // bulk request, triggering a full delete (`task_assignees.go`'s
+      // full-delete branch) for every task in `task_ids`, regardless of
+      // `fields`.
       const preFetch = await processors.update.processBatches(taskIds, async (id) => await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${id}`));
       const assigneesByTask = new Map<number, number[]>();
       for (const t of preFetch.successful) {
@@ -206,17 +232,30 @@ export async function bulkUpdateTasks(args: BulkUpdateArgs, authManager: AuthMan
       const returnedIds = new Set(updatedTasks.map((t) => t.id).filter((id): id is number => typeof id === 'number'));
       const missingIds = taskIds.filter((id) => !returnedIds.has(id));
 
-      // Re-add the assignees the bulk endpoint cleared. Sequential on purpose:
-      // concurrent writes 500 with "database is locked" on SQLite backends.
-      // Failures are collected (not just logged) so a lost assignee is
-      // surfaced to the caller rather than silently swallowed.
+      // Re-add the assignees the bulk endpoint cleared. This is a
+      // restore-to-snapshot, not a general assign flow: `userIds` is the
+      // task's own complete pre-update assignee list, so ONE
+      // `POST /tasks/{taskID}/assignees/bulk` (`models.BulkAssignees`,
+      // REPLACE semantics) call per task sets it back to exactly that list —
+      // safe here precisely because the whole set is known, unlike the
+      // additive per-user `PUT /assignees` loop used everywhere else for
+      // general assign/unassign (where replace semantics would silently
+      // unassign everyone else — upstream issue democratize-technology/
+      // vikunja-mcp#15; see the PARKED note in docs/ENDPOINT-TAIL-RETRIAGE.md
+      // line ~87). Sequential across tasks on purpose: concurrent writes 500
+      // with "database is locked" on SQLite backends. Failures are collected
+      // (not just logged) so a lost assignee is surfaced to the caller
+      // rather than silently swallowed — same {taskId, userId} failure
+      // surface as before (PR #95's assigneeRestoreFailures contract),
+      // just populated per-task instead of per-user-per-task.
       const assigneeRestoreFailures: Array<{ taskId: number; userId: number }> = [];
       for (const [taskId, userIds] of assigneesByTask) {
-        for (const userId of userIds) {
-          try {
-            await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId });
-          } catch (e) {
-            logger.warn('Could not restore assignee after bulk update', { taskId, userId, error: e instanceof Error ? e.message : String(e) });
+        const body: BulkAssignees = { assignees: userIds.map((userId) => ({ id: userId })) };
+        try {
+          await vikunjaRestRequest(authManager, 'POST', `/tasks/${taskId}/assignees/bulk`, body);
+        } catch (e) {
+          logger.warn('Could not restore assignees after bulk update', { taskId, userIds, error: e instanceof Error ? e.message : String(e) });
+          for (const userId of userIds) {
             assigneeRestoreFailures.push({ taskId, userId });
           }
         }
@@ -338,9 +377,10 @@ export async function bulkCreateTasks(args: BulkCreateArgs, authManager: AuthMan
               // Per-user additive assign (PUT /tasks/{taskID}/assignees, body
               // { user_id }, models.TaskAssginee) instead of the bulk endpoint,
               // which REPLACES the list and would silently unassign everyone
-              // (upstream issue #15). Sequential on purpose (post-#89 pattern
-              // sweep): concurrent per-user writes to the same task risk
-              // "database is locked" 500s on SQLite-backed instances.
+              // (democratize-technology/vikunja-mcp#15). Sequential on
+              // purpose (post-#89 pattern sweep): concurrent per-user writes
+              // to the same task risk "database is locked" 500s on
+              // SQLite-backed instances.
               for (const userId of assignees) {
                 await withRetry(() => vikunjaRestRequest(authManager, 'PUT', `/tasks/${createdId}/assignees`, { user_id: userId }), { maxRetries: RETRY_CONFIG.AUTH_ERRORS.maxRetries ?? 3, timeout: (RETRY_CONFIG.AUTH_ERRORS.initialDelay ?? 1000) + (RETRY_CONFIG.AUTH_ERRORS.maxDelay ?? 10000), shouldRetry: isAuthenticationError });
               }

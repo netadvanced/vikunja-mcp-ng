@@ -300,7 +300,10 @@ describe('Bulk operations', () => {
           if (method === 'POST' && path === '/tasks/bulk') {
             return { task_ids: (body as { task_ids: number[] }).task_ids, tasks: bulkResponseTasks };
           }
-          if (method === 'PUT' && /^\/tasks\/\d+\/assignees$/.test(path)) {
+          // Assignee restore-to-snapshot: ONE POST .../assignees/bulk call
+          // per task (models.BulkAssignees, REPLACE semantics), not a
+          // per-user PUT loop.
+          if (method === 'POST' && /^\/tasks\/\d+\/assignees\/bulk$/.test(path)) {
             if (options.assigneeRestoreError) throw options.assigneeRestoreError;
             return undefined;
           }
@@ -353,6 +356,13 @@ describe('Bulk operations', () => {
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'done', value: true });
 
+        expect(mockRest).toHaveBeenCalledWith(
+          expect.anything(),
+          'POST',
+          '/tasks/1/assignees/bulk',
+          { assignees: [{ id: 5 }] },
+        );
+
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);
         expect(parsed.hasHeading(2, /Error/)).toBe(true);
@@ -360,6 +370,52 @@ describe('Bulk operations', () => {
         expect(markdown).toContain('**count:** 1');
         // No missing IDs in this scenario — only the assignee restore failed.
         expect(markdown).not.toContain('FailedIds');
+      });
+
+      it('restores a task with multiple snapshotted assignees via ONE POST .../assignees/bulk call (not a per-user loop)', async () => {
+        routeNativeBulk(
+          [{ id: 1, title: 'Task 1', done: true, assignees: [] }],
+          { assigneesByTaskId: { 1: [{ id: 5 }, { id: 7 }] } },
+        );
+
+        const result = await bulkUpdateTasks({ taskIds: [1], field: 'done', value: true });
+
+        // Exactly one bulk-assignee restore call for the task, carrying
+        // the full snapshotted assignee set in one request body — the
+        // SIMPLIFY item's whole point (was: one PUT per user).
+        const restoreCalls = mockRest.mock.calls.filter(
+          (call) => call[1] === 'POST' && call[2] === '/tasks/1/assignees/bulk',
+        );
+        expect(restoreCalls).toHaveLength(1);
+        expect(restoreCalls[0]?.[3]).toEqual({ assignees: [{ id: 5 }, { id: 7 }] });
+        expect(mockRest).not.toHaveBeenCalledWith(
+          expect.anything(),
+          'PUT',
+          '/tasks/1/assignees',
+          expect.anything(),
+        );
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('## ✅ Success');
+      });
+
+      it('aggregates every snapshotted user on a task as a restore failure when the single bulk restore call fails', async () => {
+        const restoreError = new Error('assignee restore failed: database is locked');
+        routeNativeBulk(
+          [{ id: 1, title: 'Task 1', done: true, assignees: [] }],
+          { assigneesByTaskId: { 1: [{ id: 5 }, { id: 7 }] }, assigneeRestoreError: restoreError },
+        );
+
+        const result = await bulkUpdateTasks({ taskIds: [1], field: 'done', value: true });
+
+        const markdown = result.content[0].text;
+        const parsed = parseMarkdown(markdown);
+        // Same {taskId, userId}-pair failure surface as before the
+        // simplification (PR #95's assigneeRestoreFailures contract) — the
+        // task is still reported as a failed restore even though only one
+        // REST call failed (covering both snapshotted users).
+        expect(parsed.hasHeading(2, /Error/)).toBe(true);
+        expect(markdown).toContain('Assignee restoration failed for task(s): 1');
       });
     });
 

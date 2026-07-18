@@ -119,6 +119,15 @@ describe('Tasks Tool', () => {
       if (method === 'PUT' && assigneesMatch?.[1] !== undefined) {
         return jsonResponse(await mockClient.tasks.assignUserToTask(Number(assigneesMatch[1]), body?.user_id));
       }
+      // Assignee restore-to-snapshot (SIMPLIFY item): ONE POST
+      // .../assignees/bulk call per task (models.BulkAssignees, REPLACE
+      // semantics) instead of a per-user PUT loop.
+      const assigneesBulkMatch = /^\/tasks\/(\d+)\/assignees\/bulk$/.exec(pathname);
+      if (method === 'POST' && assigneesBulkMatch?.[1] !== undefined) {
+        return jsonResponse(
+          await mockClient.tasks.bulkAssignUsersToTask(Number(assigneesBulkMatch[1]), body?.assignees),
+        );
+      }
       const assigneeDeleteMatch = /^\/tasks\/(\d+)\/assignees\/(\d+)$/.exec(pathname);
       if (method === 'DELETE' && assigneeDeleteMatch?.[1] !== undefined) {
         return jsonResponse(
@@ -395,7 +404,7 @@ describe('Tasks Tool', () => {
     // Get the tasks tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5).',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
       expect.any(Object),
       expect.any(Object), // ToolAnnotations
       expect.any(Function),
@@ -2146,9 +2155,12 @@ describe('Tasks Tool', () => {
         value: true,
       });
 
-      // PUT /tasks/{id}/assignees routes to assignUserToTask in the harness
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 2);
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(2, 2);
+      // Restore-to-snapshot uses ONE POST /tasks/{id}/assignees/bulk call
+      // per task (models.BulkAssignees), not a per-user PUT loop — routes
+      // to bulkAssignUsersToTask in the harness.
+      expect(mockClient.tasks.bulkAssignUsersToTask).toHaveBeenCalledWith(1, [{ id: 2 }]);
+      expect(mockClient.tasks.bulkAssignUsersToTask).toHaveBeenCalledWith(2, [{ id: 2 }]);
+      expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
     });
 
     it('falls back to per-task merge when the native bulk endpoint is unavailable', async () => {
@@ -3173,6 +3185,75 @@ describe('Tasks Tool', () => {
     });
   });
 
+  describe('duplicate subcommand', () => {
+    // Defensive: a sibling describe block ('bulk-create subcommand') spies
+    // on retryUtils.withRetry via jest.spyOn(...).mockImplementation(...)
+    // and later calls .mockRestore(). Restoring a spy that was layered over
+    // an already-mocked module export (this file's top-level jest.mock on
+    // '../../src/utils/retry') does not reliably reinstate the file-level
+    // mock's own bypass implementation — it can leave withRetry a no-op
+    // that resolves to undefined without invoking its argument. Since
+    // duplicate/mark-read go through vikunjaRestRequest -> withRetry, that
+    // silently short-circuits fetch entirely. Reassert the intended bypass
+    // behavior here rather than relying on hook ordering across describes.
+    beforeEach(() => {
+      (retryUtils.withRetry as jest.Mock).mockImplementation((fn: () => Promise<unknown>) => fn());
+    });
+
+    it('duplicates a task via PUT /tasks/{id}/duplicate (no body)', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ duplicated_task: { id: 42, title: 'Copy of Task 1' } }),
+      );
+
+      const result = await callTool('duplicate', { id: 1 });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = mockFetch.mock.calls[0] as [string, { method?: string; body?: string }];
+      expect(url).toContain('/tasks/1/duplicate');
+      expect(init.method).toBe('PUT');
+      expect(init.body).toBeUndefined();
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('Task 1 duplicated as task 42');
+    });
+
+    it('requires a task id', async () => {
+      await expect(callTool('duplicate', {})).rejects.toThrow(
+        'Task id is required for duplicate operation',
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('mark-read subcommand', () => {
+    // See the matching comment in 'duplicate subcommand' above.
+    beforeEach(() => {
+      (retryUtils.withRetry as jest.Mock).mockImplementation((fn: () => Promise<unknown>) => fn());
+    });
+
+    it('marks a task as read via POST /tasks/{id}/read', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ taskID: 1, userID: 3 }));
+
+      const result = await callTool('mark-read', { id: 1 });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = mockFetch.mock.calls[0] as [string, { method?: string; body?: string }];
+      expect(url).toContain('/tasks/1/read');
+      expect(init.method).toBe('POST');
+      expect(init.body).toBeUndefined();
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('Task 1 marked as read');
+    });
+
+    it('requires a task id', async () => {
+      await expect(callTool('mark-read', {})).rejects.toThrow(
+        'Task id is required for mark-read operation',
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
   describe('unknown subcommand', () => {
     it('should throw validation error for unknown subcommand', async () => {
       await expect(
@@ -3199,7 +3280,7 @@ describe('Tasks Tool', () => {
     it('should register the vikunja_tasks tool', () => {
       expect(mockServer.tool).toHaveBeenCalledWith(
         'vikunja_tasks',
-        'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5).',
+        'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, set position, lookup by per-project index, create/list subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
         expect.any(Object),
         expect.any(Object), // ToolAnnotations
         expect.any(Function),
@@ -3230,6 +3311,22 @@ describe('Tasks Tool', () => {
       ConfigurationManager.getInstance({ sources: { readOnly: true } });
 
       await expect(callTool('delete', { id: 1 })).rejects.toThrow(/server is in read-only mode/);
+    });
+
+    it('rejects duplicate (write) with a clear read-only error', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      await expect(callTool('duplicate', { id: 1 })).rejects.toThrow(/server is in read-only mode/);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects mark-read (write-ish state change) with a clear read-only error', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      await expect(callTool('mark-read', { id: 1 })).rejects.toThrow(/server is in read-only mode/);
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('still allows a read subcommand (list) when read-only mode is on', async () => {
