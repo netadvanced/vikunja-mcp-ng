@@ -3,7 +3,7 @@
 This document is the durable record of **where this project is going, where it stands, and why** — the vision, the locked architecture decisions, and the honest state of what's implemented, what isn't, and what's next.
 
 Companion documents:
-- **[Tracking issue #28](https://github.com/netadvanced/vikunja-mcp/issues/28)** — the live working checklist (waves, PRs, checkboxes). This roadmap explains *why*; #28 tracks *progress*.
+- **[Tracking issue #28](https://github.com/netadvanced/vikunja-mcp-ng/issues/28)** — the live working checklist (waves, PRs, checkboxes). This roadmap explains *why*; #28 tracks *progress*.
 - **[docs/API-COVERAGE.md](API-COVERAGE.md)** — the raw endpoint-by-endpoint audit this plan was built from, fully re-verified row-by-row on 2026-07-18 against `main` @ `ce81bd7` (post node-vikunja removal, Waves A–F). Its summary counts were recounted directly from the row markers on the same date (see §4) and match — no drift.
 - **[docs/API_NOTES.md](API_NOTES.md)** / **[docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md)** — hard-won implementation gotchas and known upstream API quirks. Read before touching endpoint code.
 - **[docs/ENDPOINT-PLAYBOOK.md](ENDPOINT-PLAYBOOK.md)** — the how-to conventions for implementing new capabilities.
@@ -155,6 +155,6 @@ Remaining target surface (from the original ~55–60-operation Wave D plan, now 
 
 ## 7. Contributing / how work lands
 
-Every change: feature branch → PR on `netadvanced/vikunja-mcp` (never the upstream repo) → lint + typecheck + full test suite with a zero-net-new-regressions proof in the PR body → merge. Conventions for endpoint work live in `docs/ENDPOINT-PLAYBOOK.md`. The OpenAPI spec vendored at `docs/vikunja-openapi.json` is the only source of truth for API shapes — never `node-vikunja`'s types (the dependency itself is gone as of Wave D, but the principle stands for any future client-library temptation).
+Every change: feature branch → PR on `netadvanced/vikunja-mcp-ng` (never the upstream repo) → lint + typecheck + full test suite with a zero-net-new-regressions proof in the PR body → merge. Conventions for endpoint work live in `docs/ENDPOINT-PLAYBOOK.md`. The OpenAPI spec vendored at `docs/vikunja-openapi.json` is the only source of truth for API shapes — never `node-vikunja`'s types (the dependency itself is gone as of Wave D, but the principle stands for any future client-library temptation).
 
 *Maintained by the project coordinator; update this file when decisions change, keeping §3's decision log append-only.*

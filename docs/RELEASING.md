@@ -89,7 +89,7 @@ messages are written for git history, changelog entries are written for readers.
 
 ```bash
 git push -u origin release/vX.Y.Z
-gh pr create --repo netadvanced/vikunja-mcp --base main \
+gh pr create --repo netadvanced/vikunja-mcp-ng --base main \
   --title "release: vX.Y.Z" --body "See CHANGELOG.md"
 ```
 

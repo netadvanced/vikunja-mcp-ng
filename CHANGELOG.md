@@ -157,7 +157,7 @@ v0.3.0 predates this fork's first `v*` tag (v0.3.1), so it has no tag to compare
 a commits/main link. From v0.3.1 onward, releases are tagged and use standard
 compare-between-tags links.
 -->
-[Unreleased]: https://github.com/netadvanced/vikunja-mcp/compare/v0.3.1...main
-[0.3.1]: https://github.com/netadvanced/vikunja-mcp/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/netadvanced/vikunja-mcp/commits/main/
+[Unreleased]: https://github.com/netadvanced/vikunja-mcp-ng/compare/v0.3.1...main
+[0.3.1]: https://github.com/netadvanced/vikunja-mcp-ng/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/netadvanced/vikunja-mcp-ng/commits/main/
 [0.2.2]: https://github.com/democratize-technology/vikunja-mcp/releases/tag/0.2.2

@@ -58,12 +58,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/netadvanced/vikunja-mcp.git"
+    "url": "git+https://github.com/netadvanced/vikunja-mcp-ng.git"
   },
   "bugs": {
-    "url": "https://github.com/netadvanced/vikunja-mcp/issues"
+    "url": "https://github.com/netadvanced/vikunja-mcp-ng/issues"
   },
-  "homepage": "https://github.com/netadvanced/vikunja-mcp#readme",
+  "homepage": "https://github.com/netadvanced/vikunja-mcp-ng#readme",
   "publishConfig": {
     "access": "public"
   },

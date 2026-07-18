@@ -4,7 +4,7 @@
   "description": "Model Context Protocol server for Vikunja task management",
   "status": "active",
   "repository": {
-    "url": "https://github.com/netadvanced/vikunja-mcp",
+    "url": "https://github.com/netadvanced/vikunja-mcp-ng",
     "source": "github"
   },
   "version": "0.3.0",

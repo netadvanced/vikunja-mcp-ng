@@ -239,6 +239,7 @@ try {
 
 ## Repository Configuration
 
-- **Owner**: democratize-technology
+- **Owner**: netadvanced
+- **Repo**: vikunja-mcp-ng
 - **Branch Strategy**: Feature branches required, no direct main commits
 - **PR Requirements**: Documentation updates, test coverage, passing checks
