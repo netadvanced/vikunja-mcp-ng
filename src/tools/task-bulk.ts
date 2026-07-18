@@ -26,15 +26,19 @@ export function registerTaskBulkTool(
     'vikunja_task_bulk',
     withReadOnlyNote(
       'vikunja_task_bulk',
-      'Manage bulk task operations: create, update, delete multiple tasks',
+      'Manage bulk task operations: create, update, delete multiple tasks, move multiple tasks into a Kanban bucket. ' +
+        'bulk-set-bucket resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds.',
     ),
     {
-      operation: z.enum(['bulk-create', 'bulk-update', 'bulk-delete']),
+      operation: z.enum(['bulk-create', 'bulk-update', 'bulk-delete', 'bulk-set-bucket']),
       // Bulk operation fields
       taskIds: z.array(z.number()).optional(),
       field: z.string().optional(),
       value: z.unknown().optional(),
-      projectId: z.number().optional(), // Add projectId for bulk-create
+      projectId: z.number().optional(), // Add projectId for bulk-create; also optional override for bulk-set-bucket
+      // bulk-set-bucket fields
+      bucketId: z.coerce.number().optional(),
+      viewId: z.coerce.number().optional(),
       tasks: z
         .array(
           z.object({
@@ -118,6 +122,20 @@ export function registerTaskBulkTool(
               taskIds: args.taskIds || []
             };
             return bulkDeleteTasks(filteredArgs, authManager);
+          }
+
+          case 'bulk-set-bucket': {
+            const { bulkSetTaskBucket } = await import('./tasks/buckets.js');
+            if (args.bucketId === undefined || args.bucketId === null) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'bucketId is required for bulk-set-bucket operation');
+            }
+            const filteredArgs = {
+              taskIds: args.taskIds || [],
+              bucketId: args.bucketId,
+              ...(args.viewId !== undefined && { viewId: args.viewId }),
+              ...(args.projectId !== undefined && { projectId: args.projectId }),
+            };
+            return bulkSetTaskBucket(filteredArgs, authManager);
           }
 
           default:

@@ -48,6 +48,13 @@ describe('read-only.ts', () => {
       expect(classifySubcommand('vikunja_tasks', 'list-subtasks')).toBe('read');
     });
 
+    it('classifies the E3 bulk composites (bulk-set-bucket, bulk-create-subtasks) as write', () => {
+      expect(classifySubcommand('vikunja_tasks', 'bulk-set-bucket')).toBe('write');
+      expect(classifySubcommand('vikunja_tasks', 'bulk-create-subtasks')).toBe('write');
+      // bulk-set-bucket also lives on the standalone vikunja_task_bulk tool.
+      expect(classifySubcommand('vikunja_task_bulk', 'bulk-set-bucket')).toBe('write');
+    });
+
     it('fails closed to "write" for an unrecognized subcommand on a known tool', () => {
       expect(classifySubcommand('vikunja_tasks', 'not-a-real-subcommand')).toBe('write');
     });

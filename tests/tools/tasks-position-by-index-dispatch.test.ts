@@ -1,10 +1,13 @@
 /**
- * Dispatch-level tests for the `set-position` and `get-by-index`
- * `vikunja_tasks` subcommands — verifies the tool's Zod schema accepts the
- * new fields and the switch statement routes to the right handler with
- * `authManager` threaded through, end to end via `registerTasksTool`.
- * Handler-level behavior (validation, resolution, payloads) is covered in
- * tests/tools/tasks/position.test.ts and tests/tools/tasks/by-index.test.ts.
+ * Dispatch-level tests for the `set-position`, `get-by-index`,
+ * `bulk-set-bucket`, and `bulk-create-subtasks` `vikunja_tasks` subcommands —
+ * verifies the tool's Zod schema accepts the new fields and the switch
+ * statement routes to the right handler with `authManager` threaded through,
+ * end to end via `registerTasksTool`. Handler-level behavior (validation,
+ * resolution, payloads, partial-failure reporting) is covered in
+ * tests/tools/tasks/position.test.ts, tests/tools/tasks/by-index.test.ts,
+ * tests/tools/tasks/bulk-set-bucket.test.ts, and
+ * tests/tools/tasks/bulk-create-subtasks.test.ts.
  */
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
@@ -108,5 +111,56 @@ describe('vikunja_tasks dispatch — set-position / get-by-index', () => {
     const [url] = mockFetch.mock.calls[0] as [string];
     expect(url).toBe('https://api.vikunja.test/api/v1/projects/5/tasks/by-index/7');
     expect(result.content[0].text).toContain('Resolved task at index 7 in project 5');
+  });
+
+  it('routes bulk-set-bucket through the switch statement to bulkSetTaskBucket', async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockResponse({ text: '' })) // task 1
+      .mockResolvedValueOnce(mockResponse({ text: '' })); // task 2
+
+    const result = await toolHandler({
+      subcommand: 'bulk-set-bucket',
+      taskIds: [1, 2],
+      bucketId: 9,
+      projectId: 5,
+      viewId: 11,
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const urls = mockFetch.mock.calls.map((c) => c[0]);
+    expect(urls[0]).toBe('https://api.vikunja.test/api/v1/projects/5/views/11/buckets/9/tasks');
+    expect(urls[1]).toBe('https://api.vikunja.test/api/v1/projects/5/views/11/buckets/9/tasks');
+    expect(result.content[0].text).toContain('Successfully moved 2 tasks to bucket 9');
+  });
+
+  it('routes bulk-create-subtasks through the switch statement to bulkCreateSubtasks', async () => {
+    mockFetch
+      // resolve-parent
+      .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, project_id: 5, related_tasks: {} }) }))
+      // create-task
+      .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 42, title: 'Child', project_id: 5 }) }))
+      // create-relation
+      .mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }) }),
+      )
+      // verify-relation
+      .mockResolvedValueOnce(
+        mockResponse({
+          text: JSON.stringify({
+            id: 1,
+            project_id: 5,
+            related_tasks: { subtask: [{ id: 42, title: 'Child', done: false }] },
+          }),
+        }),
+      );
+
+    const result = await toolHandler({
+      subcommand: 'bulk-create-subtasks',
+      parentTaskId: 1,
+      subtasks: [{ title: 'Child' }],
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+    expect(result.content[0].text).toContain('Successfully created and related 1 subtask(s) under parent 1');
   });
 });

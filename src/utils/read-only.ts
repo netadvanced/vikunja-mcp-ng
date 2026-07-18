@@ -101,11 +101,19 @@ const TASKS: ClassificationTable = {
   'remove-label': 'destructive',
   'list-labels': 'read',
   'set-bucket': 'write',
+  // bulk-set-bucket (E3, battle-campaign friction #4): moves several tasks
+  // into a Kanban bucket in one call — same write classification as
+  // 'set-bucket', just batched.
+  'bulk-set-bucket': 'write',
   'set-position': 'write',
   'get-by-index': 'read',
   // Subtask composites (PR #77). create-subtask performs a real task
   // creation + relation write; list-subtasks is a pure read.
   'create-subtask': 'write',
+  // bulk-create-subtasks (E3, battle-campaign friction #4): creates and
+  // relates several subtasks under the same parent in one call — same write
+  // classification as 'create-subtask', just batched.
+  'bulk-create-subtasks': 'write',
   'list-subtasks': 'read',
   // duplicate copies a task (labels, assignees, attachments, reminders)
   // into a brand-new task — a genuine write, direct parallel to
@@ -122,6 +130,9 @@ const TASK_BULK: ClassificationTable = {
   'bulk-create': 'write',
   'bulk-update': 'write',
   'bulk-delete': 'destructive',
+  // bulk-set-bucket (E3): mirrors vikunja_tasks' bulk-set-bucket
+  // classification above — a batched Kanban bucket move, never destructive.
+  'bulk-set-bucket': 'write',
 };
 
 const TASK_ASSIGNEES: ClassificationTable = {
