@@ -13,6 +13,28 @@ Nothing yet.
 
 
 
+
+## [0.5.0] - 2026-07-19
+
+The agent-ergonomics release. A full battle-testing campaign (8 scenarios, REST-verified, run against a real local Vikunja) measured where AI agents actually struggle with the tool surface — every change in this release is backed by that evidence, and two changes we *thought* we needed were dropped because the evidence said otherwise.
+
+### Added
+
+- `bulk-set-bucket` (on `vikunja_tasks` and `vikunja_task_bulk`): distribute many tasks across Kanban buckets with one call — view/bucket resolution happens once, writes are sequential with honest per-task failure reporting (#114)
+- `bulk-create-subtasks` on `vikunja_tasks`: create and relate multiple subtasks under a parent in one call, saga-compensated per subtask (#114)
+- Battle harness: two new scenarios (existing-label reuse, project-rename-share probe) and a broadened validation-error classifier built from real campaign transcripts (#111)
+
+### Fixed
+
+- `vikunja_tasks update` no longer silently drops `bucketId` — it now routes through the shared bucket-placement logic and reports `bucketId` in `affectedFields` only when actually applied. This was the top friction in the campaign: agents lost their Kanban placement and burned 40% extra calls recovering (#112)
+- `vikunja_filters build` now emits filter strings in the same camelCase the filter validator accepts (it previously emitted server-side snake_case, actively steering agents into validation errors); filter fields also accept snake_case aliases (`due_date`, `percent_done`, …) with normalization (#113)
+- `vikunja_projects` id-domain subcommands (list-buckets, views, duplicate, backgrounds, …) accept `projectId` as an alias for `id` — the campaign showed agents reach for `projectId` first (#112)
+- Residual API-coverage issues closed: batch-import no longer fires an empty user search; project-hierarchy fetches paginate honestly instead of a 1000-item cap; share listing accepts a search param; webhooks and user-search accept pagination params; export avoids a recursive refetch (6 fixed, 1 verified already-fixed) (#115)
+
+### Chores
+
+- Coverage ratchet raised to 89/89/80/78 (statements/lines/branches/functions)
+
 ## [0.4.1] - 2026-07-18
 
 README-only patch so the npm package page reflects the published state: adds the "From npm" Quick Start (`npx -y vikunja-mcp-ng`), the npm version badge, and the post-rename repository links. No code changes.
