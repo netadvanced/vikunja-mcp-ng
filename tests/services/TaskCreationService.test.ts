@@ -5,11 +5,19 @@ import type { ImportedTask } from '../../src/parsers/InputParserFactory';
 import type { Task, Label, User } from 'node-vikunja';
 import { isAuthenticationError } from '../../src/utils/auth-error-handler';
 import { AuthManager } from '../../src/auth/AuthManager';
+import { getAuthManagerFromContext } from '../../src/client';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock dependencies
 jest.mock('../../src/utils/logger');
 jest.mock('../../src/utils/auth-error-handler');
+// setTaskLabels (src/utils/label-bulk.ts, migrated off node-vikunja) calls
+// the direct-REST helper for POST /tasks/{id}/labels/bulk rather than
+// mockClient.tasks.updateTaskLabels — it needs a resolved AuthManager
+// session from this module.
+jest.mock('../../src/client', () => ({
+  getAuthManagerFromContext: jest.fn(),
+}));
 
 // Import mocked logger for assertions
 import { logger } from '../../src/utils/logger';
@@ -83,6 +91,17 @@ describe('TaskCreationService', () => {
 
     authManager = new AuthManager();
     authManager.connect('https://vikunja.test', 'tk_test-token');
+    // createBaseTask (PUT /projects/{id}/tasks) uses the real authManager
+    // above; setTaskLabels (POST /tasks/{id}/labels/bulk, migrated by #71)
+    // instead recovers its session via getAuthManagerFromContext.
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue({
+      getSession: () => ({ apiUrl: 'https://mock.vikunja.test', apiToken: 'mock-token' }),
+    });
+    // Both createBaseTask and setTaskLabels go through the module-level
+    // mockFetch. Default every fetch to success so the label-bulk POST
+    // resolves; fetchOkOnce queues the createBaseTask PUT response per test,
+    // and label-failure tests override with mockFetch.mockRejectedValue.
+    mockFetch.mockResolvedValue(mockResponse({ text: JSON.stringify({ labels: [] }) }));
 
     // Setup mock entity maps
     mockEntityMaps = {
@@ -130,8 +149,9 @@ describe('TaskCreationService', () => {
         percent_done: 50,
       } as Task;
 
+      // createBaseTask PUT succeeds; the label-bulk POST resolves via the
+      // default-success mockFetch configured in beforeEach.
       fetchOkOnce(createdTask);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
         labels: [
@@ -298,8 +318,9 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
+      // createBaseTask PUT succeeds; the label-bulk POST resolves via the
+      // default-success mockFetch configured in beforeEach.
       fetchOkOnce(createdTask);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
         labels: [
@@ -320,9 +341,13 @@ describe('TaskCreationService', () => {
       // Assert
       expect(result.success).toBe(true);
       expect(result.warnings).toBeUndefined();
-      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(123, {
-        labels: [{ id: 1 }, { id: 2 }],
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://mock.vikunja.test/api/v1/tasks/123/labels/bulk',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ labels: [{ id: 1 }, { id: 2 }] }),
+        }),
+      );
       expect(mockClient.tasks.getTask).toHaveBeenCalledWith(123);
     });
 
@@ -335,8 +360,9 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
+      // createBaseTask PUT succeeds; the label-bulk POST resolves via the
+      // default-success mockFetch configured in beforeEach.
       fetchOkOnce(createdTask);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
         labels: [], // No labels assigned despite successful API call
@@ -365,11 +391,13 @@ describe('TaskCreationService', () => {
         done: false,
         priority: 3,
       } as Task;
-      const labelError = new Error('Insufficient permissions');
       (isAuthenticationError as jest.Mock).mockReturnValue(true);
 
+      // createBaseTask PUT succeeds; the label-bulk POST fails. Persistent
+      // rejection: the REST helper retries transient network failures, so
+      // every fetch attempt must reject the same way.
       fetchOkOnce(createdTask);
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(labelError);
+      mockFetch.mockRejectedValue(new Error('Insufficient permissions'));
 
       // Act
       const result = await taskCreationService.createTask(
@@ -394,11 +422,13 @@ describe('TaskCreationService', () => {
         done: false,
         priority: 3,
       } as Task;
-      const labelError = new Error('Network error');
       (isAuthenticationError as jest.Mock).mockReturnValue(false);
 
+      // createBaseTask PUT succeeds; the label-bulk POST fails. Persistent
+      // rejection: the REST helper retries transient network failures, so
+      // every fetch attempt must reject the same way.
       fetchOkOnce(createdTask);
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(labelError);
+      mockFetch.mockRejectedValue(new Error('Network error'));
 
       // Act
       const result = await taskCreationService.createTask(
@@ -412,7 +442,12 @@ describe('TaskCreationService', () => {
       // Assert
       expect(result.success).toBe(true);
       expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0]).toContain('Failed to assign labels: Network error');
+      // The underlying error is now REST-shaped (wrapped by
+      // vikunjaRestRequest), so the raw "Network error" text is nested
+      // inside a longer message rather than appearing immediately after
+      // the "Failed to assign labels:" prefix.
+      expect(result.warnings![0]).toContain('Failed to assign labels:');
+      expect(result.warnings![0]).toContain('Network error');
     });
 
     it('should handle labels that are not found', async () => {
@@ -428,8 +463,9 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
+      // createBaseTask PUT succeeds; the label-bulk POST resolves via the
+      // default-success mockFetch configured in beforeEach.
       fetchOkOnce(createdTask);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
         labels: [
@@ -462,8 +498,9 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
+      // createBaseTask PUT succeeds; the label-bulk POST resolves via the
+      // default-success mockFetch configured in beforeEach.
       fetchOkOnce(createdTask);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockRejectedValue(new Error('Verification failed'));
 
       // Act
@@ -784,8 +821,9 @@ describe('TaskCreationService', () => {
         priority: 3,
       } as Task;
 
+      // createBaseTask PUT succeeds; the label-bulk POST resolves via the
+      // default-success mockFetch configured in beforeEach.
       fetchOkOnce(createdTask);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockResolvedValue(createdTask); // Simulate label verification failure
       mockClient.tasks.assignUserToTask.mockResolvedValue({});
 

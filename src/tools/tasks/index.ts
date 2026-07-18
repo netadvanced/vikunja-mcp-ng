@@ -82,7 +82,7 @@ async function listTasks(
     const response = createTaskResponse(
       'list-tasks',
       `Found ${taskCount} tasks${filteringMessage}`,
-      { tasks: filteringResult.tasks || [] },
+      { tasks: filteringResult.tasks || [] } as unknown as Parameters<typeof createTaskResponse>[2],
       {
         timestamp: new Date().toISOString(),
         count: taskCount,
@@ -205,8 +205,9 @@ export function registerTasksTool(
       done: z.boolean().optional(),
       // GET /tasks query params honored for cross-project listing (direct
       // REST — see RestCrossProjectFilteringStrategy). Single-project
-      // listing still goes through node-vikunja's getProjectTasks, which
-      // does not support these, so they are silently unused in that case.
+      // listing (ClientSideFilteringStrategy/ServerSideFilteringStrategy)
+      // calls GET /projects/{id}/tasks, which never supported these extra
+      // params, so they are silently unused in that case.
       orderBy: z.enum(['asc', 'desc']).optional(),
       filterTimezone: z.string().optional(),
       filterIncludeNulls: z.boolean().optional(),
@@ -277,28 +278,28 @@ export function registerTasksTool(
           }
 
           case 'create':
-            return createTask(args as Parameters<typeof createTask>[0]);
+            return createTask(args as Parameters<typeof createTask>[0], authManager);
 
           case 'get':
-            return getTask(args as Parameters<typeof getTask>[0]);
+            return getTask(args as Parameters<typeof getTask>[0], authManager);
 
           case 'update':
-            return updateTask(args as Parameters<typeof updateTask>[0]);
+            return updateTask(args as Parameters<typeof updateTask>[0], authManager);
 
           case 'delete':
-            return deleteTask(args as Parameters<typeof deleteTask>[0]);
+            return deleteTask(args as Parameters<typeof deleteTask>[0], authManager);
 
           case 'assign':
-            return assignUsers(args as Parameters<typeof assignUsers>[0]);
+            return assignUsers(args as Parameters<typeof assignUsers>[0], authManager);
 
           case 'unassign':
-            return unassignUsers(args as Parameters<typeof unassignUsers>[0]);
+            return unassignUsers(args as Parameters<typeof unassignUsers>[0], authManager);
 
           case 'list-assignees':
             return listAssignees(args as Parameters<typeof listAssignees>[0], authManager);
 
           case 'comment':
-            return handleComment(args as Parameters<typeof handleComment>[0]);
+            return handleComment(args as Parameters<typeof handleComment>[0], authManager);
 
           case 'attach':
             return handleAttach(args as TaskAttachArgs, authManager);
@@ -316,42 +317,45 @@ export function registerTasksTool(
             return downloadAttachment(args as AttachmentSubcommandArgs, authManager);
 
           case 'bulk-update':
-            return bulkUpdateTasks(args as Parameters<typeof bulkUpdateTasks>[0]);
+            return bulkUpdateTasks(args as Parameters<typeof bulkUpdateTasks>[0], authManager);
 
           case 'bulk-delete':
-            return bulkDeleteTasks(args as Parameters<typeof bulkDeleteTasks>[0]);
+            return bulkDeleteTasks(args as Parameters<typeof bulkDeleteTasks>[0], authManager);
 
           case 'bulk-create':
-            return bulkCreateTasks(args as Parameters<typeof bulkCreateTasks>[0]);
+            return bulkCreateTasks(args as Parameters<typeof bulkCreateTasks>[0], authManager);
 
           // Handle relation subcommands
           case 'relate':
           case 'unrelate':
           case 'relations':
-            return handleRelationSubcommands({
-              subcommand: args.subcommand,
-              id: args.id,
-              otherTaskId: args.otherTaskId,
-              relationKind: args.relationKind,
-            });
+            return handleRelationSubcommands(
+              {
+                subcommand: args.subcommand,
+                id: args.id,
+                otherTaskId: args.otherTaskId,
+                relationKind: args.relationKind,
+              },
+              authManager,
+            );
 
           // Handle reminder operations
           case 'add-reminder':
-            return addReminder(args as Parameters<typeof addReminder>[0]);
+            return addReminder(args as Parameters<typeof addReminder>[0], authManager);
 
           case 'remove-reminder':
-            return removeReminder(args as Parameters<typeof removeReminder>[0]);
+            return removeReminder(args as Parameters<typeof removeReminder>[0], authManager);
 
           case 'list-reminders':
-            return listReminders(args as Parameters<typeof listReminders>[0]);
+            return listReminders(args as Parameters<typeof listReminders>[0], authManager);
           case 'apply-label':
-            return applyLabels(args as Parameters<typeof applyLabels>[0]);
+            return applyLabels(args as Parameters<typeof applyLabels>[0], authManager);
 
           case 'remove-label':
-            return removeLabels(args as Parameters<typeof removeLabels>[0]);
+            return removeLabels(args as Parameters<typeof removeLabels>[0], authManager);
 
           case 'list-labels':
-            return listTaskLabels(args as Parameters<typeof listTaskLabels>[0]);
+            return listTaskLabels(args as Parameters<typeof listTaskLabels>[0], authManager);
 
           case 'set-bucket':
             return setTaskBucket(args as Parameters<typeof setTaskBucket>[0], authManager);

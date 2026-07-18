@@ -4,9 +4,12 @@ import { registerBatchImportTool } from '../../src/tools/batch-import';
 import { MCPError, ErrorCode } from '../../src/types/index';
 import { z } from 'zod';
 
-// Mock the modules
+// Mock the modules. getAuthManagerFromContext is used by setTaskLabels
+// (src/utils/label-bulk.ts, migrated to direct REST) — any test here that
+// creates a task with labels needs it resolved (see beforeEach below).
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));
@@ -21,7 +24,7 @@ jest.mock('../../src/utils/logger', () => ({
 }));
 
 // Import mocked modules
-import { getClientFromContext } from '../../src/client';
+import { getClientFromContext, getAuthManagerFromContext } from '../../src/client';
 import { logger } from '../../src/utils/logger';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 
@@ -89,6 +92,15 @@ function toFetchOutcome(error: unknown): Response {
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
+
+/**
+ * setTaskLabels' POST /tasks/{id}/labels/bulk (label assignment during
+ * import, migrated to direct REST by #71) is routed through this mock so
+ * label-specific tests can assert on it (`.not.toHaveBeenCalled()`) or
+ * fail it (`.mockRejectedValue(...)`) independently of the create/users
+ * fetches the router also handles. It is called as `labelWrite(taskId, body)`.
+ */
+const labelWrite = jest.fn();
 
 // Define the schema matching the one in batch-import.ts
 const importedTaskSchema = z.object({
@@ -174,13 +186,33 @@ describe('Batch Import Tool', () => {
 
     (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
 
+    // setTaskLabels (src/utils/label-bulk.ts, migrated by #71) recovers its
+    // session via getAuthManagerFromContext before issuing the label-bulk POST.
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue(mockAuthManager);
+
     // vikunjaRestRequest protects every call with a process-wide named
     // circuit breaker; clear accumulated stats so one test's deliberately
     // failing scenario doesn't trip the breaker for a later test.
     circuitBreakerRegistry.clear();
     mockFetch.mockReset();
+    labelWrite.mockReset();
+    labelWrite.mockResolvedValue(undefined);
     mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       const method = (init?.method ?? 'GET') as string;
+      // setTaskLabels' POST /tasks/{id}/labels/bulk (label assignment during
+      // import) is delegated to labelWrite so label-specific tests control
+      // it; resolves success by default.
+      const labelBulkMatch = /\/tasks\/(\d+)\/labels\/bulk$/.exec(url);
+      if (method === 'POST' && labelBulkMatch) {
+        const taskId = Number(labelBulkMatch[1]);
+        const body = init?.body ? JSON.parse(init.body as string) : undefined;
+        try {
+          await labelWrite(taskId, body);
+          return mockResponse({ text: JSON.stringify({ labels: [] }) });
+        } catch (error) {
+          return toFetchOutcome(error);
+        }
+      }
       const taskMatch = /\/projects\/(\d+)\/tasks$/.exec(url);
       if (method === 'PUT' && taskMatch) {
         const projectId = Number(taskMatch[1]);
@@ -352,9 +384,13 @@ describe('Batch Import Tool', () => {
         project_id: 1,
       });
 
-      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(103, {
-        labels: [{ id: 1 }, { id: 2 }],
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/103/labels/bulk',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ labels: [{ id: 1 }, { id: 2 }] }),
+        }),
+      );
       expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(103, 10);
       expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(103, 11);
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
@@ -448,9 +484,13 @@ Task 2,Description 2,2,true`;
         project_id: 1,
       });
 
-      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(203, {
-        labels: [{ id: 1 }, { id: 2 }],
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/203/labels/bulk',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ labels: [{ id: 1 }, { id: 2 }] }),
+        }),
+      );
     });
 
     it('should handle CSV with all fields', async () => {
@@ -582,7 +622,7 @@ Description,1`;
         title: 'Task with labels',
       });
 
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(new Error('Label error'));
+      labelWrite.mockRejectedValue(new Error('Label error'));
 
       const result = await toolHandler({
         projectId: 1,
@@ -596,7 +636,8 @@ Description,1`;
       // But with a warning about label assignment failure
       expect(result.content[0].text).toContain('Warnings:');
       expect(result.content[0].text).toContain('Task #305');
-      expect(result.content[0].text).toContain('Failed to assign labels: Label error');
+      expect(result.content[0].text).toContain('Failed to assign labels:');
+      expect(result.content[0].text).toContain('Label error');
     });
 
     it('should verify successful label assignment', async () => {
@@ -611,7 +652,6 @@ Description,1`;
       });
 
       // Labels are successfully assigned
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
       // getTask returns the task with labels properly assigned
       mockClient.tasks.getTask.mockResolvedValue({
@@ -649,7 +689,6 @@ Description,1`;
       });
 
       // updateTaskLabels succeeds
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
       // But getTask fails (can't verify)
       mockClient.tasks.getTask.mockRejectedValue(new Error('Failed to fetch task'));
@@ -680,7 +719,7 @@ Description,1`;
       });
 
       // updateTaskLabels throws auth error
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(
+      labelWrite.mockRejectedValue(
         new Error(
           '401 Unauthorized: missing, malformed, expired or otherwise invalid token provided',
         ),
@@ -717,7 +756,7 @@ Description,1`;
       });
 
       // Should not call assign with empty arrays
-      expect(mockClient.tasks.updateTaskLabels).not.toHaveBeenCalled();
+      expect(labelWrite).not.toHaveBeenCalled();
       expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
       expect(result.content[0].text).toContain('Successfully imported: 1 tasks');
@@ -803,7 +842,6 @@ Description,1`;
       });
 
       // But label assignment silently fails (doesn't throw error, just doesn't work)
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
       // Add getTask mock to verify the labels weren't assigned
       mockClient.tasks.getTask = jest.fn().mockResolvedValue({
@@ -835,9 +873,13 @@ Description,1`;
       });
 
       // Verify updateTaskLabels was called with correct label IDs
-      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(122, {
-        labels: [{ id: 1 }, { id: 2 }],
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/122/labels/bulk',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ labels: [{ id: 1 }, { id: 2 }] }),
+        }),
+      );
 
       // Verify getTask was called to check if labels were actually assigned
       expect(mockClient.tasks.getTask).toHaveBeenCalledWith(122);
@@ -1136,7 +1178,7 @@ Description,1`;
       });
       
       // Should not try to update labels or assignees when they are empty
-      expect(mockClient.tasks.updateTaskLabels).not.toHaveBeenCalled();
+      expect(labelWrite).not.toHaveBeenCalled();
       expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
     });
@@ -1153,7 +1195,6 @@ Description,1`;
       });
 
       // updateTaskLabels succeeds
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
       // But getTask shows labels were not assigned (empty array instead of null)
       mockClient.tasks.getTask.mockResolvedValue({
@@ -1239,9 +1280,13 @@ Description,1`;
       });
 
       // Should map correctly despite case differences
-      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1101, {
-        labels: [{ id: 1 }, { id: 2 }],
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/1101/labels/bulk',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ labels: [{ id: 1 }, { id: 2 }] }),
+        }),
+      );
     });
 
     it('should handle assignees when projectUsers is empty but not due to auth failure', async () => {
@@ -1330,7 +1375,6 @@ Description,1`;
       });
 
       // updateTaskLabels succeeds
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
       // getTask returns task without labels property
       mockClient.tasks.getTask.mockResolvedValue({
@@ -1408,7 +1452,7 @@ Description,1`;
 
       expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(2);
       // Should not call updateTaskLabels for tasks with empty labels
-      expect(mockClient.tasks.updateTaskLabels).not.toHaveBeenCalled();
+      expect(labelWrite).not.toHaveBeenCalled();
     });
 
     it('should handle malformed labels response as defensive measure', async () => {
@@ -1476,7 +1520,6 @@ Description,1`;
       });
       
       // Mock successful label update
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       
       // Mock verification - labels successfully assigned
       mockClient.tasks.getTask.mockResolvedValue({
@@ -1492,9 +1535,13 @@ Description,1`;
       });
 
       // Should update with only the found label
-      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1801, {
-        labels: [{ id: 1 }],
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/tasks/1801/labels/bulk',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ labels: [{ id: 1 }] }),
+        }),
+      );
       
       // Task completed successfully, only 'bug' label was applied
       expect(result.content[0].text).toContain('Successfully imported: 1 tasks');
@@ -1633,7 +1680,12 @@ Description,1`;
         title: 'Task with labels',
       });
 
-      mockClient.tasks.updateTaskLabels.mockRejectedValue('Label update failed');
+      // The direct-REST helper (vikunjaRestRequest) always wraps any
+      // rejection — Error or not — into a genuine MCPError, so setTaskLabels
+      // can no longer surface a non-Error rejection the way node-vikunja
+      // occasionally could; `handleLabelAssignmentError`'s `instanceof Error
+      // ? ... : 'Unknown error'` fallback is unreachable via this path now.
+      labelWrite.mockRejectedValue('Label update failed');
 
       const result = await toolHandler({
         projectId: 1,
@@ -1642,7 +1694,8 @@ Description,1`;
       });
 
       expect(result.content[0].text).toContain('Warnings:');
-      expect(result.content[0].text).toContain('Failed to assign labels: Unknown error');
+      expect(result.content[0].text).toContain('Failed to assign labels:');
+      expect(result.content[0].text).toContain('Label update failed');
     });
 
     it('should handle label error that is not an auth error and not Error instance', async () => {
@@ -1657,7 +1710,11 @@ Description,1`;
         title: 'Task with labels',
       });
 
-      mockClient.tasks.updateTaskLabels.mockRejectedValue({ code: 500, message: 'Server error' });
+      // See the previous test: the direct-REST helper always wraps
+      // rejections into a genuine Error/MCPError, so the non-Error branch
+      // is unreachable via this path now — the message includes the
+      // stringified rejection rather than the generic "Unknown error".
+      labelWrite.mockRejectedValue({ code: 500, message: 'Server error' });
 
       const result = await toolHandler({
         projectId: 1,
@@ -1666,7 +1723,7 @@ Description,1`;
       });
 
       expect(result.content[0].text).toContain('Warnings:');
-      expect(result.content[0].text).toContain('Failed to assign labels: Unknown error');
+      expect(result.content[0].text).toContain('Failed to assign labels:');
     });
 
     it('should handle verify error that is not Error instance', async () => {
@@ -1681,7 +1738,6 @@ Description,1`;
         title: 'Task with labels',
       });
 
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockRejectedValue('Verification failed');
 
       const result = await toolHandler({
@@ -1711,7 +1767,7 @@ Description,1`;
         title: 'Task with labels',
       });
 
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(new Error('Network timeout'));
+      labelWrite.mockRejectedValue(new Error('Network timeout'));
 
       const result = await toolHandler({
         projectId: 1,
@@ -1720,7 +1776,8 @@ Description,1`;
       });
 
       expect(result.content[0].text).toContain('Warnings:');
-      expect(result.content[0].text).toContain('Failed to assign labels: Network timeout');
+      expect(result.content[0].text).toContain('Failed to assign labels:');
+      expect(result.content[0].text).toContain('Network timeout');
     });
 
     it('should handle auth error for Error instance', async () => {
@@ -1819,7 +1876,7 @@ Description,1`;
       expect(result.content[0].text).toContain('Successfully imported: 3 tasks');
       
       // Should not try to update labels/assignees for first two tasks
-      expect(mockClient.tasks.updateTaskLabels).not.toHaveBeenCalled();
+      expect(labelWrite).not.toHaveBeenCalled();
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
     });
 
@@ -1873,7 +1930,6 @@ Description,1`;
       });
 
       // updateTaskLabels succeeds
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
       // getTask returns only some labels (partial assignment)
       mockClient.tasks.getTask.mockResolvedValue({
@@ -2020,7 +2076,7 @@ Description,1`;
 
       // Should complete but skip labels/assignees
       expect(result.content[0].text).toContain('Successfully imported: 1 tasks');
-      expect(mockClient.tasks.updateTaskLabels).not.toHaveBeenCalled();
+      expect(labelWrite).not.toHaveBeenCalled();
       expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
     });
@@ -2059,7 +2115,6 @@ Description,1`;
         title: 'Task with labels',
       });
 
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
       mockClient.tasks.getTask.mockRejectedValue(new Error('Verification error'));
 
       const result = await toolHandler({
@@ -2111,7 +2166,7 @@ Description,1`;
         title: 'Task with labels',
       });
 
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(new Error('missing, malformed, expired or otherwise invalid token provided'));
+      labelWrite.mockRejectedValue(new Error('missing, malformed, expired or otherwise invalid token provided'));
 
       const result = await toolHandler({
         projectId: 1,

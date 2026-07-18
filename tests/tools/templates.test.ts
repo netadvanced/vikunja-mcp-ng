@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { registerTemplatesTool } from '../../src/tools/templates';
@@ -9,9 +9,13 @@ import { AuthManager } from '../../src/auth/AuthManager';
 import { parseMarkdown } from '../utils/markdown';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 
-// Mock modules
+// Mock modules. getAuthManagerFromContext is used by setTaskLabels
+// (src/utils/label-bulk.ts, migrated to direct REST) — any test here that
+// instantiates a task template with labels needs it resolved (see
+// beforeEach below).
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));
@@ -23,7 +27,7 @@ jest.mock('../../src/storage', () => ({
 }));
 
 // Import mocked functions
-import { getClientFromContext } from '../../src/client';
+import { getClientFromContext, getAuthManagerFromContext } from '../../src/client';
 import { storageManager } from '../../src/storage';
 
 // Mock fetch: `create` (getProject, getProjectTasks) and `instantiate`
@@ -160,6 +164,16 @@ describe('Templates Tool', () => {
     // Setup mock auth manager
     mockAuthManager = new AuthManager();
     mockAuthManager.connect('https://test.vikunja.io', 'test-token-12345678');
+
+    // setTaskLabels (src/utils/label-bulk.ts, migrated by #71) recovers its
+    // session via getAuthManagerFromContext before the label-bulk POST, which
+    // — like project/task creation — goes through the module-level mockFetch.
+    // Default every fetch to success so instantiating a template with labels
+    // keeps working; fetchOkOnce queues the create responses per test, and
+    // label-failure tests override with mockFetch.mockRejectedValue.
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue(mockAuthManager);
+    mockFetch.mockResolvedValue(mockResponse({ text: JSON.stringify({ labels: [] }) }));
+    circuitBreakerRegistry.clear();
 
     // Setup mock server
     mockServer = {
@@ -872,9 +886,10 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
+      // Project + task creation succeed; the label-bulk POST resolves via
+      // the default-success mockFetch configured in beforeEach.
       fetchOkOnce(newProject);
       fetchOkOnce(newTask);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -934,9 +949,10 @@ describe('Templates Tool', () => {
         updated: new Date(),
         isGlobal: true,
       });
+      // Project + task creation succeed; the label-bulk POST fails.
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(new Error('Label not found'));
+      mockFetch.mockRejectedValue(new Error('Label not found'));
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1229,9 +1245,9 @@ describe('Templates Tool', () => {
       });
       fetchOkOnce({ ...mockProject, id: 100 });
 
-      // Task created with null ID
+      // Task created with null ID; the label-bulk POST resolves via the
+      // default-success mockFetch configured in beforeEach.
       fetchOkOnce({ ...mockTask, id: null });
-      mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
 
       const result = await toolHandler({
         subcommand: 'instantiate',
@@ -1240,7 +1256,13 @@ describe('Templates Tool', () => {
       });
 
       // Should use 0 as fallback for null task ID
-      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(0, { labels: [{ id: 1 }, { id: 2 }] });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://test.vikunja.io/api/v1/tasks/0/labels/bulk',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ labels: [{ id: 1 }, { id: 2 }] }),
+        }),
+      );
     });
 
     it('should handle variable names with regex special characters', async () => {

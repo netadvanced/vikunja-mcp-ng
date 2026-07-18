@@ -1,17 +1,33 @@
 /**
  * Final coverage tests for remaining uncovered lines in tasks/crud.ts
  * Targeting lines: 209-219, 279, 281, 363
+ *
+ * Migrated (Wave D, tasks-core) off the node-vikunja client onto
+ * `vikunjaRestRequest` for the core create/get/update/delete calls.
+ * Labels/assignees remain on the node-vikunja client (sub-resource,
+ * sibling item M-B).
  */
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { createTask, getTask, updateTask, deleteTask } from '../../src/tools/tasks/crud';
 import { MCPError, ErrorCode } from '../../src/types';
 import type { MockVikunjaClient } from '../types/mocks';
+import type { AuthManager } from '../../src/auth/AuthManager';
 import { parseMarkdown } from '../utils/markdown';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 
-// Mock the client module
+// Mock the direct-REST helper used by the migrated CRUD services. It is the
+// single choke point for both core task ops and (post Wave-D #71)
+// setTaskLabels' POST /tasks/{id}/labels/bulk.
+jest.mock('../../src/utils/vikunja-rest', () => ({
+  vikunjaRestRequest: jest.fn(),
+}));
+
+// Mock the client module. getAuthManagerFromContext is used by setTaskLabels
+// (src/utils/label-bulk.ts, migrated to direct REST) to recover the session.
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
 }));
 
 // Mock logger to suppress output during tests
@@ -24,9 +40,13 @@ jest.mock('../../src/utils/logger', () => ({
   },
 }));
 
+import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
+
 describe('Tasks CRUD - Final Coverage', () => {
   let mockClient: MockVikunjaClient;
-  const { getClientFromContext } = require('../../src/client');
+  const { getClientFromContext, getAuthManagerFromContext } = require('../../src/client');
+  const mockAuthManager = {} as AuthManager;
+  const mockRest = vikunjaRestRequest as jest.Mock;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -46,6 +66,15 @@ describe('Tasks CRUD - Final Coverage', () => {
     } as any;
 
     getClientFromContext.mockResolvedValue(mockClient);
+
+    // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
+    // helper (vikunjaRestRequest, mocked here as mockRest) and recovers its
+    // session via getAuthManagerFromContext — provide one so label updates
+    // in these CRUD tests keep working.
+    getAuthManagerFromContext.mockResolvedValue({
+      getSession: () => ({ apiUrl: 'https://mock.vikunja.test', apiToken: 'mock-token' }),
+    });
+    circuitBreakerRegistry.clear();
   });
 
   describe('getTask success path (lines 209-219)', () => {
@@ -58,11 +87,11 @@ describe('Tasks CRUD - Final Coverage', () => {
         priority: 1,
       };
 
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
+      mockRest.mockResolvedValue(mockTask);
 
-      const result = await getTask({ id: 1 });
+      const result = await getTask({ id: 1 }, mockAuthManager);
 
-      expect(mockClient.tasks.getTask).toHaveBeenCalledWith(1);
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/tasks/1');
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -85,9 +114,9 @@ describe('Tasks CRUD - Final Coverage', () => {
         priority: 1,
       };
 
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
+      mockRest.mockResolvedValue(mockTask);
 
-      const result = await getTask({ id: 1 });
+      const result = await getTask({ id: 1 }, mockAuthManager);
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -106,9 +135,9 @@ describe('Tasks CRUD - Final Coverage', () => {
         priority: 1,
       };
 
-      mockClient.tasks.getTask.mockResolvedValue(mockTask);
+      mockRest.mockResolvedValue(mockTask);
 
-      const result = await getTask({ id: 1 });
+      const result = await getTask({ id: 1 }, mockAuthManager);
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -139,16 +168,16 @@ describe('Tasks CRUD - Final Coverage', () => {
         priority: 5, // Changed priority
       };
 
-      mockClient.tasks.getTask
-        .mockResolvedValueOnce(mockTask) // Initial fetch
-        .mockResolvedValueOnce(updatedTask); // Final fetch
-      mockClient.tasks.updateTask.mockResolvedValue(updatedTask);
+      mockRest
+        .mockResolvedValueOnce(mockTask) // analyzeUpdateState's GET
+        .mockResolvedValueOnce(updatedTask) // POST /tasks/{id}
+        .mockResolvedValueOnce(updatedTask); // final GET
 
       const result = await updateTask({
         id: 1,
         dueDate: '2024-12-31T23:59:59Z',
         priority: 5,
-      });
+      }, mockAuthManager);
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -171,16 +200,16 @@ describe('Tasks CRUD - Final Coverage', () => {
         assignees: [],
       };
 
-      mockClient.tasks.getTask
-        .mockResolvedValueOnce(mockTask) // Initial fetch
-        .mockResolvedValueOnce(mockTask); // Final fetch
-      mockClient.tasks.updateTask.mockResolvedValue(mockTask);
+      mockRest
+        .mockResolvedValueOnce(mockTask) // analyzeUpdateState's GET
+        .mockResolvedValueOnce(mockTask) // POST /tasks/{id}
+        .mockResolvedValueOnce(mockTask); // final GET
 
       const result = await updateTask({
         id: 1,
         dueDate: '2024-01-01T00:00:00Z', // Same due date
         priority: 1, // Same priority
-      });
+      }, mockAuthManager);
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -205,10 +234,12 @@ describe('Tasks CRUD - Final Coverage', () => {
         assignees: [{ id: 1 }, { id: 2 }],
       };
 
-      mockClient.tasks.getTask
-        .mockResolvedValueOnce(taskWithAssignees) // Initial fetch
-        .mockResolvedValueOnce(taskWithAssignees); // For assignee diff calculation
-      mockClient.tasks.updateTask.mockResolvedValue(taskWithAssignees);
+      // analyzeUpdateState's GET (REST) + POST update (REST)
+      mockRest
+        .mockResolvedValueOnce(taskWithAssignees)
+        .mockResolvedValueOnce(taskWithAssignees);
+      // updateTaskAssignees's diff-calculation GET (still node-vikunja client)
+      mockClient.tasks.getTask.mockResolvedValueOnce(taskWithAssignees);
 
       // Mock successful addition but failed removal with non-auth error
       mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
@@ -219,7 +250,7 @@ describe('Tasks CRUD - Final Coverage', () => {
         updateTask({
           id: 1,
           assignees: [1, 3], // Remove 2, add 3
-        })
+        }, mockAuthManager)
       ).rejects.toThrow('Network timeout during remove operation');
     });
 
@@ -236,10 +267,10 @@ describe('Tasks CRUD - Final Coverage', () => {
         assignees: [{ id: 1 }, { id: 2 }],
       };
 
-      mockClient.tasks.getTask
-        .mockResolvedValueOnce(taskWithAssignees) // Initial fetch
-        .mockResolvedValueOnce(taskWithAssignees); // For assignee diff calculation
-      mockClient.tasks.updateTask.mockResolvedValue(taskWithAssignees);
+      mockRest
+        .mockResolvedValueOnce(taskWithAssignees) // analyzeUpdateState's GET
+        .mockResolvedValueOnce(taskWithAssignees); // POST update
+      mockClient.tasks.getTask.mockResolvedValueOnce(taskWithAssignees); // assignee diff calculation
 
       // Mock successful addition but failed removal with non-Error object
       mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
@@ -250,7 +281,7 @@ describe('Tasks CRUD - Final Coverage', () => {
         updateTask({
           id: 1,
           assignees: [1, 3], // Remove 2, add 3
-        })
+        }, mockAuthManager)
       ).rejects.toThrow('Failed to update task: Unknown error');
     });
   });
@@ -280,11 +311,14 @@ describe('Tasks CRUD - Final Coverage', () => {
         repeat_mode: 0,
       };
 
-      mockClient.tasks.getTask
-        .mockResolvedValueOnce(mockTask) // Initial fetch
-        .mockResolvedValueOnce(updatedTask); // Final fetch
-      mockClient.tasks.updateTask.mockResolvedValue(updatedTask);
+      // analyzeUpdateState's GET, POST update, final GET (all REST now)
+      mockRest
+        .mockResolvedValueOnce(mockTask)
+        .mockResolvedValueOnce(updatedTask)
+        .mockResolvedValueOnce(updatedTask);
+      // Labels/assignees sub-resource calls (still node-vikunja client)
       mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
+      mockClient.tasks.getTask.mockResolvedValueOnce(mockTask); // assignee diff calculation
       mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
 
       const result = await updateTask({
@@ -298,7 +332,7 @@ describe('Tasks CRUD - Final Coverage', () => {
         repeatMode: 'day',
         labels: [1, 2],
         assignees: [1, 2],
-      });
+      }, mockAuthManager);
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);

@@ -16,7 +16,7 @@ import type { Task, User } from 'node-vikunja';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 
 // Import the function we're mocking
-import { getClientFromContext } from '../../src/client';
+import { getClientFromContext, getAuthManagerFromContext } from '../../src/client';
 
 // Import AORP test helpers
 import { extractTasksData, extractTaskData, expectAorpSuccess, expectAorpError, getAorpData, getAorpMetadata } from '../utils/aorp-test-helpers';
@@ -24,13 +24,45 @@ import { parseMarkdown } from '../utils/markdown';
 import * as retryUtils from '../../src/utils/retry';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 
-// Mock the modules
+// Mock the modules. getAuthManagerFromContext is used by setTaskLabels
+// (src/utils/label-bulk.ts, migrated to direct REST) — any test that
+// updates a task's labels via TaskUpdateService/TaskCreationService/
+// bulk-operations-simplified needs it resolved (see beforeEach below).
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
+  getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));
 jest.mock('../../src/auth/AuthManager');
+
+// Migrated (Wave D, tasks-core): the core create/get/update/delete/list
+// calls in TaskCreationService/TaskReadService/TaskUpdateService/
+// TaskDeletionService/ClientSideFilteringStrategy/ServerSideFilteringStrategy/
+// RestCrossProjectFilteringStrategy/bulk-operations-simplified.ts go through
+// vikunjaRestRequest -> fetch now, instead of the node-vikunja client.
+// Labels/assignees/comments/reminders/relations remain on the node-vikunja
+// client (sub-resource, sibling item M-B); the 'list-assignees' describe
+// block below already mocks global.fetch itself for its own dedicated
+// REST calls and overrides/restores globalThis.fetch around this file-level
+// default.
+const mockFetch = jest.fn();
+globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+/** Minimal Response-like object for the REST helper. */
+function mockRestResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+  const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
+  return {
+    ok,
+    status,
+    statusText,
+    text: jest.fn(async () => text),
+  } as unknown as Response;
+}
+
+function jsonResponse(data: unknown): Response {
+  return mockRestResponse({ text: JSON.stringify(data) });
+}
 
 // Avoid shared "anonymous" circuit breaker replaying stale ops across tests
 jest.mock('../../src/utils/retry', () => {
@@ -171,6 +203,72 @@ describe('Tasks Tool', () => {
       },
     } as MockVikunjaClient;
 
+    // Proxy the migrated core REST calls (GET/POST/DELETE /tasks/{id}, PUT
+    // /projects/{id}/tasks, GET /projects, GET /projects/{id}/tasks,
+    // GET /tasks/all) through the existing mockClient.{tasks,projects}
+    // mocks above, so every test's per-scenario mock configuration (and
+    // call-count/args assertions on those node-vikunja-shaped methods)
+    // keeps driving behavior unchanged. The bare cross-project GET /tasks
+    // (RestCrossProjectFilteringStrategy's direct-REST primary path) always
+    // rejects fast here so tests exercise the per-project aggregation
+    // fallback they were written against. A rejected mockClient method call
+    // propagates as a genuine fetch()-layer rejection, which the real
+    // vikunjaRestRequest wraps into an MCPError, same as a real network
+    // failure would.
+    mockFetch.mockReset();
+    circuitBreakerRegistry.clear();
+    mockFetch.mockImplementation(async (url: string, init?: { method?: string; body?: string }) => {
+      const parsedUrl = new URL(url);
+      const pathname = parsedUrl.pathname.replace(/^\/api\/v\d+/, '');
+      const method = init?.method ?? 'GET';
+      const body = init?.body !== undefined ? JSON.parse(init.body) : undefined;
+
+      if (pathname === '/tasks') {
+        throw new Error('mock: direct REST GET /tasks unavailable');
+      }
+
+      const parseParams = (): Record<string, unknown> => {
+        const params: Record<string, unknown> = {};
+        const page = parsedUrl.searchParams.get('page');
+        const perPage = parsedUrl.searchParams.get('per_page');
+        const s = parsedUrl.searchParams.get('s');
+        const sortBy = parsedUrl.searchParams.get('sort_by');
+        const filter = parsedUrl.searchParams.get('filter');
+        if (page !== null) params.page = Number(page);
+        if (perPage !== null) params.per_page = Number(perPage);
+        if (s !== null) params.s = s;
+        if (sortBy !== null) params.sort_by = sortBy;
+        if (filter !== null) params.filter = filter;
+        return params;
+      };
+
+      if (pathname === '/projects') {
+        return jsonResponse(await mockClient.projects.getProjects({ per_page: 1000 }));
+      }
+      if (pathname === '/tasks/all') {
+        return jsonResponse(await mockClient.tasks.getAllTasks(parseParams()));
+      }
+      const projectTasksMatch = /^\/projects\/(-?\d+)\/tasks$/.exec(pathname);
+      if (projectTasksMatch?.[1] !== undefined) {
+        if (method === 'PUT') {
+          return jsonResponse(await mockClient.tasks.createTask(Number(projectTasksMatch[1]), body));
+        }
+        return jsonResponse(
+          await mockClient.tasks.getProjectTasks(Number(projectTasksMatch[1]), parseParams()),
+        );
+      }
+
+      const taskIdMatch = /^\/tasks\/(\d+)$/.exec(pathname);
+      if (taskIdMatch?.[1] !== undefined) {
+        const taskId = Number(taskIdMatch[1]);
+        if (method === 'GET') return jsonResponse(await mockClient.tasks.getTask(taskId));
+        if (method === 'POST') return jsonResponse(await mockClient.tasks.updateTask(taskId, body));
+        if (method === 'DELETE') return jsonResponse(await mockClient.tasks.deleteTask(taskId));
+      }
+
+      throw new Error(`mockFetch: unhandled ${method} ${pathname}`);
+    });
+
     // Setup mock auth manager
     mockAuthManager = createMockTestableAuthManager();
     mockAuthManager.isAuthenticated.mockReturnValue(true);
@@ -185,6 +283,16 @@ describe('Tasks Tool', () => {
     // Mock getClientFromContext
     (getClientFromContext as jest.Mock).mockReturnValue(mockClient);
     (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
+
+    // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
+    // helper rather than node-vikunja's updateTaskLabels — resolve the same
+    // mockAuthManager session so any test that writes labels (update,
+    // bulk-update, bulk-create) can mock global fetch locally. Deliberately
+    // NOT setting a blanket default `globalThis.fetch` mock here: several
+    // other subcommands (e.g. cross-project `list`) also go through
+    // vikunjaRestRequest, and a file-wide default would silently short-
+    // circuit their own error-path tests.
+    (getAuthManagerFromContext as jest.Mock).mockResolvedValue(mockAuthManager);
 
     // Setup mock server
     mockServer = {
@@ -346,16 +454,21 @@ describe('Tasks Tool', () => {
     it('should handle API errors', async () => {
       // Cross-project aggregation calls getProjects first; a failure there
       // (unlike a single project's getProjectTasks, which is caught and
-      // skipped per-project) fails the whole listing.
+      // skipped per-project) fails the whole listing. The GET /projects
+      // call now goes through vikunjaRestRequest, which wraps the
+      // underlying failure into an MCPError (propagated as-is by
+      // listTasks) rather than a bare "Failed to list tasks" wrapper.
       mockClient.projects.getProjects.mockRejectedValue(new Error('API Error'));
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list tasks: API Error');
+      await expect(callTool('list')).rejects.toThrow('Vikunja REST request failed (GET /projects?per_page=1000): API Error');
     });
 
     it('should handle non-Error API errors', async () => {
       mockClient.projects.getProjects.mockRejectedValue('String error');
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list tasks: String error');
+      await expect(callTool('list')).rejects.toThrow(
+        'Vikunja REST request failed (GET /projects?per_page=1000): String error',
+      );
     });
   });
 
@@ -509,12 +622,15 @@ describe('Tasks Tool', () => {
     it('should handle API errors', async () => {
       mockClient.tasks.createTask.mockRejectedValue(new Error('Creation failed'));
 
+      // PUT /projects/{id}/tasks now goes through vikunjaRestRequest, which
+      // wraps the underlying failure into an MCPError (propagated as-is by
+      // createTask rather than re-wrapped generically).
       await expect(
         callTool('create', {
           title: 'Test',
           projectId: 1,
         }),
-      ).rejects.toThrow('Failed to create task: Creation failed');
+      ).rejects.toThrow('Vikunja REST request failed (PUT /projects/1/tasks): Creation failed');
     });
 
     it('should handle non-Error API errors in create', async () => {
@@ -525,7 +641,7 @@ describe('Tasks Tool', () => {
           title: 'Test',
           projectId: 1,
         }),
-      ).rejects.toThrow('Failed to create task');
+      ).rejects.toThrow('Vikunja REST request failed (PUT /projects/1/tasks)');
     });
 
     it('should rollback task creation when label assignment fails', async () => {
@@ -706,8 +822,11 @@ describe('Tasks Tool', () => {
     it('should handle task not found', async () => {
       mockClient.tasks.getTask.mockRejectedValue(new Error('Task not found'));
 
+      // GET /tasks/{id} now goes through vikunjaRestRequest, which wraps
+      // the underlying failure into an MCPError (propagated as-is by
+      // getTask rather than re-wrapped generically).
       await expect(callTool('get', { id: 999 })).rejects.toThrow(
-        'Failed to get task: Task not found',
+        'Vikunja REST request failed (GET /tasks/999): Task not found',
       );
     });
 
@@ -715,7 +834,7 @@ describe('Tasks Tool', () => {
       mockClient.tasks.getTask.mockRejectedValue({ code: 404 });
 
       await expect(callTool('get', { id: 1 })).rejects.toThrow(
-        'Failed to get task',
+        'Vikunja REST request failed (GET /tasks/1)',
       );
     });
 
@@ -994,15 +1113,37 @@ describe('Tasks Tool', () => {
         .mockResolvedValueOnce(taskWithLabels);
       mockClient.tasks.updateTask.mockResolvedValue(taskWithLabels);
 
-      await callTool('update', {
-        id: 1,
-        labels: [1, 2],
-      });
+      // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
+      // helper for POST /tasks/{id}/labels/bulk rather than node-vikunja's
+      // updateTaskLabels — mock global fetch locally, scoped to this test,
+      // rather than for the whole 'update subcommand' block.
+      const originalFetch = globalThis.fetch;
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: jest.fn(async () => JSON.stringify({ labels: [] })),
+      } as unknown as Response);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      circuitBreakerRegistry.clear();
 
-      // Labels are updated via updateTaskLabels
-      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-        labels: [{ id: 1 }, { id: 2 }],
-      });
+      try {
+        await callTool('update', {
+          id: 1,
+          labels: [1, 2],
+        });
+
+        // Labels are updated via the direct-REST helper.
+        expect(fetchMock).toHaveBeenCalledWith(
+          'https://api.vikunja.test/api/v1/tasks/1/labels/bulk',
+          expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ labels: [{ id: 1 }, { id: 2 }] }),
+          }),
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
 
     it('should handle assignee removal failures during update', async () => {
@@ -1063,12 +1204,15 @@ describe('Tasks Tool', () => {
       mockClient.tasks.getTask.mockResolvedValue(mockTask);
       mockClient.tasks.updateTask.mockRejectedValue('Update failed');
 
+      // POST /tasks/{id} now goes through vikunjaRestRequest, which wraps
+      // the underlying failure into an MCPError (propagated as-is by
+      // updateTask rather than re-wrapped generically).
       await expect(
         callTool('update', {
           id: 1,
           title: 'Test',
         }),
-      ).rejects.toThrow('Failed to update task: Update failed');
+      ).rejects.toThrow('Vikunja REST request failed (POST /tasks/1): Update failed');
     });
 
     it('should update recurring task settings', async () => {
@@ -1145,8 +1289,11 @@ describe('Tasks Tool', () => {
     it('should handle deletion errors', async () => {
       mockClient.tasks.deleteTask.mockRejectedValue(new Error('Cannot delete task'));
 
+      // DELETE /tasks/{id} now goes through vikunjaRestRequest, which wraps
+      // the underlying failure into an MCPError (propagated as-is by
+      // deleteTask rather than re-wrapped generically).
       await expect(callTool('delete', { id: 1 })).rejects.toThrow(
-        'Failed to delete task: Cannot delete task',
+        'Vikunja REST request failed (DELETE /tasks/1): Cannot delete task',
       );
     });
 
@@ -1168,12 +1315,12 @@ describe('Tasks Tool', () => {
     it('should handle non-Error API errors in delete', async () => {
       mockClient.tasks.deleteTask.mockRejectedValue(500);
 
-      // handleStatusCode only surfaces Error/string rejection values; any
-      // other shape (numbers included) is reported as "Unknown error" so
-      // arbitrary upstream payloads never leak into the user-visible
-      // message (see tests/utils/error-handler.test.ts and
-      // tests/tools/tasks-relations.test.ts for the same contract).
-      await expect(callTool('delete', { id: 1 })).rejects.toThrow('Failed to delete task: Unknown error');
+      // DELETE /tasks/{id} now goes through vikunjaRestRequest, which wraps
+      // any rejection value (String(error), for non-Error/non-string
+      // shapes) into an MCPError, propagated as-is by deleteTask.
+      await expect(callTool('delete', { id: 1 })).rejects.toThrow(
+        'Vikunja REST request failed (DELETE /tasks/1): 500',
+      );
     });
 
     it('should validate task ID', async () => {
@@ -1183,10 +1330,35 @@ describe('Tasks Tool', () => {
   });
 
   describe('assign subcommand', () => {
+    // assign/unassign call the direct-REST helper (vikunjaRestRequest) for
+    // the PUT/DELETE /tasks/{id}/assignees[/{userID}] calls now, so these
+    // tests mock global fetch. mockClient.tasks.getTask is still used to
+    // refresh the response payload (a deliberate node-vikunja leftover).
+    let fetchMock: jest.Mock;
+    let originalFetch: typeof fetch;
+
+    const restOk = (body: unknown = {}): Response =>
+      ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: jest.fn(async () => JSON.stringify(body)),
+      }) as unknown as Response;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+      fetchMock = jest.fn().mockResolvedValue(restOk({}));
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      circuitBreakerRegistry.clear();
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
     it('should assign users to a task', async () => {
       const updatedTask = { ...mockTask, assignees: [mockUser] };
 
-      mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
       mockClient.tasks.getTask.mockResolvedValue(updatedTask);
 
       const result = await callTool('assign', {
@@ -1194,8 +1366,10 @@ describe('Tasks Tool', () => {
         assignees: [1],
       });
 
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
-      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/assignees',
+        expect.objectContaining({ method: 'PUT', body: JSON.stringify({ user_id: 1 }) }),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -1205,25 +1379,30 @@ describe('Tasks Tool', () => {
     });
 
     it('should handle bulk assign errors', async () => {
-      mockClient.tasks.assignUserToTask.mockRejectedValue(new Error('Failed to assign'));
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        text: jest.fn(async () => 'Failed to assign'),
+      } as unknown as Response);
 
       await expect(
         callTool('assign', {
           id: 1,
           assignees: [1],
         }),
-      ).rejects.toThrow('Failed to assign users to task: Failed to assign');
+      ).rejects.toThrow('Failed to assign users to task:');
     });
 
     it('should handle non-Error API errors in assign', async () => {
-      mockClient.tasks.assignUserToTask.mockRejectedValue(null);
+      fetchMock.mockRejectedValue(null);
 
       await expect(
         callTool('assign', {
           id: 1,
           assignees: [1],
         }),
-      ).rejects.toThrow('Failed to assign users to task: null');
+      ).rejects.toThrow('Failed to assign users to task:');
     });
 
     it('should assign multiple users at once', async () => {
@@ -1232,7 +1411,6 @@ describe('Tasks Tool', () => {
         assignees: [mockUser, { ...mockUser, id: 2, username: 'user2' }],
       };
 
-      mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
       mockClient.tasks.getTask.mockResolvedValue(taskWithMultipleAssignees);
 
       const result = await callTool('assign', {
@@ -1240,9 +1418,14 @@ describe('Tasks Tool', () => {
         assignees: [1, 2],
       });
 
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 1);
-      expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 2);
-      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/assignees',
+        expect.objectContaining({ method: 'PUT', body: JSON.stringify({ user_id: 1 }) }),
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/assignees',
+        expect.objectContaining({ method: 'PUT', body: JSON.stringify({ user_id: 2 }) }),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -1256,10 +1439,35 @@ describe('Tasks Tool', () => {
   });
 
   describe('unassign subcommand', () => {
+    // unassign calls the direct-REST helper for
+    // DELETE /tasks/{id}/assignees/{userID} now, so these tests mock global
+    // fetch. mockClient.tasks.getTask is still used to refresh the response
+    // payload (a deliberate node-vikunja leftover).
+    let fetchMock: jest.Mock;
+    let originalFetch: typeof fetch;
+
+    const restOk = (body: unknown = {}): Response =>
+      ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: jest.fn(async () => JSON.stringify(body)),
+      }) as unknown as Response;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+      fetchMock = jest.fn().mockResolvedValue(restOk({}));
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      circuitBreakerRegistry.clear();
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
     it('should unassign users from a task', async () => {
       const updatedTask = { ...mockTask, assignees: [] };
 
-      mockClient.tasks.removeUserFromTask.mockResolvedValue(undefined);
       mockClient.tasks.getTask.mockResolvedValue(updatedTask);
 
       const result = await callTool('unassign', {
@@ -1267,7 +1475,10 @@ describe('Tasks Tool', () => {
         assignees: [1],
       });
 
-      expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledWith(1, 1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/assignees/1',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -1279,7 +1490,6 @@ describe('Tasks Tool', () => {
     it('should unassign multiple users from a task', async () => {
       const updatedTask = { ...mockTask, assignees: [] };
 
-      mockClient.tasks.removeUserFromTask.mockResolvedValue(undefined);
       mockClient.tasks.getTask.mockResolvedValue(updatedTask);
 
       const result = await callTool('unassign', {
@@ -1287,10 +1497,19 @@ describe('Tasks Tool', () => {
         assignees: [1, 2, 3],
       });
 
-      expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledTimes(3);
-      expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledWith(1, 1);
-      expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledWith(1, 2);
-      expect(mockClient.tasks.removeUserFromTask).toHaveBeenCalledWith(1, 3);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/assignees/1',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/assignees/2',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/assignees/3',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -1300,25 +1519,30 @@ describe('Tasks Tool', () => {
     });
 
     it('should handle unassign errors', async () => {
-      mockClient.tasks.removeUserFromTask.mockRejectedValue(new Error('Failed to remove user'));
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        text: jest.fn(async () => 'Failed to remove user'),
+      } as unknown as Response);
 
       await expect(
         callTool('unassign', {
           id: 1,
           assignees: [1],
         }),
-      ).rejects.toThrow('Failed to remove users from task: Failed to remove user');
+      ).rejects.toThrow('Failed to remove users from task:');
     });
 
     it('should handle non-Error API errors in unassign', async () => {
-      mockClient.tasks.removeUserFromTask.mockRejectedValue('Server error');
+      fetchMock.mockRejectedValue('Server error');
 
       await expect(
         callTool('unassign', {
           id: 1,
           assignees: [1],
         }),
-      ).rejects.toThrow('Failed to remove users from task: Server error');
+      ).rejects.toThrow('Failed to remove users from task:');
     });
 
     it('should validate parameters', async () => {
@@ -1492,14 +1716,50 @@ describe('Tasks Tool', () => {
   });
 
   describe('comment subcommand', () => {
+    // handleComment calls the direct-REST helper (vikunjaRestRequest) for
+    // GET/PUT /tasks/{id}/comments now, so these tests mock global fetch
+    // rather than node-vikunja's mockClient.tasks methods.
+    let fetchMock: jest.Mock;
+    let originalFetch: typeof fetch;
+
+    const restOk = (body: unknown): Response =>
+      ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: jest.fn(async () => JSON.stringify(body)),
+      }) as unknown as Response;
+
+    const restError = (status: number, statusText: string, body = ''): Response =>
+      ({
+        ok: false,
+        status,
+        statusText,
+        text: jest.fn(async () => body),
+      }) as unknown as Response;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+      fetchMock = jest.fn();
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      circuitBreakerRegistry.clear();
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
     it('should list comments for a task', async () => {
-      mockClient.tasks.getTaskComments.mockResolvedValue([mockComment]);
+      fetchMock.mockResolvedValue(restOk([mockComment]));
 
       const result = await callTool('comment', {
         id: 1,
       });
 
-      expect(mockClient.tasks.getTaskComments).toHaveBeenCalledWith(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/comments',
+        expect.objectContaining({ method: 'GET' }),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -1509,17 +1769,20 @@ describe('Tasks Tool', () => {
     });
 
     it('should add a comment to a task', async () => {
-      mockClient.tasks.createTaskComment.mockResolvedValue(mockComment);
+      fetchMock.mockResolvedValue(restOk(mockComment));
 
       const result = await callTool('comment', {
         id: 1,
         comment: 'New comment',
       });
 
-      expect(mockClient.tasks.createTaskComment).toHaveBeenCalledWith(1, {
-        task_id: 1,
-        comment: 'New comment',
-      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/comments',
+        expect.objectContaining({
+          method: 'PUT',
+          body: JSON.stringify({ comment: 'New comment' }),
+        }),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -1533,34 +1796,34 @@ describe('Tasks Tool', () => {
     });
 
     it('should handle comment errors', async () => {
-      mockClient.tasks.getTaskComments.mockRejectedValue(new Error('API Error'));
+      fetchMock.mockResolvedValue(restError(400, 'Bad Request', 'API Error'));
 
       await expect(
         callTool('comment', {
           id: 1,
         }),
-      ).rejects.toThrow('Failed to handle comment: API Error');
+      ).rejects.toThrow('Failed to handle comment:');
     });
 
     it('should handle create comment errors', async () => {
-      mockClient.tasks.createTaskComment.mockRejectedValue(new Error('Cannot create comment'));
+      fetchMock.mockResolvedValue(restError(400, 'Bad Request', 'Cannot create comment'));
 
       await expect(
         callTool('comment', {
           id: 1,
           comment: 'Test',
         }),
-      ).rejects.toThrow('Failed to handle comment: Cannot create comment');
+      ).rejects.toThrow('Failed to handle comment:');
     });
 
     it('should handle non-Error API errors in comment', async () => {
-      mockClient.tasks.getTaskComments.mockRejectedValue(false);
+      fetchMock.mockRejectedValue(false);
 
       await expect(
         callTool('comment', {
           id: 1,
         }),
-      ).rejects.toThrow('Failed to handle comment: false');
+      ).rejects.toThrow('Failed to handle comment:');
     });
   });
 
@@ -1573,7 +1836,11 @@ describe('Tasks Tool', () => {
       // caught and skipped - see PR #22).
       mockClient.projects.getProjects.mockRejectedValue(networkError);
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list tasks: Network error');
+      // GET /projects now goes through vikunjaRestRequest, which wraps the
+      // underlying failure into an MCPError (propagated as-is by listTasks).
+      await expect(callTool('list')).rejects.toThrow(
+        'Vikunja REST request failed (GET /projects?per_page=1000): Network error',
+      );
     });
 
     it('should handle rate limiting', async () => {
@@ -1581,14 +1848,18 @@ describe('Tasks Tool', () => {
       (rateLimitError as any).response = { status: 429 };
       mockClient.projects.getProjects.mockRejectedValue(rateLimitError);
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list tasks: Rate limit exceeded');
+      await expect(callTool('list')).rejects.toThrow(
+        'Vikunja REST request failed (GET /projects?per_page=1000): Rate limit exceeded',
+      );
     });
 
     it('should handle malformed JSON responses', async () => {
       // This would typically happen at the node-vikunja level
       mockClient.projects.getProjects.mockRejectedValue(new SyntaxError('Unexpected token'));
 
-      await expect(callTool('list')).rejects.toThrow('Failed to list tasks: Unexpected token');
+      await expect(callTool('list')).rejects.toThrow(
+        'Vikunja REST request failed (GET /projects?per_page=1000): Unexpected token',
+      );
     });
 
     it('should handle client initialization errors', async () => {
@@ -1635,6 +1906,13 @@ describe('Tasks Tool', () => {
   });
 
   describe('bulk-update subcommand', () => {
+    // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
+    // helper for POST /tasks/{id}/labels/bulk rather than node-vikunja's
+    // updateTaskLabels — default to success here (only the labels-field
+    // test below actually exercises it).
+    let fetchMock: jest.Mock;
+    let originalFetch: typeof fetch;
+
     beforeEach(() => {
       mockClient.tasks.updateTask = jest
         .fn()
@@ -1647,7 +1925,20 @@ describe('Tasks Tool', () => {
       mockClient.tasks.removeUserFromTask = jest.fn().mockResolvedValue({});
       mockClient.tasks.bulkAssignUsersToTask = jest.fn().mockResolvedValue({});
       mockClient.tasks.assignUserToTask = jest.fn().mockResolvedValue({});
-      mockClient.tasks.updateTaskLabels = jest.fn().mockResolvedValue({});
+
+      originalFetch = globalThis.fetch;
+      fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: jest.fn(async () => JSON.stringify({ labels: [] })),
+      } as unknown as Response);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      circuitBreakerRegistry.clear();
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
     });
 
     it('should bulk update multiple tasks via per-task merge (never native bulk API)', async () => {
@@ -2070,7 +2361,6 @@ describe('Tasks Tool', () => {
     it('should handle bulk update for labels field', async () => {
       mockClient.tasks.getTask.mockResolvedValue({ ...mockTask, labels: [] });
       mockClient.tasks.updateTask.mockResolvedValue({ ...mockTask });
-      mockClient.tasks.updateTaskLabels.mockResolvedValue({});
 
       const result = await callTool('bulk-update', {
         taskIds: [1, 2],
@@ -2087,10 +2377,15 @@ describe('Tasks Tool', () => {
       // native /tasks/bulk endpoint (which does not apply label relations).
       expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
       expect(mockClient.tasks.updateTask).toHaveBeenCalledTimes(2);
-      // setTaskLabels persists via updateTaskLabels with the { labels: [{ id }] } shape.
-      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-        labels: [{ id: 1 }, { id: 2 }, { id: 3 }],
-      });
+      // setTaskLabels (src/utils/label-bulk.ts) persists via the direct-REST
+      // helper — POST /tasks/{id}/labels/bulk with the { labels: [{ id }] } shape.
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/labels/bulk',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ labels: [{ id: 1 }, { id: 2 }, { id: 3 }] }),
+        }),
+      );
     });
 
     it('should handle bulk update for due_date field', async () => {
@@ -2318,15 +2613,32 @@ describe('Tasks Tool', () => {
     // breaker state. Bypass it the same way tests/tools/tasks/bulk-operations.test.ts
     // does, so each test only exercises the mocked client call it configured.
     let withRetrySpy: ReturnType<typeof jest.spyOn>;
+    // setTaskLabels (src/utils/label-bulk.ts) now calls the direct-REST
+    // helper for POST /tasks/{id}/labels/bulk rather than node-vikunja's
+    // updateTaskLabels — default to success here; tests that specifically
+    // exercise a label-write failure override fetchMock.
+    let fetchMock: jest.Mock;
+    let originalFetch: typeof fetch;
 
     beforeEach(() => {
       withRetrySpy = jest
         .spyOn(retryUtils, 'withRetry')
         .mockImplementation((operation: () => Promise<unknown>) => operation());
+
+      originalFetch = globalThis.fetch;
+      fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: jest.fn(async () => JSON.stringify({ labels: [] })),
+      } as unknown as Response);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      circuitBreakerRegistry.clear();
     });
 
     afterEach(() => {
       withRetrySpy.mockRestore();
+      globalThis.fetch = originalFetch;
     });
 
     it('should create multiple tasks successfully', async () => {
@@ -2353,7 +2665,6 @@ describe('Tasks Tool', () => {
       });
 
       mockClient.tasks.getTask.mockImplementation(async (id) => createdTasks[id - 1]);
-      mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
       mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue(undefined);
 
       const result = await callTool('bulk-create', { projectId: 1, tasks });
@@ -2492,14 +2803,17 @@ describe('Tasks Tool', () => {
         ],
       });
 
-      mockClient.tasks.updateTaskLabels.mockResolvedValue(undefined);
       mockClient.tasks.bulkAssignUsersToTask.mockResolvedValue(undefined);
 
       const result = await callTool('bulk-create', { projectId: 1, tasks });
 
-      expect(mockClient.tasks.updateTaskLabels).toHaveBeenCalledWith(1, {
-        labels: [{ id: 1 }, { id: 2 }],
-      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/tasks/1/labels/bulk',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ labels: [{ id: 1 }, { id: 2 }] }),
+        }),
+      );
       expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 3);
       expect(mockClient.tasks.assignUserToTask).toHaveBeenCalledWith(1, 4);
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
@@ -2523,7 +2837,7 @@ describe('Tasks Tool', () => {
         project_id: 1,
       });
 
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(new Error('Label update failed'));
+      fetchMock.mockRejectedValue(new Error('Label update failed'));
       mockClient.tasks.deleteTask.mockResolvedValue(undefined);
 
       await expect(
@@ -2556,7 +2870,7 @@ describe('Tasks Tool', () => {
         project_id: 1,
       });
 
-      mockClient.tasks.updateTaskLabels.mockRejectedValue(new Error('Label update failed'));
+      fetchMock.mockRejectedValue(new Error('Label update failed'));
       mockClient.tasks.deleteTask.mockRejectedValue(new Error('Delete failed'));
 
       await expect(
