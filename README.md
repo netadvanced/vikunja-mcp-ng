@@ -2,6 +2,7 @@
 
 **Give your AI assistant real hands on your Vikunja instance** — create and triage tasks, manage projects and Kanban boards, assign teammates, and more, through natural conversation.
 
+[![npm](https://img.shields.io/npm/v/vikunja-mcp-ng.svg)](https://www.npmjs.com/package/vikunja-mcp-ng)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node: 20+](https://img.shields.io/badge/node-20%2B-brightgreen.svg)](package.json)
 [![MCP](https://img.shields.io/badge/MCP-server-purple.svg)](https://modelcontextprotocol.io)
@@ -27,6 +28,27 @@ vikunja_tasks({ subcommand: "set-bucket", id: 342, bucketId: 43 })
 More end-to-end scenarios — daily triage, team sharing, project planning, staying informed, bulk imports, admin ops — each paired with the exact tool call and the resulting Vikunja UI state, live in [`docs/samples/`](docs/samples/).
 
 ## Quick Start
+
+### From npm (recommended)
+
+No install step needed — point your MCP client at `npx`:
+
+```json
+{
+  "mcpServers": {
+    "vikunja": {
+      "command": "npx",
+      "args": ["-y", "vikunja-mcp-ng"],
+      "env": {
+        "VIKUNJA_URL": "https://your-vikunja-instance.com/api/v1",
+        "VIKUNJA_API_TOKEN": "your-api-token"
+      }
+    }
+  }
+}
+```
+
+Or install globally (`npm install -g vikunja-mcp-ng`) and use `"command": "vikunja-mcp-ng"` with no args.
 
 ### From source
 
