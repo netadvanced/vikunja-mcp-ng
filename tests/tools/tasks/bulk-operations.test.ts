@@ -8,12 +8,20 @@ import { getClientFromContext } from '../../../src/client';
 import { MCPError, ErrorCode } from '../../../src/types';
 import { isAuthenticationError } from '../../../src/utils/auth-error-handler';
 import { withRetry } from '../../../src/utils/retry';
+import { vikunjaRestRequest } from '../../../src/utils/vikunja-rest';
 import { parseMarkdown } from '../../utils/markdown';
 
 jest.mock('../../../src/client');
 jest.mock('../../../src/utils/auth-error-handler');
 jest.mock('../../../src/utils/retry');
 jest.mock('../../../src/utils/logger');
+// Migrated (Wave D, tasks-core): the core get/update/create/delete calls in
+// bulk-operations-simplified.ts go through vikunjaRestRequest now.
+// Labels/assignees remain on the node-vikunja client (sub-resource, sibling
+// item M-B).
+jest.mock('../../../src/utils/vikunja-rest', () => ({
+  vikunjaRestRequest: jest.fn(),
+}));
 
 describe('Bulk operations', () => {
   const mockClient = {
@@ -29,12 +37,36 @@ describe('Bulk operations', () => {
       updateTaskLabels: jest.fn(),
     },
   };
+  const mockRest = vikunjaRestRequest as jest.Mock;
 
   beforeEach(() => {
     jest.clearAllMocks();
     (getClientFromContext as jest.Mock).mockResolvedValue(mockClient);
     (isAuthenticationError as jest.Mock).mockReturnValue(false);
     (withRetry as jest.Mock).mockImplementation((fn) => fn());
+
+    // Proxy the core REST calls (GET/POST /tasks/{id}, PUT
+    // /projects/{id}/tasks, DELETE /tasks/{id}) through the existing
+    // mockClient.tasks.{getTask,updateTask,createTask,deleteTask} mocks, so
+    // every test's per-scenario mock configuration (and call-count/args
+    // assertions on those methods) keeps driving behavior unchanged.
+    mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
+      const taskIdMatch = /^\/tasks\/(\d+)$/.exec(path);
+      if (method === 'GET' && taskIdMatch?.[1] !== undefined) {
+        return mockClient.tasks.getTask(Number(taskIdMatch[1]));
+      }
+      if (method === 'POST' && taskIdMatch?.[1] !== undefined) {
+        return mockClient.tasks.updateTask(Number(taskIdMatch[1]), body);
+      }
+      if (method === 'DELETE' && taskIdMatch?.[1] !== undefined) {
+        return mockClient.tasks.deleteTask(Number(taskIdMatch[1]));
+      }
+      const projectTasksMatch = /^\/projects\/(\d+)\/tasks$/.exec(path);
+      if (method === 'PUT' && projectTasksMatch?.[1] !== undefined) {
+        return mockClient.tasks.createTask(Number(projectTasksMatch[1]), body);
+      }
+      throw new Error(`mockRest: unhandled ${method} ${path}`);
+    });
   });
 
   describe('bulkUpdateTasks', () => {
