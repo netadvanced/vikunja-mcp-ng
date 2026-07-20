@@ -714,19 +714,30 @@ VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=host:port,other:port   # http mode only; comma li
 ```
 
 ### OIDC Resource-Server Variables (http mode only)
+
+Only consulted when `transport=http`; see `docs/OIDC-RESOURCE-SERVER.md` for
+the full design and [`docs/CONTEXT-FORGE.md`](CONTEXT-FORGE.md) for a worked
+deployment walkthrough behind IBM MCP Context Forge + Keycloak (or any OIDC
+provider).
+
 ```env
 VIKUNJA_MCP_OIDC_ISSUER=https://idp.example.org/realms/example       # required
 VIKUNJA_MCP_OIDC_AUDIENCE=vikunja-mcp                                # required; comma list accepted
 VIKUNJA_MCP_OIDC_JWKS_URI=https://idp.example.org/realms/example/protocol/openid-connect/certs  # required
-VIKUNJA_MCP_OIDC_ALLOWED_ALGS=RS256                                  # optional; comma list, default RS256
+VIKUNJA_MCP_OIDC_ALLOWED_ALGS=RS256                                  # optional; comma list, default RS256, "none" never accepted
 VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC=60                                   # optional; default 60
 VIKUNJA_MCP_OIDC_REQUIRED_SCOPE=vikunja                              # optional
 ```
 
 ### Credential Vault Variables (http mode only)
+
+Both must be set for self-service provisioning (`vikunja_auth
+provision`/`status`/`deprovision`); with oidc-http mode active the server
+refuses to start unless a vault path and master key are configured.
+
 ```env
 VIKUNJA_MCP_VAULT_PATH=/var/lib/vikunja-mcp/vault.json               # required; not secret, just a path
-VIKUNJA_MCP_VAULT_KEY=base64-32-byte-key                             # required, sensitive — or VIKUNJA_MCP_VAULT_KEY_FILE
+VIKUNJA_MCP_VAULT_KEY=<32-byte key>                                  # required, sensitive — 64 hex chars (`openssl rand -hex 32`) or base64 (`openssl rand -base64 32`); or VIKUNJA_MCP_VAULT_KEY_FILE
 ```
 
 ### Logging Variables

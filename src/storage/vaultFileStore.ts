@@ -96,9 +96,36 @@ function isVaultRecord(value: unknown): value is VaultRecord {
 }
 
 /**
+ * Parse an operator-supplied master key string into exactly 32 raw bytes,
+ * accepting EITHER encoding an operator would naturally reach for:
+ *  - 64 hex characters (`openssl rand -hex 32`), or
+ *  - standard base64 of 32 bytes (`openssl rand -base64 32`).
+ *
+ * Hex is tried first (a 64-hex string is also valid base64, but would decode
+ * to 48 bytes, so the order matters). Throws a plain `Error` on anything that
+ * does not decode to exactly {@link KEY_LENGTH} bytes; the env-reading
+ * {@link resolveVaultMasterKey} wrapper translates that into a startup-fatal
+ * `ConfigurationError`.
+ */
+export function parseMasterKey(raw: string): Buffer {
+  const trimmed = raw.trim();
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    return Buffer.from(trimmed, 'hex');
+  }
+  const decoded = Buffer.from(trimmed, 'base64');
+  if (decoded.length === KEY_LENGTH) {
+    return decoded;
+  }
+  throw new Error(
+    `VIKUNJA_MCP_VAULT_KEY must decode to exactly ${KEY_LENGTH} bytes: either 64 hex ` +
+      'characters, or standard base64 (e.g. `openssl rand -hex 32` or `openssl rand -base64 32`).',
+  );
+}
+
+/**
  * Resolve the master encryption key from `VIKUNJA_MCP_VAULT_KEY[_FILE]`
  * (the existing `_FILE` secrets convention, `src/config/secrets.ts`).
- * Throws a clear `ConfigurationError` when unset or not a 32-byte base64
+ * Throws a clear `ConfigurationError` when unset or not a 32-byte hex/base64
  * value — `oidc-http` mode must fail loud at startup rather than run with no
  * usable vault.
  */
@@ -108,19 +135,18 @@ export function resolveVaultMasterKey(): Buffer {
     throw new ConfigurationError(
       'VIKUNJA_MCP_VAULT_KEY',
       'oidc-http mode requires a credential vault master key. Set ' +
-        'VIKUNJA_MCP_VAULT_KEY (or VIKUNJA_MCP_VAULT_KEY_FILE) to a base64-encoded ' +
-        '32-byte value — e.g. generate one with `openssl rand -base64 32`.',
+        'VIKUNJA_MCP_VAULT_KEY (or VIKUNJA_MCP_VAULT_KEY_FILE) to a 32-byte value, ' +
+        'encoded as hex or base64 — e.g. generate one with `openssl rand -base64 32`.',
     );
   }
-  const key = Buffer.from(raw.trim(), 'base64');
-  if (key.length !== KEY_LENGTH) {
+  try {
+    return parseMasterKey(raw);
+  } catch (error) {
     throw new ConfigurationError(
       'VIKUNJA_MCP_VAULT_KEY',
-      `must decode (as base64) to exactly ${KEY_LENGTH} bytes, got ${key.length}. ` +
-        'Generate one with `openssl rand -base64 32`.',
+      error instanceof Error ? error.message : String(error),
     );
   }
-  return key;
 }
 
 /**
@@ -256,7 +282,11 @@ export function writeVaultFileAtomic(filePath: string, records: Map<string, Vaul
   for (const [key, record] of records) {
     obj[key] = record;
   }
-  fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2), 'utf-8');
+  // Create the temp file already restricted to owner read/write (0600) so the
+  // plaintext-adjacent ciphertext is never briefly world-readable under the
+  // process umask before the chmod below — defense in depth on top of the
+  // post-rename chmod.
+  fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2), { encoding: 'utf-8', mode: 0o600 });
   fs.renameSync(tmpPath, filePath);
   try {
     fs.chmodSync(filePath, 0o600);

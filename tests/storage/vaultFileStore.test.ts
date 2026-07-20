@@ -21,6 +21,7 @@ import * as crypto from 'crypto';
 const fs = require('fs') as typeof import('fs');
 import {
   VaultFileStore,
+  parseMasterKey,
   resolveVaultMasterKey,
   resolveVaultPath,
   encryptToken,
@@ -496,5 +497,103 @@ describe('active-vault seam (setActiveVaultStore / getActiveVaultStore)', () => 
     setActiveVaultStore(store);
     setActiveVaultStore(undefined);
     expect(getActiveVaultStore()).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reconciliation (H2a + H2b): the canonical VaultFileStore folds in H2b's
+// dual hex/base64 master-key parsing and its byte-level secret-hygiene
+// assertions. These blocks guard the pieces H2a's own suite did not cover so
+// H2b's e2e lane + threat-model tests (which mint keys with `openssl rand
+// -hex 32`) run against exactly this implementation.
+// ---------------------------------------------------------------------------
+
+describe('parseMasterKey (hex/base64 master-key parsing)', () => {
+  it('accepts a 64-char hex string (openssl rand -hex 32)', () => {
+    const raw = crypto.randomBytes(32);
+    expect(parseMasterKey(raw.toString('hex')).equals(raw)).toBe(true);
+  });
+
+  it('accepts a standard base64 32-byte string (openssl rand -base64 32)', () => {
+    const raw = crypto.randomBytes(32);
+    expect(parseMasterKey(raw.toString('base64')).equals(raw)).toBe(true);
+  });
+
+  it('trims surrounding whitespace before parsing', () => {
+    const raw = crypto.randomBytes(32);
+    expect(parseMasterKey(`  ${raw.toString('hex')}\n`).equals(raw)).toBe(true);
+  });
+
+  it('rejects a value that decodes to the wrong length', () => {
+    expect(() => parseMasterKey('too-short')).toThrow(/32 bytes/);
+  });
+
+  it('rejects an empty string', () => {
+    expect(() => parseMasterKey('')).toThrow(/32 bytes/);
+  });
+});
+
+describe('resolveVaultMasterKey accepts a hex-encoded key (e2e/threat format)', () => {
+  const original = process.env.VIKUNJA_MCP_VAULT_KEY;
+  const originalFile = process.env.VIKUNJA_MCP_VAULT_KEY_FILE;
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.VIKUNJA_MCP_VAULT_KEY;
+    else process.env.VIKUNJA_MCP_VAULT_KEY = original;
+    if (originalFile === undefined) delete process.env.VIKUNJA_MCP_VAULT_KEY_FILE;
+    else process.env.VIKUNJA_MCP_VAULT_KEY_FILE = originalFile;
+  });
+
+  it('resolves a 64-char hex key the same as its raw bytes', () => {
+    const raw = crypto.randomBytes(32);
+    process.env.VIKUNJA_MCP_VAULT_KEY = raw.toString('hex');
+    expect(resolveVaultMasterKey().equals(raw)).toBe(true);
+  });
+});
+
+describe('writeVaultFileAtomic byte-level secret hygiene', () => {
+  let dir: string;
+  let filePath: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-hygiene-'));
+    filePath = path.join(dir, 'vault.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('creates the parent directory if missing', () => {
+    const nestedPath = path.join(dir, 'nested', 'deep', 'vault.json');
+    writeVaultFileAtomic(nestedPath, new Map());
+    expect(fs.existsSync(nestedPath)).toBe(true);
+  });
+
+  it('restricts the written file to owner-only permissions (0600)', () => {
+    writeVaultFileAtomic(filePath, new Map());
+    const mode = fs.statSync(filePath).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+
+  it('leaves no temp file behind after a successful write', () => {
+    writeVaultFileAtomic(filePath, new Map());
+    expect(fs.readdirSync(dir)).toEqual(['vault.json']);
+  });
+
+  it('never persists the plaintext token anywhere in the file bytes', () => {
+    const key = crypto.randomBytes(32);
+    const token = 'tk_this-must-never-appear-on-disk';
+    const enc = encryptToken(token, key);
+    const record: VaultRecord = {
+      vikunjaUrl: 'http://localhost:33456/api/v1',
+      ...enc,
+      keyVersion: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null,
+    };
+    writeVaultFileAtomic(filePath, new Map([['iss|sub', record]]));
+    expect(fs.readFileSync(filePath, 'utf-8')).not.toContain(token);
   });
 });
