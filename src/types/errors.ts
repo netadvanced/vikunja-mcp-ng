@@ -42,6 +42,14 @@ interface MCPErrorDetails {
    * which use `statusCode` instead).
    */
   transient?: boolean;
+  /**
+   * Set by OIDC bearer-token validation failures (src/auth/oidc/jwtValidator.ts)
+   * so an HTTP transport can build the `WWW-Authenticate: Bearer error="..."`
+   * header per RFC 6750 without re-deriving it from `code`/`statusCode`.
+   * `invalid_token` pairs with `statusCode: 401`; `insufficient_scope` pairs
+   * with `statusCode: 403`.
+   */
+  wwwAuthenticateError?: 'invalid_token' | 'insufficient_scope';
 }
 
 export class MCPError extends Error {
