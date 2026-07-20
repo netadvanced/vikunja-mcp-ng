@@ -29,7 +29,6 @@ export default [
       ...typescript.configs['recommended-requiring-type-checking'].rules,
       ...typescript.configs.strict.rules,
       '@typescript-eslint/explicit-function-return-type': 'error',
-      // Allow 'any' for database instances (better-sqlite3 compatibility)
       '@typescript-eslint/no-explicit-any': ['error', {
         ignoreRestArgs: true,
       }],
