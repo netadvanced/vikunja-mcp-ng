@@ -76,12 +76,10 @@ npm run build
 
 ### Docker
 
-There's no published image yet — build it locally:
+Images are published to GHCR on every release (also tagged `X.Y.Z` and `X.Y.Z-vikunja<A.B.C>` for Vikunja compatibility):
 
 ```bash
-git clone https://github.com/netadvanced/vikunja-mcp-ng.git
-cd vikunja-mcp-ng
-docker build -t ghcr.io/netadvanced/vikunja-mcp-ng:latest .
+docker pull ghcr.io/netadvanced/vikunja-mcp-ng:latest
 ```
 
 ```json
