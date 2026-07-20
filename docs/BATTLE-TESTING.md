@@ -169,6 +169,35 @@ transcript that revealed it).
 | `existing-label-reuse` | applying an already-existing label (find-then-apply path -- seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open) |
 | `project-rename-share` | project create + rename + share-by-name in one prompt -- probes the `title`-vs-`name` field-naming footgun (`vikunja_projects`' flat args object has both) and exercises the share-by-name composite (`create-share` with a `name`) |
 
+### Live evidence runs
+
+Scenarios added by E5 (`existing-label-reuse`, `project-rename-share`) were
+never executed live at the time they shipped -- this is that first live run,
+one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
+
+- `existing-label-reuse` -- last run 2026-07-20, **PASS, clean**: 6 calls vs.
+  optimal 3 (2.0x, fully explained by one `apply-label` call per task -- no
+  bulk-apply composite exists), 0 validation errors, 0 retries, agent found
+  the seeded label via `vikunja_labels list --search` and applied its
+  existing id to all 3 tasks -- no duplicate label created. Confirms the
+  parked **label-ensure composite** verdict; stays parked.
+- `project-rename-share` -- last run 2026-07-20, **PASS verification, but
+  high friction, REOPENED**: 15 calls vs. optimal 3 (5.0x), 3 validation
+  errors, 3 retries. The agent's first `create-share` call passed `title`
+  (the project-rename field) instead of `name` (the share-label field) --
+  silently accepted, producing an unnamed share instead of an error, i.e.
+  the exact `title`-vs-`name` confusion this scenario was built to probe.
+  Recovering from that then hit a second, previously-unknown bug: repeated
+  `delete-share`/`get-share` calls against the just-created share id
+  returned spurious "not found" (`src/tools/projects/sharing.ts`) before the
+  agent gave up cleaning up and issued a second, correctly-named
+  `create-share` call, leaving the first (unnamed, undeletable-by-agent)
+  share behind for the harness's own project-delete cleanup to reclaim.
+  Reopens the parked **`name` vs `title` ergonomics** queue item with this
+  evidence; the delete-share "not found" bug is a new, separate finding
+  worth its own follow-up item (not fixed here -- out of scope for this
+  evidence-only item).
+
 ### Anatomy of a scenario file
 
 ```jsonc
