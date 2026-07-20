@@ -71,7 +71,6 @@
     "@cfworker/json-schema": "^4.1.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "async-mutex": "^0.5.0",
-    "better-sqlite3": "^12.4.1",
     "dotenv": "^17.2.3",
     "express-rate-limit": "^8.6.0",
     "jsonata": "^2.2.2",
@@ -82,7 +81,6 @@
     "zod": "^3.25.28"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
     "@types/jest": "^30.0.0",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^24.3.0",
