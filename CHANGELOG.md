@@ -14,6 +14,23 @@ Nothing yet.
 
 
 
+
+## [0.5.1] - 2026-07-20
+
+First release published via npm Trusted Publishing (OIDC) from the tag-triggered GitHub Actions workflow — no tokens, with provenance attestation. Docker images now also publish to ghcr.io automatically.
+
+### Fixed
+
+- Bulk-create now serializes its task-creation writes. On SQLite-backed Vikunja, 8 concurrent creates triggered "database is locked" 500s whose retries amplified the contention and tripped the circuit breaker — turning a lock storm into a full endpoint outage (live repro: 2/12, 0/12, 0/12 created across three 12-task calls). Contributed by @angusmaul (#116), independently verified (#119) and live-proven on a real SQLite stack before merge
+
+### Added
+
+- SQLite variant for the local e2e stack (`VIKUNJA_DB=postgres|sqlite`), a DB dimension in the version matrix, and a SQLite-sensitive 12-task bulk-create stress check — the class of bug #116 exposed can no longer hide behind our Postgres-only test stack (#120)
+
+### Chores
+
+- Tag-triggered release workflow installed with OIDC Trusted Publishing; inherited never-run CI workflows removed — exactly one workflow, running only on version tags (#123)
+
 ## [0.5.0] - 2026-07-19
 
 The agent-ergonomics release. A full battle-testing campaign (8 scenarios, REST-verified, run against a real local Vikunja) measured where AI agents actually struggle with the tool surface — every change in this release is backed by that evidence, and two changes we *thought* we needed were dropped because the evidence said otherwise.
