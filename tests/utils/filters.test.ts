@@ -508,6 +508,166 @@ describe('Consolidated Filter Utilities', () => {
     });
   });
 
+  describe('round-trip: parse -> expressionToString (server-boundary re-serialization) -> parse again preserves semantics', () => {
+    // The core regression coverage for the filter-verbatim-passthrough fix:
+    // FilterValidator.validateAndParseFilter now ALWAYS re-serializes a
+    // caller-supplied filter string through expressionToString before it
+    // reaches Vikunja's `filter` query param, rather than passing the raw
+    // string through unmodified. That re-serialization must (a) still be
+    // parseable by parseFilterString - the server's own SQL-like grammar
+    // that Vikunja accepts - and (b) preserve the parsed expression's
+    // semantics (same fields/operators/values), even though the surface
+    // syntax (parens, quoting, array spacing) may differ from the input.
+    const sampleValueFor = (field: FilterField): FilterCondition['value'] => {
+      switch (FIELD_TYPES[field]) {
+        case 'boolean':
+          return true;
+        case 'number':
+          return 3;
+        case 'array':
+          return ['1', '2'];
+        case 'date':
+          return 'now';
+        case 'string':
+        default:
+          return 'sample';
+      }
+    };
+
+    it.each(Object.keys(FIELD_TYPES) as FilterField[])(
+      'round-trips a single-condition %s filter through the API-casing serializer',
+      (field) => {
+        const operator = FIELD_TYPES[field] === 'array' ? 'in' : '=';
+        const value = sampleValueFor(field);
+        const builder = new FilterBuilder().where(field, operator, value);
+        const expression = builder.build();
+
+        const serialized = expressionToString(expression);
+        const reparsed = parseFilterString(serialized);
+
+        expect(reparsed.error).toBeUndefined();
+        expect(reparsed.expression?.groups[0]?.conditions[0]).toEqual(
+          expression.groups[0]?.conditions[0],
+        );
+      },
+    );
+
+    it('round-trips a multi-condition group (adds parens, preserves both conditions)', () => {
+      const expression: FilterExpression = {
+        groups: [
+          {
+            conditions: [
+              { field: 'priority', operator: '>=', value: 4 },
+              { field: 'done', operator: '=', value: false },
+            ],
+            operator: '&&',
+          },
+        ],
+      };
+
+      const serialized = expressionToString(expression);
+      expect(serialized).toBe('(priority >= 4 && done = false)');
+
+      const reparsed = parseFilterString(serialized);
+      expect(reparsed.error).toBeUndefined();
+      expect(reparsed.expression).toEqual(expression);
+    });
+
+    it('round-trips a multi-group expression joined by ||', () => {
+      const expression: FilterExpression = {
+        groups: [
+          {
+            conditions: [
+              { field: 'priority', operator: '>=', value: 4 },
+              { field: 'done', operator: '=', value: false },
+            ],
+            operator: '&&',
+          },
+          {
+            conditions: [{ field: 'assignees', operator: 'in', value: ['1'] }],
+            operator: '&&',
+          },
+        ],
+        operator: '||',
+      };
+
+      const serialized = expressionToString(expression);
+      const reparsed = parseFilterString(serialized);
+      expect(reparsed.error).toBeUndefined();
+      expect(reparsed.expression).toEqual(expression);
+    });
+
+    it('round-trips an "in" condition with a multi-value array (normalized spacing survives re-parse)', () => {
+      const expression: FilterExpression = {
+        groups: [
+          { conditions: [{ field: 'priority', operator: 'in', value: ['3', '4', '5'] }], operator: '&&' },
+        ],
+      };
+
+      const serialized = expressionToString(expression);
+      expect(serialized).toBe('priority in 3, 4, 5');
+
+      const reparsed = parseFilterString(serialized);
+      expect(reparsed.error).toBeUndefined();
+      expect(reparsed.expression?.groups[0]?.conditions[0]?.value).toEqual(['3', '4', '5']);
+    });
+
+    it('round-trips a `like` value containing an embedded double quote (escaping fix)', () => {
+      // Regression test for the conditionToString/conditionToDslString
+      // escaping fix: without escaping, `"${value}"` would emit
+      // `"she said "hi""`, which parseQuotedString re-parses as ending at
+      // the first embedded `"`, truncating the value to `she said `. This
+      // is exactly the "exotic quoting" class of case this item's
+      // instructions called out - properly escaping the value (rather than
+      // falling back to raw passthrough) keeps the fix's "always
+      // re-serialize" behavior total, with no narrow verbatim carve-out
+      // needed.
+      const expression: FilterExpression = {
+        groups: [
+          { conditions: [{ field: 'title', operator: 'like', value: 'she said "hi"' }], operator: '&&' },
+        ],
+      };
+
+      const serialized = expressionToString(expression);
+      expect(serialized).toBe('title like "she said \\"hi\\""');
+
+      const reparsed = parseFilterString(serialized);
+      expect(reparsed.error).toBeUndefined();
+      expect(reparsed.expression?.groups[0]?.conditions[0]?.value).toBe('she said "hi"');
+    });
+
+    it('round-trips a `like` value containing a literal backslash (escaping fix)', () => {
+      const expression: FilterExpression = {
+        groups: [
+          { conditions: [{ field: 'title', operator: 'like', value: 'C:\\temp' }], operator: '&&' },
+        ],
+      };
+
+      const serialized = expressionToString(expression);
+      const reparsed = parseFilterString(serialized);
+      expect(reparsed.error).toBeUndefined();
+      expect(reparsed.expression?.groups[0]?.conditions[0]?.value).toBe('C:\\temp');
+    });
+
+    it('round-trips a single-quoted `like` value the same as a double-quoted one', () => {
+      // parseQuotedString accepts either `"` or `'` as the quote character
+      // (see its doc comment) - without that, a caller writing SQL-style
+      // single-quoted strings (`title like 'urgent'`) would have the
+      // literal quote characters baked into the parsed value, and
+      // re-serializing (which always double-quotes) would then produce a
+      // corrupted `"'urgent'"` instead of `"urgent"`.
+      const single = parseFilterString("title like 'urgent'");
+      const double = parseFilterString('title like "urgent"');
+
+      expect(single.error).toBeUndefined();
+      expect(single.expression?.groups[0]?.conditions[0]?.value).toBe('urgent');
+      expect(single.expression).toEqual(double.expression);
+
+      const serialized = expressionToString(single.expression as FilterExpression);
+      expect(serialized).toBe('title like "urgent"');
+    });
+  });
+
   describe('parseFilterString', () => {
     it('should reject non-string input', () => {
       const result = parseFilterString(123 as unknown as string);

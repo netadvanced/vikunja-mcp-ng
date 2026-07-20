@@ -176,22 +176,45 @@ function skipWhitespace(state: ParseState): void {
 }
 
 /**
- * Parse quoted string value
+ * Parse quoted string value. Accepts either `"` or `'` as the quote
+ * character (SQL-like filter grammars commonly accept both for string
+ * literals) - whichever opens the value is also what closes it; the two
+ * are never mixed within a single value. Recognizing `'` as a quote
+ * character (not just `"`) matters for round-tripping: without it, a
+ * caller-supplied value like `'urgent'` isn't treated as a quoted string at
+ * all (single quotes aren't excluded from `parseUnquotedValue`'s character
+ * class), so the literal quote characters end up baked into the parsed
+ * value - and re-serializing through `conditionToString`/`expressionToString`
+ * (which always emits double-quoted `like` values) would then wrap an
+ * *already-quoted-looking* string in a second layer of quotes
+ * (`"'urgent'"`), corrupting the value instead of just reformatting it.
+ *
+ * Recognizes two escape sequences: `\<quoteChar>` (a literal quote
+ * character of whichever kind opened this value) and `\\` (a literal
+ * backslash) - both are the escape-side counterpart of
+ * `escapeDoubleQuotedValue`'s `\\` -> `\\\\` / `"` -> `\"` substitutions, so
+ * a value round-tripped through `conditionToString`/`conditionToDslString`
+ * and back through this function comes out byte-for-byte identical. Any
+ * other backslash (not followed by the quote char or another backslash) is
+ * kept as a literal backslash.
  */
 function parseQuotedString(state: ParseState): string | null {
-  if (state.position >= state.length || state.input[state.position] !== '"') {
+  const quoteChar = state.input[state.position];
+  if (state.position >= state.length || (quoteChar !== '"' && quoteChar !== "'")) {
     return null;
   }
 
   state.position++; // Skip opening quote
 
   let value = '';
-  while (state.position < state.length && state.input[state.position] !== '"') {
+  while (state.position < state.length && state.input[state.position] !== quoteChar) {
     const char = state.input[state.position];
+    const nextChar = state.position + 1 < state.length ? state.input[state.position + 1] : undefined;
 
-    // Handle escaped quotes
-    if (char === '\\' && state.position + 1 < state.length && state.input[state.position + 1] === '"') {
-      value += '"';
+    // Handle escaped quotes/backslashes (of the same quote character that
+    // opened this value, or a literal backslash).
+    if (char === '\\' && (nextChar === quoteChar || nextChar === '\\')) {
+      value += nextChar;
       state.position += 2;
     } else if (char !== undefined) {
       value += char;
@@ -900,6 +923,20 @@ const FILTER_FIELD_TO_API_FIELD: Partial<Record<FilterField, string>> = {
 };
 
 /**
+ * Escapes backslashes and double quotes in a `like` value before it is
+ * wrapped in double quotes for the server-side `filter` string (or the DSL
+ * string handed back to a caller). Without this, a value that itself
+ * contains a literal `"` (e.g. `she said "hi"`) would produce
+ * `"she said "hi""` - a string `parseQuotedString` re-parses as ending at
+ * the *first* embedded quote, silently truncating the value. Escaping
+ * (`\"`) round-trips correctly because `parseQuotedString` already
+ * recognizes and unescapes `\"` when reading a quoted value back in.
+ */
+function escapeDoubleQuotedValue(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
  * Convert condition to string representation
  */
 export function conditionToString(condition: FilterCondition): string {
@@ -910,7 +947,7 @@ export function conditionToString(condition: FilterCondition): string {
   if (Array.isArray(value)) {
     valueStr = value.join(', ');
   } else if (typeof value === 'string' && operator === 'like') {
-    valueStr = `"${value}"`;
+    valueStr = `"${escapeDoubleQuotedValue(value)}"`;
   } else if (typeof value === 'boolean') {
     valueStr = value.toString();
   } else {
@@ -962,7 +999,7 @@ export function conditionToDslString(condition: FilterCondition): string {
   if (Array.isArray(value)) {
     valueStr = value.join(', ');
   } else if (typeof value === 'string' && operator === 'like') {
-    valueStr = `"${value}"`;
+    valueStr = `"${escapeDoubleQuotedValue(value)}"`;
   } else if (typeof value === 'boolean') {
     valueStr = value.toString();
   } else {
