@@ -87,13 +87,25 @@ describe('FilterValidator.validateAndParseFilter — done folding', () => {
   // logical operator" — this is the exact entry point that error came
   // through. It must now succeed, normalizing to the canonical dueDate
   // field, exactly as if the caller had spelled it correctly the first time.
+  //
+  // filterString is now the re-serialized expression (expressionToString),
+  // not the caller's raw string — see the filter-verbatim-passthrough fix
+  // in FilterValidator.validateAndParseFilter. Two things fall out of that
+  // here: (1) `due_date` round-trips back to `due_date` (not `dueDate`)
+  // because expressionToString applies FILTER_FIELD_TO_API_FIELD, which
+  // maps the canonical camelCase `dueDate` back to the API's snake_case
+  // `due_date` — this was the whole point of closing the passthrough gap:
+  // an untranslated camelCase field name would have reached the server
+  // unrecognized. (2) the single group's two conditions get wrapped in
+  // parens by groupToString, which the caller didn't write but which is
+  // semantically identical.
   it('accepts a snake_case field alias (due_date) in the filter string, normalizing to dueDate', async () => {
     const result = await FilterValidator.validateAndParseFilter(
       { filter: 'priority >= 4 && due_date < now+14d' } as TaskListingArgs,
       storage,
     );
 
-    expect(result.filterString).toBe('priority >= 4 && due_date < now+14d');
+    expect(result.filterString).toBe('(priority >= 4 && due_date < now+14d)');
     expect(result.filterExpression).not.toBeNull();
     expect(result.filterExpression?.groups[0]?.conditions).toEqual([
       { field: 'priority', operator: '>=', value: 4 },

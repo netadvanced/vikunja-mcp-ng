@@ -298,12 +298,35 @@ The Vikunja API supports SQL-like filter syntax as documented. Filters should be
 - In operator: `IN`, `NOT IN`
 
 **Implementation:**
-- Filters are passed directly to the API via the `filter` parameter
-- No conversion or preprocessing is performed on filter strings
-- The API handles all filter parsing and validation
+- Filters are passed to the API via the `filter` parameter
+- **Update (2026-07-20):** the caller-supplied filter string is no longer
+  passed through verbatim. `FilterValidator.validateAndParseFilter` parses
+  every filter string with `parseFilterString` and always re-serializes the
+  resulting expression through `expressionToString` before it reaches the
+  API - this is what translates the filter DSL's canonical camelCase field
+  names (`dueDate`, `percentDone`, `startDate`, `endDate`, `doneAt`,
+  `project`) to the API's snake_case Task JSON fields (`due_date`,
+  `percent_done`, `start_date`, `end_date`, `done_at`, `project_id`) via
+  `FILTER_FIELD_TO_API_FIELD`. Previously this translation only happened
+  when the `done` argument was also supplied (folded into the same
+  expression); a bare camelCase filter string with no `done` argument
+  reached the server untranslated, which the server either rejected
+  (silently tripping `HybridFilteringStrategy`'s client-side fallback) or
+  ignored outright.
+- Re-serializing can change the filter string's surface syntax versus what
+  the caller wrote - it always parenthesizes any group with more than one
+  condition, always double-quotes `like` values (accepting single- or
+  double-quoted input), and normalizes `in`/`not in` array spacing
+  (`1,2` -> `1, 2`) - but never its semantics. See
+  `tests/tools/tasks-filter-sql-syntax.test.ts` and the round-trip property
+  tests in `tests/utils/filters.test.ts`.
+- The API still handles all filter parsing and validation of the
+  (now-translated) string; this MCP server does not evaluate filters beyond
+  what's needed to parse and re-serialize them, except as an explicit
+  client-side fallback when server-side filtering fails.
 
 ## Related Issues
 
 ---
 
-*Last updated: 2025-05-26 - Added filter implementation notes*
+*Last updated: 2026-07-20 - Filter strings are now always re-serialized through the field-name translation before reaching the API (closes the raw-filter-passthrough gap)*

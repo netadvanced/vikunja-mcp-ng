@@ -178,9 +178,18 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
   });
 
   describe('Filter string with special characters', () => {
-    it('should pass simple filter with parentheses directly to API', async () => {
-      // Simple filter with parentheses
+    it('should re-serialize a redundantly-parenthesized single-condition filter before sending it to the API', async () => {
+      // Simple filter with parentheses the user didn't need to write - a
+      // single-condition group never needs wrapping parens.
       const filter = '(priority >= 4)';
+      // FilterValidator now always re-serializes the parsed expression
+      // through expressionToString (the server-boundary, snake_case-field
+      // translation) instead of passing the caller's raw string verbatim -
+      // see FilterValidator.validateAndParseFilter. groupToString only adds
+      // parens around a group with more than one condition, so the
+      // redundant parens the caller wrote are dropped; the semantics
+      // (a single `priority >= 4` condition) are unchanged.
+      const expectedFilter = 'priority >= 4';
 
       // Mock successful response - the API should handle the filter correctly
       mockRestTasksSuccess([mockHighPriorityTask]);
@@ -188,14 +197,14 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       const result = await callTool('list', { filter });
 
       // Cross-project listing goes straight to the direct-REST GET /tasks
-      // endpoint, with the raw filter string passed through as a query param.
+      // endpoint, with the re-serialized filter string passed as a query param.
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const [url] = mockFetch.mock.calls[0] as [string];
       expect(url).toBe(
         expectedTasksUrl([
           ['page', '1'],
           ['per_page', '1000'],
-          ['filter', filter],
+          ['filter', expectedFilter],
         ]),
       );
       expect(mockClient.tasks.getAllTasks).not.toHaveBeenCalled();
@@ -326,6 +335,65 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
     });
   });
 
+  describe('camelCase field-name translation (filter-verbatim-passthrough fix)', () => {
+    // Regression test for the fix itself: a raw filter string using the
+    // filter DSL's canonical camelCase field name (`dueDate`) must reach
+    // Vikunja translated to the API's snake_case Task field (`due_date`) -
+    // previously (when `args.done` was undefined) the raw string reached
+    // the server untranslated, either erroring server-side (silently
+    // tripping the hybrid client-side fallback) or being ignored outright.
+    it('translates a camelCase field to snake_case in the outgoing filter, with no client-side fallback', async () => {
+      const filter = 'dueDate < now+7d';
+
+      mockRestTasksSuccess([mockHighPriorityTask]);
+
+      const result = await callTool('list', { filter });
+
+      // Exactly one call: server-side filtering succeeds outright, no
+      // fallback to per-project aggregation / client-side filtering.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe(
+        expectedTasksUrl([
+          ['page', '1'],
+          ['per_page', '1000'],
+          ['filter', 'due_date < now+7d'],
+        ]),
+      );
+
+      // The filtering-accounting metadata reports this honestly as
+      // server-side-used, not a client-side fallback - see
+      // RestCrossProjectFilteringStrategy.execute's metadata and
+      // src/tools/tasks/index.ts's filteringMessage derivation.
+      const markdown = result.content[0].text;
+      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('(filtered server-side)');
+      expect(markdown).not.toContain('server-side fallback');
+    });
+
+    it('translates a camelCase field combined with other conditions, still with no fallback', async () => {
+      const filter = 'priority >= 4 && dueDate < now+7d';
+
+      mockRestTasksSuccess([mockHighPriorityTask]);
+
+      const result = await callTool('list', { filter });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe(
+        expectedTasksUrl([
+          ['page', '1'],
+          ['per_page', '1000'],
+          ['filter', '(priority >= 4 && due_date < now+7d)'],
+        ]),
+      );
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('(filtered server-side)');
+    });
+  });
+
   describe('Filter operators', () => {
     const testCases = [
       {
@@ -355,30 +423,46 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       },
       {
         filter: "title like 'urgent'",
+        // FilterValidator re-serializes through expressionToString, which
+        // always double-quotes `like` values regardless of the caller's own
+        // quote style (single quotes here) - this is the server-boundary
+        // quoting Vikunja's filter grammar actually expects; the value
+        // itself (`urgent`) is unchanged. (parseQuotedString now accepts
+        // `'` as a quote character too, so the single-quoted value round-
+        // trips as the string `urgent`, not the literal 4 characters
+        // `'urgent'` - see parseQuotedString's doc comment.)
+        expectedFilter: 'title like "urgent"',
         description: 'like operator',
         expected: { page: 1, per_page: 1000 },
       },
       {
         filter: 'priority in 3,4,5',
+        // expressionToString normalizes `in`/`not in` array spacing to
+        // `value, value, ...` - the values themselves are unchanged.
+        expectedFilter: 'priority in 3, 4, 5',
         description: 'in operator',
         expected: { page: 1, per_page: 1000 },
       },
     ];
 
-    testCases.forEach(({ filter, description, expected }) => {
+    testCases.forEach(({ filter, expectedFilter, description, expected }) => {
       it(`should handle ${description}`, async () => {
         mockRestTasksSuccess([mockHighPriorityTask]);
 
         const result = await callTool('list', { filter });
 
         // Cross-project listing goes straight to the direct-REST GET /tasks
-        // endpoint, with the raw filter string passed through as a query param.
+        // endpoint. FilterValidator re-serializes the parsed filter through
+        // expressionToString before it reaches the API (see
+        // FilterValidator.validateAndParseFilter) rather than passing the
+        // caller's raw string verbatim, so the query param may differ
+        // syntactically (though never semantically) from `filter`.
         const [url] = mockFetch.mock.calls[0] as [string];
         expect(url).toBe(
           expectedTasksUrl([
             ['page', String(expected.page)],
             ['per_page', String(expected.per_page)],
-            ['filter', filter],
+            ['filter', expectedFilter ?? filter],
           ]),
         );
 
@@ -391,28 +475,53 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
   describe('Filter logical operators', () => {
     const testCases = [
-      { filter: 'priority >= 4 && done = false', description: 'AND operator' },
-      { filter: 'priority >= 5 || done = true', description: 'OR operator' },
       {
+        filter: 'priority >= 4 && done = false',
+        // expressionToString's groupToString parenthesizes any group with
+        // more than one condition (here, both conditions share a single
+        // implicit group joined by `&&`) - matching the parenthesized form
+        // Vikunja's own filter grammar examples use for multi-condition
+        // groups (see docs/API_NOTES.md), and identical in meaning to the
+        // caller's unparenthesized original.
+        expectedFilter: '(priority >= 4 && done = false)',
+        description: 'AND operator',
+      },
+      {
+        filter: 'priority >= 5 || done = true',
+        expectedFilter: '(priority >= 5 || done = true)',
+        description: 'OR operator',
+      },
+      {
+        // Already fully parenthesized by the caller in a way that survives
+        // re-serialization unchanged: two separate groups (`(priority >= 4
+        // && done = false)` and `assignees in 1`) joined by the top-level
+        // `||` - the first group has 2 conditions so groupToString adds
+        // parens (already present); the second has exactly 1 condition so
+        // groupToString adds none (none were present).
         filter: '(priority >= 4 && done = false) || assignees in 1',
         description: 'combined operators with parentheses',
       },
     ];
 
-    testCases.forEach(({ filter, description }) => {
+    testCases.forEach(({ filter, description, ...rest }) => {
+      const expectedFilter = 'expectedFilter' in rest ? rest.expectedFilter : filter;
       it(`should handle ${description}`, async () => {
         mockRestTasksSuccess([mockHighPriorityTask]);
 
         const result = await callTool('list', { filter });
 
         // Cross-project listing goes straight to the direct-REST GET /tasks
-        // endpoint, with the raw filter string passed through as a query param.
+        // endpoint. FilterValidator re-serializes the parsed filter through
+        // expressionToString before it reaches the API (see
+        // FilterValidator.validateAndParseFilter) rather than passing the
+        // caller's raw string verbatim, so the query param may differ
+        // syntactically (though never semantically) from `filter`.
         const [url] = mockFetch.mock.calls[0] as [string];
         expect(url).toBe(
           expectedTasksUrl([
             ['page', '1'],
             ['per_page', '1000'],
-            ['filter', filter],
+            ['filter', expectedFilter],
           ]),
         );
 
