@@ -222,15 +222,20 @@ How this project tracks new upstream Vikunja releases, proven end-to-end alignin
 > milestone (battle-hardening + v2 API fast-paths). Use sparingly and only when nothing a caller
 > relies on changes; the default remains a minor.
 
-**Compat tag semantics.** Every release's Docker image carries the aligned Vikunja version as a
-suffix on its own version, never as a standalone tag: `X.Y.Z-vikunja<A.B.C>` (e.g. `0.5.1` aligned
-to `2.4.0` → `:0.5.1-vikunja2.4.0`), the same convention as `node:20-alpine`. This is deliberate:
-an earlier scheme published a standalone floating `:vikunja-<ver>` tag that re-pointed at whichever
-release was newest for a server version — exactly the ambiguity this scheme exists to avoid.
-`scripts/lib/vikunja-compat-version.sh` is the single source of truth, deriving the compat version
-from the vendored spec's `info.version` field rather than anyone hand-typing it; it also cross-
-checks against the `e2e` pin and warns (doesn't fail) on drift. The image also carries this as OCI
-labels (`org.opencontainers.image.version`, `io.vikunja.compat`) so alignment survives a retag.
+**Compat tag semantics.** Every release's Docker image carries a `-vikunja<A.B.C>` suffix on its own
+version, never a standalone tag: `X.Y.Z-vikunja<A.B.C>` (e.g. `0.5.2` → `:0.5.2-vikunja2.4.0`), the
+same convention as `node:20-alpine`. This is deliberate: an earlier scheme published a standalone
+floating `:vikunja-<ver>` tag that re-pointed at whichever release was newest for a server version —
+exactly the ambiguity this scheme exists to avoid. **The image is tagged once per Vikunja version
+the release's matrix actually validated** — currently both the aligned version and the min-supported
+floor — so you get `:X.Y.Z-vikunja<aligned>` and `:X.Y.Z-vikunja<floor>` as aliases on the *same
+image digest* (the image is server-version-agnostic; the suffixes advertise the tested range, not
+separate builds). `scripts/lib/vikunja-compat-version.sh` is the single source of truth for both:
+the aligned version is derived from the vendored spec's `info.version`, the floor from its
+`MIN_SUPPORTED_VIKUNJA` constant (`--min-supported`); it also cross-checks the aligned value against
+the `e2e` pin and warns (doesn't fail) on drift. The image also carries these as OCI labels
+(`org.opencontainers.image.version`, `io.vikunja.compat`, `io.vikunja.min-supported`) so the tested
+range survives a retag.
 
 **Minimum-supported vs. aligned** — the project supports a floor version in addition to the
 current aligned/default version (currently floor `2.3.0`, aligned `2.4.0`); see
