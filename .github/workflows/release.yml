@@ -101,7 +101,15 @@ jobs:
         # docs/RELEASING.md "Vikunja compatibility".
         run: echo "value=$(scripts/lib/vikunja-compat-version.sh)" >> "$GITHUB_OUTPUT"
 
+      - name: Determine minimum-supported Vikunja version
+        id: vikunja-min
+        # The v1-floor the release's matrix also validates this image against — same source of
+        # truth as the aligned version (scripts/lib/vikunja-compat-version.sh --min-supported).
+        # The image is tagged with a -vikunja<ver> alias for both, all on one digest.
+        run: echo "value=$(scripts/lib/vikunja-compat-version.sh --min-supported)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -110,9 +118,11 @@ jobs:
             ghcr.io/netadvanced/vikunja-mcp-ng:${{ steps.version.outputs.value }}
             ghcr.io/netadvanced/vikunja-mcp-ng:latest
             ghcr.io/netadvanced/vikunja-mcp-ng:${{ steps.version.outputs.value }}-vikunja${{ steps.vikunja-compat.outputs.value }}
+            ghcr.io/netadvanced/vikunja-mcp-ng:${{ steps.version.outputs.value }}-vikunja${{ steps.vikunja-min.outputs.value }}
           labels: |
             org.opencontainers.image.version=${{ steps.version.outputs.value }}
             io.vikunja.compat=${{ steps.vikunja-compat.outputs.value }}
+            io.vikunja.min-supported=${{ steps.vikunja-min.outputs.value }}
 
       - name: Extract changelog section for this version
         id: changelog
@@ -131,6 +141,39 @@ jobs:
             END_LINE="$(wc -l < CHANGELOG.md | tr -d ' ')"
           fi
           sed -n "${START_LINE},${END_LINE}p" CHANGELOG.md > release-notes.md
+          cat release-notes.md
+
+      - name: Append artifacts footer to release notes
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          COMPAT: ${{ steps.vikunja-compat.outputs.value }}
+          MIN: ${{ steps.vikunja-min.outputs.value }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          IMG="ghcr.io/netadvanced/vikunja-mcp-ng"
+          # All tags come from a single build, so they share one digest today. This table lists each
+          # alias with its digest so that if a version ever gets its own build (distinct sha), the
+          # notes show it truthfully rather than implying they're all the same image.
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "### Artifacts"
+            echo ""
+            echo "**npm:** \`npm install -g vikunja-mcp-ng@${VERSION}\` — published with OIDC provenance."
+            echo ""
+            echo "**Docker** — \`${IMG}\` (all tags on one digest are aliases of the same image):"
+            echo ""
+            echo "| Tag | Digest |"
+            echo "|---|---|"
+            echo "| \`${VERSION}\` | \`${DIGEST}\` |"
+            echo "| \`latest\` | \`${DIGEST}\` |"
+            echo "| \`${VERSION}-vikunja${COMPAT}\` (aligned) | \`${DIGEST}\` |"
+            if [[ "${MIN}" != "${COMPAT}" ]]; then
+              echo "| \`${VERSION}-vikunja${MIN}\` (min-supported) | \`${DIGEST}\` |"
+            fi
+          } >> release-notes.md
           cat release-notes.md
 
       - name: Create GitHub release
