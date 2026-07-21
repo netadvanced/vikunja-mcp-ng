@@ -4,17 +4,22 @@ This is the ruleset for cutting a release of `vikunja-mcp-ng`. It assumes you're
 with git but haven't necessarily tagged or published an npm package before — every step is
 spelled out.
 
-Companion reading: [docs/ROADMAP.md](ROADMAP.md) for where the project stands, and
-[CHANGELOG.md](../CHANGELOG.md) for what's already shipped.
+Companion reading: [docs/ROADMAP.md](ROADMAP.md) for where the project stands,
+[CHANGELOG.md](../CHANGELOG.md) for what's already shipped,
+[docs/LOCAL-TESTING.md](LOCAL-TESTING.md) for the version-matrix/e2e harnesses referenced in the
+pre-tag checklist (§3, Step 5), and [docs/BATTLE-TESTING.md](BATTLE-TESTING.md) for the agent
+battle-testing harness also referenced there.
 
 ## The short version
 
 Releases are **deliberate, batch-time acts**, not something that happens automatically on every
-merged PR. Someone decides "it's time to cut a release," picks patch or minor, and runs three
-scripts. Version numbers change in exactly one kind of PR: a release PR. Nowhere else.
+merged PR. Someone decides "it's time to cut a release," picks patch or minor, runs
+`release:prepare`, and — after the PR merges and the **mandatory pre-tag checklist** (§3, Step 5)
+is green — runs `release:tag`, which triggers the rest. Version numbers change in exactly one kind
+of PR: a release PR. Nowhere else.
 
 ```
-decide scope  →  release:prepare  →  review PR  →  merge  →  release:tag  →  release:publish
+decide scope → release:prepare → review PR → merge → pre-tag checklist → release:tag → (workflow publishes)
 ```
 
 ## 1. SemVer policy (pre-1.0)
@@ -47,12 +52,12 @@ message, an author, and a date, and can be verified independently of the commit 
 - No release branches. `main` is the only place work lands and the only place tags are cut from.
 - The tag's annotation message is the changelog section for that version — `git show v0.3.1` shows
   you exactly what shipped, no separate lookup needed.
-- Pushing a tag matching `v*` is what (eventually) triggers the release workflow — see §6.
+- Pushing a tag matching `v*` is what triggers the release workflow immediately — see §6.
 
 ## 3. Release checklist
 
 Run through this top to bottom. Steps 1–3 happen on a branch and go through a normal PR review.
-Steps 4–6 happen on `main` after that PR is merged.
+Steps 4–7 happen on `main` after that PR is merged.
 
 ### Step 1 — Decide scope
 
@@ -98,7 +103,68 @@ gh pr create --repo netadvanced/vikunja-mcp-ng --base main \
 Ordinary PR review and merge, same gates as any other PR. Nothing special except that this PR is
 the *only* kind allowed to touch the version field.
 
-### Step 5 — Run `release:tag` (on `main`, after merge)
+### Step 5 — Pre-tag verification checklist (mandatory)
+
+**Do not run `release:tag` (Step 6) until every box below is checked.** Pushing a `vX.Y.Z` tag
+immediately triggers the live, OIDC-authenticated publish workflow (§6) — there is no dry-run and
+no "undo" for an npm publish. This checklist exists because the release-verification steps below
+were, until now, only ever *practiced*, never written down; treat it as the actual gate, not a
+suggestion.
+
+- [ ] **Full local gates, clean.** `npm run lint && npm run typecheck && npm run test:coverage` —
+      all three green on the exact commit you're about to tag (this should already be true, since
+      the release PR that merged in Step 4 required it, but re-confirm on `main` after the merge,
+      not just on the branch before it).
+- [ ] **Version-matrix regression, both DBs, on the version this release aligns to.** Run
+      `VIKUNJA_VERSION=<aligned> npm run test:matrix` for **both** `VIKUNJA_DB=postgres` and
+      `VIKUNJA_DB=sqlite` against the Vikunja version this release is aligned to (§7) — see
+      [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-matrix-testing-npm-run-testmatrix) for what
+      the matrix runner does and how to read a verdict file. `<aligned>` is whatever
+      `docker/e2e/docker-compose.yml`'s default pin currently is (see LOCAL-TESTING.md's "Version
+      pinning and refresh"); omit `VIKUNJA_VERSION` to use that default explicitly.
+  - [ ] `VIKUNJA_VERSION=<aligned> VIKUNJA_DB=postgres npm run test:matrix` — PASS.
+  - [ ] `VIKUNJA_VERSION=<aligned> VIKUNJA_DB=sqlite npm run test:matrix` — PASS.
+  - [ ] **Minimum-supported-version floor regression:** `VIKUNJA_VERSION=2.3.0 npm run test:matrix`
+        (postgres is sufficient for the floor check unless the release touches DB-concurrency
+        behavior, in which case run both backends) — this is the documented minimum supported
+        Vikunja version (currently `2.3.0`, see
+        [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-pinning-and-refresh)), and it is
+        deliberately *not* the aligned/default version, so it never gets exercised by accident.
+        A `FAIL` here needs the same triage as any other matrix failure (script staleness vs. real
+        tool bug vs. new server-drift) before proceeding.
+- [ ] **Live MCP harness expectations, read honestly, not assumed.** The matrix run above already
+      executes both `npm run test:mcp` and `npm run test:e2e:mcp` per version/DB combination, but
+      confirm you're reading the results against the *current* tolerances rather than stale
+      memory of a previous release: open `scripts/mcp-e2e.ts` and check what is currently
+      version-gated (as of this writing, one documented tolerance —
+      `GET /tasks/{id}/assignees` 500s unconditionally below Vikunja 2.4.0, tolerated only on
+      servers `< 2.4.0` and a hard failure on 2.4.0+; see `driftTolerated()` /
+      `versionLessThan()` in that file and
+      [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#true-mcp-layer-e2e-harness-npm-run-teste2emcp)'s
+      "Findings categorization" section). Any `✗` (hard failure) blocks the release; any `⚠
+      server-drift` must match a tolerance actually present in `scripts/mcp-e2e.ts` today, not
+      one you remember from an earlier version of this checklist — if the script's tolerances
+      have changed since this paragraph was last edited, trust the script and update this
+      paragraph in the same PR.
+- [ ] **Battle smoke (cheapest scenario, manual, deliberate).** Run at least
+      `npm run battle -- --scenario single-task-smoke --model haiku` (or the sonnet default) per
+      [docs/BATTLE-TESTING.md](BATTLE-TESTING.md) — this is the harness that measures tool-surface
+      ergonomics with a real agent, not just server correctness. **This costs real money and is
+      never automated** (see BATTLE-TESTING.md's cost warning); a single cheap scenario is the
+      floor for every release. If this release changes tool descriptions, argument shapes, error
+      messages, or adds/removes subcommands, run the **full scenario library**
+      (`npm run battle -- --all`) instead of just the smoke scenario, and read the friction report
+      for regressions before tagging.
+- [ ] **Changelog curation review, final pass.** Re-read the `CHANGELOG.md` section for this
+      version one more time on `main` post-merge (not just during Step 3's PR review) — this is
+      the text that becomes the annotated tag's message (§2) and the GitHub release notes (Step 7).
+      Confirm it accurately reflects what's actually in this commit, is in the right Keep a
+      Changelog categories, and (per §7) leads with the Vikunja alignment line if this release
+      changes the base Vikunja version.
+
+Only once every box above is checked, proceed to Step 6.
+
+### Step 6 — Run `release:tag` (on `main`, after merge)
 
 ```bash
 git checkout main && git pull
@@ -107,57 +173,71 @@ npm run release:tag
 
 This script (`scripts/release-tag.sh`) reads the version out of `package.json`, verifies no tag
 `vX.Y.Z` already exists, creates an **annotated** tag on `HEAD` whose message is the matching
-`CHANGELOG.md` section, and pushes the tag.
+`CHANGELOG.md` section, and pushes the tag. **Pushing this tag immediately triggers the live
+release workflow** (§6) — this is the point of no return for this release; it's why Step 5 comes
+first.
 
-### Step 6 — Run `release:publish` (or let the workflow do it)
+### Step 7 — the tag-triggered workflow does the rest (manual fallback: `release:publish`)
 
-Today, run it locally against the tagged commit:
+Pushing the tag in Step 6 is what actually kicks off the release: `.github/workflows/release.yml`
+triggers on any `v*` tag push and, on the tagged commit, re-runs the full gates then publishes to
+npm via **OIDC trusted publishing** (no tokens or repository secrets — npmjs.com is configured to
+trust this exact repo + workflow filename, and npm's provenance attestation is generated
+automatically), builds and pushes the Docker image (`ghcr.io/netadvanced/vikunja-mcp-ng:X.Y.Z`,
+`:latest`, and the `:X.Y.Z-vikunja<A.B.C>` compatibility tag, §7), and runs `gh release create
+vX.Y.Z` using the `CHANGELOG.md` section as the release notes. This is the normal path — nothing
+further to run by hand once the tag lands, other than watching the workflow run go green.
+
+`scripts/release-publish.sh` (`npm run release:publish`) is the **documented manual fallback**,
+kept fully equivalent (minus provenance) for the case where Actions is unavailable:
 
 ```bash
 git checkout vX.Y.Z   # or just stay on main right after tagging
 npm run release:publish
 ```
 
-This script (`scripts/release-publish.sh`) re-runs the full gates, then:
-
-- `npm publish --access public`
-- builds and tags the Docker image `ghcr.io/netadvanced/vikunja-mcp-ng:X.Y.Z`, `:latest`, and a
-  `:X.Y.Z-vikunja<A.B.C>` compatibility tag (push only with `--push`) — see §7 below
-- `gh release create vX.Y.Z` using the changelog section as the release notes
-
-The tag-triggered workflow is installed as
-`.github/workflows/release.yml` (see §6), pushing the tag in step 5 does this automatically and
-step 6 becomes a manual fallback rather than the normal path.
+This script re-runs the full gates, then does the same three things by hand: `npm publish
+--access public`, build-and-tag the Docker image (push only with `--push`), and `gh release
+create vX.Y.Z`.
 
 ## 4. What "1.0.0" means
 
 `1.0.0` is deferred until the project is declared stable — that's an explicit owner decision, not
 a metric threshold crossed automatically. At minimum it implies: the tool surface (subcommand
-shapes, config schema) is not expected to change without a deprecation window, GitHub Actions CI
-is live (currently disabled repo-wide, tracked in `docs/ROADMAP.md` §3b), and the owner says so in
-a release PR. Until then, every `0.x` release may contain breaking changes in a minor bump per §1
-— that's the pre-1.0 deal.
+shapes, config schema) is not expected to change without a deprecation window, general per-PR
+GitHub Actions CI is live (today only the tag-triggered release workflow runs Actions, §6; regular
+PR/branch CI remains off by explicit owner decision, tracked in `docs/ROADMAP.md` §3b), and the
+owner says so in a release PR. Until then, every `0.x` release may contain breaking changes in a
+minor bump per §1 — that's the pre-1.0 deal.
 
 ## 5. Who does what
 
 - **Owner**: decides *when* to release and *what scope* (step 1). Reviews and curates the
-  changelog (step 3). Approves and merges the release PR (step 4). Decides when to install the
-  GitHub Actions workflow (§6).
-- **Agents / anyone with repo access**: can execute the mechanical steps (2, 5, 6) once the owner
-  has signed off on scope — these are scripts, not judgment calls. An agent should still surface
-  the generated changelog for owner review rather than merging it unseen.
+  changelog (step 3). Approves and merges the release PR (step 4). Decided to install the
+  tag-triggered GitHub Actions workflow (§6, 2026-07-20) and owns any further change to it.
+- **Agents / anyone with repo access**: can execute the mechanical steps (2, 6, 7) and run the
+  verification checklist (5) once the owner has signed off on scope — these are scripts and
+  documented checks, not judgment calls. An agent should still surface the generated changelog for
+  owner review rather than merging it unseen, and should report the checklist results (matrix
+  verdicts, harness output, battle-smoke result) rather than just asserting "done".
 
 ## 6. Automation status
 
-- **Today**: three local scripts (`scripts/release-*.sh`) that a human or agent runs by hand, in
-  order. No CI dependency.
+- **Local scripts**: `scripts/release-{prepare,tag,publish}.sh` — usable standalone at any time,
+  no CI dependency. `release:publish` in particular is the documented manual fallback for Step 7
+  if Actions is ever unavailable (see below).
 - **Installed and active**: `.github/workflows/release.yml` — a tag-triggered
-  (`on: push: tags: ['v*']`) GitHub Actions workflow that does steps 5–6's publish work
-  automatically once a tag is pushed. It is deliberately kept as an example file rather than a
-  live workflow — installing it under `.github/workflows/` is the owner's explicit act, done when
-  ready (see the header comment in that file for the secrets it needs). Everyday PRs are
-  unaffected either way: the workflow only ever triggers on a `v*` tag push, never on branches or
-  PRs.
+  (`on: push: tags: ['v*']`) GitHub Actions workflow, installed 2026-07-20 by explicit owner
+  decision (see the header comment in that file). It is the **only** Actions workflow in this
+  repository — the previously-inherited `ci.yml`/`security.yml` were removed when it was
+  installed, so "only releases run CI" is enforced structurally, not just by convention. It runs
+  the full gate suite, then does Step 7's publish work automatically: `npm publish` via OIDC
+  trusted publishing (no npm token, no repository secret — npmjs.com trusts this exact
+  repo + workflow filename, and provenance attestation is generated automatically), the Docker
+  build/push (using the built-in `GITHUB_TOKEN` for GHCR), and `gh release create`. Everyday PRs
+  and branch pushes are unaffected: the workflow only ever triggers on a `v*` tag push. General
+  per-PR CI remains off by separate, still-standing owner decision — see `docs/ROADMAP.md` §3b —
+  this workflow's install did not change that.
 
 ## 7. Vikunja compatibility
 
