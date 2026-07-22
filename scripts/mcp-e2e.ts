@@ -704,9 +704,61 @@ async function testTasks(h: McpHarness, ctx: FlowContext): Promise<void> {
     id: ctx.taskId,
     title: updatedTitle,
     priority: 5,
+    dueDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
   });
   if (assertOk('update task', update)) {
     assertStep('update task reflects new title', update.text.includes(updatedTitle), update.text.slice(0, 400));
+  }
+
+  // Filter-syntax discoverability check (netadvanced/vikunja-mcp#28, item
+  // filter-discoverability): exercises the exact priority+due-date pattern
+  // documented in the vikunja_tasks `filter` param and vikunja_filters tool
+  // descriptions ("priority >= 4 && dueDate < now+7d") end-to-end against a
+  // real task (priority 5, due in 3 days), scoped to this project so it is
+  // unaffected by other tasks accumulated in the e2e account.
+  const priorityDueFilter = await h.call('vikunja_tasks', {
+    subcommand: 'list',
+    projectId: ctx.projectId,
+    filter: 'priority >= 4 && dueDate < now+7d',
+  });
+  if (assertOk('list tasks (priority + due-date filter)', priorityDueFilter)) {
+    assertStep(
+      'priority+due-date filter matches the high-priority, soon-due task',
+      extractAllIds(priorityDueFilter.text).includes(ctx.taskId),
+      priorityDueFilter.text.slice(0, 400),
+    );
+  }
+
+  // Same filter with snake_case field alias (due_date) - confirms the
+  // documented alias normalization (src/utils/filters.ts FILTER_FIELD_ALIASES)
+  // is live end-to-end, not just at the unit-test level.
+  const snakeCaseFilter = await h.call('vikunja_tasks', {
+    subcommand: 'list',
+    projectId: ctx.projectId,
+    filter: 'priority >= 4 && due_date < now+7d',
+  });
+  if (assertOk('list tasks (snake_case due_date alias filter)', snakeCaseFilter)) {
+    assertStep(
+      'snake_case due_date alias matches the same task as camelCase dueDate',
+      extractAllIds(snakeCaseFilter.text).includes(ctx.taskId),
+      snakeCaseFilter.text.slice(0, 400),
+    );
+  }
+
+  // Negative control: a priority filter that should exclude this task
+  // (priority 5 is not < 2) confirms the filter is actually being applied
+  // rather than the endpoint silently ignoring it and returning everything.
+  const excludingFilter = await h.call('vikunja_tasks', {
+    subcommand: 'list',
+    projectId: ctx.projectId,
+    filter: 'priority < 2',
+  });
+  if (assertOk('list tasks (excluding priority filter)', excludingFilter)) {
+    assertStep(
+      'low-priority filter excludes the priority-5 task',
+      !extractAllIds(excludingFilter.text).includes(ctx.taskId),
+      excludingFilter.text.slice(0, 400),
+    );
   }
 
   const projectList = await h.call('vikunja_tasks', { subcommand: 'list', projectId: ctx.projectId });

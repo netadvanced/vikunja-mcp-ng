@@ -216,8 +216,14 @@ export function registerTasksTool(
         .string()
         .optional()
         .describe(
-          'Filter query string (e.g. "priority >= 4 && dueDate < now+14d"). Fields use ' +
-            'camelCase (dueDate, percentDone, startDate, endDate, doneAt, project, plus ' +
+          'Filter query string. Operators: = != > >= < <= like in "not in". Combine ' +
+            'conditions with && (AND) or || (OR); group with parentheses. Examples: ' +
+            '"priority >= 4" (high priority, priority is 0-5, so >= 4 means urgent/DO NOW); ' +
+            '"dueDate < now+14d" (due within 14 days); "priority >= 4 && dueDate < now+7d" ' +
+            '(high priority AND due soon); "labels in \'bug\', \'urgent\'" (has either label); ' +
+            '"done = false && dueDate <= now" (overdue, not done). Date literals: now, ' +
+            'now+14d, now-1w, or ISO 8601 (2024-12-31). Fields use camelCase (dueDate, ' +
+            'percentDone, startDate, endDate, doneAt, project, plus ' +
             'done/priority/assignees/labels/created/updated/title/description); ' +
             'snake_case aliases (due_date, percent_done, etc.) are also accepted and ' +
             'normalized automatically. Build one with vikunja_filters build/validate.',
