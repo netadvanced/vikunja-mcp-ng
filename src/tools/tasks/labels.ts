@@ -5,7 +5,7 @@
 import type { MinimalTask } from '../../types';
 import { MCPError, ErrorCode } from '../../types';
 import type { AuthManager } from '../../auth/AuthManager';
-import { isAuthenticationError } from '../../utils/auth-error-handler';
+import { extractHttpStatus } from '../../utils/http-error-detail';
 import { withRetry, RETRY_CONFIG } from '../../utils/retry';
 import { vikunjaRestRequest } from '../../utils/vikunja-rest';
 import { getTaskViaRest } from '../../utils/task-rest-transport';
@@ -102,13 +102,15 @@ export async function applyLabels(
             }),
           {
             ...RETRY_CONFIG.AUTH_ERRORS,
-            shouldRetry: (error: unknown) => isAuthenticationError(error),
+            // Only a genuine 401 session failure is worth retrying; a resource
+            // 403 will not change on retry and must not be masked as auth.
+            shouldRetry: (error: unknown) => extractHttpStatus(error) === 401,
           },
         );
         newlyApplied.push(labelId);
       } catch (labelError) {
-        // Check if it's an auth error after retries
-        if (isAuthenticationError(labelError)) {
+        // A genuine session failure after retries — surface it as auth.
+        if (extractHttpStatus(labelError) === 401) {
           throw new MCPError(
             ErrorCode.API_ERROR,
             `Failed to apply label to task (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`,
@@ -197,40 +199,108 @@ export async function removeLabels(
     args.labels.forEach((id) => validateId(id, 'label ID'));
 
     const taskId = args.id;
-    const labelIds = args.labels;
+    // Deduplicate so a repeated id is not removed or counted twice.
+    const labelIds = [...new Set(args.labels)];
 
-    // Remove labels from the task with retry logic. DELETE
-    // /tasks/{task}/labels/{label} per the OpenAPI spec — no body.
+    // Remove each label. DELETE /tasks/{task}/labels/{label} per the OpenAPI
+    // spec — no body. Vikunja returns 403 (not 404) when the label is not
+    // attached to the task, so a failed DELETE does NOT by itself mean an
+    // error: we reconcile against the task's real label set below rather than
+    // trusting the per-call status. Only a genuine 401 session failure is
+    // retried and surfaced as auth — a static token cannot recover a 401 by
+    // retrying, and the resource-level 403 here will never change on retry.
+    const removeFailures: number[] = [];
     for (const labelId of labelIds) {
       try {
         await withRetry(
           () => vikunjaRestRequest(authManager, 'DELETE', `/tasks/${taskId}/labels/${labelId}`),
           {
             ...RETRY_CONFIG.AUTH_ERRORS,
-            shouldRetry: (error: unknown) => isAuthenticationError(error),
+            shouldRetry: (error: unknown) => extractHttpStatus(error) === 401,
           },
         );
       } catch (removeError) {
-        // Check if it's an auth error after retries
-        if (isAuthenticationError(removeError)) {
+        // A genuine session failure can't be masked as an absent label.
+        if (extractHttpStatus(removeError) === 401) {
           throw new MCPError(
             ErrorCode.API_ERROR,
             `Failed to remove label from task (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`,
           );
         }
-        throw removeError;
+        // Non-auth failure (typically Vikunja's 403 for a label that is not
+        // attached to the task). Defer judgement to the actual labels below.
+        removeFailures.push(labelId);
       }
+    }
+
+    // Reconcile against ground truth: the labels actually attached now. The
+    // labels array embedded in a getTask response is unreliable (see
+    // listTaskLabels), so read the dedicated GET /tasks/{id}/labels endpoint.
+    let attachedIds: Set<number> | null = null;
+    try {
+      const currentLabels = await vikunjaRestRequest<VikunjaLabel[]>(
+        authManager,
+        'GET',
+        `/tasks/${taskId}/labels`,
+      );
+      attachedIds = new Set(
+        (Array.isArray(currentLabels) ? currentLabels : [])
+          .map((label) => label.id)
+          .filter((id): id is number => typeof id === 'number'),
+      );
+    } catch {
+      // Current labels could not be read; fall back to trusting the DELETE
+      // outcomes (any failed removal is reported as a failure below).
+      attachedIds = null;
+    }
+
+    // A requested label is "still attached" only when ground truth confirms it;
+    // without that confirmation, a failed DELETE is itself the failure signal.
+    const stillAttached =
+      attachedIds !== null ? labelIds.filter((id) => attachedIds.has(id)) : removeFailures;
+
+    if (stillAttached.length > 0) {
+      const plural = stillAttached.length > 1;
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `Could not remove label${plural ? 's' : ''} ${stillAttached.join(', ')} from task ${taskId}: ` +
+          `still attached after the request. Check the label id${plural ? 's' : ''} and that you have write access to the task.`,
+      );
+    }
+
+    // Everything requested is off the task. Some ids may never have been
+    // attached (Vikunja 403 → confirmed absent by the reconcile above); report
+    // those as skipped, mirroring applyLabels' idempotent messaging.
+    const alreadyAbsent = removeFailures.filter(
+      (id) => attachedIds === null || !attachedIds.has(id),
+    );
+    const removed = labelIds.filter((id) => !removeFailures.includes(id));
+
+    let message: string;
+    if (removed.length > 0) {
+      message = `Label${removed.length > 1 ? 's' : ''} removed from task successfully`;
+      if (alreadyAbsent.length > 0) {
+        message += ` (${alreadyAbsent.length} already not attached, skipped)`;
+      }
+    } else {
+      message = `No labels removed: all ${alreadyAbsent.length} requested label(s) were already not attached to the task`;
     }
 
     // Fetch the updated task to show current labels via GET /tasks/{id}
     // (direct-REST) — see the matching comment in applyLabels above.
-    const task = await getTaskViaRest(authManager, args.id);
+    const task = await getTaskViaRest(authManager, taskId);
 
     const response = createSimpleResponse(
       'remove-label',
-      `Label${labelIds.length > 1 ? 's' : ''} removed from task successfully`,
+      message,
       { task },
-      { metadata: { affectedFields: ['labels'] } }
+      {
+        metadata: {
+          affectedFields: ['labels'],
+          labelsRemoved: removed,
+          labelsAlreadyAbsent: alreadyAbsent,
+        },
+      }
     );
 
     return {
@@ -242,6 +312,9 @@ export async function removeLabels(
       ],
     };
   } catch (error) {
+    if (error instanceof MCPError) {
+      throw error;
+    }
     throw new MCPError(
       ErrorCode.API_ERROR,
       `Failed to remove labels from task: ${error instanceof Error ? error.message : String(error)}`,
