@@ -168,6 +168,31 @@ describe('Label operations', () => {
 
       await expect(applyLabels({ id: 1, labels: [1] }, authManager)).rejects.toThrow(MCPError);
     });
+
+    it('surfaces a non-auth 403 on apply as the real error, not a retried auth failure', async () => {
+      // #154 audit: a resource-level 403 must not be masked as an auth retry.
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (init?.method === 'GET' && url.endsWith('/labels')) {
+          return Promise.resolve(restOk([]));
+        }
+        return Promise.resolve(restError(403, 'Forbidden'));
+      });
+
+      await expect(applyLabels({ id: 1, labels: [1] }, authManager)).rejects.toThrow(/HTTP 403/);
+    });
+
+    it('still surfaces a genuine 401 on apply as an auth error', async () => {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (init?.method === 'GET' && url.endsWith('/labels')) {
+          return Promise.resolve(restOk([]));
+        }
+        return Promise.resolve(restError(401, 'Unauthorized'));
+      });
+
+      await expect(applyLabels({ id: 1, labels: [1] }, authManager)).rejects.toThrow(
+        /Retried 3 times/,
+      );
+    });
   });
 
   describe('removeLabels', () => {
@@ -197,6 +222,80 @@ describe('Label operations', () => {
       );
       expect(deleteCalls).toHaveLength(2);
       expect(result.content[0].text).toContain('Labels removed from task successfully');
+    });
+
+    it('treats removing a label that is not attached as an idempotent no-op (Vikunja 403)', async () => {
+      // Regression for #154: Vikunja returns 403 when the label is not attached
+      // to the task. The old code misclassified that as an auth failure, retried
+      // 3×, and surfaced a misleading "(Retried 3 times)" error.
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method;
+        if (method === 'DELETE') return Promise.resolve(restError(403, 'Forbidden'));
+        // Reconcile: the label is genuinely not attached.
+        if (url.endsWith('/tasks/1/labels')) return Promise.resolve(restOk([]));
+        return Promise.resolve(restOk({}));
+      });
+
+      const result = await removeLabels({ id: 1, labels: [25] }, authManager);
+      const text = result.content[0].text;
+      expect(text).toContain('already not attached');
+      expect(text).not.toContain('Retried');
+    });
+
+    it('reports a clear, task/label-specific error when a label is still attached after a failed removal', async () => {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method;
+        if (method === 'DELETE') return Promise.resolve(restError(403, 'Forbidden'));
+        // Reconcile: the label is STILL attached (e.g. no write access).
+        if (url.endsWith('/tasks/1/labels')) return Promise.resolve(restOk([{ id: 25 }]));
+        return Promise.resolve(restOk({}));
+      });
+
+      await expect(removeLabels({ id: 1, labels: [25] }, authManager)).rejects.toThrow(
+        /Could not remove label 25 from task 1/,
+      );
+    });
+
+    it('still surfaces a genuine 401 as an auth error', async () => {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (init?.method === 'DELETE') return Promise.resolve(restError(401, 'Unauthorized'));
+        return Promise.resolve(restOk({}));
+      });
+
+      await expect(removeLabels({ id: 1, labels: [1] }, authManager)).rejects.toThrow(
+        /Retried 3 times/,
+      );
+    });
+
+    it('removes attached labels while skipping ones already absent', async () => {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method;
+        if (method === 'DELETE' && url.endsWith('/labels/25')) {
+          return Promise.resolve(restError(403, 'Forbidden'));
+        }
+        if (method === 'DELETE') return Promise.resolve(restOk({})); // label 1 removed
+        if (url.endsWith('/tasks/1/labels')) return Promise.resolve(restOk([])); // neither attached now
+        return Promise.resolve(restOk({}));
+      });
+
+      const result = await removeLabels({ id: 1, labels: [1, 25] }, authManager);
+      const text = result.content[0].text;
+      expect(text).toContain('Label removed from task successfully');
+      expect(text).toContain('1 already not attached, skipped');
+    });
+
+    it('reports failure when a removal fails and the current labels cannot be reconciled', async () => {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method;
+        if (method === 'DELETE') return Promise.resolve(restError(403, 'Forbidden'));
+        // Reconcile GET itself fails — fall back to trusting the failed DELETE.
+        if (url.endsWith('/tasks/1/labels')) return Promise.resolve(restError(500, 'Server Error'));
+        return Promise.resolve(restOk({}));
+      });
+
+      await expect(removeLabels({ id: 1, labels: [25] }, authManager)).rejects.toThrow(
+        /Could not remove label 25 from task 1/,
+      );
     });
   });
 
