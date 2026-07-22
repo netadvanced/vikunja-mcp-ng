@@ -1232,6 +1232,63 @@ async function testKanban(h: McpHarness, ctx: FlowContext): Promise<void> {
     bucketId: ctx.bucketId,
   });
   assertOk('bulk-set-bucket', bulkSetBucket);
+
+  // Item bucket-arg-clarity (netadvanced/vikunja-mcp#28 5.3 friction #3):
+  // when a required bucket/view arg is missing, the thrown error must NAME
+  // the specific argument and say how to obtain it — not just "required".
+  // These checks exercise the actual improved error strings end-to-end so a
+  // regression that reverts the wording is caught here, not just in unit
+  // tests that import the handler directly.
+
+  const setBucketMissingBucketId = await h.call('vikunja_tasks', {
+    subcommand: 'set-bucket',
+    id: ctx.taskId,
+  });
+  assertStep(
+    'set-bucket without bucketId names the arg and how to get it',
+    setBucketMissingBucketId.isError &&
+      setBucketMissingBucketId.text.includes('bucketId') &&
+      setBucketMissingBucketId.text.includes('list-buckets'),
+    setBucketMissingBucketId.text.slice(0, 300),
+  );
+
+  const bulkSetBucketMissingBucketId = await h.call('vikunja_tasks', {
+    subcommand: 'bulk-set-bucket',
+    taskIds: [ctx.taskId],
+  });
+  assertStep(
+    'bulk-set-bucket without bucketId names the arg and how to get it',
+    bulkSetBucketMissingBucketId.isError &&
+      bulkSetBucketMissingBucketId.text.includes('bucketId') &&
+      bulkSetBucketMissingBucketId.text.includes('list-buckets'),
+    bulkSetBucketMissingBucketId.text.slice(0, 300),
+  );
+
+  const listBucketsMissingId = await h.call('vikunja_projects', {
+    subcommand: 'list-buckets',
+  });
+  assertStep(
+    'list-buckets without id/projectId names the arg and how to get it',
+    listBucketsMissingId.isError &&
+      listBucketsMissingId.text.includes('id') &&
+      listBucketsMissingId.text.includes('projectId') &&
+      listBucketsMissingId.text.includes('vikunja_projects list'),
+    listBucketsMissingId.text.slice(0, 300),
+  );
+
+  const updateBucketMissingBucketRef = await h.call('vikunja_projects', {
+    subcommand: 'update-bucket',
+    id: ctx.projectId,
+    title: 'irrelevant',
+  });
+  assertStep(
+    'update-bucket without bucketId/bucketTitle names both accepted args and how to get one',
+    updateBucketMissingBucketRef.isError &&
+      updateBucketMissingBucketRef.text.includes('bucketId') &&
+      updateBucketMissingBucketRef.text.includes('bucketTitle') &&
+      updateBucketMissingBucketRef.text.includes('list-buckets'),
+    updateBucketMissingBucketRef.text.slice(0, 300),
+  );
 }
 
 async function testNotifications(h: McpHarness): Promise<void> {

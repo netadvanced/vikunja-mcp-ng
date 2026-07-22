@@ -99,6 +99,13 @@ describe('vikunja_projects routing: views, buckets, duplicate', () => {
     args: Record<string, unknown>;
     fn: jest.Mock;
     missingIdMessage: string;
+    /**
+     * Overrides the default `Project ID is required for X operation` message
+     * for subcommands whose dispatch-level guard was rewritten with more
+     * specific id/how-to-get-it guidance (item bucket-arg-clarity,
+     * netadvanced/vikunja-mcp#28 5.3 friction #3).
+     */
+    expectedMessage?: string;
   }> = [
     { subcommand: 'list-views', args: { id: 5 }, fn: listViews as jest.Mock, missingIdMessage: 'list-views' },
     {
@@ -136,24 +143,37 @@ describe('vikunja_projects routing: views, buckets, duplicate', () => {
       args: { id: 5, viewId: 11 },
       fn: listBuckets as jest.Mock,
       missingIdMessage: 'list-buckets',
+      expectedMessage:
+        'id (or projectId, accepted as an alias) is required for list-buckets operation — ' +
+        'the project whose Kanban buckets to list; get it from vikunja_projects list.',
     },
     {
       subcommand: 'create-bucket',
       args: { id: 5, title: 'Doing' },
       fn: createBucket as jest.Mock,
       missingIdMessage: 'create-bucket',
+      expectedMessage:
+        'id (or projectId, accepted as an alias) is required for create-bucket operation — ' +
+        'the project to add the bucket to; get it from vikunja_projects list.',
     },
     {
       subcommand: 'update-bucket',
       args: { id: 5, bucketId: 100, title: 'x' },
       fn: updateBucket as jest.Mock,
       missingIdMessage: 'update-bucket',
+      expectedMessage:
+        'id (or projectId, accepted as an alias) is required for update-bucket operation — ' +
+        'the project whose bucket to update (also pass bucketId or bucketTitle to identify ' +
+        'the bucket itself); get the project id from vikunja_projects list.',
     },
     {
       subcommand: 'delete-bucket',
       args: { id: 5, bucketId: 100 },
       fn: deleteBucket as jest.Mock,
       missingIdMessage: 'delete-bucket',
+      expectedMessage:
+        'id (or projectId, accepted as an alias) is required for delete-bucket operation — ' +
+        'the project whose bucket to delete; get it from vikunja_projects list.',
     },
     {
       subcommand: 'list-view-tasks',
@@ -169,7 +189,7 @@ describe('vikunja_projects routing: views, buckets, duplicate', () => {
     },
   ];
 
-  for (const { subcommand, args, fn, missingIdMessage } of cases) {
+  for (const { subcommand, args, fn, missingIdMessage, expectedMessage } of cases) {
     it(`routes '${subcommand}' to its handler with the auth manager`, async () => {
       const result = await toolHandler({ subcommand, ...args });
 
@@ -186,7 +206,7 @@ describe('vikunja_projects routing: views, buckets, duplicate', () => {
       await expect(toolHandler({ subcommand, ...rest })).rejects.toThrow(
         new MCPError(
           ErrorCode.VALIDATION_ERROR,
-          `Project ID is required for ${missingIdMessage} operation`,
+          expectedMessage ?? `Project ID is required for ${missingIdMessage} operation`,
         ),
       );
       expect(fn).not.toHaveBeenCalled();

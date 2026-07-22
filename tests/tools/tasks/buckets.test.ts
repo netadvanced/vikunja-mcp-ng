@@ -57,7 +57,8 @@ describe('setTaskBucket', () => {
       await expect(setTaskBucket({ bucketId: 3 }, authManager)).rejects.toThrow(
         new MCPError(
           ErrorCode.VALIDATION_ERROR,
-          'Task id is required for set-bucket operation',
+          'id is required for set-bucket operation — the id of the task to move (from ' +
+            'vikunja_tasks list/get), NOT the bucket or project id.',
         ),
       );
       expect(mockFetch).not.toHaveBeenCalled();
@@ -66,14 +67,15 @@ describe('setTaskBucket', () => {
     it('throws a VALIDATION_ERROR when the task id is zero (falsy)', async () => {
       await expect(
         setTaskBucket({ id: 0, bucketId: 3 }, authManager),
-      ).rejects.toThrow('Task id is required for set-bucket operation');
+      ).rejects.toThrow('is required for set-bucket operation');
     });
 
     it('throws a VALIDATION_ERROR when bucketId is undefined', async () => {
       await expect(setTaskBucket({ id: 1 }, authManager)).rejects.toThrow(
         new MCPError(
           ErrorCode.VALIDATION_ERROR,
-          'bucketId is required for set-bucket operation',
+          'bucketId is required for set-bucket operation — the destination Kanban bucket id; ' +
+            'call vikunja_projects list-buckets to get bucket ids.',
         ),
       );
       expect(mockFetch).not.toHaveBeenCalled();

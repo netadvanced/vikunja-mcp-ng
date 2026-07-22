@@ -66,7 +66,8 @@ describe('listBuckets', () => {
       await expect(listBuckets({}, authManager)).rejects.toThrow(
         new MCPError(
           ErrorCode.VALIDATION_ERROR,
-          'Project id is required for list-buckets operation',
+          'id (or projectId, accepted as an alias) is required for list-buckets operation — ' +
+            'the project whose Kanban buckets to list; get it from vikunja_projects list.',
         ),
       );
       expect(mockFetch).not.toHaveBeenCalled();
@@ -74,7 +75,7 @@ describe('listBuckets', () => {
 
     it('throws a VALIDATION_ERROR when the project id is zero (falsy)', async () => {
       await expect(listBuckets({ id: 0 }, authManager)).rejects.toThrow(
-        'Project id is required for list-buckets operation',
+        'is required for list-buckets operation',
       );
     });
 
@@ -272,7 +273,7 @@ describe('createBucket', () => {
 
   it('throws a VALIDATION_ERROR when the project id is missing', async () => {
     await expect(createBucket({ title: 'Doing' }, authManager)).rejects.toThrow(
-      'Project id is required for create-bucket operation',
+      'is required for create-bucket operation',
     );
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -376,7 +377,7 @@ describe('updateBucket', () => {
 
   it('throws a VALIDATION_ERROR when the project id is missing', async () => {
     await expect(updateBucket({ bucketId: 100, title: 'x' }, authManager)).rejects.toThrow(
-      'Project id is required for update-bucket operation',
+      'is required for update-bucket operation',
     );
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -526,7 +527,7 @@ describe('deleteBucket', () => {
 
   it('throws a VALIDATION_ERROR when the project id is missing', async () => {
     await expect(deleteBucket({ bucketId: 100 }, authManager)).rejects.toThrow(
-      'Project id is required for delete-bucket operation',
+      'is required for delete-bucket operation',
     );
     expect(mockFetch).not.toHaveBeenCalled();
   });
