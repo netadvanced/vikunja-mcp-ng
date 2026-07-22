@@ -172,7 +172,12 @@ function resolveBucketFromList(
     }
     return match;
   }
-  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'bucketId or bucketTitle is required');
+  throw new MCPError(
+    ErrorCode.VALIDATION_ERROR,
+    'bucketId or bucketTitle is required — pass the numeric bucketId from vikunja_projects ' +
+      'list-buckets, or the bucket\'s display name as bucketTitle (e.g. "Doing") to resolve it ' +
+      'by name instead.',
+  );
 }
 
 /**
@@ -189,7 +194,8 @@ export async function listBuckets(
   if (!args.id) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'Project id is required for list-buckets operation',
+      'id (or projectId, accepted as an alias) is required for list-buckets operation — ' +
+        'the project whose Kanban buckets to list; get it from vikunja_projects list.',
     );
   }
   validateId(args.id, 'id');
@@ -259,7 +265,8 @@ export async function createBucket(
   if (!args.id) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'Project id is required for create-bucket operation',
+      'id (or projectId, accepted as an alias) is required for create-bucket operation — ' +
+        'the project to add the bucket to; get it from vikunja_projects list.',
     );
   }
   if (!args.title || args.title.trim() === '') {
@@ -322,7 +329,9 @@ export async function updateBucket(
   if (!args.id) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'Project id is required for update-bucket operation',
+      'id (or projectId, accepted as an alias) is required for update-bucket operation — ' +
+        'the project whose bucket to update (also pass bucketId or bucketTitle to identify ' +
+        'the bucket itself); get the project id from vikunja_projects list.',
     );
   }
   validateId(args.id, 'id');
@@ -405,7 +414,8 @@ export async function deleteBucket(
   if (!args.id) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'Project id is required for delete-bucket operation',
+      'id (or projectId, accepted as an alias) is required for delete-bucket operation — ' +
+        'the project whose bucket to delete; get it from vikunja_projects list.',
     );
   }
   validateId(args.id, 'id');

@@ -261,7 +261,17 @@ export function registerProjectsTool(
       // (below, under Sharing arguments) is accepted as an alias for `id` on
       // those subcommands (see PROJECT_ID_ALIAS_SUBCOMMANDS); the sharing
       // subcommands use `projectId` directly instead.
-      id: z.number().positive().optional(),
+      id: z
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          'The project id targeted by CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds ' +
+            'subcommands (get, update, delete, list-buckets, create-bucket, update-bucket, ' +
+            'delete-bucket, list-view-tasks, etc.) — NOT a bucket or view id. `projectId` is ' +
+            'accepted as an alias for `id` on those same subcommands. Get project ids from ' +
+            'vikunja_projects list.',
+        ),
       title: z.string().optional(),
       description: z.string().optional(),
       parentProjectId: z.number().positive().optional(),
@@ -277,9 +287,30 @@ export function registerProjectsTool(
       // delete-bucket, list-view-tasks, set-done-bucket subcommands).
       // z.coerce tolerates MCP clients whose cached tool schema predates
       // this param and therefore send it as a string over JSON-RPC.
-      viewId: z.coerce.number().positive().optional(),
-      bucketId: z.coerce.number().positive().optional(),
-      bucketTitle: z.string().optional(),
+      viewId: z.coerce
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          "The project's Kanban view id (a project VIEW, not a bucket). Optional — when " +
+            "omitted it is auto-resolved to the project's Kanban view. Get an explicit " +
+            "value from vikunja_projects list-views (look for viewKind: 'kanban').",
+        ),
+      bucketId: z.coerce
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          'The Kanban bucket (column) id — e.g. the id of the "Doing" column. Get it from ' +
+            'vikunja_projects list-buckets (each bucket in the response has an id). On ' +
+            'update-bucket/delete-bucket, bucketTitle may be used instead to identify the ' +
+            "bucket by name (e.g. \"Doing\") when you don't have the numeric id.",
+        ),
+      bucketTitle: z.string().optional().describe(
+        'The Kanban bucket\'s display name (e.g. "Doing"), accepted as an alternative to ' +
+          'bucketId on update-bucket/delete-bucket — resolved internally via list-buckets. ' +
+          'bucketId wins when both are supplied.',
+      ),
       limit: z.coerce.number().min(0).optional(),
       // Lane-order position for create-bucket/update-bucket. Vikunja
       // positions are float64s — fractional values slot a bucket between
@@ -294,7 +325,16 @@ export function registerProjectsTool(
       // Duplicate-project arguments (duplicate subcommand).
       duplicateShares: z.boolean().optional(),
       // Sharing arguments (link shares + direct user/team sharing)
-      projectId: z.number().positive().optional(),
+      projectId: z
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          'The project id. Required (as `projectId`) by sharing subcommands (create-share, ' +
+            'share-with-user, list-members, etc.). Also accepted as an alias for `id` on ' +
+            'CRUD/hierarchy/Kanban-bucket/view subcommands (list-buckets, create-bucket, ' +
+            'update-bucket, delete-bucket, list-view-tasks, etc.) — NOT a bucket id or view id.',
+        ),
       shareId: z.string().optional(),
       shareHash: z.string().optional(),
       right: z.union([z.enum(['read', 'write', 'admin']), z.literal(0), z.literal(1), z.literal(2)]).optional(),
@@ -579,28 +619,45 @@ export function registerProjectsTool(
           // Kanban bucket operations
           case 'list-buckets':
             if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-buckets operation');
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'id (or projectId, accepted as an alias) is required for list-buckets operation — ' +
+                  "the project whose Kanban buckets to list; get it from vikunja_projects list.",
+              );
             }
             validateId(args.id, 'id');
             return await listBuckets(args as ListBucketsArgs, authManager);
 
           case 'create-bucket':
             if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for create-bucket operation');
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'id (or projectId, accepted as an alias) is required for create-bucket operation — ' +
+                  "the project to add the bucket to; get it from vikunja_projects list.",
+              );
             }
             validateId(args.id, 'id');
             return await createBucket(args as CreateBucketArgs, authManager);
 
           case 'update-bucket':
             if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for update-bucket operation');
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'id (or projectId, accepted as an alias) is required for update-bucket operation — ' +
+                  'the project whose bucket to update (also pass bucketId or bucketTitle to identify ' +
+                  'the bucket itself); get the project id from vikunja_projects list.',
+              );
             }
             validateId(args.id, 'id');
             return await updateBucket(args as UpdateBucketArgs, authManager);
 
           case 'delete-bucket':
             if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for delete-bucket operation');
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'id (or projectId, accepted as an alias) is required for delete-bucket operation — ' +
+                  "the project whose bucket to delete; get it from vikunja_projects list.",
+              );
             }
             validateId(args.id, 'id');
             return await deleteBucket(args as DeleteBucketArgs, authManager);
