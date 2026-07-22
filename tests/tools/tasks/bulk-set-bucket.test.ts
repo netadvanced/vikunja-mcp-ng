@@ -63,7 +63,14 @@ describe('bulkSetTaskBucket', () => {
     it('throws a VALIDATION_ERROR when bucketId is undefined', async () => {
       await expect(
         bulkSetTaskBucket({ taskIds: [1, 2] }, authManager),
-      ).rejects.toThrow('bucketId is required for bulk-set-bucket operation');
+      ).rejects.toThrow(
+        new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          'bucketId is required for bulk-set-bucket operation — the destination Kanban bucket ' +
+            'id (a single id shared by every task in taskIds); call vikunja_projects list-buckets ' +
+            'to get bucket ids.',
+        ),
+      );
       expect(mockFetch).not.toHaveBeenCalled();
     });
 

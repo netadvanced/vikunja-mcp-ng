@@ -139,6 +139,7 @@ export function registerTasksTool(
         'create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). ' +
         'bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). ' +
         'bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). ' +
+        'set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. ' +
         'duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). ' +
         'mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
     ),
@@ -183,7 +184,14 @@ export function registerTasksTool(
       // Task creation/update fields
       title: z.string().optional(),
       description: z.string().optional(),
-      projectId: z.number().optional(),
+      projectId: z
+        .number()
+        .optional()
+        .describe(
+          'The project id, used by create/list/etc. to scope the task(s). On set-bucket/' +
+            "bulk-set-bucket this is optional and only needed to override auto-resolution " +
+            "(normally resolved from the task itself); it is NOT the bucket id.",
+        ),
       dueDate: z.string().optional(),
       startDate: z.string().optional(),
       endDate: z.string().optional(),
@@ -191,11 +199,25 @@ export function registerTasksTool(
       percentDone: z.number().min(0).max(1).optional(),
       labels: z.array(z.number()).optional(),
       assignees: z.array(z.number()).optional(),
-      // Kanban bucket fields (set-bucket subcommand).
+      // Kanban bucket fields (set-bucket, bulk-set-bucket subcommands).
       // z.coerce tolerates MCP clients whose cached tool schema predates
       // these params and therefore send them as strings over JSON-RPC.
-      bucketId: z.coerce.number().optional(),
-      viewId: z.coerce.number().optional(),
+      bucketId: z.coerce
+        .number()
+        .optional()
+        .describe(
+          'The destination Kanban bucket (column) id for set-bucket/bulk-set-bucket — e.g. ' +
+            'the id of the "Doing" column. Get it from vikunja_projects list-buckets, NOT from ' +
+            'this tool. This is a bucket id, not a project or view id.',
+        ),
+      viewId: z.coerce
+        .number()
+        .optional()
+        .describe(
+          "Optional Kanban view id for set-bucket/bulk-set-bucket, auto-resolved from the " +
+            "task's project when omitted. Get an explicit value from vikunja_projects " +
+            "list-views (look for viewKind: 'kanban'). This is a view id, not a bucket id.",
+        ),
       // Task position fields (set-position subcommand). position is a
       // float64 per the API (see models.TaskPosition) - see docs on
       // spreading tasks between two positions - so it is not coerced to an
@@ -211,7 +233,15 @@ export function registerTasksTool(
       repeatAfter: z.number().min(0).optional(),
       repeatMode: z.enum(['day', 'week', 'month', 'year']).optional(),
       // Query fields
-      id: z.number().optional(),
+      id: z
+        .number()
+        .optional()
+        .describe(
+          'The task id, used by most subcommands (get, update, delete, set-bucket, etc.) to ' +
+            'identify the target task. On set-bucket this is the task to move — NOT the ' +
+            'bucket id (use bucketId for that) or a project id. bulk-set-bucket moves several ' +
+            'tasks at once and uses the separate taskIds array instead of id.',
+        ),
       filter: z
         .string()
         .optional()
@@ -249,7 +279,14 @@ export function registerTasksTool(
       comment: z.string().optional(),
       commentId: z.number().optional(),
       // Bulk operation fields
-      taskIds: z.array(z.number()).optional(),
+      taskIds: z
+        .array(z.number())
+        .optional()
+        .describe(
+          'Task ids for bulk operations (bulk-update, bulk-delete, bulk-set-bucket). On ' +
+            'bulk-set-bucket these are the tasks to move into the single bucket named by ' +
+            'bucketId.',
+        ),
       field: z.string().optional(),
       value: z.unknown().optional(),
       tasks: z
