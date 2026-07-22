@@ -9,11 +9,38 @@ import { MCPError } from '../../../src/types/index';
 // afterwards. There is no node-vikunja client involved any more, so the tests
 // route a single mocked global fetch for all of it.
 
-// Mock withRetry to call the operation directly without circuit breaker caching
-jest.mock('../../../src/utils/retry', () => ({
-  ...jest.requireActual('../../../src/utils/retry'),
-  withRetry: async <T>(operation: () => Promise<T>) => operation(),
-}));
+// Mock withRetry with a lightweight retry that HONORS the caller's shouldRetry
+// predicate but skips the production backoff delays. This is deliberate: the
+// #154 regression was that a non-auth 403 got retried and misclassified, so the
+// tests must actually exercise the retry predicate and be able to assert call
+// counts (e.g. "a 403 is attempted exactly once, a 401 is retried"). A plain
+// pass-through mock hid that branch entirely.
+jest.mock('../../../src/utils/retry', () => {
+  const actual = jest.requireActual('../../../src/utils/retry');
+  return {
+    ...actual,
+    withRetry: async <T>(
+      operation: () => Promise<T>,
+      options?: { maxRetries?: number; shouldRetry?: (error: unknown) => boolean },
+    ): Promise<T> => {
+      const maxRetries = options?.maxRetries ?? 0;
+      const shouldRetry = options?.shouldRetry ?? (() => false);
+      let attempt = 0;
+      // eslint-disable-next-line no-constant-condition
+      for (;;) {
+        try {
+          return await operation();
+        } catch (error) {
+          if (attempt < maxRetries && shouldRetry(error)) {
+            attempt += 1;
+            continue;
+          }
+          throw error;
+        }
+      }
+    },
+  };
+});
 
 describe('Label operations', () => {
   let authManager: AuthManager;
@@ -179,9 +206,15 @@ describe('Label operations', () => {
       });
 
       await expect(applyLabels({ id: 1, labels: [1] }, authManager)).rejects.toThrow(/HTTP 403/);
+
+      // A resource 403 on apply is attempted once, not retried as auth.
+      const putCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit)?.method === 'PUT',
+      );
+      expect(putCalls).toHaveLength(1);
     });
 
-    it('still surfaces a genuine 401 on apply as an auth error', async () => {
+    it('still surfaces a genuine 401 on apply as an auth error, and DOES retry it', async () => {
       fetchMock.mockImplementation((url: string, init?: RequestInit) => {
         if (init?.method === 'GET' && url.endsWith('/labels')) {
           return Promise.resolve(restOk([]));
@@ -192,6 +225,11 @@ describe('Label operations', () => {
       await expect(applyLabels({ id: 1, labels: [1] }, authManager)).rejects.toThrow(
         /Retried 3 times/,
       );
+
+      const putCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit)?.method === 'PUT',
+      );
+      expect(putCalls).toHaveLength(4);
     });
   });
 
@@ -240,6 +278,13 @@ describe('Label operations', () => {
       const text = result.content[0].text;
       expect(text).toContain('already not attached');
       expect(text).not.toContain('Retried');
+
+      // The crux of #154: a non-auth 403 must be attempted exactly ONCE, never
+      // retried. The old code retried it 3× (4 calls) before failing.
+      const deleteCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit)?.method === 'DELETE',
+      );
+      expect(deleteCalls).toHaveLength(1);
     });
 
     it('reports a clear, task/label-specific error when a label is still attached after a failed removal', async () => {
@@ -256,7 +301,7 @@ describe('Label operations', () => {
       );
     });
 
-    it('still surfaces a genuine 401 as an auth error', async () => {
+    it('still surfaces a genuine 401 as an auth error, and DOES retry it', async () => {
       fetchMock.mockImplementation((url: string, init?: RequestInit) => {
         if (init?.method === 'DELETE') return Promise.resolve(restError(401, 'Unauthorized'));
         return Promise.resolve(restOk({}));
@@ -265,6 +310,13 @@ describe('Label operations', () => {
       await expect(removeLabels({ id: 1, labels: [1] }, authManager)).rejects.toThrow(
         /Retried 3 times/,
       );
+
+      // A genuine 401 is still retried (1 initial + 3 retries): the fix narrows
+      // WHICH statuses count as auth, it does not weaken real auth handling.
+      const deleteCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit)?.method === 'DELETE',
+      );
+      expect(deleteCalls).toHaveLength(4);
     });
 
     it('removes attached labels while skipping ones already absent', async () => {
