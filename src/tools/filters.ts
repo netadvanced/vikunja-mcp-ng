@@ -405,7 +405,16 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
         "same casing 'build' emits and vikunja_tasks list's own filter argument " +
         'accepts; snake_case aliases (due_date, percent_done, project_id, etc.) ' +
         'are also accepted everywhere a field name is given and are normalized ' +
-        'to camelCase automatically.',
+        'to camelCase automatically. Query-string syntax: operators are = != > ' +
+        '>= < <= like in "not in"; combine conditions with && (AND) or || (OR). ' +
+        'Copy-pasteable examples: "priority >= 4" for high/urgent priority tasks ' +
+        '(priority ranges 0-5, so >= 4 covers High and DO NOW); "dueDate < now+14d" ' +
+        'for tasks due within the next 14 days; "priority >= 4 && dueDate < now+7d" ' +
+        'to combine both; "labels in \'bug\', \'urgent\'" to match either label. ' +
+        'Date literals accept now, now+14d, now-1w (s/h/d/w/M/y units) or ISO 8601 ' +
+        "dates. Use action='build' with structured conditions to have this tool " +
+        "assemble the query string for you, or action='validate' to check a " +
+        'hand-written one before passing it to vikunja_tasks list.',
     ),
     {
       action: z.enum(['list', 'get', 'create', 'update', 'delete', 'build', 'validate']),
