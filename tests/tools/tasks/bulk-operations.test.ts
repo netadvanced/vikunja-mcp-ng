@@ -928,6 +928,52 @@ describe('Bulk operations', () => {
         }));
       });
 
+      // Regression for issue #168: bulk-create accepted startDate/endDate on
+      // its task shape but never forwarded them to Vikunja at all - distinct
+      // from the date-FORMAT bug #164 fixed above for dueDate.
+      it('forwards startDate/endDate as start_date/end_date, coercing date-only values to RFC3339', async () => {
+        const mockTask = {
+          id: 1,
+          title: 'Test Task',
+          project_id: 1,
+          start_date: '2026-07-24T00:00:00Z',
+          end_date: '2026-07-25T10:30:00Z',
+        };
+
+        mockClient.tasks.createTask.mockResolvedValue(mockTask);
+        mockClient.tasks.getTask.mockResolvedValue(mockTask);
+
+        const result = await bulkCreateTasks({
+          projectId: 1,
+          tasks: [{ title: 'Test Task', startDate: '2026-07-24', endDate: '2026-07-25T10:30:00Z' }],
+        });
+
+        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, expect.objectContaining({
+          title: 'Test Task',
+          start_date: '2026-07-24T00:00:00Z',
+          end_date: '2026-07-25T10:30:00Z',
+        }));
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('## ✅ Success');
+      });
+
+      it('does not send start_date/end_date when startDate/endDate are omitted', async () => {
+        const mockTask = { id: 1, title: 'Test Task', project_id: 1 };
+
+        mockClient.tasks.createTask.mockResolvedValue(mockTask);
+        mockClient.tasks.getTask.mockResolvedValue(mockTask);
+
+        await bulkCreateTasks({
+          projectId: 1,
+          tasks: [{ title: 'Test Task' }],
+        });
+
+        const callArgs = mockClient.tasks.createTask.mock.calls[0][1];
+        expect(callArgs).not.toHaveProperty('start_date');
+        expect(callArgs).not.toHaveProperty('end_date');
+      });
+
       it('should handle labels and assignees', async () => {
         const mockTask = { id: 1, title: 'Test Task', project_id: 1 };
 

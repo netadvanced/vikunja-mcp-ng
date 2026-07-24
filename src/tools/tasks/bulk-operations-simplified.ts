@@ -403,6 +403,12 @@ export async function bulkCreateTasks(args: BulkCreateArgs, authManager: AuthMan
         const newTask: Task = { title: t.title, project_id: projectId };
         if (t.description !== undefined) newTask.description = t.description;
         if (t.dueDate !== undefined) newTask.due_date = normalizeDateForApi(t.dueDate) ?? t.dueDate;
+        // Issue #168: startDate/endDate were accepted on the bulk task shape
+        // but never forwarded, silently dropped. Mirror the dueDate handling
+        // (issue #164) — coerce date-only 'YYYY-MM-DD' values to RFC3339,
+        // same as resolveBulkUpdateValue does for bulk-update.
+        if (t.startDate !== undefined) newTask.start_date = normalizeDateForApi(t.startDate) ?? t.startDate;
+        if (t.endDate !== undefined) newTask.end_date = normalizeDateForApi(t.endDate) ?? t.endDate;
         if (t.priority !== undefined) newTask.priority = t.priority;
         if (t.repeatAfter !== undefined || t.repeatMode !== undefined) {
           const rc = convertRepeatConfiguration(t.repeatAfter, t.repeatMode);
