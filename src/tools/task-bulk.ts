@@ -66,6 +66,22 @@ export function registerTaskBulkTool(
                   '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
                   'being sent to Vikunja.',
               ),
+            startDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
+                  '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
+                  'being sent to Vikunja.',
+              ),
+            endDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
+                  '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
+                  'being sent to Vikunja.',
+              ),
             priority: z.number().min(0).max(5).optional(),
             labels: z.array(z.number()).optional(),
             assignees: z.array(z.number()).optional(),
@@ -104,9 +120,11 @@ export function registerTaskBulkTool(
             }
             // Filter out undefined values from tasks to satisfy exactOptionalPropertyTypes
             const filteredTasks = (args.tasks || []).map(task => {
-              const filteredTask: { title: string; description?: string; due_date?: string; priority?: number; labels?: number[]; assignees?: number[]; repeat_after?: number; repeat_mode?: 'day' | 'week' | 'month' | 'year' } = { title: task.title };
+              const filteredTask: { title: string; description?: string; due_date?: string; startDate?: string; endDate?: string; priority?: number; labels?: number[]; assignees?: number[]; repeat_after?: number; repeat_mode?: 'day' | 'week' | 'month' | 'year' } = { title: task.title };
               if (task.description !== undefined) filteredTask.description = task.description;
               if (task.dueDate !== undefined) filteredTask.due_date = task.dueDate;
+              if (task.startDate !== undefined) filteredTask.startDate = task.startDate;
+              if (task.endDate !== undefined) filteredTask.endDate = task.endDate;
               if (task.priority !== undefined) filteredTask.priority = task.priority;
               if (task.labels !== undefined) filteredTask.labels = task.labels;
               if (task.assignees !== undefined) filteredTask.assignees = task.assignees;
