@@ -1426,9 +1426,13 @@ async function testKanban(h: McpHarness, ctx: FlowContext): Promise<void> {
 async function testSetupKanban(h: McpHarness): Promise<void> {
   log('\n[setup-kanban composite]');
 
-  // New project: create the board, ordered columns, and tasks distributed
-  // across those columns (one column name deliberately unknown to a task,
-  // exercising the honest created-not-placed reporting path).
+  // --- CLEAN call: happy-path assertions only (counts, project id
+  // extraction, bucket count, idempotent reuse). No bogus column here — a
+  // partial-failure response is a different scenario with different
+  // expected assertions (see the unknown-column block below), and mixing
+  // the two into one call was itself the bug being fixed (issue #173
+  // follow-up: the original single-call test asserted happy-path facts
+  // against what is actually a partial-failure response).
   const title = `${NAME_PREFIX}kanban-composite`;
   const setup = await h.call('vikunja_projects', {
     subcommand: 'setup-kanban',
@@ -1438,19 +1442,13 @@ async function testSetupKanban(h: McpHarness): Promise<void> {
       { title: `${NAME_PREFIX}kc-task-1`, column: 'To Do', priority: 3, dueDate: '2026-09-01' },
       { title: `${NAME_PREFIX}kc-task-2`, column: 'Doing' },
       { title: `${NAME_PREFIX}kc-task-3`, column: 'Done' },
-      { title: `${NAME_PREFIX}kc-task-4`, column: 'Nonexistent Column' },
     ],
   });
-  if (!assertOk('setup-kanban (new project)', setup)) return;
+  if (!assertOk('setup-kanban (new project, clean)', setup)) return;
   assertStep(
     'setup-kanban reports the project, columns, and tasks created',
-    setup.text.includes('3/3 columns ready') && setup.text.includes('3/4 tasks created'),
+    setup.text.includes('3/3 columns ready') && setup.text.includes('3/3 tasks created'),
     setup.text.slice(0, 500),
-  );
-  assertStep(
-    'setup-kanban honestly reports the unknown-column task as created-not-placed',
-    setup.text.includes('Created but not placed') && setup.text.includes('kc-task-4'),
-    setup.text.slice(0, 800),
   );
 
   const projectId = extractId(setup.text);
@@ -1493,6 +1491,42 @@ async function testSetupKanban(h: McpHarness): Promise<void> {
       'setup-kanban reuse does not create duplicate buckets',
       bucketIds.length === 3,
       `expected still 3 bucket ids after reuse, got: ${bucketsAfterReuse.text.slice(0, 300)}`,
+    );
+  }
+
+  // --- SEPARATE call: the unknown-column path. Fail-fast (issue #173
+  // follow-up) means this must be an up-front rejection — the whole call is
+  // rejected with a validation error before anything is created, not a
+  // partial success with a "created-not-placed" task. Reuses the project
+  // above (via `id`) so "no task was created" is directly verifiable
+  // server-side.
+  const bogusTaskTitle = `${NAME_PREFIX}kc-bogus-column-task`;
+  const bogusColumnCall = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    id: projectId,
+    columns: ['To Do', 'Doing', 'Done'],
+    tasks: [{ title: bogusTaskTitle, column: 'Nonexistent Column' }],
+  });
+  assertStep(
+    'setup-kanban rejects an unknown column up front (isError, VALIDATION_ERROR-shaped)',
+    bogusColumnCall.isError &&
+      bogusColumnCall.text.includes('Nonexistent Column') &&
+      bogusColumnCall.text.includes(bogusTaskTitle) &&
+      /not one of the requested columns/.test(bogusColumnCall.text),
+    bogusColumnCall.text.slice(0, 500),
+  );
+
+  // Verify server-side: the rejected call created nothing — the bogus
+  // task's title must not appear anywhere in the project's task list.
+  const tasksAfterRejection = await h.call('vikunja_tasks', {
+    subcommand: 'list',
+    projectId,
+  });
+  if (assertOk('list tasks after rejected setup-kanban call', tasksAfterRejection)) {
+    assertStep(
+      'setup-kanban unknown-column rejection created no task',
+      !tasksAfterRejection.text.includes(bogusTaskTitle),
+      tasksAfterRejection.text.slice(0, 500),
     );
   }
 

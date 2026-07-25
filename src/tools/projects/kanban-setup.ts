@@ -56,6 +56,20 @@
  * buckets' pre-existing positions, so the resulting board's column order
  * always matches the requested order exactly.
  *
+ * Fail fast on an unknown column (issue #173 follow-up, live-harness
+ * finding): every task's `column` (when given) is validated against the
+ * requested `columns` list UP FRONT — before the project, view, or any
+ * bucket/task is touched — since that list is fully known with zero API
+ * calls. A task naming a column outside that list rejects the WHOLE call
+ * with a `VALIDATION_ERROR` naming the offending column, the task's title,
+ * and the valid column names; nothing is created. This is deliberately
+ * NOT part of the "honest partial failure" reporting below — a typo in
+ * `column` is a caller mistake, not a runtime failure, and rejecting it
+ * up front is cheap to recover from (re-running setup-kanban reuses the
+ * existing project/view/buckets rather than duplicating them), whereas an
+ * orphaned created-but-unplaced task is not. A task with no `column` at all
+ * is never an error — it is simply created unplaced.
+ *
  * Error semantics (honest, server-derived, bulk-style): resolving each
  * column and creating+placing each task are independent, try/caught
  * per-item operations — a failure in one does not abort the rest. The
@@ -66,7 +80,12 @@
  * land. The whole call only hard-fails when NO column could be
  * created/resolved at all (no board could be established), mirroring the
  * "throw only when nothing succeeded, otherwise report partial" contract
- * `bulkCreateTasks`/`bulkSetTaskBucket` already use.
+ * `bulkCreateTasks`/`bulkSetTaskBucket` already use. A genuine partial
+ * failure (e.g. the server rejects a placement) still surfaces the
+ * project's id in the SAME `(ID: N)`-extractable format the fully
+ * successful path uses — see the "project ... (ID: ...)" summary line
+ * below — so a caller can recover the project handle and retry rather than
+ * losing track of a project that really was created.
  */
 
 import type { AuthManager } from '../../auth/AuthManager';
@@ -155,9 +174,12 @@ export interface KanbanTaskOutcome {
   /**
    * 'placed': created and placed into its requested column.
    * 'created': created, no column requested — nothing to place.
-   * 'created-not-placed': created, but placement failed (unknown column
-   *   name, or the bucket-move request itself failed) — the task exists but
-   *   is not where it was asked to be.
+   * 'created-not-placed': created, but placement failed — the requested
+   *   column's own bucket could not be resolved (see the columns result for
+   *   why), or the bucket-move request itself failed. The task exists but is
+   *   not where it was asked to be. An unrecognized column name is no longer
+   *   possible here — `setupKanban` rejects the whole call up front (see its
+   *   fail-fast column validation) before anything is created.
    * 'failed': task creation itself failed — no task was created.
    */
   status: 'placed' | 'created' | 'created-not-placed' | 'failed';
@@ -278,11 +300,9 @@ async function createAndPlaceTasks(
   authManager: AuthManager,
   projectId: number,
   viewId: number,
-  columnNames: string[],
   bucketIdByColumn: Map<string, number>,
   tasks: SetupKanbanTaskInput[],
 ): Promise<KanbanTaskOutcome[]> {
-  const requestedColumnKeys = new Set(columnNames.map((c) => columnKey(c)));
   const results: KanbanTaskOutcome[] = [];
 
   for (let i = 0; i < tasks.length; i++) {
@@ -320,17 +340,20 @@ async function createAndPlaceTasks(
       const key = columnKey(t.column);
       const bucketId = bucketIdByColumn.get(key);
       if (bucketId === undefined) {
-        const reason = requestedColumnKeys.has(key)
-          ? `column "${t.column}" was requested but its bucket could not be resolved — see the ` +
-            `columns result for the failure reason`
-          : `column "${t.column}" is not one of the requested columns (${columnNames.join(', ')})`;
+        // Every task's column was already validated (up front, before any
+        // write) against the requested `columns` list — see setupKanban's
+        // fail-fast validation. So reaching here means the column WAS
+        // requested but its bucket resolution failed (see the columns
+        // result for the failure reason), never an unrecognized name.
         results.push({
           index: i,
           title: t.title,
           taskId,
           column: t.column,
           status: 'created-not-placed',
-          error: reason,
+          error:
+            `column "${t.column}" was requested but its bucket could not be resolved — see the ` +
+            'columns result for the failure reason',
         });
         continue;
       }
@@ -405,9 +428,30 @@ export async function setupKanban(
         'breaking into smaller batches.',
     );
   }
+  // Fail fast on an unknown column name — checkable with ZERO API calls,
+  // since the requested `columns` list is fully known before any write
+  // happens. Rejecting the WHOLE call up front (nothing gets created) is
+  // far cheaper for the caller to recover from than the alternative: a task
+  // gets created against an unrecognized column name, cannot be placed, and
+  // is left orphaned in whatever bucket the view defaults new tasks to,
+  // alongside a partial-failure response. Re-running setup-kanban is
+  // reuse-safe (see the module doc's "Idempotent-ish existing-project
+  // reuse"), so an up-front rejection costs nothing to retry. A task with NO
+  // `column` is left as-is — that is not an error, it is simply created
+  // unplaced (see KanbanTaskOutcome's 'created' status).
+  const columnKeySet = new Set(columnNames.map((c) => columnKey(c)));
   tasks.forEach((t, i) => {
     if (!t.title || t.title.trim() === '') {
       throw new MCPError(ErrorCode.VALIDATION_ERROR, `tasks[${i}].title is required`);
+    }
+    if (t.column !== undefined && !columnKeySet.has(columnKey(t.column))) {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `tasks[${i}] ("${t.title.trim()}") has column "${t.column}" which is not one of the ` +
+          `requested columns: ${columnNames.join(', ')}. Fix the column name (or add it to ` +
+          '`columns`) and re-run setup-kanban — no project, view, bucket, or task has been ' +
+          'created by this call.',
+      );
     }
   });
 
@@ -465,14 +509,7 @@ export async function setupKanban(
   }
 
   // 4. Bulk-create the requested tasks and place each into its column.
-  const taskResults = await createAndPlaceTasks(
-    authManager,
-    projectId,
-    viewId,
-    columnNames,
-    bucketIdByColumn,
-    tasks,
-  );
+  const taskResults = await createAndPlaceTasks(authManager, projectId, viewId, bucketIdByColumn, tasks);
 
   // 5. Build the honest, server-derived summary — never claim success for
   // anything that did not land.
@@ -480,8 +517,18 @@ export async function setupKanban(
   const taskNotPlaced = taskResults.filter((r) => r.status === 'created-not-placed');
   const partial = columnFailures.length > 0 || taskFailures.length > 0 || taskNotPlaced.length > 0;
 
+  // The project id is embedded in the SAME `(ID: N)` format
+  // `formatListItemLine`/`formatSingleDataItem` (src/utils/simple-response.ts)
+  // already use for every other tool's created/fetched resources, and is
+  // what `extractId` (scripts/mcp-e2e.ts) parses. This must survive on the
+  // PARTIAL-failure path too: `formatErrorMessage` (used whenever
+  // `metadata.success` is false, see the comment on `detailParts` below)
+  // drops the `data` payload entirely, so the message TEXT is the only
+  // place a caller can recover the id of a project that really was
+  // created — never leave it as bare prose ("project 15 created") that no
+  // extractor can parse.
   const summaryParts = [
-    `project ${projectId} ${projectCreated ? 'created' : 'reused'}`,
+    `project ${projectId} ${projectCreated ? 'created' : 'reused'} (ID: ${projectId})`,
     `${columnResults.length - columnFailures.length}/${columnResults.length} columns ready`,
   ];
   if (tasks.length > 0) {

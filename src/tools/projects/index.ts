@@ -261,7 +261,10 @@ export function registerProjectsTool(
       + 'ONE call given a project title (or an existing `id` to reuse), an ordered `columns` array, and an optional `tasks` array (each task may '
       + 'carry a `column` name plus the normal task fields) provisions the whole board — creating/reusing the project, ensuring its Kanban view, '
       + 'creating/renaming/reusing buckets to match `columns` in order, and creating+placing every task. Prefer it over hand-rolling '
-      + 'create -> create-bucket (xN) -> vikunja_task_bulk bulk-create -> vikunja_tasks set-bucket / vikunja_task_bulk bulk-set-bucket (xN).'
+      + 'create -> create-bucket (xN) -> vikunja_task_bulk bulk-create -> vikunja_tasks set-bucket / vikunja_task_bulk bulk-set-bucket (xN). '
+      + 'A task\'s `column` (when given) must match one of the requested `columns` entries (case-insensitive) — an unrecognized column name '
+      + 'is rejected UP FRONT with a validation error naming the bad column, the task, and the valid choices, before anything is created; '
+      + 're-run with a corrected column, no cleanup needed. A task with no `column` is created unplaced, not an error.'
       + (backgroundsEnabled
         ? ' The opt-in backgrounds module adds remove-background/set-unsplash-background/search-unsplash'
         : ''),
@@ -356,7 +359,11 @@ export function registerProjectsTool(
             column: z
               .string()
               .optional()
-              .describe('Must match one of the setup-kanban `columns` entries (case-insensitive).'),
+              .describe(
+                'Must match one of the setup-kanban `columns` entries (case-insensitive). A ' +
+                  'mismatch is rejected up front — the whole call fails before anything is ' +
+                  'created — rather than creating an orphaned, unplaced task.',
+              ),
             description: z.string().optional(),
             priority: z.number().min(0).max(5).optional(),
             dueDate: z
