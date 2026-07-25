@@ -166,7 +166,7 @@ transcript that revealed it).
 | `bulk-create-subtasks` | 3 | bulk-create-subtasks composite discoverability vs. one `create-subtask` call per subtask |
 | `bulk-priority-bump` | 3 | bulk-edit discoverability vs. one-call-per-task |
 | `bulk-set-bucket` | 1 | bulk-set-bucket composite discoverability vs. moving each task into its Kanban column one at a time. Re-baselined 2026-07-25 from 9 to 1: this scenario's prompt is a verbatim match for `setup-kanban` (PR #175) -- see "Re-baselining `optimalCallCount`" below |
-| `labels-due-date-combo` | 1 | label creation + application + due dates combined in one ask. Re-baselined 2026-07-25 from 3 to 1: `setup-kanban`'s per-task `labels`/`dueDate` fields reach the same end state in one call even without a Kanban board being requested -- see "Re-baselining `optimalCallCount`" below |
+| `labels-due-date-combo` | 3 | label creation + application + due dates combined in one ask: create-project (1) + create-label (1) + bulk-create with per-task `labels`/`dueDate` (1). PR #179 briefly re-baselined this to 1 via `setup-kanban` with a fabricated placeholder column; reverted 2026-07-25 (netadvanced/vikunja-mcp#28 T1) because that route invents an unrequested Kanban board -- see "Re-baselining `optimalCallCount`" below |
 | `single-task-smoke` | 2 | deliberately the simplest, most deterministic scenario -- use this one for a first try or a live-smoke proof (see the note on `optimalCallCount` below -- it is no longer necessarily the global minimum by raw call count, but remains the designated smoke-test scenario) |
 | `mixed-priority-batch` | 2 | varying a per-item field within a single batch-creation call |
 | `existing-label-reuse` | 3 | applying an already-existing label (find-then-apply path -- seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open) |
@@ -294,7 +294,6 @@ were written:
 | scenario | actual | old optimal | new optimal | why |
 |---|---|---|---|---|
 | `bulk-set-bucket` | 1 | 9 | 1 | `setup-kanban` (PR #175) is a verbatim match for this scenario's own ask (new project + Kanban columns + tasks distributed across them) |
-| `labels-due-date-combo` | 1 | 3 | 1 | `setup-kanban`'s per-task `labels`/`dueDate` fields plus a placeholder `columns` entry reach the same end state in one call, even though no Kanban board was requested -- see the scenario file's own description for why this is credited here but not elsewhere |
 | `subtask-breakdown` | 3 | 5 | 3 | `bulk-create-subtasks` (already shipped, but this scenario's optimum still assumed one `create-subtask` call per subtask) |
 
 **The two capabilities behind this sweep**, both landed since the last
@@ -306,45 +305,77 @@ full re-baseline:
   ordered buckets + tasks placed into columns) in ONE call (PR #175, issue
   #173).
 
+**Correction, 2026-07-25 (netadvanced/vikunja-mcp#28 T1)**: this same sweep
+originally also re-baselined `labels-due-date-combo` from 3 to 1, crediting
+`setup-kanban` with a single *fabricated placeholder column* even though the
+scenario's prompt never asks for a Kanban board. That was wrong and has been
+reverted (optimum is 3 again -- see the scenario file's own description).
+Two live runs prove why the 1-call figure was never a real optimum:
+`battle-results/20260725-172435-r9pgwd` is the run that produced the actual=1
+measurement, and its transcript shows exactly the fabrication in question --
+`{subcommand: 'setup-kanban', columns: ['To Do'], tasks: [...]}`, a Kanban
+view and bucket the user never asked for, invented solely to shave a call off
+the count. `battle-results/20260725-181208-dt6a8n` is the very next sweep,
+where an agent took the honest 3-call path (create-project + create-label +
+bulk-create with labels/dueDate) and got flagged as 300%-over-optimal for it
+-- proof the 1-call figure made the metric actively lie about the honest
+route. The rules below are sharpened so this specific mistake can't recur.
+
 **The policy, so the next re-baseline doesn't have to re-litigate this**:
 
 1. Re-derive `optimalCallCount` by reading the CURRENT tool schemas
    (`src/tools/**`), never by copying the observed `actual` from a sweep --
    an agent's transcript proves a number is *reachable*, it doesn't by
-   itself prove it's the *minimum*. (In practice, for the three scenarios
-   above, independent hand-derivation landed on the same numbers the sweep
-   observed -- that's corroboration, not the derivation method itself.)
+   itself prove it's the *minimum*, and it never by itself proves the path
+   taken to reach it was legitimate (see the `labels-due-date-combo`
+   correction above: `actual=1` was reachable, and still not the optimum).
+   Never set `optimalCallCount` equal to an observed `actual` without
+   independently deriving that same number from the tool schemas first --
+   if the independent derivation lands somewhere else, the schemas win, not
+   the transcript.
 2. Credit a composite's full capability when the scenario's own prompt is a
    direct match for what it does (`bulk-set-bucket`, `q3-offsite-kanban`,
-   `setup-kanban-composite` -- all genuinely 1 call via `setup-kanban`).
-3. A composite may still be creditable even when its designed purpose
-   doesn't literally match the ask, PROVIDED the prompt describes an END
-   STATE rather than PRESCRIBING A PROCESS, and a live sweep has actually
-   demonstrated the shortcut (`labels-due-date-combo`'s placeholder-column
-   use of `setup-kanban` -- see its description). A prompt that prescribes
-   a specific sequence (e.g. `bulk-priority-bump`'s "create N tasks, THEN in
-   one bulk update...") must be solved in that sequence -- front-loading the
-   target value at creation time would pass the `verify` checks but is not a
-   faithful solve of what was actually asked, so it is never credited.
+   `setup-kanban-composite` -- all genuinely 1 call via `setup-kanban`,
+   because each of those prompts explicitly asks for a Kanban board with
+   named columns).
+3. A composite is creditable on a scenario whose prompt does NOT literally
+   ask for what the composite is designed for ONLY if reaching that call
+   count requires NO structure, view, board, column, or other state the
+   prompt did not ask for. "Describes an end state rather than prescribing
+   a process" is necessary but never sufficient by itself -- it does not
+   license fabricating unrequested state to reach that end state more
+   cheaply. Concretely: `setup-kanban`'s placeholder-column trick is
+   permanently NOT creditable on any scenario whose prompt doesn't itself
+   ask for a Kanban board, no matter how cheap a sweep shows it to be --
+   this is exactly the `labels-due-date-combo` mistake, and it is the same
+   reason the honest path (create-project + create-label + bulk-create with
+   labels/dueDate = 3) is the real floor there. Separately, a prompt that
+   prescribes a specific sequence (e.g. `bulk-priority-bump`'s "create N
+   tasks, THEN in one bulk update...") must be solved in that sequence --
+   front-loading the target value at creation time would pass the `verify`
+   checks but is not a faithful solve of what was actually asked, so it is
+   never credited either, even though it fabricates no extra state.
 4. Do NOT apply an available shortcut to every scenario it could
    theoretically reach just because it's technically possible. Nearly every
    "create a project with N tasks" scenario in this library could be
    collapsed to 1 call by feeding `setup-kanban` a throwaway placeholder
-   column -- doing that unconditionally would fabricate unrequested Kanban
-   boards across the whole suite and collapse almost every `optimalCallCount`
-   to 1, destroying the harness's ability to ever show friction again. Only
-   apply it where evidenced (rule 3) or where it's the tool's actual
-   designed purpose (rule 2); otherwise keep the natural, intended-use
-   derivation, and say so explicitly in the scenario's `description` (see
-   `mixed-priority-batch.json`, `single-task-smoke.json` for scenarios that
-   explicitly decline the shortcut and state why).
+   column -- doing that unconditionally (or even selectively, per rule 3)
+   would fabricate unrequested Kanban boards across the suite and collapse
+   almost every `optimalCallCount` to 1, destroying the harness's ability to
+   ever show friction again. Only apply a composite's shortcut where it's
+   the tool's actual designed purpose for that prompt (rule 2); otherwise
+   keep the natural, intended-use derivation, and say so explicitly in the
+   scenario's `description` (see `mixed-priority-batch.json`,
+   `single-task-smoke.json` for scenarios that explicitly decline the
+   shortcut and state why).
 5. Record the reasoning in the scenario's own `description` field (this
    schema has no separate "why" field -- `ScenarioSchema.parse` silently
    strips unknown keys, so `description` is the only place a comment
    survives load time). State which specific calls make up the optimum,
    e.g. `"create (1) + bulk-create (1) + apply-label with taskIds (1) = 3"`.
-   If the optimum is now genuinely 1, say so plainly rather than padding it
-   back up for the sake of a "more interesting" ratio.
+   If the optimum is genuinely 1, say so plainly rather than padding it back
+   up for the sake of a "more interesting" ratio -- but "genuinely 1" must
+   survive rule 3's test first.
 
 ## Testing the harness itself (no live Claude needed)
 
