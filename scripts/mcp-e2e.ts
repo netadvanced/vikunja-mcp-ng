@@ -342,6 +342,19 @@ function extractAllIds(text: string): number[] {
   return [...text.matchAll(/"id":\s*(-?\d+)/g)].map((m) => Number(m[1]));
 }
 
+/**
+ * Extracts bucket `title`s from a `list-buckets` response's raw JSON dump,
+ * IN THE ORDER the server returned them (i.e. the actual board order — see
+ * `formatObjectData` in src/utils/simple-response.ts, which JSON.stringifies
+ * the `buckets` array verbatim, preserving server order). This is the only
+ * way this harness can see column ORDER rather than just bucket count/names
+ * — see issue #173's setup-kanban position-0 regression, which every
+ * COUNT-only assertion here missed.
+ */
+function extractBucketTitlesInOrder(text: string): string[] {
+  return [...text.matchAll(/"title":\s*"([^"]*)"/g)].map((m) => m[1] as string);
+}
+
 // ============================================================================
 // Cleanup-by-name-prefix (idempotent: safe to run even after a failed prior run)
 // ============================================================================
@@ -1467,6 +1480,16 @@ async function testSetupKanban(h: McpHarness): Promise<void> {
       bucketIds.length === 3,
       `expected 3 bucket ids, got: ${buckets.text.slice(0, 300)}`,
     );
+    // ORDER, not just count/contents (issue #173 — this is the exact check
+    // that was missing and let the position-0 regression ship: bucket COUNT
+    // and NAMES were both correct while the first column silently landed
+    // last on the board).
+    const bucketOrder = extractBucketTitlesInOrder(buckets.text);
+    assertStep(
+      'setup-kanban (new project) buckets come back in the requested column order',
+      bucketOrder.join('|') === ['To Do', 'Doing', 'Done'].join('|'),
+      `expected order [To Do, Doing, Done], got: [${bucketOrder.join(', ')}]`,
+    );
   }
 
   // Idempotent-ish reuse: calling setup-kanban again on the SAME project id
@@ -1491,6 +1514,16 @@ async function testSetupKanban(h: McpHarness): Promise<void> {
       'setup-kanban reuse does not create duplicate buckets',
       bucketIds.length === 3,
       `expected still 3 bucket ids after reuse, got: ${bucketsAfterReuse.text.slice(0, 300)}`,
+    );
+    // Same order check on the REUSE path (existing-project, all-exact-match
+    // reuse) — a separate code path (`resolveColumns`' 'exact' branch) from
+    // the new-project 'created' branch checked above, and the one the
+    // coordinator's live probe exercised directly.
+    const bucketOrderAfterReuse = extractBucketTitlesInOrder(bucketsAfterReuse.text);
+    assertStep(
+      'setup-kanban (existing project reuse) buckets come back in the requested column order',
+      bucketOrderAfterReuse.join('|') === ['To Do', 'Doing', 'Done'].join('|'),
+      `expected order [To Do, Doing, Done], got: [${bucketOrderAfterReuse.join(', ')}]`,
     );
   }
 

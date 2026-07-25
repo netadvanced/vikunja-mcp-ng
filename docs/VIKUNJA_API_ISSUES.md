@@ -320,4 +320,22 @@ curl -X PUT 'https://your-vikunja-instance.com/api/v1/projects/1' \
 
 **Impact:** The MCP server now includes the project title when archiving/unarchiving to work around this validation requirement.
 
+## 11. Bucket `position: 0` Is Indistinguishable From Omitted (issue #173)
+
+**Status:** Workaround implemented (2026-07-25, `src/tools/projects/kanban-setup.ts`)
+
+**Description:** `models.Bucket.position` is a plain (non-pointer) `float64` on the wire. A client explicitly sending `"position": 0` is byte-for-byte indistinguishable, server-side, from a client that omitted `position` entirely. When Vikunja cannot tell the two apart, it substitutes its own id-derived default (`bucket.id * 65536`) instead of honoring "first in the ordering".
+
+**Reproduction (live-verified against Vikunja 2.4.0):** `PUT` three buckets with `position: 0`, `position: 1`, `position: 2` respectively, then read them back via `GET /projects/{id}/views/{id}/buckets`:
+```
+sent position 0 -> server stored 8585216 (= bucket id 131 * 65536, its own default)
+sent position 1 -> stored 1 (honored)
+sent position 2 -> stored 2 (honored)
+```
+Resulting board order: Col-1, Col-2, &lt;default buckets&gt;, Col-0 — the column meant to be FIRST landed dead LAST.
+
+**Workaround:** Never send a literal `position: 0`. `setupKanban`'s `bucketPositionForIndex` helper pins every bucket position to a **1-based**, 65536-spaced value (`(index + 1) * 65536`) — matching the `id * 65536` lane spacing Vikunja itself uses — so every value this composite sends is guaranteed non-zero and therefore always honored.
+
+**Impact:** Any code that programmatically sets `Bucket.position` (not just `setup-kanban`) must avoid a literal `0` for the first item in an ordered sequence. This is easy to reintroduce by "simplifying" a 1-based position helper back to a 0-based `index * step` — see the comment on `bucketPositionForIndex` for why that would silently regress this fix.
+
 *These issues were discovered during development of the Vikunja MCP Server*

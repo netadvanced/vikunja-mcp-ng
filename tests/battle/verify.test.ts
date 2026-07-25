@@ -228,6 +228,100 @@ describe('runVerification / project-has-share', () => {
   });
 });
 
+describe('runVerification / buckets-in-order', () => {
+  it('passes when buckets come back from the server in exactly the expected order', async () => {
+    const client = new FakeRestClient();
+    client.projects = [{ id: 7, title: 'battle-x-Product Launch' }];
+    client.buckets[7] = [
+      { id: 10, title: 'Backlog' },
+      { id: 11, title: 'In Progress' },
+      { id: 12, title: 'Review' },
+      { id: 13, title: 'Done' },
+    ];
+    const checks: VerifyCheck[] = [
+      {
+        type: 'buckets-in-order',
+        projectTitleContains: 'Product Launch',
+        order: ['Backlog', 'In Progress', 'Review', 'Done'],
+      },
+    ];
+    const verdict = await runVerification(scenario(), checks, client);
+    expect(verdict.passed).toBe(true);
+  });
+
+  it('fails when the first expected column lands last (issue #173 regression shape)', async () => {
+    const client = new FakeRestClient();
+    client.projects = [{ id: 7, title: 'battle-x-Product Launch' }];
+    // Reproduces the coordinator's live probe: sending position 0 for the
+    // FIRST column let the server substitute its own id-derived default,
+    // pushing that column to the back of the returned order.
+    client.buckets[7] = [
+      { id: 11, title: 'In Progress' },
+      { id: 12, title: 'Review' },
+      { id: 13, title: 'Done' },
+      { id: 10, title: 'Backlog' },
+    ];
+    const checks: VerifyCheck[] = [
+      {
+        type: 'buckets-in-order',
+        projectTitleContains: 'Product Launch',
+        order: ['Backlog', 'In Progress', 'Review', 'Done'],
+      },
+    ];
+    const verdict = await runVerification(scenario(), checks, client);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('Backlog');
+  });
+
+  it('ignores buckets not named in `order` (e.g. a leftover default bucket in a reuse scenario)', async () => {
+    const client = new FakeRestClient();
+    client.projects = [{ id: 7, title: 'battle-x-Board' }];
+    client.buckets[7] = [
+      { id: 10, title: 'To Do' },
+      { id: 99, title: 'Unclaimed Leftover' },
+      { id: 11, title: 'Doing' },
+      { id: 12, title: 'Done' },
+    ];
+    const checks: VerifyCheck[] = [
+      { type: 'buckets-in-order', projectTitleContains: 'Board', order: ['To Do', 'Doing', 'Done'] },
+    ];
+    const verdict = await runVerification(scenario(), checks, client);
+    expect(verdict.passed).toBe(true);
+  });
+
+  it('matches column names case-insensitively', async () => {
+    const client = new FakeRestClient();
+    client.projects = [{ id: 7, title: 'battle-x-Board' }];
+    client.buckets[7] = [{ id: 10, title: 'to do' }, { id: 11, title: 'DOING' }];
+    const checks: VerifyCheck[] = [
+      { type: 'buckets-in-order', projectTitleContains: 'Board', order: ['To Do', 'Doing'] },
+    ];
+    const verdict = await runVerification(scenario(), checks, client);
+    expect(verdict.passed).toBe(true);
+  });
+
+  it('fails when an expected column is missing entirely', async () => {
+    const client = new FakeRestClient();
+    client.projects = [{ id: 7, title: 'battle-x-Board' }];
+    client.buckets[7] = [{ id: 10, title: 'To Do' }, { id: 11, title: 'Doing' }];
+    const checks: VerifyCheck[] = [
+      { type: 'buckets-in-order', projectTitleContains: 'Board', order: ['To Do', 'Doing', 'Done'] },
+    ];
+    const verdict = await runVerification(scenario(), checks, client);
+    expect(verdict.passed).toBe(false);
+  });
+
+  it('fails cleanly when the project itself does not exist', async () => {
+    const client = new FakeRestClient();
+    const checks: VerifyCheck[] = [
+      { type: 'buckets-in-order', projectTitleContains: 'nope', order: ['To Do', 'Done'] },
+    ];
+    const verdict = await runVerification(scenario(), checks, client);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('no project with title containing');
+  });
+});
+
 describe('runVerification / overall verdict', () => {
   it('passes only when every check passes', async () => {
     const client = new FakeRestClient();

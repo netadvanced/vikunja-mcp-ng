@@ -9,6 +9,11 @@
     { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Product Launch", "min": 8 },
     { "type": "min-buckets-in-project", "projectTitleContains": "{{prefix}}Product Launch", "min": 4 },
     { "type": "buckets-with-tasks-count", "projectTitleContains": "{{prefix}}Product Launch", "min": 4 },
+    {
+      "type": "buckets-in-order",
+      "projectTitleContains": "{{prefix}}Product Launch",
+      "order": ["Backlog", "In Progress", "Review", "Done"]
+    },
     { "type": "tasks-field-match-count", "projectTitleContains": "{{prefix}}Product Launch", "field": "priority", "op": "set", "min": 6 },
     {
       "type": "tasks-due-date-in-range",
