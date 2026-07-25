@@ -17,6 +17,27 @@ Nothing yet.
 
 
 
+
+## [0.6.1] - 2026-07-25
+
+_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._
+
+### Added
+
+- apply-label/remove-label across multiple tasks + id alias for bulk-create-subtasks (#178)
+- add setup-kanban composite for one-call board provisioning (#173) (#175)
+
+### Fixed
+
+- revert labels-due-date-combo optimum to the honest 3-call path (netadvanced/vikunja-mcp#28 T1) (#180)
+- pin setup-kanban bucket positions to non-zero, 65536-spaced values (#177)
+- fail fast on unknown columns, recoverable partial responses (#176)
+- stop silently dropping the oldest commit in changelog drafts (#174)
+
+### Chores
+
+- re-baseline optimalCallCount + live e2e coverage for taskIds/id-alias (netadvanced/vikunja-mcp#28 C1) (#179)
+
 ## [0.6.0] - 2026-07-24
 
 A reliability and agent-ergonomics milestone on the Vikunja 2.4.0-aligned baseline (minimum
