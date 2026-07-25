@@ -156,21 +156,21 @@ transcript that revealed it).
 `scripts/battle/scenarios/*.json`, each validated against `ScenarioSchema`
 (`scripts/battle/types.ts`) at load time. Currently 13 scenarios:
 
-| id | probes |
-|---|---|
-| `q3-offsite-kanban` | Pierre's canonical example: a single sentence hiding a multi-step composite (project + 3-column Kanban + 10 tasks + priorities + due dates). `optimalCallCount` dropped from 15 to 1 once the `setup-kanban` composite (issue #173) shipped -- see `setup-kanban-composite` below |
-| `setup-kanban-composite` | added alongside issue #173's `setup-kanban` composite: a q3-offsite-kanban-style prompt (new project, 4-column board, 8 tasks distributed across columns, priorities, due dates) specifically probing whether the agent reaches for the one-call composite instead of hand-rolling create -> create-bucket (xN) -> bulk-create -> set-bucket/bulk-set-bucket (xN) |
-| `filter-high-priority-search` | the Vikunja filter query language (`docs/API_NOTES.md`'s filter notes) |
-| `share-project-by-user` | project link-sharing discoverability |
-| `subtask-breakdown` | subtask creation (Vikunja has no first-class subtask resource -- it's a task relation under the hood) |
-| `bulk-create-subtasks` | bulk-create-subtasks composite discoverability vs. one `create-subtask` call per subtask |
-| `bulk-priority-bump` | bulk-edit discoverability vs. one-call-per-task |
-| `bulk-set-bucket` | bulk-set-bucket composite discoverability vs. moving each task into its Kanban column one at a time |
-| `labels-due-date-combo` | label creation + application + due dates combined in one ask (create-then-apply path only) |
-| `single-task-smoke` | deliberately the simplest, most deterministic scenario -- use this one for a first try or a live-smoke proof (see the note on `optimalCallCount` below -- it is no longer necessarily the global minimum by raw call count, but remains the designated smoke-test scenario) |
-| `mixed-priority-batch` | varying a per-item field within a single batch-creation call |
-| `existing-label-reuse` | applying an already-existing label (find-then-apply path -- seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open) |
-| `project-rename-share` | project create + rename + share-by-name in one prompt -- probes the `title`-vs-`name` field-naming footgun (`vikunja_projects`' flat args object has both) and exercises the share-by-name composite (`create-share` with a `name`) |
+| id | optimal | probes |
+|---|---|---|
+| `q3-offsite-kanban` | 1 | Pierre's canonical example: a single sentence hiding a multi-step composite (project + 3-column Kanban + 10 tasks + priorities + due dates). `optimalCallCount` dropped from 15 to 1 once the `setup-kanban` composite (issue #173) shipped -- see `setup-kanban-composite` below |
+| `setup-kanban-composite` | 1 | added alongside issue #173's `setup-kanban` composite: a q3-offsite-kanban-style prompt (new project, 4-column board, 8 tasks distributed across columns, priorities, due dates) specifically probing whether the agent reaches for the one-call composite instead of hand-rolling create -> create-bucket (xN) -> bulk-create -> set-bucket/bulk-set-bucket (xN) |
+| `filter-high-priority-search` | 3 | the Vikunja filter query language (`docs/API_NOTES.md`'s filter notes) |
+| `share-project-by-user` | 3 | project link-sharing discoverability |
+| `subtask-breakdown` | 3 | subtask creation (Vikunja has no first-class subtask resource -- it's a task relation under the hood). Re-baselined 2026-07-25 from 5 to 3: `bulk-create-subtasks` reaches the same end state in one call instead of one `create-subtask` call per subtask -- see "Re-baselining `optimalCallCount`" below |
+| `bulk-create-subtasks` | 3 | bulk-create-subtasks composite discoverability vs. one `create-subtask` call per subtask |
+| `bulk-priority-bump` | 3 | bulk-edit discoverability vs. one-call-per-task |
+| `bulk-set-bucket` | 1 | bulk-set-bucket composite discoverability vs. moving each task into its Kanban column one at a time. Re-baselined 2026-07-25 from 9 to 1: this scenario's prompt is a verbatim match for `setup-kanban` (PR #175) -- see "Re-baselining `optimalCallCount`" below |
+| `labels-due-date-combo` | 1 | label creation + application + due dates combined in one ask. Re-baselined 2026-07-25 from 3 to 1: `setup-kanban`'s per-task `labels`/`dueDate` fields reach the same end state in one call even without a Kanban board being requested -- see "Re-baselining `optimalCallCount`" below |
+| `single-task-smoke` | 2 | deliberately the simplest, most deterministic scenario -- use this one for a first try or a live-smoke proof (see the note on `optimalCallCount` below -- it is no longer necessarily the global minimum by raw call count, but remains the designated smoke-test scenario) |
+| `mixed-priority-batch` | 2 | varying a per-item field within a single batch-creation call |
+| `existing-label-reuse` | 3 | applying an already-existing label (find-then-apply path -- seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open) |
+| `project-rename-share` | 3 | project create + rename + share-by-name in one prompt -- probes the `title`-vs-`name` field-naming footgun (`vikunja_projects`' flat args object has both) and exercises the share-by-name composite (`create-share` with a `name`) |
 
 ### Live evidence runs
 
@@ -183,7 +183,14 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
   bulk-apply composite exists), 0 validation errors, 0 retries, agent found
   the seeded label via `vikunja_labels list --search` and applied its
   existing id to all 3 tasks -- no duplicate label created. Confirms the
-  parked **label-ensure composite** verdict; stays parked.
+  parked **label-ensure composite** verdict; stays parked. UPDATE 2026-07-25:
+  `apply-label`/`remove-label` now accept `taskIds` (PR #178), so "no
+  bulk-apply composite exists" is no longer true as of this writing -- a
+  re-run today could plausibly do the 3-task apply in one `apply-label`
+  call with `taskIds` + `labelTitles` instead of three individual calls.
+  `optimalCallCount` stays 3 either way (see the scenario file's own
+  description) -- this note only corrects the "no bulk-apply composite"
+  claim, which was accurate on 2026-07-20 but is stale now.
 - `project-rename-share` -- last run 2026-07-20, **PASS verification, but
   high friction, REOPENED**: 15 calls vs. optimal 3 (5.0x), 3 validation
   errors, 3 retries. The agent's first `create-share` call passed `title`
@@ -255,7 +262,10 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
    already available (`bulk-create` accepts per-task `priority`/`dueDate`/
    `labels` in one call, `create-subtask`, `share-with-user`, etc.) --
    the estimate should reflect what's *possible* with this tool surface,
-   not a naive one-call-per-field count.
+   not a naive one-call-per-field count. State the reasoning inline in the
+   scenario's own `description` field (e.g. "create-project (1) + bulk-create
+   (1) + apply-label with taskIds (1) = 3") -- see "Re-baselining
+   `optimalCallCount`" below for the full policy this estimate must follow.
 5. Add a unit test in `tests/battle/scenario.test.ts` if the check verifies
    a shape not already covered.
 6. If the scenario needs the agent to act on pre-existing data (rather than
@@ -264,6 +274,77 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
    see `existing-label-reuse.json` and `scripts/battle/lib/setup.ts`.
 7. `npm run battle -- --list` to confirm it loads and validates.
 8. `npm run battle -- --scenario <id> --model haiku` for a cheap first run.
+
+### Re-baselining `optimalCallCount`
+
+The friction report ranks scenarios by `callCountRatio` (actual calls /
+`optimalCallCount`), so a stale `optimalCallCount` makes that ranking
+meaningless -- worse, an `optimalCallCount` the agent routinely *beats*
+isn't an optimum at all, it just makes every run of that scenario look
+artificially cheap. `optimalCallCount` is not a one-time estimate: it must
+be re-derived whenever a new composite tool ships that changes what's
+*possible* on this tool surface, the same way the coverage-threshold ratchet
+in `CLAUDE.md` only ever moves in the direction of the evidence.
+
+**A controlled haiku sweep on 2026-07-25 (main @ `8c49b68`)** found three
+scenarios where `actual < optimalCallCount` -- direct proof the recorded
+optimum was stale, because two composites had shipped after those estimates
+were written:
+
+| scenario | actual | old optimal | new optimal | why |
+|---|---|---|---|---|
+| `bulk-set-bucket` | 1 | 9 | 1 | `setup-kanban` (PR #175) is a verbatim match for this scenario's own ask (new project + Kanban columns + tasks distributed across them) |
+| `labels-due-date-combo` | 1 | 3 | 1 | `setup-kanban`'s per-task `labels`/`dueDate` fields plus a placeholder `columns` entry reach the same end state in one call, even though no Kanban board was requested -- see the scenario file's own description for why this is credited here but not elsewhere |
+| `subtask-breakdown` | 3 | 5 | 3 | `bulk-create-subtasks` (already shipped, but this scenario's optimum still assumed one `create-subtask` call per subtask) |
+
+**The two capabilities behind this sweep**, both landed since the last
+full re-baseline:
+
+- `vikunja_task_labels` `apply-label`/`remove-label` accept `taskIds: number[]`
+  -- N tasks in ONE call instead of one call per task (PR #178).
+- `vikunja_projects` `setup-kanban` provisions an entire board (project +
+  ordered buckets + tasks placed into columns) in ONE call (PR #175, issue
+  #173).
+
+**The policy, so the next re-baseline doesn't have to re-litigate this**:
+
+1. Re-derive `optimalCallCount` by reading the CURRENT tool schemas
+   (`src/tools/**`), never by copying the observed `actual` from a sweep --
+   an agent's transcript proves a number is *reachable*, it doesn't by
+   itself prove it's the *minimum*. (In practice, for the three scenarios
+   above, independent hand-derivation landed on the same numbers the sweep
+   observed -- that's corroboration, not the derivation method itself.)
+2. Credit a composite's full capability when the scenario's own prompt is a
+   direct match for what it does (`bulk-set-bucket`, `q3-offsite-kanban`,
+   `setup-kanban-composite` -- all genuinely 1 call via `setup-kanban`).
+3. A composite may still be creditable even when its designed purpose
+   doesn't literally match the ask, PROVIDED the prompt describes an END
+   STATE rather than PRESCRIBING A PROCESS, and a live sweep has actually
+   demonstrated the shortcut (`labels-due-date-combo`'s placeholder-column
+   use of `setup-kanban` -- see its description). A prompt that prescribes
+   a specific sequence (e.g. `bulk-priority-bump`'s "create N tasks, THEN in
+   one bulk update...") must be solved in that sequence -- front-loading the
+   target value at creation time would pass the `verify` checks but is not a
+   faithful solve of what was actually asked, so it is never credited.
+4. Do NOT apply an available shortcut to every scenario it could
+   theoretically reach just because it's technically possible. Nearly every
+   "create a project with N tasks" scenario in this library could be
+   collapsed to 1 call by feeding `setup-kanban` a throwaway placeholder
+   column -- doing that unconditionally would fabricate unrequested Kanban
+   boards across the whole suite and collapse almost every `optimalCallCount`
+   to 1, destroying the harness's ability to ever show friction again. Only
+   apply it where evidenced (rule 3) or where it's the tool's actual
+   designed purpose (rule 2); otherwise keep the natural, intended-use
+   derivation, and say so explicitly in the scenario's `description` (see
+   `mixed-priority-batch.json`, `single-task-smoke.json` for scenarios that
+   explicitly decline the shortcut and state why).
+5. Record the reasoning in the scenario's own `description` field (this
+   schema has no separate "why" field -- `ScenarioSchema.parse` silently
+   strips unknown keys, so `description` is the only place a comment
+   survives load time). State which specific calls make up the optimum,
+   e.g. `"create (1) + bulk-create (1) + apply-label with taskIds (1) = 3"`.
+   If the optimum is now genuinely 1, say so plainly rather than padding it
+   back up for the sake of a "more interesting" ratio.
 
 ## Testing the harness itself (no live Claude needed)
 

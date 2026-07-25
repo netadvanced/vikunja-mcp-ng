@@ -1,7 +1,7 @@
 {
   "id": "single-task-smoke",
   "title": "Single-task smoke test (cheapest scenario)",
-  "description": "Deliberately the cheapest, simplest scenario in the library -- exists so `npm run battle -- --scenario single-task-smoke --model haiku` can prove the whole harness's plumbing end-to-end without spending much on the live smoke test (see docs/BATTLE-TESTING.md).",
+  "description": "Deliberately the cheapest, simplest scenario in the library -- exists so `npm run battle -- --scenario single-task-smoke --model haiku` can prove the whole harness's plumbing end-to-end without spending much on the live smoke test (see docs/BATTLE-TESTING.md). RE-VERIFIED 2026-07-25 (netadvanced/vikunja-mcp#28 C1): optimalCallCount reasoning unchanged -- create-project (1) + create-task with priority set at creation (1) = 2. setup-kanban (PR #175) could technically also reach 1 call here via a placeholder column, but that reduction is deliberately NOT credited: this scenario's whole purpose is to stay the simplest, most primitive two-call baseline for a cheap smoke run, not to chase the global minimum (see tests/battle/scenario.test.ts's 'single-task-smoke remains the designated cheap live-smoke-test scenario' and docs/BATTLE-TESTING.md's re-baselining policy).",
   "promptTemplate": "Create a project called \"{{prefix}}Smoke Test\" and add one task called \"{{prefix}}hello world\" with priority 3.",
   "optimalCallCount": 2,
   "verify": [

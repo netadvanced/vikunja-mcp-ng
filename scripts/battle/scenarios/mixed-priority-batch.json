@@ -1,7 +1,7 @@
 {
   "id": "mixed-priority-batch",
   "title": "Mixed-priority batch creation",
-  "description": "Probes whether the agent correctly varies a per-item field (priority) within a single batch creation request, rather than collapsing everything to one value or issuing one call per task.",
+  "description": "Probes whether the agent correctly varies a per-item field (priority) within a single batch creation request, rather than collapsing everything to one value or issuing one call per task. RE-VERIFIED 2026-07-25 (netadvanced/vikunja-mcp#28 C1): optimalCallCount reasoning unchanged -- create-project (1) + bulk-create 6 tasks with per-task `priority` values in the same call (1) = 2. Neither PR #178 (label taskIds) nor PR #175 (setup-kanban) changes this: there is no label or Kanban dimension to this ask, and setup-kanban would only save the same 1 call at the cost of fabricating an unrequested Kanban board -- deliberately not credited here (see docs/BATTLE-TESTING.md's re-baselining policy) since it would erode this scenario's own signal (does the agent vary a per-item field within ONE bulk-create, not just any single call).",
   "promptTemplate": "Create a project called \"{{prefix}}Feature Backlog\" with 6 tasks: two low priority (priority 1) called \"{{prefix}}low-N\", two medium priority (priority 3) called \"{{prefix}}med-N\", and two high priority (priority 5) called \"{{prefix}}high-N\" (N=1..2 within each group).",
   "optimalCallCount": 2,
   "verify": [
