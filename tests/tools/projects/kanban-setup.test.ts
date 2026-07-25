@@ -191,6 +191,9 @@ describe('setupKanban', () => {
       expect(text).toContain('**projectCreated:** true');
       expect(text).toContain('3/3 columns ready');
       expect(text).toContain('3/3 tasks created');
+      // Project id in the `(ID: N)`-extractable format scripts/mcp-e2e.ts's
+      // extractId parses.
+      expect(text).toContain('project 501 created (ID: 501)');
 
       // Buckets created in requested order with explicit, index-based positions.
       const bucketCreateCalls = router.calls.filter(
@@ -269,8 +272,61 @@ describe('setupKanban', () => {
     });
   });
 
-  describe('unknown column name on a task', () => {
-    it('creates the task but reports created-not-placed with a clear reason', async () => {
+  describe('unknown column name on a task (fail fast)', () => {
+    it('rejects the whole call up front with a VALIDATION_ERROR, before any API call is made', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      // No routes registered at all — if setupKanban made ANY request, the
+      // router would throw "Unmocked request in test", failing this test.
+      let caught: unknown;
+      try {
+        await setupKanban(
+          {
+            title: 'Board',
+            columns: ['To Do', 'Done'],
+            tasks: [{ title: 'Mystery task', column: 'Review' }],
+          },
+          authManager,
+        );
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(MCPError);
+      expect((caught as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+      const message = (caught as MCPError).message;
+      // Names the offending column, the task title, and the valid columns.
+      expect(message).toContain('"Review"');
+      expect(message).toContain('Mystery task');
+      expect(message).toContain('To Do, Done');
+
+      // Zero API calls — no project, view, bucket, or task was created.
+      expect(router.calls).toHaveLength(0);
+    });
+
+    it('still rejects up front even when other tasks in the same call name valid columns', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      await expect(
+        setupKanban(
+          {
+            title: 'Board',
+            columns: ['To Do', 'Done'],
+            tasks: [
+              { title: 'Good task', column: 'To Do' },
+              { title: 'Mystery task', column: 'Review' },
+            ],
+          },
+          authManager,
+        ),
+      ).rejects.toThrow('which is not one of the requested columns');
+
+      expect(router.calls).toHaveLength(0);
+    });
+
+    it('does not reject a task with no column at all (not an error)', async () => {
       const router = createRouter();
       global.fetch = router.fetchImpl as unknown as typeof fetch;
 
@@ -299,20 +355,14 @@ describe('setupKanban', () => {
         {
           title: 'Board',
           columns: ['To Do', 'Done'],
-          tasks: [{ title: 'Mystery task', column: 'Review' }],
+          tasks: [{ title: 'Unplaced task' }],
         },
         authManager,
       );
 
       const text = result.content[0]?.text ?? '';
-      expect(text).toContain('Kanban setup partially completed');
-      expect(text).toContain('Created but not placed');
-      expect(text).toContain('is not one of the requested columns');
-      expect(text).toContain('Mystery task');
-
-      // The task was still created — no move call was ever attempted.
-      const moveCalls = router.calls.filter((c) => /\/buckets\/\d+\/tasks$/.test(c.path));
-      expect(moveCalls).toHaveLength(0);
+      expect(text).toContain('Kanban setup completed');
+      expect(text).toContain('1/1 tasks created');
     });
   });
 
@@ -577,6 +627,12 @@ describe('setupKanban', () => {
       expect(text).toContain('Kanban setup partially completed');
       expect(text).toContain('Created but not placed');
       expect(text).toContain('Stuck task');
+
+      // The project id must still be recoverable from a partial-failure
+      // response, in the SAME `(ID: N)`-extractable format the success path
+      // uses (scripts/mcp-e2e.ts's extractId parses this) — not just bare
+      // prose ("project 210 created") that no extractor can parse.
+      expect(text).toContain('project 210 created (ID: 210)');
     });
   });
 
