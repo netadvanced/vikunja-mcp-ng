@@ -105,6 +105,33 @@ const ProjectHasShareCheck = z.object({
   projectTitleContains: z.string().min(1),
 });
 
+/**
+ * Asserts a project's Kanban buckets appear in a specific NAMED order (issue
+ * #173's setup-kanban position-0 regression -- live-verified against
+ * Vikunja 2.4.0: a bucket pinned to `position: 0` is wire-indistinguishable
+ * from an omitted position, so the server substituted its own id-derived
+ * default and the column meant to be FIRST landed dead LAST on the board).
+ * Neither `min-buckets-in-project` nor `buckets-with-tasks-count` can catch
+ * this -- both only look at bucket COUNT/CONTENTS, which stay correct even
+ * when the board is scrambled.
+ *
+ * `order` names the EXPECTED columns, in the order they should appear. Any
+ * buckets NOT in `order` (e.g. leftover default buckets in an
+ * existing-project reuse scenario) are ignored -- the check only asserts the
+ * RELATIVE order of the named buckets among themselves, matched
+ * case-insensitively against `VikunjaBucket.title` (see `runCheck`'s
+ * 'buckets-in-order' branch). Only meaningful for a scenario whose prompt
+ * fixes the column names up front -- a scenario that leaves column naming to
+ * the agent (e.g. q3-offsite-kanban's "a kanban board with three columns",
+ * no names given) cannot use this check, since there is no fixed `order` to
+ * assert against.
+ */
+const BucketsInOrderCheck = z.object({
+  type: z.literal('buckets-in-order'),
+  projectTitleContains: z.string().min(1),
+  order: z.array(z.string().min(1)).min(1),
+});
+
 // zod's discriminatedUnion needs the literal discriminator field name and the
 // list of object schemas; kept as a builder function below the individual
 // schemas so each branch above stays readable in isolation.
@@ -120,6 +147,7 @@ function buildVerifyCheckSchema() {
     TasksWithLabelCountCheck,
     TaskHasSubtasksCheck,
     ProjectHasShareCheck,
+    BucketsInOrderCheck,
   ]);
 }
 

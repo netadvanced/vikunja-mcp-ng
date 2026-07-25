@@ -195,17 +195,32 @@ describe('setupKanban', () => {
       // extractId parses.
       expect(text).toContain('project 501 created (ID: 501)');
 
-      // Buckets created in requested order with explicit, index-based positions.
+      // Buckets created in requested order with explicit, non-zero,
+      // 65536-spaced positions (issue #173 — an explicit `position: 0` is
+      // wire-indistinguishable from an omitted position, so the FIRST
+      // column's request must never carry a literal 0; see
+      // `bucketPositionForIndex`'s doc comment for the full mechanics).
       const bucketCreateCalls = router.calls.filter(
         (c) => c.method === 'PUT' && c.path === '/projects/501/views/11/buckets',
       );
       expect(bucketCreateCalls).toHaveLength(3);
       expect((bucketCreateCalls[0]?.body as { title: string; position: number }).title).toBe('To Do');
-      expect((bucketCreateCalls[0]?.body as { title: string; position: number }).position).toBe(0);
+      expect((bucketCreateCalls[0]?.body as { title: string; position: number }).position).toBe(65536);
       expect((bucketCreateCalls[1]?.body as { title: string; position: number }).title).toBe('Doing');
-      expect((bucketCreateCalls[1]?.body as { title: string; position: number }).position).toBe(1);
+      expect((bucketCreateCalls[1]?.body as { title: string; position: number }).position).toBe(131072);
       expect((bucketCreateCalls[2]?.body as { title: string; position: number }).title).toBe('Done');
-      expect((bucketCreateCalls[2]?.body as { title: string; position: number }).position).toBe(2);
+      expect((bucketCreateCalls[2]?.body as { title: string; position: number }).position).toBe(196608);
+
+      // Every requested position is non-zero and strictly increasing in
+      // requested-column order — the actual regression this item fixes.
+      const sentPositions = bucketCreateCalls.map(
+        (c) => (c.body as { position: number }).position,
+      );
+      expect(sentPositions.every((p) => p !== 0 && p > 0)).toBe(true);
+      expect(sentPositions).toEqual([...sentPositions].sort((a, b) => a - b));
+      for (let i = 1; i < sentPositions.length; i++) {
+        expect((sentPositions[i] as number) > (sentPositions[i - 1] as number)).toBe(true);
+      }
 
       // Every task got placed via the move endpoint.
       const moveCalls = router.calls.filter((c) => /\/buckets\/\d+\/tasks$/.test(c.path) && c.method === 'POST');
@@ -257,6 +272,9 @@ describe('setupKanban', () => {
         (c) => c.method === 'POST' && c.path === '/projects/77/views/20/buckets/302',
       );
       expect(doneUpdate).toBeDefined();
+      // Requested column index 2 ("Done" is the 3rd requested column) ->
+      // non-zero, 65536-spaced position — never a literal 0/1/2.
+      expect((doneUpdate?.body as { position?: number }).position).toBe(196608);
 
       // "Backlog" (id 301) was renamed to "To Do" (the first unmatched column) — a POST update, not a new bucket.
       const backlogRename = router.calls.find(
@@ -264,11 +282,31 @@ describe('setupKanban', () => {
       );
       expect(backlogRename).toBeDefined();
       expect((backlogRename?.body as { title?: string }).title).toBe('To Do');
+      // "To Do" is requested column index 0 — the FIRST column, the one this
+      // bug clobbered by sending a literal `position: 0`. Must be non-zero.
+      expect((backlogRename?.body as { position?: number }).position).toBe(65536);
+      expect((backlogRename?.body as { position?: number }).position).not.toBe(0);
 
       // Only ONE brand-new bucket was created ("Doing" — no existing bucket left to reuse).
       const created = router.calls.filter((c) => c.method === 'PUT' && c.path === '/projects/77/views/20/buckets');
       expect(created).toHaveLength(1);
       expect((created[0]?.body as { title: string }).title).toBe('Doing');
+      // "Doing" is requested column index 1.
+      expect((created[0]?.body as { position?: number }).position).toBe(131072);
+
+      // Cross-cutting assertion: the actual VALUES sent across all three
+      // resolution paths (rename-reuse "To Do", create "Doing", exact-reuse
+      // "Done") are non-zero and strictly increasing in requested-column
+      // order — the real regression, not merely returned-array ordering.
+      const sentPositions = [
+        (backlogRename?.body as { position?: number }).position,
+        (created[0]?.body as { position?: number }).position,
+        (doneUpdate?.body as { position?: number }).position,
+      ] as number[];
+      expect(sentPositions.every((p) => p > 0)).toBe(true);
+      for (let i = 1; i < sentPositions.length; i++) {
+        expect((sentPositions[i] as number) > (sentPositions[i - 1] as number)).toBe(true);
+      }
     });
   });
 
@@ -485,9 +523,14 @@ describe('setupKanban', () => {
         (c) => c.method === 'POST' && c.path === '/projects/99/views/15/buckets/401',
       );
       // "To Do" is requested column index 0, "Done" is index 1 — regardless
-      // of their original positions (1 and 0, respectively) above.
-      expect((toDoUpdate?.body as { position?: number }).position).toBe(0);
-      expect((doneUpdate?.body as { position?: number }).position).toBe(1);
+      // of their original positions (1 and 0, respectively) above. Pinned to
+      // non-zero, 65536-spaced values — NOT the raw zero-based index (a
+      // literal `position: 0` for "To Do" is wire-indistinguishable from an
+      // omitted position and would silently let the server's own id-derived
+      // default win, sending "To Do" to the back of the board).
+      expect((toDoUpdate?.body as { position?: number }).position).toBe(65536);
+      expect((doneUpdate?.body as { position?: number }).position).toBe(131072);
+      expect((toDoUpdate?.body as { position?: number }).position).not.toBe(0);
     });
   });
 

@@ -51,10 +51,15 @@
  * this composite only ever creates, renames, or reuses; it never removes.
  *
  * Ordering guarantee: every bucket this composite touches — reused,
- * renamed, or newly created — has its `position` explicitly set to its
- * index in the requested `columns` array. This holds regardless of the
- * buckets' pre-existing positions, so the resulting board's column order
- * always matches the requested order exactly.
+ * renamed, or newly created — has its `position` explicitly pinned to a
+ * NON-ZERO, 65536-spaced value derived from its index in the requested
+ * `columns` array (`bucketPositionForIndex`: `(index + 1) * 65536`), never
+ * the raw zero-based index. This holds regardless of the buckets'
+ * pre-existing positions, so the resulting board's column order always
+ * matches the requested order exactly. The non-zero requirement is load
+ * bearing, not cosmetic — see `bucketPositionForIndex`'s doc comment for the
+ * omitted-vs-zero wire ambiguity that silently broke ordering for whichever
+ * column landed at index 0.
  *
  * Fail fast on an unknown column (issue #173 follow-up, live-harness
  * finding): every task's `column` (when given) is validated against the
@@ -192,11 +197,41 @@ function columnKey(name: string): string {
 }
 
 /**
+ * Lane-spacing step between pinned bucket positions (issue #173, live probe
+ * against Vikunja 2.4.0 — see PRs #175/#176). Matches the 2^16 spacing
+ * Vikunja itself uses between bucket ids' default (id * 65536) positions, so
+ * gaps this composite leaves are wide enough for a caller to slot another
+ * bucket in between afterwards without renumbering anything.
+ */
+const BUCKET_POSITION_STEP = 65536;
+
+/**
+ * Bucket position to pin for a column at `index` in the requested order.
+ *
+ * MUST be `(index + 1) * BUCKET_POSITION_STEP` — never `index * step`. This
+ * looks like an off-by-one waiting to be "simplified" away, but it isn't:
+ * `models.Bucket.position` is a plain (non-pointer) `float64` on the wire, so
+ * an explicit `position: 0` is byte-for-byte indistinguishable from an
+ * OMITTED position. When the request carries no distinguishable position,
+ * Vikunja substitutes its own id-derived default (`bucket.id * 65536`)
+ * instead of honoring "first". Live-probed against Vikunja 2.4.0: sending
+ * position 0/1/2 for three fresh buckets stored 8585216 (= id 131 * 65536,
+ * the server default) / 1 / 2 — the column meant to be FIRST landed dead
+ * LAST on the board every time. Starting the sequence at `1 * step` instead
+ * of `0 * step` keeps every value this composite sends non-zero, so it is
+ * always honored instead of silently discarded.
+ */
+function bucketPositionForIndex(index: number): number {
+  return (index + 1) * BUCKET_POSITION_STEP;
+}
+
+/**
  * Resolves (reuses, renames, or creates) the Kanban bucket for every
- * requested column, IN ORDER, pinning each bucket's `position` to its
- * column index so the resulting board order always matches the request —
- * see the module doc's "Ordering guarantee". Existing buckets not claimed
- * by any column are left untouched.
+ * requested column, IN ORDER, pinning each bucket's `position` to a
+ * non-zero, 65536-spaced value derived from its column index (see
+ * `bucketPositionForIndex`) so the resulting board order always matches the
+ * request — see the module doc's "Ordering guarantee". Existing buckets not
+ * claimed by any column are left untouched.
  */
 async function resolveColumns(
   authManager: AuthManager,
@@ -259,17 +294,18 @@ async function resolveColumns(
     try {
       let bucket: VikunjaBucket;
       let status: KanbanColumnOutcome['status'];
+      const position = bucketPositionForIndex(i);
       if (assignment.kind === 'exact') {
-        bucket = await updateBucketRaw(authManager, projectId, viewId, assignment.bucket, { position: i });
+        bucket = await updateBucketRaw(authManager, projectId, viewId, assignment.bucket, { position });
         status = 'reused';
       } else if (assignment.kind === 'leftover') {
         bucket = await updateBucketRaw(authManager, projectId, viewId, assignment.bucket, {
           title: name,
-          position: i,
+          position,
         });
         status = 'renamed';
       } else {
-        bucket = await createBucketRaw(authManager, projectId, viewId, { title: name, position: i });
+        bucket = await createBucketRaw(authManager, projectId, viewId, { title: name, position });
         status = 'created';
       }
 
