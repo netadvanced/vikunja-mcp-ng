@@ -137,4 +137,49 @@ describe('registerTaskLabelsTool', () => {
 
     expect(mockRemoveLabels).toHaveBeenCalledWith({ id: 5, labels: [1] }, expect.anything());
   });
+
+  // netadvanced/vikunja-mcp#28 `existing-label-reuse`: apply-label/remove-label
+  // accept `taskIds` (multiple tasks) as an alternative to `id` (single task).
+  it('describes taskIds as the multi-task alternative to id', () => {
+    const { server, getDescription } = makeMockServer();
+    registerTaskLabelsTool(server, makeAuthenticatedAuthManager());
+
+    const description = getDescription();
+    expect(description).toContain('taskIds');
+    expect(description).toMatch(/MULTIPLE tasks/);
+  });
+
+  it('threads taskIds through to applyLabels on apply-label', async () => {
+    mockApplyLabels.mockResolvedValue(okResult);
+    const { server, getHandler } = makeMockServer();
+    registerTaskLabelsTool(server, makeAuthenticatedAuthManager());
+
+    await getHandler()({
+      operation: 'apply-label',
+      taskIds: [5, 6],
+      labels: [1],
+    });
+
+    expect(mockApplyLabels).toHaveBeenCalledWith(
+      { id: undefined, taskIds: [5, 6], labels: [1], labelTitles: [] },
+      expect.anything(),
+    );
+  });
+
+  it('threads taskIds through to removeLabels on remove-label', async () => {
+    mockRemoveLabels.mockResolvedValue(okResult);
+    const { server, getHandler } = makeMockServer();
+    registerTaskLabelsTool(server, makeAuthenticatedAuthManager());
+
+    await getHandler()({
+      operation: 'remove-label',
+      taskIds: [5, 6],
+      labels: [1],
+    });
+
+    expect(mockRemoveLabels).toHaveBeenCalledWith(
+      { id: undefined, taskIds: [5, 6], labels: [1] },
+      expect.anything(),
+    );
+  });
 });

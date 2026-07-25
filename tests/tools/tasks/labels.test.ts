@@ -374,6 +374,123 @@ describe('Label operations', () => {
     });
   });
 
+  // netadvanced/vikunja-mcp#28 `existing-label-reuse`: apply-label previously
+  // accepted only a single `id`, forcing one call per task. `taskIds` lets
+  // one call apply the same label(s) to multiple tasks, resolving
+  // `labelTitles` ONCE and reporting per-task results honestly.
+  describe('applyLabels with taskIds (multi-task)', () => {
+    it('rejects when both id and taskIds are supplied', async () => {
+      await expect(
+        applyLabels({ id: 1, taskIds: [1, 2], labels: [1] }, authManager),
+      ).rejects.toThrow(/either `id`.*or `taskIds`|not both/i);
+    });
+
+    it('rejects when neither id nor taskIds is supplied', async () => {
+      await expect(applyLabels({ labels: [1] }, authManager)).rejects.toThrow(MCPError);
+    });
+
+    it('applies the same label ids to every task in taskIds', async () => {
+      const result = await applyLabels({ taskIds: [1, 2], labels: [7] }, authManager);
+
+      const putCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit)?.method === 'PUT',
+      );
+      expect(putCalls).toHaveLength(2);
+      const urls = putCalls.map(([url]) => url as string).sort();
+      expect(urls).toEqual([
+        'https://vikunja.test/api/v1/tasks/1/labels',
+        'https://vikunja.test/api/v1/tasks/2/labels',
+      ]);
+      expect(result.content[0].text).toContain('Labels applied to 2 task(s) successfully');
+    });
+
+    it('resolves labelTitles ONCE for the whole call and reuses the id across every task', async () => {
+      let searchCalls = 0;
+      let createCalls = 0;
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method;
+        const parsed = new URL(url);
+        if (method === 'GET' && parsed.pathname.endsWith('/labels') && parsed.searchParams.has('s')) {
+          searchCalls += 1;
+          return Promise.resolve(restOk([]));
+        }
+        if (method === 'PUT' && parsed.pathname === '/api/v1/labels') {
+          createCalls += 1;
+          return Promise.resolve(restOk({ id: 77, title: 'Urgent' }));
+        }
+        if (method === 'GET' && parsed.pathname.endsWith('/labels')) {
+          return Promise.resolve(restOk([]));
+        }
+        return Promise.resolve(restOk({}));
+      });
+
+      const result = await applyLabels(
+        { taskIds: [1, 2, 3], labelTitles: ['Urgent'] },
+        authManager,
+      );
+
+      // The title is resolved exactly once (one search, one create) no
+      // matter how many tasks are targeted.
+      expect(searchCalls).toBe(1);
+      expect(createCalls).toBe(1);
+
+      const applyCalls = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          (init as RequestInit)?.method === 'PUT' && /\/tasks\/\d+\/labels$/.test(url as string),
+      );
+      expect(applyCalls).toHaveLength(3);
+      for (const [, init] of applyCalls) {
+        expect(JSON.parse((init as RequestInit).body as string)).toEqual({ label_id: 77 });
+      }
+      expect(result.content[0].text).toContain('created');
+      expect(result.content[0].text).toContain('Urgent');
+    });
+
+    it('reports mixed success/failure honestly instead of a clean success', async () => {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method;
+        if (method === 'GET' && url.endsWith('/labels')) {
+          return Promise.resolve(restOk([]));
+        }
+        if (method === 'PUT' && /\/tasks\/2\/labels$/.test(url)) {
+          return Promise.resolve(restError(500, 'Server Error', 'boom'));
+        }
+        if (method === 'PUT') {
+          return Promise.resolve(restOk({}));
+        }
+        return Promise.resolve(restOk({}));
+      });
+
+      const result = await applyLabels({ taskIds: [1, 2], labels: [7] }, authManager);
+      const text = result.content[0].text;
+      expect(text).toContain('Labels applied to 1 of 2 task(s)');
+      expect(text).toContain('1 failed');
+      expect(text).toContain('Failed task IDs: 2');
+    });
+
+    it('throws when every task in the batch fails', async () => {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method;
+        if (method === 'GET' && url.endsWith('/labels')) {
+          return Promise.resolve(restOk([]));
+        }
+        if (method === 'PUT') {
+          return Promise.resolve(restError(500, 'Server Error', 'boom'));
+        }
+        return Promise.resolve(restOk({}));
+      });
+
+      await expect(applyLabels({ taskIds: [1, 2], labels: [7] }, authManager)).rejects.toThrow(
+        /Could not apply labels to any/,
+      );
+    });
+
+    it('still applies labels correctly for a single-task `id` call (backward compatible)', async () => {
+      const result = await applyLabels({ id: 1, labels: [1] }, authManager);
+      expect(result.content[0].text).toContain('Label applied to task successfully');
+    });
+  });
+
   describe('removeLabels', () => {
     it('should remove labels from a task successfully', async () => {
       const result = await removeLabels({ id: 1, labels: [1] }, authManager);
@@ -489,6 +606,74 @@ describe('Label operations', () => {
       await expect(removeLabels({ id: 1, labels: [25] }, authManager)).rejects.toThrow(
         /Could not remove label 25 from task 1/,
       );
+    });
+  });
+
+  // Mirrors "applyLabels with taskIds (multi-task)" above — same friction,
+  // same honest per-task reporting requirement.
+  describe('removeLabels with taskIds (multi-task)', () => {
+    it('rejects when both id and taskIds are supplied', async () => {
+      await expect(
+        removeLabels({ id: 1, taskIds: [1, 2], labels: [1] }, authManager),
+      ).rejects.toThrow(/either `id`.*or `taskIds`|not both/i);
+    });
+
+    it('rejects when neither id nor taskIds is supplied', async () => {
+      await expect(removeLabels({ labels: [1] }, authManager)).rejects.toThrow(MCPError);
+    });
+
+    it('removes the same label ids from every task in taskIds', async () => {
+      const result = await removeLabels({ taskIds: [1, 2], labels: [1] }, authManager);
+
+      const deleteCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit)?.method === 'DELETE',
+      );
+      expect(deleteCalls).toHaveLength(2);
+      const urls = deleteCalls.map(([url]) => url as string).sort();
+      expect(urls).toEqual([
+        'https://vikunja.test/api/v1/tasks/1/labels/1',
+        'https://vikunja.test/api/v1/tasks/2/labels/1',
+      ]);
+      expect(result.content[0].text).toContain('Labels removed from 2 task(s) successfully');
+    });
+
+    it('reports mixed success/failure honestly instead of a clean success', async () => {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method;
+        if (method === 'DELETE' && url.includes('/tasks/2/')) {
+          return Promise.resolve(restError(403, 'Forbidden'));
+        }
+        if (method === 'DELETE') return Promise.resolve(restOk({}));
+        // Reconcile: task 2 still has the label attached (removal genuinely
+        // failed); task 1 does not (removal succeeded).
+        if (url.endsWith('/tasks/2/labels')) return Promise.resolve(restOk([{ id: 25 }]));
+        if (url.endsWith('/tasks/1/labels')) return Promise.resolve(restOk([]));
+        return Promise.resolve(restOk({}));
+      });
+
+      const result = await removeLabels({ taskIds: [1, 2], labels: [25] }, authManager);
+      const text = result.content[0].text;
+      expect(text).toContain('Labels removed from 1 of 2 task(s)');
+      expect(text).toContain('1 failed');
+      expect(text).toContain('Failed task IDs: 2');
+    });
+
+    it('throws when every task in the batch fails', async () => {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method;
+        if (method === 'DELETE') return Promise.resolve(restError(403, 'Forbidden'));
+        if (url.endsWith('/labels')) return Promise.resolve(restOk([{ id: 25 }]));
+        return Promise.resolve(restOk({}));
+      });
+
+      await expect(removeLabels({ taskIds: [1, 2], labels: [25] }, authManager)).rejects.toThrow(
+        /Could not remove labels from any/,
+      );
+    });
+
+    it('still removes labels correctly for a single-task `id` call (backward compatible)', async () => {
+      const result = await removeLabels({ id: 1, labels: [1] }, authManager);
+      expect(result.content[0].text).toContain('Label removed from task successfully');
     });
   });
 

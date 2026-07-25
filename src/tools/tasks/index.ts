@@ -43,6 +43,25 @@ import { markTaskRead } from './mark-read';
 
 
 /**
+ * Subcommands where `id` is accepted as an alias for `parentTaskId`.
+ *
+ * `id` works on nearly every other `vikunja_tasks` subcommand (get, update,
+ * delete, set-bucket, ...), so an agent reaching for it on `create-subtask`/
+ * `bulk-create-subtasks` previously paid a full wasted round-trip: sweep
+ * evidence (netadvanced/vikunja-mcp#28) shows `bulk-create-subtasks` called
+ * with `id: 243` failing with "parentTaskId is required to create subtasks",
+ * only succeeding on a retry with `parentTaskId: 243`. Mirrors the
+ * `PROJECT_ID_ALIAS_SUBCOMMANDS` fix in `src/tools/projects/index.ts` for the
+ * identical trap. If both `id` and `parentTaskId` are supplied and disagree,
+ * the call is rejected outright rather than silently picking one — see the
+ * alias resolution in the tool handler below.
+ */
+const SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS = new Set<string>([
+  'create-subtask',
+  'bulk-create-subtasks',
+]);
+
+/**
  * Get session-scoped storage instance
  */
 async function getSessionStorage(authManager: AuthManager): ReturnType<typeof storageManager.getStorage> {
@@ -137,6 +156,7 @@ export function registerTasksTool(
       'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). ' +
         'download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. ' +
         'create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). ' +
+        'create-subtask/bulk-create-subtasks identify the parent via `parentTaskId` — `id` is accepted as an alias for it on these two subcommands (supplying both and disagreeing is rejected). ' +
         'bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). ' +
         'bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). ' +
         'set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. ' +
@@ -240,7 +260,9 @@ export function registerTasksTool(
           'The task id, used by most subcommands (get, update, delete, set-bucket, etc.) to ' +
             'identify the target task. On set-bucket this is the task to move — NOT the ' +
             'bucket id (use bucketId for that) or a project id. bulk-set-bucket moves several ' +
-            'tasks at once and uses the separate taskIds array instead of id.',
+            'tasks at once and uses the separate taskIds array instead of id. On ' +
+            'create-subtask/bulk-create-subtasks, `id` is accepted as an alias for ' +
+            '`parentTaskId` (the parent task) — see parentTaskId.',
         ),
       filter: z
         .string()
@@ -323,7 +345,15 @@ export function registerTasksTool(
       // Subtask composite fields (create-subtask, bulk-create-subtasks).
       // title/description/dueDate/priority/labels/assignees/bucketId are
       // shared with the generic create/set-bucket fields above.
-      parentTaskId: z.number().optional(),
+      parentTaskId: z
+        .number()
+        .optional()
+        .describe(
+          'The parent task id for create-subtask/bulk-create-subtasks — the existing task the ' +
+            'new subtask(s) attach to. `id` is accepted as an alias for `parentTaskId` on these ' +
+            'two subcommands. Supplying both `id` and `parentTaskId` with different values is ' +
+            'rejected as a validation error.',
+        ),
       // Opt into atomic rollback for create-subtask / bulk-create-subtasks
       // (default best-effort; bulk-create-subtasks applies it PER SUBTASK,
       // never across the batch) — see docs/ENDPOINT-PLAYBOOK.md §5.
@@ -347,7 +377,33 @@ export function registerTasksTool(
       sessionId: z.string().optional(),
     },
     getToolAnnotations('vikunja_tasks'),
-    async (args) => {
+    async (rawArgs) => {
+      // Ergonomic id/parentTaskId alias for create-subtask/bulk-create-subtasks
+      // — see SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS above (the same trap already
+      // solved for projects via PROJECT_ID_ALIAS_SUBCOMMANDS). Precedence is
+      // explicit: if both are supplied and disagree, reject rather than
+      // silently picking one.
+      if (
+        SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS.has(rawArgs.subcommand) &&
+        rawArgs.id !== undefined &&
+        rawArgs.id !== null &&
+        rawArgs.parentTaskId !== undefined &&
+        rawArgs.parentTaskId !== null &&
+        rawArgs.id !== rawArgs.parentTaskId
+      ) {
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          `id (${rawArgs.id}) and parentTaskId (${rawArgs.parentTaskId}) were both supplied and ` +
+            `disagree for ${rawArgs.subcommand} — provide only one, or make them match.`,
+        );
+      }
+      const args =
+        SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS.has(rawArgs.subcommand) &&
+        (rawArgs.parentTaskId === undefined || rawArgs.parentTaskId === null) &&
+        rawArgs.id !== undefined &&
+        rawArgs.id !== null
+          ? { ...rawArgs, parentTaskId: rawArgs.id }
+          : rawArgs;
       try {
         logger.debug('Executing tasks tool', { subcommand: args.subcommand, args });
 

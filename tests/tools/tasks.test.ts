@@ -403,7 +403,7 @@ describe('Tasks Tool', () => {
     // Get the tasks tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). create-subtask/bulk-create-subtasks identify the parent via `parentTaskId` — `id` is accepted as an alias for it on these two subcommands (supplying both and disagreeing is rejected). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
       expect.any(Object),
       expect.any(Object), // ToolAnnotations
       expect.any(Function),
@@ -3301,7 +3301,7 @@ describe('Tasks Tool', () => {
     it('should register the vikunja_tasks tool', () => {
       expect(mockServer.tool).toHaveBeenCalledWith(
         'vikunja_tasks',
-        'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
+        'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). create-subtask/bulk-create-subtasks identify the parent via `parentTaskId` — `id` is accepted as an alias for it on these two subcommands (supplying both and disagreeing is rejected). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
         expect.any(Object),
         expect.any(Object), // ToolAnnotations
         expect.any(Function),
@@ -3394,6 +3394,94 @@ describe('Tasks Tool', () => {
       expect(caught instanceof MCPError && caught.message.includes('read-only mode')).toBe(
         false,
       );
+    });
+  });
+
+  // netadvanced/vikunja-mcp#28: `id` works on nearly every other
+  // vikunja_tasks subcommand, so create-subtask/bulk-create-subtasks accept
+  // it as an alias for `parentTaskId` (mirrors PROJECT_ID_ALIAS_SUBCOMMANDS
+  // in src/tools/projects/index.ts for the identical trap).
+  describe('id/parentTaskId alias (create-subtask, bulk-create-subtasks)', () => {
+    const parentTask = { id: 243, title: 'Parent', project_id: 5, related_tasks: {} };
+    const parentTaskWithChild = (childId: number) => ({
+      id: 243,
+      title: 'Parent',
+      project_id: 5,
+      related_tasks: { subtask: [{ id: childId, title: 'Child', done: false }] },
+    });
+    const createdChild = { id: 42, title: 'Child', project_id: 5 };
+
+    it('accepts `id` as an alias for `parentTaskId` on create-subtask', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(parentTask)) // resolve-parent: GET /tasks/243
+        .mockResolvedValueOnce(jsonResponse(createdChild)) // create-task: PUT /projects/5/tasks
+        .mockResolvedValueOnce(
+          jsonResponse({ task_id: 243, other_task_id: 42, relation_kind: 'subtask' }),
+        ) // create-relation
+        .mockResolvedValueOnce(jsonResponse(parentTaskWithChild(42))); // verify-relation
+
+      const result = await callTool('create-subtask', { id: 243, title: 'Child' });
+
+      expect(result.content[0].text).toContain('under parent task 243');
+      // The parent was resolved via id 243 (aliased to parentTaskId), not a
+      // second wasted call.
+      expect(mockFetch.mock.calls[0]?.[0]).toBe('https://api.vikunja.test/api/v1/tasks/243');
+    });
+
+    it('accepts `id` as an alias for `parentTaskId` on bulk-create-subtasks', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(parentTask)) // resolve-parent (once for the batch)
+        .mockResolvedValueOnce(jsonResponse(createdChild)) // create-task
+        .mockResolvedValueOnce(
+          jsonResponse({ task_id: 243, other_task_id: 42, relation_kind: 'subtask' }),
+        ) // create-relation
+        .mockResolvedValueOnce(jsonResponse(parentTaskWithChild(42))); // verify-relation
+
+      const result = await callTool('bulk-create-subtasks', {
+        id: 243,
+        subtasks: [{ title: 'Child' }],
+      });
+
+      expect(result.content[0].text).toContain('under parent 243');
+    });
+
+    it('rejects `id` and `parentTaskId` supplied together when they disagree', async () => {
+      await expect(
+        callTool('create-subtask', { id: 243, parentTaskId: 999, title: 'Child' }),
+      ).rejects.toThrow(/id \(243\) and parentTaskId \(999\) were both supplied and disagree/);
+
+      // Rejected before any network call was made.
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects `id` and `parentTaskId` supplied together and disagreeing on bulk-create-subtasks', async () => {
+      await expect(
+        callTool('bulk-create-subtasks', {
+          id: 243,
+          parentTaskId: 999,
+          subtasks: [{ title: 'Child' }],
+        }),
+      ).rejects.toThrow(/id \(243\) and parentTaskId \(999\) were both supplied and disagree/);
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('allows `id` and `parentTaskId` supplied together when they match', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(parentTask))
+        .mockResolvedValueOnce(jsonResponse(createdChild))
+        .mockResolvedValueOnce(
+          jsonResponse({ task_id: 243, other_task_id: 42, relation_kind: 'subtask' }),
+        )
+        .mockResolvedValueOnce(jsonResponse(parentTaskWithChild(42)));
+
+      const result = await callTool('create-subtask', {
+        id: 243,
+        parentTaskId: 243,
+        title: 'Child',
+      });
+
+      expect(result.content[0].text).toContain('under parent task 243');
     });
   });
 });
