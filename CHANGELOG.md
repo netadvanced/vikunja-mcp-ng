@@ -17,6 +17,65 @@ Nothing yet.
 
 
 
+
+## [0.6.1] - 2026-07-25
+
+An agent-ergonomics release built from battle-harness evidence. Setting up a Kanban board — the one
+flow weaker agents still fumbled after 0.6.0 — now takes a single tool call instead of roughly
+thirty-eight (measured: haiku pass-rate 2/3 → 3/3 on the `q3-offsite-kanban` scenario, zero
+validation errors). Applying a label to N tasks is likewise one call instead of N. Two real bugs in
+the new composite were caught by running it against a live Vikunja server rather than against mocks,
+and the changelog tooling that quietly dropped a commit from every release draft is fixed.
+
+### Added
+
+- **Provision a whole Kanban board in one call.** `vikunja_projects` gains `setup-kanban`: it
+  creates (or reuses) the project, ensures the Kanban view exists, creates the requested columns in
+  order, bulk-creates the tasks, and places each one in its column — resolving view and bucket ids
+  internally so the caller never juggles them. Re-running it against an existing project reuses the
+  view and columns instead of duplicating them (#173, #175).
+- **Apply or remove a label across many tasks at once.** `vikunja_task_labels` `apply-label` /
+  `remove-label` now accept `taskIds` alongside the single-task `id`; label titles are resolved
+  get-or-create *once* per call and reused across every task, with honest per-task reporting of
+  partial failures (#178).
+- **`id` is accepted as an alias for `parentTaskId`** on `create-subtask` and
+  `bulk-create-subtasks`, matching the alias handling the project subcommands already had.
+  Supplying both with conflicting values is rejected rather than silently resolved (#178).
+
+### Fixed
+
+- **Kanban columns came back in the wrong order.** `setup-kanban` pinned bucket positions to their
+  zero-based index, but Vikunja's `position` is a non-pointer float64 — an explicit `0` is
+  indistinguishable on the wire from an omitted value, so the server substituted its own id-derived
+  default and the *first* requested column sorted **last**. Positions are now non-zero and
+  65536-spaced, matching Vikunja's own lane spacing so callers can still slot buckets between
+  columns afterwards (#177).
+- **A typo'd column name no longer half-builds a board.** `setup-kanban` validates every task's
+  column against the requested column list up front and rejects the call before creating anything,
+  instead of creating the task and then failing to place it. Genuine partial failures now surface
+  the project id in the standard extractable form, so a caller keeps the handle on a project that
+  really was created (#176).
+- **Changelog drafts silently dropped the oldest commit of every release.** `git log
+  --pretty=format:%s` emits no trailing newline, so the generator's `while read` loop discarded its
+  final line. Unclassifiable commits are now reported loudly under their own heading with a stderr
+  warning, rather than vanishing (#174).
+
+### Changed
+
+- Battle-harness accounting made trustworthy: `optimalCallCount` re-derived for all 13 scenarios
+  against the current tool surface, a `buckets-in-order` verify type added (the old verifiers
+  checked bucket names and contents but never their order, which is how the ordering bug shipped),
+  and `docs/BATTLE-TESTING.md` gained a testable re-baselining rule — an optimum must be reachable
+  without fabricating structure the prompt never asked for, and may never be set equal to an
+  observed call count without independent derivation (#179, #180).
+
+> **On the version number.** `setup-kanban` is a new capability, which
+> [docs/RELEASING.md](docs/RELEASING.md) §1 would normally make a *minor* bump. This ships as a
+> patch by owner discretion — the work is scoped as the ergonomics/bugfix follow-up to 0.6.0, and
+> `0.7.0` is reserved for the Vikunja v2 API migration. Nothing a caller relies on changed: every
+> addition is additive and the single-task/`parentTaskId` forms behave exactly as before. Same
+> latitude as the [0.5.2](#052---2026-07-22) exception.
+
 ## [0.6.0] - 2026-07-24
 
 A reliability and agent-ergonomics milestone on the Vikunja 2.4.0-aligned baseline (minimum
