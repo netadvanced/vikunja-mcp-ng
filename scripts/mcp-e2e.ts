@@ -997,6 +997,64 @@ async function testSubtaskComposites(h: McpHarness, ctx: FlowContext): Promise<v
       listSubtasks.text.slice(0, 300),
     );
   }
+
+  // `id` accepted as an alias for `parentTaskId` on create-subtask /
+  // bulk-create-subtasks (SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS,
+  // src/tools/tasks/index.ts) — netadvanced/vikunja-mcp#28 sweep evidence
+  // showed bulk-create-subtasks called with `id: 243` failing with
+  // "parentTaskId is required to create subtasks" before this alias
+  // shipped. `id` works on nearly every other vikunja_tasks subcommand, so
+  // an agent reaching for it here paid a full wasted round-trip.
+  const createSubtaskViaIdAlias = await h.call('vikunja_tasks', {
+    subcommand: 'create-subtask',
+    id: ctx.taskId,
+    title: `${NAME_PREFIX}subtask-via-id-alias`,
+  });
+  if (assertOk('create-subtask (`id` alias for parentTaskId)', createSubtaskViaIdAlias)) {
+    assertStep(
+      'create-subtask via `id` alias reports the parent task id',
+      createSubtaskViaIdAlias.text.includes(String(ctx.taskId)),
+      createSubtaskViaIdAlias.text.slice(0, 300),
+    );
+  }
+
+  const bulkCreateSubtasksViaIdAlias = await h.call('vikunja_tasks', {
+    subcommand: 'bulk-create-subtasks',
+    id: ctx.taskId,
+    subtasks: [{ title: `${NAME_PREFIX}bulk-subtask-via-id-alias` }],
+  });
+  if (assertOk('bulk-create-subtasks (`id` alias for parentTaskId)', bulkCreateSubtasksViaIdAlias)) {
+    assertStep(
+      'bulk-create-subtasks via `id` alias reports 1 subtask created',
+      bulkCreateSubtasksViaIdAlias.text.includes('1 subtask'),
+      bulkCreateSubtasksViaIdAlias.text.slice(0, 400),
+    );
+  }
+
+  // Both `id` and `parentTaskId` supplied and DISAGREEING must be rejected
+  // outright — precedence is explicit, never a silent pick-one.
+  const conflictingAliasCall = await h.call('vikunja_tasks', {
+    subcommand: 'create-subtask',
+    id: ctx.taskId,
+    parentTaskId: ctx.taskId + 999999, // guaranteed to differ from ctx.taskId
+    title: `${NAME_PREFIX}subtask-conflicting-alias`,
+  });
+  assertStep(
+    'create-subtask rejects conflicting `id`/`parentTaskId` values (isError, validation-shaped)',
+    conflictingAliasCall.isError && /both supplied and disagree/i.test(conflictingAliasCall.text),
+    conflictingAliasCall.text.slice(0, 400),
+  );
+
+  // Server-side confirmation that the rejected conflicting call created
+  // nothing: the bogus title must not appear anywhere under the parent.
+  const listAfterConflict = await h.call('vikunja_tasks', { subcommand: 'list-subtasks', id: ctx.taskId });
+  if (assertOk('list-subtasks after rejected conflicting alias call', listAfterConflict)) {
+    assertStep(
+      'conflicting id/parentTaskId create-subtask call created no subtask',
+      !listAfterConflict.text.includes(`${NAME_PREFIX}subtask-conflicting-alias`),
+      listAfterConflict.text.slice(0, 400),
+    );
+  }
 }
 
 async function testLabels(h: McpHarness, ctx: FlowContext): Promise<void> {
@@ -1159,6 +1217,231 @@ async function testLabels(h: McpHarness, ctx: FlowContext): Promise<void> {
       `first=${ctx.attachByTitleLabelId} second=${extractId(searchAfterSecond.text)}`,
     );
   }
+}
+
+/**
+ * Multi-task label operations (PR #178, netadvanced/vikunja-mcp#28 C1):
+ * `vikunja_task_labels` apply-label/remove-label accept `taskIds: number[]`
+ * to operate on several tasks in ONE call instead of one call per task.
+ * This was deliberately deferred out of the PR #178 wave (a concurrent wave
+ * owned this file at the time) — this is that live coverage.
+ *
+ * Self-contained: creates its own project + 4 tasks (mirrors
+ * testSetupKanban's pattern) rather than reusing the shared FlowContext
+ * task chain, since this needs several sibling tasks, and cleans itself up
+ * at the end via deleteProjectAndTasks.
+ *
+ * Covers, for BOTH apply-label and remove-label:
+ *   (a) `taskIds` across MULTIPLE tasks in one call, verified SERVER-SIDE
+ *       per task (list-labels), not just by reading the aggregate response
+ *       text.
+ *   (b) the single `id` form still works (backward compatibility).
+ *   (c) partial-failure honesty: one invalid task id mixed in with valid
+ *       ones must be reported as a partial failure (never a clean
+ *       success), while the valid task in the same call is still processed.
+ */
+async function testMultiTaskLabelOps(h: McpHarness): Promise<void> {
+  log('\n[Multi-task label operations (taskIds, PR #178)]');
+
+  const projectTitle = `${NAME_PREFIX}multi-label`;
+  const createProject = await h.call('vikunja_projects', { subcommand: 'create', title: projectTitle });
+  if (!assertOk('create project (multi-task label ops)', createProject)) return;
+  const projectId = extractId(createProject.text);
+  if (!projectId) {
+    fail('create project (multi-task label ops) id extraction', createProject.text.slice(0, 300));
+    return;
+  }
+
+  const bulkCreate = await h.call('vikunja_tasks', {
+    subcommand: 'bulk-create',
+    projectId,
+    tasks: [1, 2, 3, 4].map((n) => ({ title: `${NAME_PREFIX}ml-task-${n}` })),
+  });
+  if (!assertOk('bulk-create tasks (multi-task label ops)', bulkCreate)) {
+    await deleteProjectAndTasks(h, projectId, projectTitle);
+    return;
+  }
+  const taskIds = extractAllIds(bulkCreate.text);
+  if (taskIds.length < 4) {
+    fail('bulk-create tasks (multi-task label ops) id extraction', bulkCreate.text.slice(0, 400));
+    await deleteProjectAndTasks(h, projectId, projectTitle);
+    return;
+  }
+  const [taskA, taskB, taskC, taskD] = taskIds as [number, number, number, number];
+
+  // --- (a) apply-label: `taskIds` across MULTIPLE tasks in one call ---
+  const multiTag = `${NAME_PREFIX}multi-tag`;
+  const applyMulti = await h.call('vikunja_task_labels', {
+    operation: 'apply-label',
+    taskIds: [taskA, taskB, taskC],
+    labelTitles: [multiTag],
+  });
+  if (!assertOk('apply-label taskIds (3 tasks, one call)', applyMulti)) {
+    await deleteProjectAndTasks(h, projectId, projectTitle);
+    return;
+  }
+  assertStep(
+    'apply-label taskIds response reports all 3 tasks applied',
+    /Labels applied to 3 task\(s\) successfully/.test(applyMulti.text),
+    applyMulti.text.slice(0, 400),
+  );
+
+  // SERVER-SIDE verification (the whole point of this check): read each
+  // task's labels back independently via list-labels rather than trusting
+  // apply-label's own aggregate response text.
+  for (const [name, taskId] of [
+    ['task A', taskA],
+    ['task B', taskB],
+    ['task C', taskC],
+  ] as const) {
+    const list = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskId });
+    if (assertOk(`list-labels after multi-task apply-label (${name})`, list)) {
+      assertStep(
+        `${name} actually carries the label server-side after multi-task apply-label`,
+        list.text.includes(multiTag),
+        list.text.slice(0, 300),
+      );
+    }
+  }
+
+  // --- (b) apply-label: same operation, single `id` form (backward compat) ---
+  const singleTag = `${NAME_PREFIX}single-tag`;
+  const applySingle = await h.call('vikunja_task_labels', {
+    operation: 'apply-label',
+    id: taskD,
+    labelTitles: [singleTag],
+  });
+  if (assertOk('apply-label `id` (single task, backward compatibility)', applySingle)) {
+    const listSingle = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskD });
+    if (assertOk('list-labels after single-id apply-label', listSingle)) {
+      assertStep(
+        'single-id apply-label form still attaches the label server-side',
+        listSingle.text.includes(singleTag),
+        listSingle.text.slice(0, 300),
+      );
+    }
+  }
+
+  // --- (c) apply-label: partial-failure honesty (one invalid task id mixed
+  // with a valid one). Vikunja ids are small positive integers on a fresh
+  // e2e stack, so this id is guaranteed not to correspond to a real task.
+  const INVALID_TASK_ID = 999999999;
+  const partialTag = `${NAME_PREFIX}partial-tag`;
+  const applyPartial = await h.call('vikunja_task_labels', {
+    operation: 'apply-label',
+    taskIds: [taskD, INVALID_TASK_ID],
+    labelTitles: [partialTag],
+  });
+  assertStep(
+    'apply-label taskIds partial failure is reported honestly, not as a clean success',
+    /Labels applied to 1 of 2 task\(s\)/.test(applyPartial.text) &&
+      /1 failed/.test(applyPartial.text) &&
+      applyPartial.text.includes(`Failed task IDs: ${INVALID_TASK_ID}`),
+    applyPartial.text.slice(0, 600),
+  );
+  const listAfterPartialApply = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskD });
+  if (assertOk('list-labels after partial-failure apply-label', listAfterPartialApply)) {
+    assertStep(
+      'the VALID task in a partial-failure apply-label call was still processed (label attached)',
+      listAfterPartialApply.text.includes(partialTag),
+      listAfterPartialApply.text.slice(0, 300),
+    );
+  }
+
+  // remove-label needs numeric label ids (no labelTitles) — resolve each
+  // title-created label's id once via search, same pattern testLabels uses.
+  async function resolveLabelId(title: string): Promise<number | undefined> {
+    const search = await h.call('vikunja_labels', { subcommand: 'list', search: title });
+    if (!assertOk(`search for "${title}" label id (for remove-label)`, search)) return undefined;
+    const id = extractId(search.text);
+    if (!id) fail(`"${title}" label id extraction`, search.text.slice(0, 300));
+    return id;
+  }
+
+  const multiTagId = await resolveLabelId(multiTag);
+  if (!multiTagId) {
+    await deleteProjectAndTasks(h, projectId, projectTitle);
+    return;
+  }
+
+  // --- (a) remove-label: `taskIds` across MULTIPLE tasks in one call ---
+  const removeMulti = await h.call('vikunja_task_labels', {
+    operation: 'remove-label',
+    taskIds: [taskA, taskB, taskC],
+    labels: [multiTagId],
+  });
+  if (assertOk('remove-label taskIds (3 tasks, one call)', removeMulti)) {
+    assertStep(
+      'remove-label taskIds response reports all 3 tasks removed',
+      /Labels removed from 3 task\(s\) successfully/.test(removeMulti.text),
+      removeMulti.text.slice(0, 400),
+    );
+  }
+
+  for (const [name, taskId] of [
+    ['task A', taskA],
+    ['task B', taskB],
+    ['task C', taskC],
+  ] as const) {
+    const list = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskId });
+    if (assertOk(`list-labels after multi-task remove-label (${name})`, list)) {
+      assertStep(
+        `${name} no longer carries the label server-side after multi-task remove-label`,
+        !list.text.includes(multiTag),
+        list.text.slice(0, 300),
+      );
+    }
+  }
+
+  // --- (b) remove-label: same operation, single `id` form (backward compat) ---
+  const singleTagId = await resolveLabelId(singleTag);
+  if (singleTagId) {
+    const removeSingle = await h.call('vikunja_task_labels', {
+      operation: 'remove-label',
+      id: taskD,
+      labels: [singleTagId],
+    });
+    if (assertOk('remove-label `id` (single task, backward compatibility)', removeSingle)) {
+      const listAfterRemoveSingle = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskD });
+      if (assertOk('list-labels after single-id remove-label', listAfterRemoveSingle)) {
+        assertStep(
+          'single-id remove-label form actually detaches the label server-side',
+          !listAfterRemoveSingle.text.includes(singleTag),
+          listAfterRemoveSingle.text.slice(0, 300),
+        );
+      }
+    }
+  }
+
+  // --- (c) remove-label: partial-failure honesty (taskD currently carries
+  // partialTag from the apply-label partial-failure check above).
+  const partialTagId = await resolveLabelId(partialTag);
+  if (partialTagId) {
+    const removePartial = await h.call('vikunja_task_labels', {
+      operation: 'remove-label',
+      taskIds: [taskD, INVALID_TASK_ID],
+      labels: [partialTagId],
+    });
+    assertStep(
+      'remove-label taskIds partial failure is reported honestly, not as a clean success',
+      /Labels removed from 1 of 2 task\(s\)/.test(removePartial.text) &&
+        /1 failed/.test(removePartial.text) &&
+        removePartial.text.includes(`Failed task IDs: ${INVALID_TASK_ID}`),
+      removePartial.text.slice(0, 600),
+    );
+    const listAfterPartialRemove = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskD });
+    if (assertOk('list-labels after partial-failure remove-label', listAfterPartialRemove)) {
+      assertStep(
+        'the VALID task in a partial-failure remove-label call was still processed (label removed)',
+        !listAfterPartialRemove.text.includes(partialTag),
+        listAfterPartialRemove.text.slice(0, 300),
+      );
+    }
+  }
+
+  // Cleanup: self-contained project (own tasks) — clean up here rather
+  // than relying on finalCleanup's FlowContext chain.
+  await deleteProjectAndTasks(h, projectId, projectTitle);
 }
 
 async function testAssignees(h: McpHarness, ctx: FlowContext): Promise<void> {
@@ -1820,6 +2103,7 @@ async function main(): Promise<void> {
       await testBulkCreateStress(h, ctx);
       await testSubtaskComposites(h, ctx);
       await testLabels(h, ctx);
+      await testMultiTaskLabelOps(h);
       await testAssignees(h, ctx);
       await testComments(h, ctx);
       await testReminders(h, ctx);
