@@ -22,6 +22,11 @@ class CircuitBreakerRegistry {
     return this.breakers.get(name);
   }
 
+  /** Reports whether a breaker is currently registered under `name`. */
+  has(name: string): boolean {
+    return this.breakers.has(name);
+  }
+
   async resetAll(): Promise<void> {
     const promises = Array.from(this.breakers.values()).map(breaker => {
       return new Promise<void>((resolve) => {

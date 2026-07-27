@@ -5,14 +5,47 @@
  * the problem+json error adapter, and the request helper itself.
  */
 
-import { describe, it, expect } from '@jest/globals';
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { AuthManager } from '../../src/auth/AuthManager';
+import { circuitBreakerRegistry } from '../../src/utils/retry';
 import {
   resolveV2BaseUrl,
   deriveRestV2BreakerName,
   parseVikunjaV2Error,
+  vikunjaRestV2Request,
 } from '../../src/utils/vikunja-rest-v2';
 import { deriveRestBreakerName } from '../../src/utils/vikunja-rest';
 import { MCPError, ErrorCode } from '../../src/types';
+
+const mockFetch = jest.fn();
+global.fetch = mockFetch as unknown as typeof fetch;
+
+/**
+ * Builds a Response-like object good enough for vikunjaRestV2Request, which
+ * reads `.ok`, `.status`, `.statusText`, `.headers.get()` and `.text()`.
+ */
+function mockV2Response(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+  contentType?: string | null;
+}): Response {
+  const {
+    ok = true,
+    status = 200,
+    statusText = 'OK',
+    text = '',
+    contentType = 'application/json',
+  } = opts;
+  return {
+    ok,
+    status,
+    statusText,
+    headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? contentType : null) },
+    text: jest.fn(async () => text),
+  } as unknown as Response;
+}
 
 describe('vikunja-rest-v2 helper', () => {
   describe('resolveV2BaseUrl', () => {
@@ -333,6 +366,189 @@ describe('vikunja-rest-v2 helper', () => {
         { message: 'unexpected field' },
         { value: 'extra' },
       ]);
+    });
+  });
+
+  describe('vikunjaRestV2Request', () => {
+    let authManager: AuthManager;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockFetch.mockReset();
+      // The breaker registry in ../../src/utils/retry is a process-wide
+      // singleton keyed by name; several tests below deliberately fail the
+      // same path, so without clearing accumulated stats a later test
+      // starts seeing "Breaker is open" instead of its own scenario.
+      circuitBreakerRegistry.clear();
+      authManager = new AuthManager();
+      authManager.connect('https://vikunja.test', 'tk_test-token');
+    });
+
+    it('targets the v2 base URL and sends the bearer token', async () => {
+      mockFetch.mockResolvedValueOnce(mockV2Response({ text: JSON.stringify({ id: 7 }) }));
+
+      const result = await vikunjaRestV2Request(authManager, 'GET', '/tasks/7');
+
+      expect(result).toEqual({ id: 7 });
+      const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://vikunja.test/api/v2/tasks/7');
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tk_test-token');
+      expect(init.body).toBeUndefined();
+    });
+
+    it('sends merge-patch+json for PATCH by default', async () => {
+      mockFetch.mockResolvedValueOnce(mockV2Response({ text: '{}' }));
+
+      await vikunjaRestV2Request(authManager, 'PATCH', '/tasks/7', { priority: 3 });
+
+      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect((init.headers as Record<string, string>)['Content-Type']).toBe(
+        'application/merge-patch+json',
+      );
+      expect(init.body).toBe(JSON.stringify({ priority: 3 }));
+    });
+
+    it('sends json-patch+json when that patch format is requested', async () => {
+      mockFetch.mockResolvedValueOnce(mockV2Response({ text: '{}' }));
+
+      await vikunjaRestV2Request(authManager, 'PATCH', '/tasks/7', [{ op: 'remove', path: '/assignees/0' }], {
+        patchFormat: 'json-patch',
+      });
+
+      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect((init.headers as Record<string, string>)['Content-Type']).toBe(
+        'application/json-patch+json',
+      );
+    });
+
+    it('sends plain application/json for non-PATCH methods', async () => {
+      mockFetch.mockResolvedValueOnce(mockV2Response({ text: '{}' }));
+
+      await vikunjaRestV2Request(authManager, 'POST', '/tasks', { title: 'x' });
+
+      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    });
+
+    it('returns null for an empty response body', async () => {
+      mockFetch.mockResolvedValueOnce(mockV2Response({ text: '' }));
+
+      await expect(vikunjaRestV2Request(authManager, 'DELETE', '/tasks/7')).resolves.toBeNull();
+    });
+
+    it('returns null for a 2xx response with a non-JSON body', async () => {
+      mockFetch.mockResolvedValueOnce(mockV2Response({ text: 'not json' }));
+
+      await expect(vikunjaRestV2Request(authManager, 'GET', '/tasks/7')).resolves.toBeNull();
+    });
+
+    it('routes a problem+json error through the adapter', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockV2Response({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          contentType: 'application/problem+json',
+          text: JSON.stringify({ title: 'Not Found', code: 4004 }),
+        }),
+      );
+
+      await expect(vikunjaRestV2Request(authManager, 'GET', '/tasks/7')).rejects.toMatchObject({
+        code: ErrorCode.API_ERROR,
+        details: { statusCode: 404, vikunjaError: { code: 4004, errors: [] } },
+      });
+    });
+
+    it('wraps a network-layer failure as a transient MCPError', async () => {
+      const netError = Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' });
+      mockFetch.mockRejectedValue(netError);
+
+      const promise = vikunjaRestV2Request(authManager, 'GET', '/tasks/7', undefined, {
+        retry: { maxRetries: 0 },
+      });
+
+      await expect(promise).rejects.toBeInstanceOf(MCPError);
+      await expect(promise).rejects.toMatchObject({ details: { transient: true } });
+    });
+
+    it('retries a 500 and succeeds on the next attempt', async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          mockV2Response({ ok: false, status: 500, statusText: 'Server Error', contentType: null }),
+        )
+        .mockResolvedValueOnce(mockV2Response({ text: JSON.stringify({ id: 7 }) }));
+
+      const result = await vikunjaRestV2Request(authManager, 'GET', '/tasks/7', undefined, {
+        retry: { initialDelay: 1 },
+      });
+
+      expect(result).toEqual({ id: 7 });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry a 404', async () => {
+      mockFetch.mockResolvedValue(
+        mockV2Response({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          contentType: 'application/problem+json',
+          text: JSON.stringify({ title: 'Not Found' }),
+        }),
+      );
+
+      await expect(vikunjaRestV2Request(authManager, 'GET', '/tasks/7')).rejects.toBeInstanceOf(
+        MCPError,
+      );
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    // isClientErrorExcludedFromBreaker in ./retry is status-generic, so it
+    // applies to v2 unchanged — this pins that it actually does.
+    it('does not count 4xx responses toward the breaker', async () => {
+      mockFetch.mockResolvedValue(
+        mockV2Response({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          contentType: 'application/problem+json',
+          text: JSON.stringify({ title: 'Not Found' }),
+        }),
+      );
+
+      // Iteration count must exceed the breaker's volume threshold so that a
+      // regression (4xx wrongly counted) would actually trip it. Check the
+      // configured threshold in ./retry and raise this number if it is >= 12.
+      for (let i = 0; i < 12; i++) {
+        await expect(vikunjaRestV2Request(authManager, 'GET', '/tasks/7')).rejects.toBeInstanceOf(
+          MCPError,
+        );
+      }
+
+      // A tripped breaker rejects with a reworded "circuit breaker is open"
+      // message instead of the underlying 404 — assert we still see the 404.
+      await expect(
+        vikunjaRestV2Request(authManager, 'GET', '/tasks/7'),
+      ).rejects.toMatchObject({ details: { statusCode: 404 } });
+    });
+
+    it('registers its breaker under the v2-prefixed name', async () => {
+      mockFetch.mockResolvedValueOnce(mockV2Response({ text: '{}' }));
+
+      await vikunjaRestV2Request(authManager, 'GET', '/tasks/7');
+
+      expect(circuitBreakerRegistry.has('vikunja-rest-v2-tasks')).toBe(true);
+      expect(circuitBreakerRegistry.has('vikunja-rest-tasks')).toBe(false);
+    });
+
+    it('honours an explicit breaker name override', async () => {
+      mockFetch.mockResolvedValueOnce(mockV2Response({ text: '{}' }));
+
+      await vikunjaRestV2Request(authManager, 'GET', '/tasks/7', undefined, {
+        breakerName: 'vikunja-rest-v2-custom',
+      });
+
+      expect(circuitBreakerRegistry.has('vikunja-rest-v2-custom')).toBe(true);
     });
   });
 });

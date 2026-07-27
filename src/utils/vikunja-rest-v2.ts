@@ -13,6 +13,18 @@
  */
 
 import { MCPError, ErrorCode } from '../types';
+import type { AuthManager } from '../auth/AuthManager';
+import {
+  defaultRestShouldRetry,
+  isTransientNetworkError,
+  type VikunjaRestRequestOptions,
+} from './vikunja-rest';
+import {
+  createCircuitBreaker,
+  withRetry,
+  rewordBreakerOpenError,
+  type RetryOptions,
+} from './retry';
 
 /**
  * Resolves the v2 API base URL for a session, normalizing whether or not
@@ -192,4 +204,142 @@ export function parseVikunjaV2Error(
   // object rather than `.details.statusCode`.
   Object.assign(error, { status });
   return error;
+}
+
+/** Which RFC the PATCH request body follows. v2 accepts both on every PATCH route. */
+export type PatchFormat = 'merge' | 'json-patch';
+
+export interface VikunjaRestV2RequestOptions extends VikunjaRestRequestOptions {
+  /**
+   * Request body format for PATCH calls. `'merge'` (RFC 7386
+   * merge-patch+json, the default) matches the shape of our tool arguments;
+   * `'json-patch'` (RFC 6902) is the only way to express true array
+   * operations such as removing a single assignee. Ignored for other methods.
+   */
+  patchFormat?: PatchFormat;
+}
+
+/**
+ * Same modest retry/backoff tuning as the v1 helper — a safety net for
+ * transient failures, not a substitute for thinking about idempotency.
+ */
+const DEFAULT_V2_JSON_RETRY: RetryOptions = {
+  maxRetries: 2,
+  initialDelay: 250,
+  maxDelay: 2000,
+  backoffFactor: 2,
+};
+
+function resolveContentType(method: HttpMethodV2, patchFormat: PatchFormat): string {
+  if (method !== 'PATCH') {
+    return 'application/json';
+  }
+  return patchFormat === 'json-patch'
+    ? 'application/json-patch+json'
+    : 'application/merge-patch+json';
+}
+
+/**
+ * The actual network call, with no retry/breaker logic of its own.
+ * Intentionally a plain top-level function rather than a closure factory so
+ * it can be registered once per breaker name and re-fired with fresh
+ * arguments — see `createCircuitBreaker` in ./retry for why a call-site
+ * closure here was the shape of the anonymous-breaker bug.
+ */
+async function vikunjaRestV2RequestRaw(
+  authManager: AuthManager,
+  method: HttpMethodV2,
+  path: string,
+  body: unknown,
+  patchFormat: PatchFormat,
+): Promise<unknown> {
+  const session = authManager.getSession();
+  const url = `${resolveV2BaseUrl(session.apiUrl)}${path}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${session.apiToken}`,
+        'Content-Type': resolveContentType(method, patchFormat),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch (error) {
+    throw new MCPError(
+      ErrorCode.API_ERROR,
+      `Vikunja REST request failed (${method} ${path}): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { transient: isTransientNetworkError(error) },
+    );
+  }
+
+  if (!response.ok) {
+    let rawBody = '';
+    try {
+      rawBody = await response.text();
+    } catch {
+      // Body could not be read — the adapter falls back to the status line.
+    }
+    throw parseVikunjaV2Error(
+      method,
+      path,
+      response.status,
+      response.statusText,
+      response.headers.get('content-type'),
+      rawBody,
+    );
+  }
+
+  const text = await response.text();
+  if (!text) {
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    // A 2xx response with a non-JSON body (rare) is treated as an empty result.
+    return null;
+  }
+}
+
+/**
+ * Performs an authenticated request against the Vikunja **v2** REST API,
+ * protected by a named circuit breaker and a bounded retry loop, with the
+ * same retry policy as v1 (`defaultRestShouldRetry`: 5xx/429 and transient
+ * network failures, never 4xx).
+ *
+ * Callers should not invoke this directly based on their own version
+ * assumptions — route through `resolveApiVersion` in ./api-version so the
+ * v1 fallback stays honest.
+ *
+ * @throws MCPError with `details.statusCode` set from the final attempt;
+ *         for problem+json responses `details.vikunjaError` also carries
+ *         Vikunja's numeric code and the per-field `errors[]` list.
+ */
+export async function vikunjaRestV2Request<T = unknown>(
+  authManager: AuthManager,
+  method: HttpMethodV2,
+  path: string,
+  body?: unknown,
+  options?: VikunjaRestV2RequestOptions,
+): Promise<T> {
+  const breakerName = options?.breakerName ?? deriveRestV2BreakerName(path);
+  const patchFormat: PatchFormat = options?.patchFormat ?? 'merge';
+  const retryOptions: RetryOptions = {
+    ...DEFAULT_V2_JSON_RETRY,
+    shouldRetry: defaultRestShouldRetry,
+    ...options?.retry,
+  };
+  const breaker = createCircuitBreaker(vikunjaRestV2RequestRaw, breakerName, retryOptions);
+  const result = await withRetry(
+    () =>
+      breaker.fire(authManager, method, path, body, patchFormat).catch((error: unknown) => {
+        throw rewordBreakerOpenError(error);
+      }),
+    retryOptions,
+  );
+  return result as T;
 }
