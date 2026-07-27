@@ -275,7 +275,51 @@ tested, starting with `vikunja_tasks update` and `vikunja_task_bulk bulk-update`
 retire the workarounds motivating the milestone. Buckets stay on v1 permanently for now: v2 has no
 `PATCH` for `/projects/{project}/views/{view}/buckets/{bucket}`.
 
-An open question deferred to P3: whether v2 response bodies differ enough in shape (the `$schema`
-field, pagination envelopes) to need normalization before reaching the formatters. It must be
-verified against the live 2.4.0 stack rather than the spec, and it does not affect this phase
-because no tool consumes a v2 response yet.
+### Response shape: question answered, and the answer is "yes" (verified live, 2026-07-27)
+
+This spec deferred one open question to P3: whether v2 response bodies differ enough in shape to
+need normalization before reaching the formatters. The live check against a real Vikunja 2.4.0
+stack answered it — **they do**, and P3 cannot skip this.
+
+`GET /api/v2/projects` returns a **pagination envelope**, where v1 returns a bare array:
+
+```json
+{
+  "$schema": "http://<host>/api/v2/schemas/PaginatedProject.json",
+  "items": [ { "id": 1, "title": "Inbox", ... } ],
+  "total": 28, "page": 1, "per_page": 50, "total_pages": 1
+}
+```
+
+Consequences for P3:
+
+- Every **list** endpoint switched to v2 needs the envelope unwrapped (`.items`) before the result
+  reaches a formatter, or the tool returns an object where callers expect an array. This is a
+  caller-visible break, not a cosmetic difference.
+- The envelope is also an *opportunity*: `total`/`total_pages` are data v1 never returned, and the
+  hybrid-filtering and memory-protection paths currently estimate what this states outright.
+- `$schema` is present on responses generally and should be stripped, not passed through.
+- Single-entity responses (e.g. `GET /tasks/{id}`) were not exercised here; verify each shape
+  per-endpoint rather than assuming the envelope is universal.
+
+Two further live-verified details worth carrying forward:
+
+- `GET /info` reports `version` as **`v2.4.0`** — with a leading `v`. Any future semver floor check
+  (see the probe note below) must strip it; a naive `>=` string compare against `2.4.0` fails.
+- The problem+json adapter matches real server output. A `GET /api/v2/tasks/999999999` returned
+  `code: 4002` with `errors: []`, which round-tripped intact into
+  `details.vikunjaError` — confirming the adapter was not built against a fictional shape.
+
+### The v2 probe's false-positive risk (raised 2026-07-27, deliberately not addressed here)
+
+`probeV2Api` (`src/utils/capabilities.ts`) trusts `response.ok` alone. A reverse proxy or SPA
+catch-all returning `200` + `index.html` for unknown paths yields `hasV2Api: true` on a v1-only
+server. That is harmless while the result only feeds a status report, but becomes load-bearing the
+moment P3 routes operations on it — with the kill switch as the sole mitigation.
+
+Decision: **left as-is for this phase**, because nothing routes on it yet. P3 must tighten it
+before wiring the first operation — by checking the response content type or parsing for an
+`openapi` key, and/or by adding the `serverVersion` floor check this spec originally rejected.
+That original decision ("`hasV2Api` alone is sufficient, the probe is a stronger signal than a
+version string") was made before the false-positive path was identified; it does not survive the
+probe being trusted for routing.
