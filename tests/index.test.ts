@@ -43,6 +43,8 @@ const mockSetGlobalClientFactory = jest.fn();
 const mockClearGlobalClientFactory = jest.fn();
 const mockGetAuthManagerFromContext = jest.fn();
 
+const mockResolvePackageVersion = jest.fn().mockReturnValue('9.9.9-test');
+
 // Set up all mocks before imports
 jest.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   McpServer: MockMcpServer,
@@ -69,6 +71,10 @@ jest.mock('../src/tools', () => ({
 
 jest.mock('../src/utils/logger', () => ({
   logger: mockLogger,
+}));
+
+jest.mock('../src/utils/version', () => ({
+  resolvePackageVersion: mockResolvePackageVersion,
 }));
 
 jest.mock('../src/utils/security', () => ({
@@ -131,14 +137,15 @@ describe('Main Server Entry Point (index.ts)', () => {
       expect(mockDotenvConfig).toHaveBeenCalledTimes(1);
     });
 
-    it('should create McpServer with correct configuration', () => {
+    it('should create McpServer with the version resolved from package.json', () => {
       require('../src/index');
-      
+
       expect(MockMcpServer).toHaveBeenCalledTimes(1);
       expect(MockMcpServer).toHaveBeenCalledWith({
         name: 'vikunja-mcp-ng',
-        version: '0.3.0',
+        version: '9.9.9-test',
       });
+      expect(mockResolvePackageVersion).toHaveBeenCalledWith(path.resolve(__dirname, '..', 'src'));
     });
 
     it('should create AuthManager instance', () => {

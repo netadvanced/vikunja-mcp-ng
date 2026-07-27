@@ -25,6 +25,8 @@ cd "$REPO_ROOT"
 
 # shellcheck source=./lib/changelog-draft.sh
 source "$REPO_ROOT/scripts/lib/changelog-draft.sh"
+# shellcheck source=./lib/sync-server-json.sh
+source "$REPO_ROOT/scripts/lib/sync-server-json.sh"
 
 # ---------------------------------------------------------------------------
 # 0. Args
@@ -141,6 +143,20 @@ fi
 echo "==> package.json now at $BUMPED_VERSION"
 
 # ---------------------------------------------------------------------------
+# 5b. Sync server.json's two version fields to match (netadvanced/vikunja-mcp-ng#186:
+#     the MCP registry manifest is static, not runtime state, so nothing derives it
+#     automatically — the release process is the single place that keeps it aligned).
+# ---------------------------------------------------------------------------
+
+echo "==> Syncing server.json version fields to $BUMPED_VERSION"
+sync_server_json_version "$REPO_ROOT/server.json" "$BUMPED_VERSION"
+if ! assert_server_json_version_matches "$REPO_ROOT/server.json" "$BUMPED_VERSION"; then
+  echo "ERROR: server.json version fields do not match package.json ($BUMPED_VERSION) after sync." >&2
+  exit 1
+fi
+echo "==> server.json now at $BUMPED_VERSION"
+
+# ---------------------------------------------------------------------------
 # 6. Generate a draft changelog section from conventional commits since the last tag
 # ---------------------------------------------------------------------------
 
@@ -239,7 +255,7 @@ echo "==> CHANGELOG.md updated with draft section for ${TARGET_VERSION}"
 # 7. Commit
 # ---------------------------------------------------------------------------
 
-git add package.json package-lock.json CHANGELOG.md
+git add package.json package-lock.json server.json CHANGELOG.md
 git commit -m "release: v${TARGET_VERSION}"
 
 echo ""
