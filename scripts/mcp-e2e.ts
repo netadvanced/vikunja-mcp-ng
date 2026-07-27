@@ -2006,19 +2006,17 @@ async function testNotifications(h: McpHarness): Promise<void> {
  * failure, not a skip.
  */
 async function testAvatarSettings(h: McpHarness): Promise<void> {
-  log('\n[Avatar settings (soft-skip: vikunja_users is JWT-only)]');
+  log('\n[Avatar settings gating (API-token session)]');
+  // `vikunja_users` is JWT-only, so under API-token auth the only honest
+  // check here is that it is correctly gated OFF. The subcommands themselves
+  // are exercised for real in the JWT lane (`runJwtLane`, issue #198) —
+  // this used to be a permanent `skip()`, which reported a coverage hole as
+  // if it were an untestable one.
   const result = await h.call('vikunja_users', { subcommand: 'get-avatar' });
-  if (!result.isError) {
-    fail(
-      'avatar settings gating',
-      'vikunja_users.get-avatar unexpectedly succeeded under API-token auth — JWT-only gating regression? ' +
-        result.text.slice(0, 200),
-    );
-    return;
-  }
-  skip(
-    'avatar settings (get-avatar/set-avatar/upload-avatar)',
-    "vikunja_users is JWT-only; this harness runs under API-token auth so it can't exercise these subcommands",
+  assertStep(
+    'avatar settings correctly gated off under API-token auth (exercised for real in the JWT lane)',
+    result.isError,
+    `vikunja_users.get-avatar unexpectedly succeeded under API-token auth — JWT-only gating regression? ${result.text.slice(0, 200)}`,
   );
 }
 
@@ -2064,30 +2062,33 @@ function isAuthRejection(text: string): boolean {
 async function testUserWebhooks(h: McpHarness): Promise<void> {
   log('\n[User-scoped webhooks (scope: user)]');
 
+  // `GET /user/settings/webhooks*` is JWTKeyAuth-only per the OpenAPI spec,
+  // so a 401 under a tk_* token is the server behaving exactly as documented
+  // — NOT a tolerated server regression, which is how this used to be
+  // recorded (`driftTolerated`). Either outcome is a legitimate pass here;
+  // what must never happen is a non-auth error. The JWT lane (`runJwtLane`,
+  // issue #198) exercises these same calls under JWT, where they must
+  // genuinely succeed.
   const listEvents = await h.call('vikunja_webhooks', { subcommand: 'list-events', scope: 'user' });
   if (!listEvents.isError) {
     assertOk('user-scope list-events', listEvents);
-  } else if (isAuthRejection(listEvents.text)) {
-    driftTolerated(
-      'user-scope list-events',
-      'rejected under tk_* API-token auth (spec: JWTKeyAuth-only, expected)',
+  } else {
+    assertStep(
+      'user-scope list-events rejected as spec-documented under tk_* auth (JWTKeyAuth-only)',
+      isAuthRejection(listEvents.text),
       listEvents.text.slice(0, 300),
     );
-  } else {
-    fail('user-scope list-events', listEvents.text.slice(0, 300));
   }
 
   const list = await h.call('vikunja_webhooks', { subcommand: 'list', scope: 'user' });
   if (!list.isError) {
     assertOk('user-scope list', list);
-  } else if (isAuthRejection(list.text)) {
-    driftTolerated(
-      'user-scope list',
-      'rejected under tk_* API-token auth (spec: JWTKeyAuth-only, expected)',
+  } else {
+    assertStep(
+      'user-scope list rejected as spec-documented under tk_* auth (JWTKeyAuth-only)',
+      isAuthRejection(list.text),
       list.text.slice(0, 300),
     );
-  } else {
-    fail('user-scope list', list.text.slice(0, 300));
   }
 
   // These are pure Zod/argument-consistency checks (no server round-trip),
@@ -2183,6 +2184,167 @@ function buildProject(): void {
   }
 }
 
+// ============================================================================
+// JWT lane (issue #198)
+// ============================================================================
+
+/**
+ * Tools that must be PRESENT once the session is authenticated with a JWT —
+ * the positive counterpart of `EXPECTED_TOOLS_ABSENT`, which the API-token
+ * session asserts. Auth-gated only: `vikunja_users` and the export family.
+ */
+const JWT_ONLY_TOOLS_EXPECTED_PRESENT = [
+  'vikunja_users',
+  'vikunja_export_project',
+  'vikunja_request_user_export',
+  'vikunja_user_export_status',
+  'vikunja_download_user_export',
+];
+
+/**
+ * Tools that must stay ABSENT even under JWT: these are deny-by-default
+ * MODULE-config gates ("dangerous"), not auth gates, so a JWT alone must
+ * never surface them. Asserting this in the JWT lane is what proves the two
+ * gating mechanisms are independent rather than accidentally coupled.
+ */
+const DENY_BY_DEFAULT_TOOLS_EXPECTED_ABSENT = [
+  'vikunja_tokens',
+  'vikunja_caldav_tokens',
+  'vikunja_admin',
+  'vikunja_user_deletion',
+];
+
+/** Smallest valid PNG (1x1, transparent) — uploaded via `fileContent`, no temp file. */
+const TINY_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+/** Reads the current avatar provider out of a `get-avatar` response. */
+function extractAvatarProvider(text: string): string | undefined {
+  return /\*\*avatarProvider:\*\*\s*(\S+)/.exec(text)?.[1] ?? /"avatarProvider":\s*"([^"]*)"/.exec(text)?.[1];
+}
+
+/**
+ * Second session, authenticated with a JWT instead of the `tk_*` API token
+ * the main flow uses (issue #198).
+ *
+ * Why a whole second server process: JWT-only tools are gated at TOOL
+ * REGISTRATION time by the token format the server booted with (see
+ * `src/tools/index.ts`), so they cannot be reached by re-authenticating an
+ * already-running session — the tools simply are not registered in it.
+ *
+ * This closes the harness's last coverage hole: before this, the entire
+ * JWT-only surface was asserted solely by "we correctly refuse it" under
+ * API-token auth — one permanent `skip()` (avatar settings) and one
+ * mis-labelled "tolerated server drift" (user-scope webhooks). The
+ * credential needed nothing new: `getApiToken()` already logs in for a JWT
+ * and then throws it away after exchanging it for a `tk_*` token.
+ */
+async function runJwtLane(jwt: string, inheritedEnv: Record<string, string>): Promise<void> {
+  log('\n╔══════════════════════════════════════╗');
+  log('║   JWT lane (second session, issue #198)   ║');
+  log('╚══════════════════════════════════════╝');
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [DIST_ENTRY],
+    // Same localhost-verified URL as the main session (`assertLocalUrl` ran
+    // in `main` before anything spawned), same ambient-env stripping.
+    env: { ...inheritedEnv, VIKUNJA_URL, VIKUNJA_API_TOKEN: jwt },
+  });
+  const client = new Client({ name: 'mcp-e2e-harness-jwt', version: '1.0.0' }, { capabilities: {} });
+
+  try {
+    await client.connect(transport);
+    log('Connected to a second MCP server instance over stdio (JWT auth).');
+    const h = new McpHarness(client);
+
+    // --- Tool gating under JWT
+    log('\n[Tool gating (JWT session)]');
+    const tools = await h.listToolNames();
+    const missing = JWT_ONLY_TOOLS_EXPECTED_PRESENT.filter((t) => !tools.includes(t));
+    assertStep(
+      'JWT-only tools are registered under JWT auth',
+      missing.length === 0,
+      `missing under JWT: ${missing.join(', ') || 'none'}`,
+    );
+    const leaked = DENY_BY_DEFAULT_TOOLS_EXPECTED_ABSENT.filter((t) => tools.includes(t));
+    assertStep(
+      'deny-by-default modules stay absent under JWT auth (module config is not an auth gate)',
+      leaked.length === 0,
+      `unexpectedly present under JWT: ${leaked.join(', ') || 'none'}`,
+    );
+
+    // --- Avatar settings, for real this time
+    log('\n[Avatar settings (JWT session — the surface the API-token lane can only refuse)]');
+    const initial = await h.call('vikunja_users', { subcommand: 'get-avatar' });
+    const originalProvider = assertOk('get-avatar', initial) ? extractAvatarProvider(initial.text) : undefined;
+    assertStep(
+      'get-avatar returns a provider value',
+      Boolean(originalProvider),
+      `could not read avatarProvider from: ${initial.text.slice(0, 300)}`,
+    );
+
+    const setInitials = await h.call('vikunja_users', {
+      subcommand: 'set-avatar',
+      avatarProvider: 'initials',
+    });
+    if (assertOk('set-avatar (initials)', setInitials)) {
+      const afterSet = await h.call('vikunja_users', { subcommand: 'get-avatar' });
+      assertStep(
+        'set-avatar round-trips through get-avatar',
+        assertOk('get-avatar after set-avatar', afterSet) && extractAvatarProvider(afterSet.text) === 'initials',
+        `expected provider "initials", got: ${afterSet.text.slice(0, 300)}`,
+      );
+    }
+
+    const upload = await h.call('vikunja_users', {
+      subcommand: 'upload-avatar',
+      fileContent: TINY_PNG_BASE64,
+      filename: 'mcp-e2e-avatar.png',
+    });
+    if (assertOk('upload-avatar (inline base64 PNG)', upload)) {
+      const afterUpload = await h.call('vikunja_users', { subcommand: 'get-avatar' });
+      // Vikunja's UploadAvatar handler sets the provider to `upload` as a
+      // side effect — asserting that is what proves the bytes actually
+      // landed server-side rather than the call merely returning 200.
+      assertStep(
+        'upload-avatar flips the provider to "upload" server-side',
+        assertOk('get-avatar after upload', afterUpload) &&
+          extractAvatarProvider(afterUpload.text) === 'upload',
+        `expected provider "upload", got: ${afterUpload.text.slice(0, 300)}`,
+      );
+    }
+
+    // Leave the stack's test user exactly as found.
+    if (originalProvider) {
+      const restore = await h.call('vikunja_users', {
+        subcommand: 'set-avatar',
+        avatarProvider: originalProvider,
+      });
+      assertStep(
+        `avatar provider restored to "${originalProvider}"`,
+        !restore.isError,
+        restore.text.slice(0, 300),
+      );
+    }
+
+    // --- User-scope webhooks, which 401 under a tk_* token by design
+    log('\n[User-scoped webhooks (JWT session)]');
+    assertOk(
+      'user-scope list-events succeeds under JWT',
+      await h.call('vikunja_webhooks', { subcommand: 'list-events', scope: 'user' }),
+    );
+    assertOk(
+      'user-scope list succeeds under JWT',
+      await h.call('vikunja_webhooks', { subcommand: 'list', scope: 'user' }),
+    );
+  } catch (e) {
+    fail('JWT lane', (e as Error).stack || String(e));
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
 async function main(): Promise<void> {
   log('╔═════════════════════════════╗');
   log('║   MCP-layer E2E Harness (spawns dist/index.js)   ║');
@@ -2255,6 +2417,19 @@ async function main(): Promise<void> {
     exitCode = 1;
   } finally {
     await client.close().catch(() => undefined);
+  }
+
+  // Second session under JWT auth (issue #198). Deliberately AFTER the main
+  // session is closed, not concurrent with it: two servers writing to the
+  // same stack under the same prefix would make the cleanup-by-prefix
+  // sweeps race each other.
+  try {
+    const jwt = await login();
+    await runJwtLane(jwt, inheritedEnv);
+  } catch (e) {
+    // A login failure here is a real gap in coverage, not a reason to go
+    // quiet — the JWT-only surface would go unexercised.
+    fail('JWT lane (login for the second session)', (e as Error).message);
   }
 
   // ============================================================================

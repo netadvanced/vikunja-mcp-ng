@@ -671,6 +671,51 @@ describe('vikunja-rest helper', () => {
       expect(headers['Content-Type']).toBeUndefined();
     });
 
+    // Regression: netadvanced/vikunja-mcp-ng#199. Breakers are cached by
+    // name in a process-wide registry, and before the fix both helpers
+    // derived the SAME name for sibling paths — so a JSON call made first
+    // left the multipart call firing `vikunjaRestRequestRaw`, which
+    // JSON.stringify'd the FormData to `{}` and set a JSON Content-Type.
+    // Live symptom was an opaque HTTP 500 from Vikunja
+    // ("request Content-Type isn't multipart/form-data"). These tests fail
+    // without the `-multipart` breaker-name suffix.
+    describe('breaker-name collision with the JSON helper (#199)', () => {
+      it.each([
+        ['avatar upload', '/user/settings/avatar', '/user/settings/avatar/upload'],
+        ['task attachments', '/tasks/42/attachments', '/tasks/42/attachments'],
+      ])('sends %s as multipart even after a JSON call on the same path group', async (
+        _label,
+        jsonPath,
+        multipartPath,
+      ) => {
+        // 1. JSON call first — this is what registers the breaker under the
+        //    shared derived name.
+        mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ ok: true }) }));
+        await vikunjaRestRequest(authManager, 'GET', jsonPath);
+
+        // 2. Multipart call second, same derived group.
+        mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ success: [] }) }));
+        const form = makeForm();
+        await vikunjaRestMultipartRequest(authManager, 'PUT', multipartPath, form);
+
+        const [, init] = mockFetch.mock.calls[1] as [string, RequestInit];
+        // The body must still BE the FormData — not a JSON string of it.
+        expect(init.body).toBe(form);
+        expect(typeof init.body).not.toBe('string');
+        // And fetch must be left to set the multipart boundary itself.
+        expect((init.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+      });
+
+      it('registers the multipart breaker under a distinct name', () => {
+        expect(deriveRestBreakerName('/user/settings/avatar')).toBe('vikunja-rest-user-settings');
+        expect(deriveRestBreakerName('/user/settings/avatar/upload')).toBe(
+          'vikunja-rest-user-settings',
+        );
+        // Same derived group for both paths — which is exactly why the
+        // multipart helper must not use the derived name verbatim.
+      });
+    });
+
     it('does not retry on failure by default (unlike the JSON variant)', async () => {
       mockFetch.mockResolvedValue(
         mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', text: '' }),

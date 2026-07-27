@@ -384,7 +384,19 @@ export async function vikunjaRestMultipartRequest<T = unknown>(
   form: FormData,
   options?: VikunjaRestRequestOptions,
 ): Promise<T> {
-  const breakerName = options?.breakerName ?? deriveRestBreakerName(path);
+  // `-multipart` suffix is load bearing (#199): without it this derives the
+  // SAME name as the JSON helper for sibling paths (`/user/settings/avatar`
+  // vs `/user/settings/avatar/upload`, `/tasks/{id}/attachments` for both
+  // list and upload), and `createCircuitBreaker` returns whichever breaker
+  // was registered first under that name — so an upload preceded by a JSON
+  // call in the same group was fired through `vikunjaRestRequestRaw`, which
+  // JSON.stringify'd the `FormData` to `{}` and set
+  // `Content-Type: application/json`. The server rejected it with a 500
+  // ("request Content-Type isn't multipart/form-data") that pointed nowhere
+  // near the real cause. The two paths SHOULD trip independently anyway:
+  // uploads deliberately don't retry (`DEFAULT_MULTIPART_RETRY`) while JSON
+  // calls do, so sharing breaker state between them was never intended.
+  const breakerName = options?.breakerName ?? `${deriveRestBreakerName(path)}-multipart`;
   const retryOptions: RetryOptions = {
     ...DEFAULT_MULTIPART_RETRY,
     shouldRetry: defaultRestShouldRetry,

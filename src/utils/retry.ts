@@ -232,16 +232,39 @@ export function createCircuitBreaker<TArgs extends unknown[], TR>(
   name: string,
   options: RetryOptions = {},
 ): CircuitBreaker<TArgs, TR> {
-  // Check if a circuit breaker with this name already exists
-  const existingBreaker = circuitBreakerRegistry.get(name);
+  // Check if a circuit breaker with this name already exists. A cached
+  // breaker is only reusable if it wraps the SAME operation — see #199: the
+  // JSON and multipart REST helpers derived the same breaker name for
+  // `/user/settings/avatar` vs `/user/settings/avatar/upload`, so whichever
+  // ran first defined what that name executed for the rest of the session,
+  // and multipart uploads were silently fired through the JSON helper
+  // (`Content-Type: application/json`, `FormData` JSON.stringify'd to `{}`,
+  // server 500). Rather than hand back a breaker that runs the wrong code,
+  // register the mismatched operation under a disambiguated name and say so
+  // loudly — a collision is a programming error, but failing a live upload
+  // is a worse way to learn about it than a log line.
+  let registryKey = name;
+  const existingBreaker = circuitBreakerRegistry.get(registryKey);
   if (existingBreaker) {
-    return existingBreaker as unknown as CircuitBreaker<TArgs, TR>;
+    if ((existingBreaker as unknown as { action?: unknown }).action === operation) {
+      return existingBreaker as unknown as CircuitBreaker<TArgs, TR>;
+    }
+    registryKey = `${name}#${operation.name || 'anonymous'}`;
+    const existingForOperation = circuitBreakerRegistry.get(registryKey);
+    if (existingForOperation) {
+      return existingForOperation as unknown as CircuitBreaker<TArgs, TR>;
+    }
+    logger.error(
+      `Circuit breaker name collision: "${name}" is already registered for a different operation. ` +
+        `Registering "${operation.name || 'anonymous'}" under "${registryKey}" instead — give the two ` +
+        'call sites distinct breaker names (see deriveRestBreakerName / VikunjaRestRequestOptions.breakerName).',
+    );
   }
 
   const opts = { ...DEFAULT_OPTIONS, ...options };
 
   const breaker = new CircuitBreaker<TArgs, TR>(operation, {
-    name,
+    name: registryKey,
     timeout: opts.timeout,
     resetTimeout: opts.resetTimeout,
     errorThresholdPercentage: opts.errorThresholdPercentage,
@@ -255,11 +278,11 @@ export function createCircuitBreaker<TArgs extends unknown[], TR>(
   });
 
   // Register with the global registry
-  circuitBreakerRegistry.register(name, breaker);
+  circuitBreakerRegistry.register(registryKey, breaker);
 
   // Essential logging only
-  breaker.on('open', () => logger.warn(`Circuit breaker ${name} opened`));
-  breaker.on('close', () => logger.info(`Circuit breaker ${name} closed`));
+  breaker.on('open', () => logger.warn(`Circuit breaker ${registryKey} opened`));
+  breaker.on('close', () => logger.info(`Circuit breaker ${registryKey} closed`));
 
   return breaker;
 }
@@ -321,12 +344,32 @@ export async function withNamedRetry<T>(
   name: string,
   options: RetryOptions = {},
 ): Promise<T> {
-  const breaker = createCircuitBreaker(operation, name, options);
+  // Register a STABLE action and pass the per-call operation as a fire()
+  // argument, exactly as `createCircuitBreaker`'s doc comment prescribes.
+  // Registering `operation` itself would mean every caller of a shared name
+  // (e.g. `withTaskRetry(..., 'create')`, which deliberately pools all task
+  // creates behind one breaker) hands in a different closure: before #199's
+  // fix that silently re-fired whichever closure was registered FIRST — two
+  // different creates, the first one executed twice — and after it, each
+  // closure would get its own breaker, defeating the pooling these helpers
+  // exist for. Threading the operation through `fire()` keeps both
+  // properties: one shared breaker per name, and the right code runs.
+  const breaker = createCircuitBreaker(invokeOperation, name, options);
   try {
-    return await breaker.fire();
+    return (await breaker.fire(operation)) as T;
   } catch (error) {
     throw rewordBreakerOpenError(error);
   }
+}
+
+/**
+ * The stable breaker action used by {@link withNamedRetry}: invokes whatever
+ * operation it is fired with. Must stay a single top-level reference — that
+ * is what makes every `withNamedRetry` call under one name resolve to the
+ * same registered breaker.
+ */
+function invokeOperation(operation: () => Promise<unknown>): Promise<unknown> {
+  return operation();
 }
 
 /**
