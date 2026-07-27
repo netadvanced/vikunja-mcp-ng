@@ -310,6 +310,55 @@ Two further live-verified details worth carrying forward:
   `code: 4002` with `errors: []`, which round-tripped intact into
   `details.vikunjaError` — confirming the adapter was not built against a fictional shape.
 
+### BLOCKER for P3: `PATCH /api/v2/tasks/{id}` 422s on any subscribed task (Vikunja 2.4.0)
+
+Verified live on 2026-07-27 against a clean 2.4.0 stack. **The premise of this milestone holds,
+but only with a workaround**, and the failure hits exactly the case the milestone exists to fix.
+
+A task that has a **subscription** cannot be PATCHed through v2:
+
+```
+PATCH /api/v2/tasks/{id}   {"priority": 7}   (merge-patch+json)
+→ 422  body.subscription.entity="task" (expected integer)
+```
+
+The server round-trips the task's `subscription` object through validation, where
+`subscription.entity` is serialized as the string `"task"` but the v2 schema declares it an
+integer. It is a server-side bug, not a client mistake.
+
+**Why this matters more than it first looks: assigning a user auto-subscribes them.** A bare task
+has no subscription and PATCHes fine (200). The moment it gets an assignee it acquires
+`subscription: {id, entity: "task", entity_id, created}` — and every subsequent v2 PATCH 422s. So
+the one operation the milestone was built to fix (updating a task without clobbering its
+assignees) is precisely the one v2 PATCH refuses.
+
+Measured behaviour, same task, in order:
+
+| Step | Result |
+|---|---|
+| Fresh task, `PATCH {priority: 3}` | **200**, applied |
+| Assign a user | subscription appears |
+| `PATCH {priority: 7}` | **422**, unchanged |
+| `PATCH {priority: 9, subscription: null}` | **200** — priority applied, **assignees preserved**, subscription untouched |
+| `PATCH [{op:"replace",path:"/priority"}]` (json-patch) | **422** — same error |
+
+**Conclusions for P3:**
+
+1. **The core premise is confirmed.** With the workaround, a v2 PATCH changed `priority` while
+   leaving `assignees` intact — no fetch-merge, no snapshot/restore. That is the milestone's payoff
+   and it is real.
+2. **Every v2 task PATCH must send `subscription: null`** until upstream fixes this. The server
+   ignores it (the subscription still exists afterwards), so today it is a validation bypass rather
+   than a data change — but that is *incidental*, and a future version that honours merge-patch
+   `null` semantics would silently unsubscribe users. Treat it as a versioned workaround with an
+   expiry, not a permanent part of the payload, and pin it with a test that fails if a PATCH ever
+   removes a subscription.
+3. **JSON Patch is not an escape hatch.** RFC 6902 hits the identical 422, so the `patchFormat`
+   option cannot route around this. That removes the main speculative justification for keeping
+   `'json-patch'`; re-evaluate whether to keep the option at all in P3.
+4. **File this upstream** before building on it, and check whether 2.4.1+ fixes it — that would let
+   the workaround be dropped behind a version check rather than carried indefinitely.
+
 ### The v2 probe's false-positive risk (raised 2026-07-27, deliberately not addressed here)
 
 `probeV2Api` (`src/utils/capabilities.ts`) trusts `response.ok` alone. A reverse proxy or SPA
