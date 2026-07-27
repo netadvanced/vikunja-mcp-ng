@@ -245,5 +245,94 @@ describe('vikunja-rest-v2 helper', () => {
       );
       expect(error.details?.vikunjaError).toEqual({ code: 5000, errors: [] });
     });
+
+    // Defensive test: error entries may omit location or message fields.
+    // This exercises the conditional branches in readErrorDetails.
+    it('handles error entries with only location (no message)', () => {
+      const error = parseVikunjaV2Error(
+        'PATCH',
+        '/tasks/7',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          title: 'Validation failed',
+          errors: [{ location: 'body.tags', value: 'invalid' }],
+        }),
+      );
+
+      expect(error.message).toContain('body.tags');
+      expect(error.details?.vikunjaError?.errors).toEqual([
+        { location: 'body.tags', value: 'invalid' },
+      ]);
+    });
+
+    it('handles error entries with only message (no location)', () => {
+      const error = parseVikunjaV2Error(
+        'PATCH',
+        '/tasks/7',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          title: 'Validation failed',
+          errors: [{ message: 'must be at least 3 characters', value: 'xy' }],
+        }),
+      );
+
+      expect(error.message).toContain('must be at least 3 characters');
+      expect(error.details?.vikunjaError?.errors).toEqual([
+        { message: 'must be at least 3 characters', value: 'xy' },
+      ]);
+    });
+
+    it('handles error entries with neither location nor message', () => {
+      const error = parseVikunjaV2Error(
+        'PATCH',
+        '/tasks/7',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          title: 'Validation failed',
+          errors: [{ value: null }],
+        }),
+      );
+
+      // Entry with no location or message is skipped in the fields list
+      expect(error.message).toBe(
+        'Vikunja REST request failed (PATCH /tasks/7): HTTP 422 Unprocessable Entity — Validation failed',
+      );
+      expect(error.details?.vikunjaError?.errors).toEqual([{ value: null }]);
+    });
+
+    it('renders mixed error entries with varying completeness', () => {
+      const error = parseVikunjaV2Error(
+        'PATCH',
+        '/tasks/7',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          errors: [
+            { location: 'body.title', message: 'required' },
+            { location: 'body.tags' },
+            { message: 'unexpected field' },
+            { value: 'extra' },
+          ],
+        }),
+      );
+
+      // Should render complete entry, location-only, message-only, and skip valueless
+      expect(error.message).toContain('body.title: required');
+      expect(error.message).toContain('body.tags');
+      expect(error.message).toContain('unexpected field');
+      expect(error.details?.vikunjaError?.errors).toEqual([
+        { location: 'body.title', message: 'required' },
+        { location: 'body.tags' },
+        { message: 'unexpected field' },
+        { value: 'extra' },
+      ]);
+    });
   });
 });
