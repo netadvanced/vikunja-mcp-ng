@@ -311,12 +311,58 @@ describe('retry utility', () => {
       expect(action).toHaveBeenNthCalledWith(2, 21);
     });
 
-    it('returns the cached breaker for a name that already has one, ignoring the new operation reference', () => {
+    it('returns the cached breaker when the SAME operation is registered again under one name', () => {
       const name = `test-breaker-cache-${Math.random()}`;
-      const first = createCircuitBreaker(async () => 'first', name);
-      const second = createCircuitBreaker(async () => 'second', name);
+      const operation = async (): Promise<string> => 'same';
+      const first = createCircuitBreaker(operation, name);
+      const second = createCircuitBreaker(operation, name);
 
       expect(second).toBe(first);
+    });
+
+    // Regression: netadvanced/vikunja-mcp-ng#199. This used to return the
+    // cached breaker regardless of the operation, so the SECOND caller
+    // silently executed the FIRST caller's function. Live consequence: a
+    // multipart upload was fired through the JSON REST helper, which
+    // JSON.stringify'd the FormData and set a JSON Content-Type, and Vikunja
+    // answered with an opaque 500. A name collision is a programming error,
+    // but running the wrong code is a far worse way to surface it.
+    it('does NOT hand back a cached breaker that wraps a different operation (#199)', async () => {
+      const name = `test-breaker-mismatch-${Math.random()}`;
+      const firstOperation = async (): Promise<string> => 'first';
+      const secondOperation = async (): Promise<string> => 'second';
+
+      const first = createCircuitBreaker(firstOperation, name);
+      const second = createCircuitBreaker(secondOperation, name);
+
+      expect(second).not.toBe(first);
+      await expect(first.fire()).resolves.toBe('first');
+      await expect(second.fire()).resolves.toBe('second');
+      // The mismatched operation is registered under a disambiguated key so
+      // the original name keeps its original breaker.
+      expect(circuitBreakerRegistry.get(name)).toBe(first);
+    });
+
+    // Companion to the #199 fix: `withNamedRetry` pools calls behind ONE
+    // breaker per name (that is the whole point of `withTaskRetry(...,
+    // 'create')`), so every caller necessarily passes a different closure.
+    // It used to register those closures as the breaker action, which meant
+    // the second caller silently re-ran the FIRST caller's operation and got
+    // its result back. The state-sharing test above never caught it because
+    // it only counted successes, never checked whose code ran.
+    it('runs the caller\'s own operation when several share one breaker name', async () => {
+      const name = `test-named-retry-${Math.random()}`;
+      const first = jest.fn(async () => 'first-result');
+      const second = jest.fn(async () => 'second-result');
+
+      await expect(withNamedRetry(first, name)).resolves.toBe('first-result');
+      await expect(withNamedRetry(second, name)).resolves.toBe('second-result');
+
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(second).toHaveBeenCalledTimes(1);
+      // ...and they genuinely shared one breaker, rather than being split
+      // into two by the mismatch guard.
+      expect(circuitBreakerRegistry.get(`${name}#invokeOperation`)).toBeUndefined();
     });
 
     it('registers the breaker under the given name and clear() forgets it', async () => {
