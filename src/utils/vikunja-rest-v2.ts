@@ -25,6 +25,7 @@ import {
   rewordBreakerOpenError,
   type RetryOptions,
 } from './retry';
+import { resolveV2BaseUrl } from './vikunja-v2-url';
 
 /**
  * Resolves the v2 API base URL for a session, normalizing whether or not
@@ -33,12 +34,12 @@ import {
  * `./vikunja-rest`, but targets v2 and replaces — rather than preserves —
  * an existing version suffix, matching `resolveV2ProbeUrl` in
  * `./capabilities`.
+ *
+ * Re-exported from `./vikunja-v2-url`, the shared implementation both this
+ * module and `./capabilities` import — see that module's doc comment for why
+ * it isn't defined in either consumer directly.
  */
-export function resolveV2BaseUrl(apiUrl: string): string {
-  const trimmed = apiUrl.replace(/\/+$/, '');
-  const withoutVersion = trimmed.replace(/\/api\/v\d+$/, '');
-  return `${withoutVersion}/api/v2`;
-}
+export { resolveV2BaseUrl };
 
 /**
  * Derives a stable, endpoint-group-scoped circuit breaker name for a v2
@@ -51,6 +52,14 @@ export function resolveV2BaseUrl(apiUrl: string): string {
  * `PATCH /tasks/{id}` and a v1 `POST /tasks/{id}` would both derive
  * `vikunja-rest-tasks` and silently share one rolling failure window across
  * two different API surfaces.
+ *
+ * Namespace constraint: v1 and v2 breaker names share one flat registry keyed
+ * purely by string, so this scheme only avoids collisions because
+ * `deriveRestBreakerName` (v1) never itself produces a `vikunja-rest-v2-...`
+ * name. If a v1 request path's first non-numeric segment were ever literally
+ * `v2` (e.g. a hypothetical v1 route `/v2/...`), it would derive
+ * `vikunja-rest-v2-...` and collide with this namespace. No such v1 path
+ * exists today — just don't introduce one without revisiting this.
  */
 export function deriveRestV2BreakerName(path: string): string {
   const segments = path.split('/').filter((seg) => seg.length > 0 && !/^\d+$/.test(seg));
@@ -186,7 +195,12 @@ export function parseVikunjaV2Error(
         .map((entry) => [entry.location, entry.message].filter(Boolean).join(': '))
         .filter((entry) => entry.length > 0);
       const fieldSuffix = fields.length > 0 ? `[${fields.join('; ')}]` : '';
-      const suffix = [summary, fieldSuffix].filter((part) => part.length > 0).join(' ');
+      const rawSuffix = [summary, fieldSuffix].filter((part) => part.length > 0).join(' ');
+      // Bounds the composed suffix the same way buildFallbackError bounds its
+      // raw body: a server or proxy can return an oversized `detail` or an
+      // `errors[]` list with thousands of entries, and without this cap that
+      // would produce an unbounded MCP error message.
+      const suffix = rawSuffix.slice(0, MAX_FALLBACK_BODY_LENGTH);
       const base = buildBaseMessage(method, path, status, statusText);
 
       error = new MCPError(ErrorCode.API_ERROR, suffix ? `${base} — ${suffix}` : base, {
@@ -209,12 +223,32 @@ export function parseVikunjaV2Error(
 /** Which RFC the PATCH request body follows. v2 accepts both on every PATCH route. */
 export type PatchFormat = 'merge' | 'json-patch';
 
+/**
+ * Extends `VikunjaRestRequestOptions` (v1's option shape) rather than
+ * defining an unrelated interface, which means a `VikunjaRestV2RequestOptions`
+ * object — including one carrying `patchFormat` — is structurally assignable
+ * to v1's `vikunjaRestRequest`. v1 has no notion of PATCH body format and
+ * will silently ignore `patchFormat` if passed to it. That is harmless today
+ * only because nothing routes through v2 yet (this phase wires up no
+ * operation). In P3, if a call site builds one options object and passes it
+ * to whichever transport `resolveApiVersion` picks, an accidental v1 fallback
+ * carrying `patchFormat: 'json-patch'` would silently send a JSON-Patch array
+ * body to v1's full-model POST/PUT — a corrupt update, not an error. Callers
+ * must construct/pass options per-transport rather than sharing one object
+ * across both.
+ */
 export interface VikunjaRestV2RequestOptions extends VikunjaRestRequestOptions {
   /**
    * Request body format for PATCH calls. `'merge'` (RFC 7386
    * merge-patch+json, the default) matches the shape of our tool arguments;
    * `'json-patch'` (RFC 6902) is the only way to express true array
    * operations such as removing a single assignee. Ignored for other methods.
+   *
+   * v1-unaware: `vikunjaRestRequest` (v1) accepts a `VikunjaRestRequestOptions`
+   * and has no `patchFormat` concept — if this field is ever passed through to
+   * v1 (e.g. via a shared options object in a future per-endpoint migration),
+   * it is silently ignored there rather than rejected. See the interface doc
+   * comment above for the concrete P3 failure mode.
    */
   patchFormat?: PatchFormat;
 }

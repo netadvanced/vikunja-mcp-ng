@@ -339,6 +339,49 @@ describe('vikunja-rest-v2 helper', () => {
       expect(error.details?.vikunjaError?.errors).toEqual([{ value: null }]);
     });
 
+    // A server or proxy can return an oversized `detail` field; the composed
+    // suffix must be capped the same way the non-problem+json fallback path
+    // caps its raw body, or an unbounded value here produces an unbounded
+    // MCP error message.
+    it('caps an oversized detail field at 500 characters', () => {
+      const error = parseVikunjaV2Error(
+        'PATCH',
+        '/tasks/7',
+        400,
+        'Bad Request',
+        'application/problem+json',
+        JSON.stringify({ title: 'Bad Request', detail: 'x'.repeat(900) }),
+      );
+
+      const dashIndex = error.message.indexOf('— ');
+      expect(dashIndex).toBeGreaterThan(-1);
+      const suffix = error.message.slice(dashIndex + 2);
+      expect(suffix.length).toBe(500);
+      expect(suffix.startsWith('Bad Request: ')).toBe(true);
+      expect(error.message).not.toContain('x'.repeat(501));
+    });
+
+    // Same cap applies when the length comes from many errors[] entries
+    // rather than one long detail string.
+    it('caps a message composed of many errors[] entries at 500 characters', () => {
+      const errors = Array.from({ length: 200 }, (_, i) => ({
+        location: `body.field${i}`,
+        message: 'invalid',
+      }));
+      const error = parseVikunjaV2Error(
+        'PATCH',
+        '/tasks/7',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({ errors }),
+      );
+
+      const dashIndex = error.message.indexOf('— ');
+      expect(dashIndex).toBeGreaterThan(-1);
+      expect(error.message.length - (dashIndex + 2)).toBe(500);
+    });
+
     it('renders mixed error entries with varying completeness', () => {
       const error = parseVikunjaV2Error(
         'PATCH',
@@ -469,6 +512,23 @@ describe('vikunja-rest-v2 helper', () => {
 
       await expect(promise).rejects.toBeInstanceOf(MCPError);
       await expect(promise).rejects.toMatchObject({ details: { transient: true } });
+    });
+
+    // Mirrors vikunja-rest.test.ts's "stringifies a non-Error rejection
+    // value": fetch can reject with a non-Error (e.g. a plain string thrown
+    // by a mock or a non-standard fetch polyfill), and that branch of the
+    // `error instanceof Error ? error.message : String(error)` ternary is
+    // otherwise never exercised.
+    it('stringifies a non-Error network rejection value', async () => {
+      mockFetch.mockRejectedValue('plain string failure');
+
+      const promise = vikunjaRestV2Request(authManager, 'GET', '/tasks/7', undefined, {
+        retry: { maxRetries: 0 },
+      });
+
+      await expect(promise).rejects.toThrow(
+        'Vikunja REST request failed (GET /tasks/7): plain string failure',
+      );
     });
 
     it('retries a 500 and succeeds on the next attempt', async () => {

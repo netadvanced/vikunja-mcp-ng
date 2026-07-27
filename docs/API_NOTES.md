@@ -291,9 +291,11 @@ This creates a race condition in task creation.
 (`{ serverVersion, features, hasV2Api }`) — the `GET /info` payload already
 fetched by `vikunja_auth.connect`'s verification step, plus a one-time
 best-effort `GET /api/v2/openapi.json` probe — surfaced read-only via
-`vikunja_auth`'s `status` and `info` subcommands. **No tool currently branches
-on `hasV2Api` or issues any `/api/v2/*` request** — this is only a seam future
-v2 fast-paths can consult without an extra round trip.
+`vikunja_auth`'s `status` and `info` subcommands. **The only consumer of
+`hasV2Api` today is `vikunja_auth`'s reporting** (`resolveApiVersion` in
+`src/utils/api-version.ts`, surfaced as `activeApiVersion`) — no operation
+routes on it, and no tool issues any other `/api/v2/*` request. This is only a
+seam future v2 fast-paths can consult without an extra round trip.
 
 Ground truth confirmed live against the e2e harness's `2.4.0` Vikunja stack
 (`npm run e2e:up`, `VIKUNJA_VERSION=2.4.0` default): `GET /api/v2/openapi.json`

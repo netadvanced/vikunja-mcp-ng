@@ -119,8 +119,10 @@ On a non-2xx v2 response:
      transport status, and a server bug in the body must not be able to change retry behaviour.
    - `details.vikunjaError` = `{ code, errors }`, preserving Vikunja's numeric `code`
      (`VikunjaErrorModel.code`, generated at `:5685`) and the `errors[]` detail list
-     (`ErrorDetail { location, message, value }`, `:3238`). The numeric code is what the existing
-     error-handler logic keys on and must not be lost.
+     (`ErrorDetail { location, message, value }`, `:3238`). No code in `src/` reads
+     `details.vikunjaError` today (`src/types/errors.ts` types it `unknown`; every existing write
+     site is fire-and-forget) — the numeric code is preserved for future consumers and diagnostic
+     fidelity, not because anything currently keys on it.
    - message = `title` plus `detail` when present, with the `errors[]` field locations appended so
      a validation failure names the offending field.
    - a top-level `.status` via `Object.assign`, mirroring `vikunja-rest.ts:227` — shared

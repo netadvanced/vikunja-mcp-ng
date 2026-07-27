@@ -7,7 +7,9 @@
  * read-only `VikunjaCapabilities` snapshot — the raw `GET /info` payload
  * plus a one-time `GET /api/v2/openapi.json` probe — and caches it on the
  * session so a future v2 fast-path has something to consult without an
- * extra round trip. No tool currently branches on `hasV2Api`.
+ * extra round trip. The only consumer today is `vikunja_auth`'s reporting
+ * (`resolveApiVersion` in `./api-version`, surfaced as `activeApiVersion`) —
+ * no operation routes on `hasV2Api` yet.
  *
  * The v2 probe is intentionally isolated from `vikunjaRestRequest`: that
  * helper always resolves paths against the v1 base URL
@@ -22,6 +24,7 @@
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaCapabilities } from '../types/vikunja';
 import { logger } from './logger';
+import { resolveV2BaseUrl } from './vikunja-v2-url';
 
 /** Bounds how long the one-time v2 probe can delay connect/info/status. */
 const V2_PROBE_TIMEOUT_MS = 3000;
@@ -29,13 +32,15 @@ const V2_PROBE_TIMEOUT_MS = 3000;
 /**
  * Derives the `/api/v2/openapi.json` URL for a session's configured
  * `apiUrl`, regardless of whether that URL already carries an `/api/v{n}`
- * suffix (mirrors the normalization `resolveBaseUrl` does for v1 in
- * `vikunja-rest.ts`, but targets v2).
+ * suffix. Composed from `resolveV2BaseUrl` (`./vikunja-v2-url`), the same
+ * normalization the v2 transport (`./vikunja-rest-v2`) uses for its base
+ * URL — imported from the shared, dependency-free module rather than from
+ * the transport itself, so this probe doesn't pull in the transport's
+ * circuit-breaker/retry machinery it deliberately avoids (see module doc
+ * comment above).
  */
 export function resolveV2ProbeUrl(apiUrl: string): string {
-  const trimmed = apiUrl.replace(/\/+$/, '');
-  const withoutVersion = trimmed.replace(/\/api\/v\d+$/, '');
-  return `${withoutVersion}/api/v2/openapi.json`;
+  return `${resolveV2BaseUrl(apiUrl)}/openapi.json`;
 }
 
 /**

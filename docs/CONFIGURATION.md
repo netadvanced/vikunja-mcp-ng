@@ -402,8 +402,10 @@ conservatively:
 ### Forcing the v1 API
 
 The server detects once per session whether the Vikunja instance exposes the v2
-API, and uses v2's `PATCH` routes for partial updates when it does. Set this to
-force every operation onto the v1 API regardless of what was detected.
+API. Today that detection result is surfaced only for reporting (see
+`vikunja_auth`'s `activeApiVersion` below) — no operation routes through v2
+yet. Once per-endpoint v2 support lands, this flag will let you force every
+operation onto the v1 API regardless of what was detected.
 
 - **Config file key**: `featureFlags.forceV1Api` (boolean, default `false`)
 - **Env override**: `VIKUNJA_MCP_FORCE_V1_API` (`true`/`false`) — as with every
