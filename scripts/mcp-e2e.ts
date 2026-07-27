@@ -1913,20 +1913,49 @@ async function testSetupKanban(h: McpHarness): Promise<void> {
   if (!noColumnsProjectId) {
     fail('setup-kanban (columns-less) response contains a project id', noColumnsCall.text.slice(0, 300));
   } else {
-    // Verify server-side: zero buckets — no Kanban structure was created or
-    // touched on this path, only Vikunja's own auto-created default view.
+    // Verify server-side that this path created/renamed/touched NO bucket.
+    // NOT by asserting zero buckets: Vikunja auto-provisions a default
+    // Kanban view AND a set of default buckets ("To-Do"/"Doing"/"Done" on
+    // 2.4.0) for every new project, server-side, with no involvement from
+    // us — verified by direct REST probe against a plain `PUT /projects`.
+    // The honest, version-independent check is therefore a CONTROL project
+    // created via plain `create`: a columns-less setup-kanban must leave
+    // exactly the same bucket set the server would have made on its own.
+    const controlTitle = `${NAME_PREFIX}kanban-columns-less-control`;
+    const controlCall = await h.call('vikunja_projects', {
+      subcommand: 'create',
+      title: controlTitle,
+    });
+    const controlProjectId = assertOk('create control project (columns-less baseline)', controlCall)
+      ? extractId(controlCall.text)
+      : null;
+
+    const bucketTitles = (text: string): string[] =>
+      [...text.matchAll(/"title":\s*"([^"]*)"/g)].map((m) => m[1] ?? '').sort();
+
     const noColumnsBuckets = await h.call('vikunja_projects', {
       subcommand: 'list-buckets',
       id: noColumnsProjectId,
     });
-    if (assertOk('list-buckets after columns-less setup-kanban', noColumnsBuckets)) {
-      const bucketIds = extractAllIds(noColumnsBuckets.text);
+    const controlBuckets = controlProjectId
+      ? await h.call('vikunja_projects', { subcommand: 'list-buckets', id: controlProjectId })
+      : null;
+
+    if (
+      assertOk('list-buckets after columns-less setup-kanban', noColumnsBuckets) &&
+      controlBuckets &&
+      assertOk('list-buckets on the control project', controlBuckets)
+    ) {
+      const actual = bucketTitles(noColumnsBuckets.text);
+      const expected = bucketTitles(controlBuckets.text);
       assertStep(
-        'setup-kanban columns-less path created zero buckets',
-        bucketIds.length === 0,
-        `expected 0 bucket ids, got: ${noColumnsBuckets.text.slice(0, 300)}`,
+        'setup-kanban columns-less path leaves the server default buckets untouched',
+        actual.length === expected.length && actual.every((t, i) => t === expected[i]),
+        `columns-less buckets ${JSON.stringify(actual)} differ from a plain create's ${JSON.stringify(expected)}`,
       );
     }
+
+    if (controlProjectId) await deleteProjectAndTasks(h, controlProjectId, controlTitle);
     await deleteProjectAndTasks(h, noColumnsProjectId, noColumnsTitle);
   }
 
