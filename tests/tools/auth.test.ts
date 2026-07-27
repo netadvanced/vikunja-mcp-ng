@@ -429,13 +429,18 @@ describe('Auth Tool', () => {
       );
     });
 
-    it('should not surface hasV2Api in the connect response (only status/info do)', async () => {
-      // Item scope: connect performs and caches capability detection, but
-      // only 'status' and 'info' are required to surface it in their
-      // output. Pin that connect's response shape is unaffected even when
-      // detection reports v2 support.
+    it('should surface hasV2Api and activeApiVersion in the connect response', async () => {
+      // Changed by #184 P2: connect triggers the first capability detection,
+      // so it now reports the result and which API version that resolves to.
+      // This replaces an earlier test that pinned connect as NOT surfacing
+      // hasV2Api (correct under #149, superseded here).
       mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
       mockAuthManager.getAuthType.mockReturnValue('api-token');
+      mockAuthManager.getCapabilities.mockReturnValue({
+        serverVersion: '1.2.3',
+        features: { version: '1.2.3' },
+        hasV2Api: true,
+      });
       mockGetOrDetectCapabilities.mockResolvedValue({
         serverVersion: '1.2.3',
         features: { version: '1.2.3' },
@@ -447,7 +452,8 @@ describe('Auth Tool', () => {
         apiToken: 'tk_test-token-123',
       });
 
-      expect(result.content[0].text).not.toContain('hasV2Api');
+      expect(result.content[0].text).toContain('hasV2Api');
+      expect(result.content[0].text).toMatch(/activeApiVersion\W+v2/);
     });
   });
 
@@ -1031,6 +1037,95 @@ describe('Auth Tool', () => {
       for (const subcommand of ['status', 'refresh', 'disconnect', 'info']) {
         expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand }))).toBe(false);
       }
+    });
+  });
+
+  describe('active API version reporting', () => {
+    afterEach(() => {
+      delete process.env.VIKUNJA_MCP_FORCE_V1_API;
+      ConfigurationManager.reset();
+    });
+
+    it('reports v2 from status when the session is v2-capable', async () => {
+      mockAuthManager.getStatus.mockReturnValue({
+        authenticated: true,
+        apiUrl: 'https://vikunja.example.com',
+        hasV2Api: true,
+      });
+      mockAuthManager.getCapabilities.mockReturnValue({
+        serverVersion: '2.4.0',
+        features: {},
+        hasV2Api: true,
+      });
+
+      const result = await callTool('status');
+
+      expect(result.content[0].text).toMatch(/activeApiVersion\W+v2/);
+    });
+
+    it('reports v1 from status when the session is not v2-capable', async () => {
+      mockAuthManager.getStatus.mockReturnValue({
+        authenticated: true,
+        apiUrl: 'https://vikunja.example.com',
+        hasV2Api: false,
+      });
+      mockAuthManager.getCapabilities.mockReturnValue({
+        serverVersion: '2.3.0',
+        features: {},
+        hasV2Api: false,
+      });
+
+      const result = await callTool('status');
+
+      expect(result.content[0].text).toMatch(/activeApiVersion\W+v1/);
+    });
+
+    it('omits activeApiVersion when not authenticated', async () => {
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+
+      const result = await callTool('status');
+
+      expect(result.content[0].text).not.toContain('activeApiVersion');
+    });
+
+    it('reports v1 from status when the kill switch overrides a v2-capable server', async () => {
+      process.env.VIKUNJA_MCP_FORCE_V1_API = 'true';
+      ConfigurationManager.reset();
+      mockAuthManager.getStatus.mockReturnValue({
+        authenticated: true,
+        apiUrl: 'https://vikunja.example.com',
+        hasV2Api: true,
+      });
+      mockAuthManager.getCapabilities.mockReturnValue({
+        serverVersion: '2.4.0',
+        features: {},
+        hasV2Api: true,
+      });
+
+      const result = await callTool('status');
+
+      // The server's capability is still reported honestly...
+      expect(result.content[0].text).toContain('hasV2Api');
+      // ...but the active path is forced back to v1.
+      expect(result.content[0].text).toMatch(/activeApiVersion\W+v1/);
+    });
+
+    it('reports activeApiVersion from info', async () => {
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+      mockAuthManager.getCapabilities.mockReturnValue({
+        serverVersion: '2.4.0',
+        features: {},
+        hasV2Api: true,
+      });
+      mockGetOrDetectCapabilities.mockResolvedValue({
+        serverVersion: '2.4.0',
+        features: { version: '2.4.0' },
+        hasV2Api: true,
+      });
+
+      const result = await callTool('info');
+
+      expect(result.content[0].text).toMatch(/activeApiVersion\W+v2/);
     });
   });
 });

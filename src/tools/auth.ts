@@ -18,6 +18,7 @@ import { createStandardResponse } from '../utils/response-factory';
 import { formatMcpResponse } from '../utils/simple-response';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { getOrDetectCapabilities } from '../utils/capabilities';
+import { resolveApiVersion } from '../utils/api-version';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 interface AuthArgs {
@@ -173,6 +174,8 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
                 ...(capabilities.serverVersion !== undefined
                   ? { serverVersion: capabilities.serverVersion }
                   : {}),
+                hasV2Api: capabilities.hasV2Api,
+                activeApiVersion: resolveApiVersion(authManager),
               },
             );
             return {
@@ -186,7 +189,12 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
               'auth-status',
               status.authenticated ? 'Authentication status retrieved' : 'Not authenticated',
               status,
-              status.authenticated ? { apiUrl: status.apiUrl } : undefined,
+              status.authenticated
+                ? {
+                    apiUrl: status.apiUrl,
+                    activeApiVersion: resolveApiVersion(authManager),
+                  }
+                : undefined,
             );
             return {
               content: formatMcpResponse(response),
@@ -285,6 +293,7 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
                   ? { serverVersion: capabilities.serverVersion }
                   : {}),
                 hasV2Api: capabilities.hasV2Api,
+                activeApiVersion: resolveApiVersion(authManager),
               },
             );
             return {
