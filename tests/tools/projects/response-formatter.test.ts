@@ -64,7 +64,7 @@ describe('Project Response Formatter', () => {
         'Project retrieved',
         { id: 1 },
         {},
-        'minimal'
+        'minimal',
       );
 
       expect(result.transformation.context.verbosity).toBe('minimal');
@@ -80,7 +80,7 @@ describe('Project Response Formatter', () => {
         'Projects retrieved',
         [{ id: 1 }],
         {},
-        'complete'
+        'complete',
       );
 
       expect(result.transformation.context.verbosity).toBe('complete');
@@ -92,7 +92,9 @@ describe('Project Response Formatter', () => {
       process.env[VERBOSITY_ENV_VAR] = 'minimal';
       jest.resetModules();
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { createProjectSuccessResponse } = require('../../../src/tools/projects/response-formatter');
+      const {
+        createProjectSuccessResponse,
+      } = require('../../../src/tools/projects/response-formatter');
 
       const result = createProjectSuccessResponse('list_projects', [{ id: 1 }]);
 
@@ -103,7 +105,9 @@ describe('Project Response Formatter', () => {
       process.env[VERBOSITY_ENV_VAR] = 'minimal';
       jest.resetModules();
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { createProjectSuccessResponse } = require('../../../src/tools/projects/response-formatter');
+      const {
+        createProjectSuccessResponse,
+      } = require('../../../src/tools/projects/response-formatter');
 
       const result = createProjectSuccessResponse('list_projects', [{ id: 1 }], {
         verbosity: 'detailed',

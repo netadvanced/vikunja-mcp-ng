@@ -16,7 +16,12 @@ import * as path from 'path';
 import * as os from 'os';
 
 /** Minimal Response-like object for the direct-REST helper. */
-function mockResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
   return {
     ok,
@@ -62,11 +67,15 @@ describe('vikunja_templates file-backed persistence', () => {
    * have been reset by the caller when simulating a restart — and returns a
    * ready-to-call tool handler bound to a newly-connected AuthManager.
    */
-  function setupTool(): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
+  function setupTool(): (
+    args: Record<string, unknown>,
+  ) => Promise<{ content: { text: string }[] }> {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { registerTemplatesTool } = require('../../src/tools/templates') as typeof import('../../src/tools/templates');
+    const { registerTemplatesTool } =
+      require('../../src/tools/templates') as typeof import('../../src/tools/templates');
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { AuthManager } = require('../../src/auth/AuthManager') as typeof import('../../src/auth/AuthManager');
+    const { AuthManager } =
+      require('../../src/auth/AuthManager') as typeof import('../../src/auth/AuthManager');
 
     const authManager = new AuthManager();
     authManager.connect('https://test.vikunja.io', 'test-token-12345678');
@@ -132,12 +141,16 @@ describe('vikunja_templates file-backed persistence', () => {
     fetchOkOnce([{ id: 1, title: 'Task 1' }]);
     await handler({ subcommand: 'create', projectId: 1, name: 'Original Name' });
 
-    const onDiskAfterCreate = JSON.parse(fs.readFileSync(persistFile, 'utf-8')) as { name: string }[];
+    const onDiskAfterCreate = JSON.parse(fs.readFileSync(persistFile, 'utf-8')) as {
+      name: string;
+    }[];
     expect(onDiskAfterCreate).toHaveLength(1);
     const templateId = onDiskAfterCreate[0]!.name;
 
     await handler({ subcommand: 'update', id: templateId, name: 'Renamed' });
-    const onDiskAfterUpdate = JSON.parse(fs.readFileSync(persistFile, 'utf-8')) as { data: string }[];
+    const onDiskAfterUpdate = JSON.parse(fs.readFileSync(persistFile, 'utf-8')) as {
+      data: string;
+    }[];
     expect(onDiskAfterUpdate).toHaveLength(1);
     expect(JSON.parse(onDiskAfterUpdate[0]!.data).name).toBe('Renamed');
 

@@ -23,7 +23,7 @@ The task has been successfully created and is ready for use.
 
     expect(status).toEqual({
       type: 'success',
-      heading: '✅ Success: Task Created Successfully'
+      heading: '✅ Success: Task Created Successfully',
     });
   });
 
@@ -44,7 +44,9 @@ The system has validated all inputs and confirmed data integrity.
     const parsed = parseMarkdown(aorpContent);
     const content = parsed.getSectionContent('Primary Recommendation');
 
-    expect(content).toBe('The task has been successfully updated with all requested changes.\nThe system has validated all inputs and confirmed data integrity.');
+    expect(content).toBe(
+      'The task has been successfully updated with all requested changes.\nThe system has validated all inputs and confirmed data integrity.',
+    );
   });
 
   it('should getSectionListItems correctly', () => {
@@ -67,7 +69,7 @@ The system has validated all inputs and confirmed data integrity.
       'Configure development environment',
       'Implement core functionality',
       'Add comprehensive tests',
-      'Prepare deployment package'
+      'Prepare deployment package',
     ]);
   });
 
@@ -96,7 +98,7 @@ The task has been successfully created and assigned to the project.
       status: 'success',
       success: 'Task Management Operation',
       task_id: '12345',
-      user_id: 'user_abc123'
+      user_id: 'user_abc123',
     });
   });
 });

@@ -136,7 +136,9 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     // Register the tool
@@ -193,7 +195,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-task');
       expect(markdown).toContain('**projectId:**');
       expect(markdown).toContain('Task created successfully');
@@ -230,7 +232,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-task');
       expect(markdown).toContain('Task created successfully');
     });
@@ -266,7 +268,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-task');
       expect(markdown).toContain('Task created successfully');
     });
@@ -302,7 +304,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-task');
       expect(markdown).toContain('Task created successfully');
     });
@@ -330,17 +332,19 @@ describe('Tasks Tool - Repeating Tasks', () => {
       // Route by request shape rather than call order: bulk-create runs the
       // per-task PUT+GET pairs with concurrency, so call order across tasks
       // isn't guaranteed.
-      mockRest.mockImplementation((_auth: unknown, method: string, path: string, body?: { title?: string }) => {
-        if (method === 'PUT') {
-          const match = createdTasks.find((t) => t.title === body?.title);
-          return Promise.resolve(match);
-        }
-        if (method === 'GET') {
-          const match = createdTasks.find((t) => path === `/tasks/${t.id}`);
-          return Promise.resolve(match);
-        }
-        return Promise.resolve(undefined);
-      });
+      mockRest.mockImplementation(
+        (_auth: unknown, method: string, path: string, body?: { title?: string }) => {
+          if (method === 'PUT') {
+            const match = createdTasks.find((t) => t.title === body?.title);
+            return Promise.resolve(match);
+          }
+          if (method === 'GET') {
+            const match = createdTasks.find((t) => path === `/tasks/${t.id}`);
+            return Promise.resolve(match);
+          }
+          return Promise.resolve(undefined);
+        },
+      );
 
       const result = await callTool('bulk-create', {
         projectId: 17,
@@ -360,7 +364,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-tasks');
       expect(markdown).toContain('Successfully created 2 tasks');
       expect(markdown).toContain('**count:**');
@@ -405,7 +409,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('update-task');
       expect(markdown).toContain('Task updated successfully');
       expect(markdown).toContain('**affectedFields:**');

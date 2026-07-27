@@ -75,7 +75,7 @@ class SecureErrorHandler {
     // Database schema and connection details (table names, hosts, passwords)
     if (
       lowerMessage.includes('er_no_such_table') ||
-      lowerMessage.includes('table \'') ||
+      lowerMessage.includes("table '") ||
       lowerMessage.includes('mysql://') ||
       lowerMessage.includes('postgresql://') ||
       lowerMessage.includes('mongodb://') ||
@@ -131,7 +131,7 @@ class SecureErrorHandler {
     }
 
     // Check for other security patterns
-    const hasSensitiveInfo = SECURITY_PATTERNS.some(pattern => pattern.test(message));
+    const hasSensitiveInfo = SECURITY_PATTERNS.some((pattern) => pattern.test(message));
 
     if (hasSensitiveInfo) {
       return 'System error occurred';
@@ -177,7 +177,7 @@ class SecureErrorHandler {
     error: unknown,
     operation: string,
     resourceId?: string | number,
-    customMessage?: string
+    customMessage?: string,
   ): MCPError {
     if (this.isStatusCodeError(error) && error.statusCode === 404) {
       if (customMessage) {
@@ -189,7 +189,7 @@ class SecureErrorHandler {
 
       return new MCPError(
         ErrorCode.NOT_FOUND,
-        `${resourceType.charAt(0).toUpperCase() + resourceType.slice(1)}${resourceInfo} not found`
+        `${resourceType.charAt(0).toUpperCase() + resourceType.slice(1)}${resourceInfo} not found`,
       );
     }
 
@@ -250,7 +250,7 @@ class SecureErrorHandler {
     toolName: string,
     operation: string,
     resourceId?: string | number,
-    customMessage?: string
+    customMessage?: string,
   ): MCPError {
     if (error instanceof MCPError) {
       return error;
@@ -263,10 +263,7 @@ class SecureErrorHandler {
     const message = error instanceof Error ? error.message : 'Unknown error';
     const sanitized = this.sanitize(message);
 
-    return new MCPError(
-      ErrorCode.API_ERROR,
-      `${toolName}.${operation} failed: ${sanitized}`
-    );
+    return new MCPError(ErrorCode.API_ERROR, `${toolName}.${operation} failed: ${sanitized}`);
   }
 
   /**
@@ -277,11 +274,11 @@ class SecureErrorHandler {
     return new MCPError(
       ErrorCode.AUTH_REQUIRED,
       `Authentication required${context}. Please connect first:\n` +
-      `vikunja_auth.connect({\n` +
-      `  apiUrl: 'https://your-vikunja.com/api/v1',\n` +
-      `  apiToken: 'your-api-token'\n` +
-      `})\n\n` +
-      `Get your API token from Vikunja Settings > API Access.`
+        `vikunja_auth.connect({\n` +
+        `  apiUrl: 'https://your-vikunja.com/api/v1',\n` +
+        `  apiToken: 'your-api-token'\n` +
+        `})\n\n` +
+        `Get your API token from Vikunja Settings > API Access.`,
     );
   }
 
@@ -321,7 +318,7 @@ class SecureErrorHandler {
     ) {
       return new MCPError(
         ErrorCode.AUTH_REQUIRED,
-        `Failed to ${operation}. Please check authentication and API access.`
+        `Failed to ${operation}. Please check authentication and API access.`,
       );
     }
 
@@ -329,7 +326,7 @@ class SecureErrorHandler {
     if (lowerMessage.includes('timeout')) {
       return new MCPError(
         ErrorCode.API_ERROR,
-        `Request timeout while trying to ${operation}. Please try again.`
+        `Request timeout while trying to ${operation}. Please try again.`,
       );
     }
 
@@ -366,7 +363,7 @@ export const handleStatusCodeError = (
   error: unknown,
   operation: string,
   resourceId?: string | number,
-  customMessage?: string
+  customMessage?: string,
 ): MCPError => errorHandler.handleStatusCode(error, operation, resourceId, customMessage);
 
 export const wrapIfRestOrigin = (error: MCPError, operation: string): MCPError =>
@@ -380,7 +377,7 @@ export const wrapToolError = (
   toolName: string,
   operation: string,
   resourceId?: string | number,
-  customMessage?: string
+  customMessage?: string,
 ): MCPError => errorHandler.wrap(error, toolName, operation, resourceId, customMessage);
 
 export const createAuthRequiredError = (operation?: string): MCPError =>

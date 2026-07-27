@@ -113,9 +113,9 @@ describe('startDate / endDate / doneAt / project filter fields', () => {
     } as unknown as Task;
 
     it('matches startDate before today via < now', () => {
-      expect(
-        evaluateCondition(baseTask, { field: 'startDate', operator: '<', value: 'now' }),
-      ).toBe(true);
+      expect(evaluateCondition(baseTask, { field: 'startDate', operator: '<', value: 'now' })).toBe(
+        true,
+      );
     });
 
     it('treats start_date = "0001-01-..." as unset', () => {
@@ -129,18 +129,16 @@ describe('startDate / endDate / doneAt / project filter fields', () => {
     });
 
     it('treats missing done_at as unset (the != escape hatch)', () => {
-      expect(
-        evaluateCondition(baseTask, { field: 'doneAt', operator: '!=', value: 'now' }),
-      ).toBe(true);
-      expect(
-        evaluateCondition(baseTask, { field: 'doneAt', operator: '=', value: 'now' }),
-      ).toBe(false);
+      expect(evaluateCondition(baseTask, { field: 'doneAt', operator: '!=', value: 'now' })).toBe(
+        true,
+      );
+      expect(evaluateCondition(baseTask, { field: 'doneAt', operator: '=', value: 'now' })).toBe(
+        false,
+      );
     });
 
     it('compares project against task.project_id', () => {
-      expect(evaluateCondition(baseTask, { field: 'project', operator: '=', value: 3 })).toBe(
-        true,
-      );
+      expect(evaluateCondition(baseTask, { field: 'project', operator: '=', value: 3 })).toBe(true);
       expect(evaluateCondition(baseTask, { field: 'project', operator: '=', value: 99 })).toBe(
         false,
       );

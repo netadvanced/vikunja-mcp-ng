@@ -36,7 +36,10 @@ interface RecordedCall {
   body: unknown;
 }
 
-function jsonResponse(body: unknown, opts: { ok?: boolean; status?: number; statusText?: string } = {}): Response {
+function jsonResponse(
+  body: unknown,
+  opts: { ok?: boolean; status?: number; statusText?: string } = {},
+): Response {
   const { ok = true, status = 200, statusText = 'OK' } = opts;
   const text = body === undefined ? '' : JSON.stringify(body);
   return {
@@ -125,10 +128,7 @@ describe('setupKanban', () => {
 
     it('throws when a task has a blank title', async () => {
       await expect(
-        setupKanban(
-          { title: 'Board', columns: ['To Do'], tasks: [{ title: '  ' }] },
-          authManager,
-        ),
+        setupKanban({ title: 'Board', columns: ['To Do'], tasks: [{ title: '  ' }] }, authManager),
       ).rejects.toThrow('tasks[0].title is required');
     });
 
@@ -204,18 +204,28 @@ describe('setupKanban', () => {
         (c) => c.method === 'PUT' && c.path === '/projects/501/views/11/buckets',
       );
       expect(bucketCreateCalls).toHaveLength(3);
-      expect((bucketCreateCalls[0]?.body as { title: string; position: number }).title).toBe('To Do');
-      expect((bucketCreateCalls[0]?.body as { title: string; position: number }).position).toBe(65536);
-      expect((bucketCreateCalls[1]?.body as { title: string; position: number }).title).toBe('Doing');
-      expect((bucketCreateCalls[1]?.body as { title: string; position: number }).position).toBe(131072);
-      expect((bucketCreateCalls[2]?.body as { title: string; position: number }).title).toBe('Done');
-      expect((bucketCreateCalls[2]?.body as { title: string; position: number }).position).toBe(196608);
+      expect((bucketCreateCalls[0]?.body as { title: string; position: number }).title).toBe(
+        'To Do',
+      );
+      expect((bucketCreateCalls[0]?.body as { title: string; position: number }).position).toBe(
+        65536,
+      );
+      expect((bucketCreateCalls[1]?.body as { title: string; position: number }).title).toBe(
+        'Doing',
+      );
+      expect((bucketCreateCalls[1]?.body as { title: string; position: number }).position).toBe(
+        131072,
+      );
+      expect((bucketCreateCalls[2]?.body as { title: string; position: number }).title).toBe(
+        'Done',
+      );
+      expect((bucketCreateCalls[2]?.body as { title: string; position: number }).position).toBe(
+        196608,
+      );
 
       // Every requested position is non-zero and strictly increasing in
       // requested-column order — the actual regression this item fixes.
-      const sentPositions = bucketCreateCalls.map(
-        (c) => (c.body as { position: number }).position,
-      );
+      const sentPositions = bucketCreateCalls.map((c) => (c.body as { position: number }).position);
       expect(sentPositions.every((p) => p !== 0 && p > 0)).toBe(true);
       expect(sentPositions).toEqual([...sentPositions].sort((a, b) => a - b));
       for (let i = 1; i < sentPositions.length; i++) {
@@ -223,7 +233,9 @@ describe('setupKanban', () => {
       }
 
       // Every task got placed via the move endpoint.
-      const moveCalls = router.calls.filter((c) => /\/buckets\/\d+\/tasks$/.test(c.path) && c.method === 'POST');
+      const moveCalls = router.calls.filter(
+        (c) => /\/buckets\/\d+\/tasks$/.test(c.path) && c.method === 'POST',
+      );
       expect(moveCalls).toHaveLength(3);
     });
   });
@@ -288,7 +300,9 @@ describe('setupKanban', () => {
       expect((backlogRename?.body as { position?: number }).position).not.toBe(0);
 
       // Only ONE brand-new bucket was created ("Doing" — no existing bucket left to reuse).
-      const created = router.calls.filter((c) => c.method === 'PUT' && c.path === '/projects/77/views/20/buckets');
+      const created = router.calls.filter(
+        (c) => c.method === 'PUT' && c.path === '/projects/77/views/20/buckets',
+      );
       expect(created).toHaveLength(1);
       expect((created[0]?.body as { title: string }).title).toBe('Doing');
       // "Doing" is requested column index 1.
@@ -469,7 +483,10 @@ describe('setupKanban', () => {
         { id: 14, title: 'Kanban', project_id: 88, view_kind: 'kanban' },
       ]);
       router.on('GET', '/projects/88/views/14/buckets', () => []);
-      router.on('PUT', '/projects/88/views/14/buckets', (_p, body) => ({ id: 901, ...(body as Record<string, unknown>) }));
+      router.on('PUT', '/projects/88/views/14/buckets', (_p, body) => ({
+        id: 901,
+        ...(body as Record<string, unknown>),
+      }));
 
       const createdTasks = new Map<number, Record<string, unknown>>();
       router.on('PUT', '/projects/88/tasks', (_p, body) => {
@@ -489,7 +506,9 @@ describe('setupKanban', () => {
         authManager,
       );
 
-      const createCall = router.calls.find((c) => c.method === 'PUT' && c.path === '/projects/88/tasks');
+      const createCall = router.calls.find(
+        (c) => c.method === 'PUT' && c.path === '/projects/88/tasks',
+      );
       expect((createCall?.body as { due_date?: string }).due_date).toBe('2026-09-01T00:00:00Z');
     });
   });
@@ -617,9 +636,13 @@ describe('setupKanban', () => {
       expect(text).toContain('1/1 tasks created');
 
       // Label was resolved (reused, not created) and attached.
-      const labelSearch = router.calls.find((c) => c.method === 'GET' && /^\/labels\?s=/.test(c.path));
+      const labelSearch = router.calls.find(
+        (c) => c.method === 'GET' && /^\/labels\?s=/.test(c.path),
+      );
       expect(labelSearch).toBeDefined();
-      const labelAttach = router.calls.find((c) => c.method === 'POST' && c.path === '/tasks/6001/labels/bulk');
+      const labelAttach = router.calls.find(
+        (c) => c.method === 'POST' && c.path === '/tasks/6001/labels/bulk',
+      );
       expect(labelAttach).toBeDefined();
       expect((labelAttach?.body as { labels: Array<{ id: number }> }).labels).toEqual([{ id: 77 }]);
 
@@ -764,7 +787,9 @@ describe('setupKanban', () => {
         id: 980,
         ...(body as Record<string, unknown>),
       }));
-      router.on('PUT', '/projects/240/tasks', (_p, body) => ({ ...(body as Record<string, unknown>) }));
+      router.on('PUT', '/projects/240/tasks', (_p, body) => ({
+        ...(body as Record<string, unknown>),
+      }));
 
       const result = await setupKanban(
         { title: 'Board', columns: ['To Do'], tasks: [{ title: 'No id task' }] },

@@ -73,7 +73,7 @@ export async function addReminder(
       'add-reminder',
       `Reminder added successfully for ${args.reminderDate}`,
       true,
-      `Reminder added successfully for ${args.reminderDate}`
+      `Reminder added successfully for ${args.reminderDate}`,
     );
 
     return {
@@ -207,7 +207,7 @@ export async function removeReminder(
       'remove-reminder',
       `Reminder ${removedDescription} removed successfully`,
       true,
-      `Reminder ${removedDescription} removed successfully`
+      `Reminder ${removedDescription} removed successfully`,
     );
 
     return {

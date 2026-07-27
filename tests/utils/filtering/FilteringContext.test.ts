@@ -5,26 +5,30 @@
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { FilteringContext } from '../../../src/utils/filtering/FilteringContext';
-import type { FilteringParams, FilteringResult, StrategyConfig } from '../../../src/utils/filtering/types';
+import type {
+  FilteringParams,
+  FilteringResult,
+  StrategyConfig,
+} from '../../../src/utils/filtering/types';
 import type { Task } from 'node-vikunja';
 
 // Mock the strategies
 jest.mock('../../../src/utils/filtering/ClientSideFilteringStrategy', () => ({
   ClientSideFilteringStrategy: jest.fn().mockImplementation(() => ({
-    execute: jest.fn()
-  }))
+    execute: jest.fn(),
+  })),
 }));
 
 jest.mock('../../../src/utils/filtering/HybridFilteringStrategy', () => ({
   HybridFilteringStrategy: jest.fn().mockImplementation(() => ({
-    execute: jest.fn()
-  }))
+    execute: jest.fn(),
+  })),
 }));
 
 jest.mock('../../../src/utils/filtering/RestCrossProjectFilteringStrategy', () => ({
   RestCrossProjectFilteringStrategy: jest.fn().mockImplementation(() => ({
-    execute: jest.fn()
-  }))
+    execute: jest.fn(),
+  })),
 }));
 
 import { ClientSideFilteringStrategy } from '../../../src/utils/filtering/ClientSideFilteringStrategy';
@@ -55,7 +59,7 @@ describe('FilteringContext', () => {
     args: {},
     filterExpression: null,
     filterString: 'priority >= 3',
-    params: { page: 1, per_page: 10 }
+    params: { page: 1, per_page: 10 },
   };
 
   const mockResult: FilteringResult = {
@@ -64,28 +68,36 @@ describe('FilteringContext', () => {
       serverSideFilteringUsed: false,
       serverSideFilteringAttempted: false,
       clientSideFiltering: true,
-      filteringNote: 'Test filtering applied'
-    }
+      filteringNote: 'Test filtering applied',
+    },
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
 
     mockClientStrategy = {
-      execute: jest.fn().mockResolvedValue(mockResult)
+      execute: jest.fn().mockResolvedValue(mockResult),
     } as any;
 
     mockHybridStrategy = {
-      execute: jest.fn().mockResolvedValue(mockResult)
+      execute: jest.fn().mockResolvedValue(mockResult),
     } as any;
 
     mockRestCrossProjectStrategy = {
-      execute: jest.fn().mockResolvedValue(mockResult)
+      execute: jest.fn().mockResolvedValue(mockResult),
     } as any;
 
-    (ClientSideFilteringStrategy as jest.MockedClass<typeof ClientSideFilteringStrategy>).mockImplementation(() => mockClientStrategy);
-    (HybridFilteringStrategy as jest.MockedClass<typeof HybridFilteringStrategy>).mockImplementation(() => mockHybridStrategy);
-    (RestCrossProjectFilteringStrategy as jest.MockedClass<typeof RestCrossProjectFilteringStrategy>).mockImplementation(() => mockRestCrossProjectStrategy);
+    (
+      ClientSideFilteringStrategy as jest.MockedClass<typeof ClientSideFilteringStrategy>
+    ).mockImplementation(() => mockClientStrategy);
+    (
+      HybridFilteringStrategy as jest.MockedClass<typeof HybridFilteringStrategy>
+    ).mockImplementation(() => mockHybridStrategy);
+    (
+      RestCrossProjectFilteringStrategy as jest.MockedClass<
+        typeof RestCrossProjectFilteringStrategy
+      >
+    ).mockImplementation(() => mockRestCrossProjectStrategy);
   });
 
   describe('strategy selection', () => {
@@ -224,23 +236,23 @@ describe('FilteringContext', () => {
           perPage: 25,
           search: 'test',
           sort: 'priority',
-          allProjects: true
+          allProjects: true,
         },
         filterExpression: {
           groups: [
             {
               conditions: [{ field: 'priority', operator: '>=', value: 3 }],
-              operator: '&&'
-            }
-          ]
+              operator: '&&',
+            },
+          ],
         },
         filterString: 'priority >= 3 && done = false',
         params: {
           page: 3,
           per_page: 25,
           sort_by: 'priority',
-          s: 'test'
-        }
+          s: 'test',
+        },
       };
 
       const context = new FilteringContext({ enableServerSide: false });

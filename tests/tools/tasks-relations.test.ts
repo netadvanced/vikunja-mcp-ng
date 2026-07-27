@@ -67,7 +67,9 @@ const mockTask = {
 // a single mocked global fetch for all of it.
 
 // Helper to create a mock server
-function createMockServer(): McpServer & { executeTool: (name: string, args: unknown) => Promise<unknown> } {
+function createMockServer(): McpServer & {
+  executeTool: (name: string, args: unknown) => Promise<unknown>;
+} {
   const registeredTools = new Map<string, any>();
 
   const mockServer = {
@@ -86,7 +88,9 @@ function createMockServer(): McpServer & { executeTool: (name: string, args: unk
     },
   };
 
-  return mockServer as unknown as McpServer & { executeTool: (name: string, args: unknown) => Promise<unknown> };
+  return mockServer as unknown as McpServer & {
+    executeTool: (name: string, args: unknown) => Promise<unknown>;
+  };
 }
 
 describe('Task Relations Tool', () => {
@@ -232,7 +236,7 @@ describe('Task Relations Tool', () => {
         const markdown = (result as any).content[0].text;
         const parsed = parseMarkdown(markdown);
         const aorpStatus = parsed.getAorpStatus();
-      expect(aorpStatus.type).toBe('success'); // New format returns success for successful operations
+        expect(aorpStatus.type).toBe('success'); // New format returns success for successful operations
         expect(markdown).toContain(kind);
       }
     });
@@ -481,7 +485,9 @@ describe('Task Relations Tool', () => {
           subcommand: 'relations',
           id: 1,
         }),
-      ).rejects.toThrow('Failed to get task relations: Vikunja REST request failed (GET /tasks/1): 12345');
+      ).rejects.toThrow(
+        'Failed to get task relations: Vikunja REST request failed (GET /tasks/1): 12345',
+      );
     });
   });
 

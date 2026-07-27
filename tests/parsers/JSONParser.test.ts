@@ -57,7 +57,7 @@ describe('JSONParser', () => {
 
     it('should accept valid hex colors', () => {
       const validColors = ['#FF5733', '#000000', '#FFFFFF', '#123ABC', '#abc123'];
-      validColors.forEach(color => {
+      validColors.forEach((color) => {
         const task = { title: 'Test', hexColor: color };
         expect(() => importedTaskSchema.parse(task)).not.toThrow();
       });
@@ -91,22 +91,24 @@ describe('JSONParser', () => {
     });
 
     it('should parse tasks with all properties', () => {
-      const json = JSON.stringify([{
-        title: 'Complete Task',
-        description: 'Description',
-        done: true,
-        dueDate: '2024-12-31T23:59:59Z',
-        priority: 5,
-        labels: ['urgent'],
-        assignees: ['user1'],
-        startDate: '2024-01-01T00:00:00Z',
-        endDate: '2024-12-31T23:59:59Z',
-        hexColor: '#FF5733',
-        percentDone: 75,
-        repeatAfter: 3600,
-        repeatMode: 2,
-        reminders: ['2024-12-30T10:00:00Z'],
-      }]);
+      const json = JSON.stringify([
+        {
+          title: 'Complete Task',
+          description: 'Description',
+          done: true,
+          dueDate: '2024-12-31T23:59:59Z',
+          priority: 5,
+          labels: ['urgent'],
+          assignees: ['user1'],
+          startDate: '2024-01-01T00:00:00Z',
+          endDate: '2024-12-31T23:59:59Z',
+          hexColor: '#FF5733',
+          percentDone: 75,
+          repeatAfter: 3600,
+          repeatMode: 2,
+          reminders: ['2024-12-30T10:00:00Z'],
+        },
+      ]);
 
       const result = parseJSONInput(json);
       expect(result).toHaveLength(1);
@@ -177,7 +179,7 @@ describe('JSONParser', () => {
     it('should handle large arrays efficiently', () => {
       const tasks = Array.from({ length: 100 }, (_, i) => ({
         title: `Task ${i + 1}`,
-        priority: (i % 6),
+        priority: i % 6,
       }));
 
       const json = JSON.stringify(tasks);
@@ -225,7 +227,7 @@ describe('JSONParser', () => {
     it('should reject tasks with invalid hex color format', () => {
       const invalidColors = ['#FF573', 'FF5733', '#GG5733', '#F5733', '#FF57333'];
 
-      invalidColors.forEach(color => {
+      invalidColors.forEach((color) => {
         const json = JSON.stringify({ title: 'Test', hexColor: color });
         expect(() => parseJSONInput(json)).toThrow(MCPError);
       });

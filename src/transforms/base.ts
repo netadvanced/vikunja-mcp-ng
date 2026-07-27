@@ -15,7 +15,7 @@ export enum Verbosity {
   /** Extended fields including relationships, metadata, timestamps */
   DETAILED = 'detailed',
   /** All available fields including debug info, raw data, complete metadata */
-  COMPLETE = 'complete'
+  COMPLETE = 'complete',
 }
 
 /**
@@ -30,7 +30,7 @@ export enum FieldCategory {
   /** Time-related fields like due dates, reminders, scheduling */
   SCHEDULING = 'scheduling',
   /** Metadata, statistics, and debug information */
-  METADATA = 'metadata'
+  METADATA = 'metadata',
 }
 
 /**
@@ -205,7 +205,7 @@ export const SizeEstimator = {
   calculateReduction(originalSize: number, optimizedSize: number): number {
     if (originalSize === 0) return 0;
     return Math.round(((originalSize - optimizedSize) / originalSize) * 100);
-  }
+  },
 };
 
 /**
@@ -213,55 +213,70 @@ export const SizeEstimator = {
  */
 export const FIELD_CATEGORIES = {
   // Core fields (always included in minimal)
-  CORE_FIELDS: [
-    'id', 'title', 'done', 'status', 'success', 'operation', 'message'
-  ],
+  CORE_FIELDS: ['id', 'title', 'done', 'status', 'success', 'operation', 'message'],
 
   // Context fields (included in standard and above)
   CONTEXT_FIELDS: [
-    'description', 'project_id', 'project', 'labels', 'assignees',
-    'creator', 'created_by', 'priority', 'identifier'
+    'description',
+    'project_id',
+    'project',
+    'labels',
+    'assignees',
+    'creator',
+    'created_by',
+    'priority',
+    'identifier',
   ],
 
   // Scheduling fields (included in detailed and above)
   SCHEDULING_FIELDS: [
-    'due_date', 'start_date', 'end_date', 'reminders', 'created_at',
-    'updated_at', 'completed_at', 'repeat_after'
+    'due_date',
+    'start_date',
+    'end_date',
+    'reminders',
+    'created_at',
+    'updated_at',
+    'completed_at',
+    'repeat_after',
   ],
 
   // Metadata fields (included in complete only)
   METADATA_FIELDS: [
-    'hex_color', 'index', 'kanban_position', 'position', 'bucket_id',
-    'parent_task_id', 'related_tasks', 'attachments', 'comments',
-    'background_information', 'subscription', 'is_favorite'
-  ]
+    'hex_color',
+    'index',
+    'kanban_position',
+    'position',
+    'bucket_id',
+    'parent_task_id',
+    'related_tasks',
+    'attachments',
+    'comments',
+    'background_information',
+    'subscription',
+    'is_favorite',
+  ],
 } as const;
 
 /**
  * Default verbosity field mappings
  */
 export const DEFAULT_VERBOSITY_FIELDS = {
-  [Verbosity.MINIMAL]: [
-    ...FIELD_CATEGORIES.CORE_FIELDS
-  ],
+  [Verbosity.MINIMAL]: [...FIELD_CATEGORIES.CORE_FIELDS],
 
-  [Verbosity.STANDARD]: [
-    ...FIELD_CATEGORIES.CORE_FIELDS,
-    ...FIELD_CATEGORIES.CONTEXT_FIELDS
-  ],
+  [Verbosity.STANDARD]: [...FIELD_CATEGORIES.CORE_FIELDS, ...FIELD_CATEGORIES.CONTEXT_FIELDS],
 
   [Verbosity.DETAILED]: [
     ...FIELD_CATEGORIES.CORE_FIELDS,
     ...FIELD_CATEGORIES.CONTEXT_FIELDS,
-    ...FIELD_CATEGORIES.SCHEDULING_FIELDS
+    ...FIELD_CATEGORIES.SCHEDULING_FIELDS,
   ],
 
   [Verbosity.COMPLETE]: [
     ...FIELD_CATEGORIES.CORE_FIELDS,
     ...FIELD_CATEGORIES.CONTEXT_FIELDS,
     ...FIELD_CATEGORIES.SCHEDULING_FIELDS,
-    ...FIELD_CATEGORIES.METADATA_FIELDS
-  ]
+    ...FIELD_CATEGORIES.METADATA_FIELDS,
+  ],
 } as const;
 
 /**

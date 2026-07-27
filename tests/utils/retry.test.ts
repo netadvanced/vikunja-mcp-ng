@@ -13,12 +13,14 @@ import { logger } from '../../src/utils/logger';
 
 jest.mock('../../src/utils/logger');
 jest.mock('../../src/utils/auth-error-handler', () => ({
-  isAuthenticationError: jest.fn()
+  isAuthenticationError: jest.fn(),
 }));
 
 describe('retry utility', () => {
-  const mockIsAuthenticationError = isAuthenticationError as jest.MockedFunction<typeof isAuthenticationError>;
-  
+  const mockIsAuthenticationError = isAuthenticationError as jest.MockedFunction<
+    typeof isAuthenticationError
+  >;
+
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
@@ -32,9 +34,9 @@ describe('retry utility', () => {
   describe('withRetry', () => {
     it('should return result on successful operation', async () => {
       const operation = jest.fn().mockResolvedValue('success');
-      
+
       const result = await withRetry(operation);
-      
+
       expect(result).toBe('success');
       expect(operation).toHaveBeenCalledTimes(1);
     });
@@ -42,21 +44,22 @@ describe('retry utility', () => {
     it('should retry on authentication error', async () => {
       const authError = new Error('Authentication failed');
       mockIsAuthenticationError.mockReturnValue(true);
-      
-      const operation = jest.fn()
+
+      const operation = jest
+        .fn()
         .mockRejectedValueOnce(authError)
         .mockRejectedValueOnce(authError)
         .mockResolvedValueOnce('success');
-      
+
       const promise = withRetry(operation);
-      
+
       // First retry after 1000ms
       await jest.advanceTimersByTimeAsync(1000);
       // Second retry after 2000ms (1000 * 2^1)
       await jest.advanceTimersByTimeAsync(2000);
-      
+
       const result = await promise;
-      
+
       expect(result).toBe('success');
       expect(operation).toHaveBeenCalledTimes(3);
       expect(logger.debug).toHaveBeenCalledTimes(2);
@@ -64,17 +67,18 @@ describe('retry utility', () => {
 
     it('should retry on transient network error', async () => {
       const networkError = new Error('ECONNRESET: connection reset');
-      
-      const operation = jest.fn()
+
+      const operation = jest
+        .fn()
         .mockRejectedValueOnce(networkError)
         .mockResolvedValueOnce('success');
-      
+
       const promise = withRetry(operation);
-      
+
       await jest.advanceTimersByTimeAsync(1000);
-      
+
       const result = await promise;
-      
+
       expect(result).toBe('success');
       expect(operation).toHaveBeenCalledTimes(2);
     });
@@ -82,28 +86,28 @@ describe('retry utility', () => {
     it('should throw after max retries', async () => {
       const authError = new Error('Authentication failed');
       mockIsAuthenticationError.mockReturnValue(true);
-      
+
       const operation = jest.fn().mockRejectedValue(authError);
-      
+
       const promise = withRetry(operation, { maxRetries: 2 });
-      
+
       // Handle the rejection to avoid unhandled promise rejection
       promise.catch(() => {});
-      
+
       // First retry
       await jest.advanceTimersByTimeAsync(1000);
       // Second retry
       await jest.advanceTimersByTimeAsync(2000);
-      
+
       await expect(promise).rejects.toThrow('Authentication failed');
       expect(operation).toHaveBeenCalledTimes(3); // initial + 2 retries
     });
 
     it('should not retry on non-retryable error', async () => {
       const validationError = new Error('Invalid input');
-      
+
       const operation = jest.fn().mockRejectedValue(validationError);
-      
+
       await expect(withRetry(operation)).rejects.toThrow('Invalid input');
       expect(operation).toHaveBeenCalledTimes(1);
     });
@@ -111,23 +115,21 @@ describe('retry utility', () => {
     it('should use custom retry options', async () => {
       const error = new Error('Custom error');
       const customShouldRetry = jest.fn().mockReturnValue(true);
-      
-      const operation = jest.fn()
-        .mockRejectedValueOnce(error)
-        .mockResolvedValueOnce('success');
-      
+
+      const operation = jest.fn().mockRejectedValueOnce(error).mockResolvedValueOnce('success');
+
       const promise = withRetry(operation, {
         maxRetries: 1,
         initialDelay: 500,
         maxDelay: 5000,
         backoffFactor: 3,
-        shouldRetry: customShouldRetry
+        shouldRetry: customShouldRetry,
       });
-      
+
       await jest.advanceTimersByTimeAsync(500);
-      
+
       const result = await promise;
-      
+
       expect(result).toBe('success');
       expect(customShouldRetry).toHaveBeenCalledWith(error);
       expect(operation).toHaveBeenCalledTimes(2);
@@ -136,26 +138,26 @@ describe('retry utility', () => {
     it('should respect max delay', async () => {
       const error = new Error('Error');
       mockIsAuthenticationError.mockReturnValue(true);
-      
+
       const operation = jest.fn().mockRejectedValue(error);
-      
+
       const promise = withRetry(operation, {
         maxRetries: 5,
         initialDelay: 1000,
         maxDelay: 3000,
-        backoffFactor: 2
+        backoffFactor: 2,
       });
-      
+
       // Handle the rejection to avoid unhandled promise rejection
       promise.catch(() => {});
-      
+
       // Delays should be: 1000, 2000, 3000 (capped), 3000 (capped), 3000 (capped)
       await jest.advanceTimersByTimeAsync(1000);
       await jest.advanceTimersByTimeAsync(2000);
       await jest.advanceTimersByTimeAsync(3000);
       await jest.advanceTimersByTimeAsync(3000);
       await jest.advanceTimersByTimeAsync(3000);
-      
+
       await expect(promise).rejects.toThrow('Error');
       expect(operation).toHaveBeenCalledTimes(6); // initial + 5 retries
     });
@@ -175,11 +177,12 @@ describe('retry utility', () => {
 
     it('should handle non-Error objects', async () => {
       const stringError = 'String error';
-      
-      const operation = jest.fn()
+
+      const operation = jest
+        .fn()
         .mockRejectedValueOnce(stringError)
         .mockResolvedValueOnce('success');
-      
+
       // String errors are not retryable by default
       await expect(withRetry(operation)).rejects.toBe('String error');
       expect(operation).toHaveBeenCalledTimes(1);
@@ -188,35 +191,35 @@ describe('retry utility', () => {
     it('should calculate exponential backoff correctly', async () => {
       const error = new Error('Error');
       mockIsAuthenticationError.mockReturnValue(true);
-      
+
       const operation = jest.fn().mockRejectedValue(error);
       const debugCalls: any[] = [];
-      
+
       (logger.debug as jest.Mock).mockImplementation((msg, data) => {
         debugCalls.push({ msg, data });
       });
-      
+
       const promise = withRetry(operation, {
         maxRetries: 3,
         initialDelay: 100,
-        backoffFactor: 2
+        backoffFactor: 2,
       });
-      
+
       // Handle the rejection to avoid unhandled promise rejection
       promise.catch(() => {});
-      
+
       // First retry: 100ms
       await jest.advanceTimersByTimeAsync(100);
       expect(debugCalls[0].msg).toContain('after 100ms');
-      
+
       // Second retry: 200ms (100 * 2^1)
       await jest.advanceTimersByTimeAsync(200);
       expect(debugCalls[1].msg).toContain('after 200ms');
-      
+
       // Third retry: 400ms (100 * 2^2)
       await jest.advanceTimersByTimeAsync(400);
       expect(debugCalls[2].msg).toContain('after 400ms');
-      
+
       await expect(promise).rejects.toThrow('Error');
     });
   });
@@ -271,7 +274,7 @@ describe('retry utility', () => {
         maxDelay: 10000,
         backoffFactor: 2,
         enableCircuitBreaker: true,
-        circuitBreakerName: 'vikunja-auth-connect'
+        circuitBreakerName: 'vikunja-auth-connect',
       });
     });
 
@@ -282,7 +285,7 @@ describe('retry utility', () => {
         maxDelay: 30000,
         backoffFactor: 1.5,
         enableCircuitBreaker: true,
-        circuitBreakerName: 'vikunja-api-operations'
+        circuitBreakerName: 'vikunja-api-operations',
       });
     });
   });

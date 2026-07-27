@@ -71,7 +71,7 @@ export {
   type RemoveProjectTeamArgs,
   type ShareWithUserArgs,
   type ShareWithTeamArgs,
-  type ListMembersArgs
+  type ListMembersArgs,
 } from './projects/index';
 
 // Re-export validation utilities for external use
@@ -82,7 +82,7 @@ export {
   calculateProjectDepth,
   getMaxSubtreeDepth,
   validateMoveConstraints,
-  MAX_PROJECT_DEPTH
+  MAX_PROJECT_DEPTH,
 } from './projects/validation';
 
 // Re-export response formatters for external use
@@ -91,5 +91,5 @@ export {
   createProjectSuccessResponse,
   createProjectListResponse,
   createProjectTreeResponse,
-  createBreadcrumbResponse
+  createBreadcrumbResponse,
 } from './projects/response-formatter';

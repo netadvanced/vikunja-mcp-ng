@@ -46,7 +46,13 @@ import {
   deleteView,
   setDoneBucket,
 } from '../../../src/tools/projects/views';
-import { listBuckets, createBucket, updateBucket, deleteBucket, listViewTasks } from '../../../src/tools/projects/buckets';
+import {
+  listBuckets,
+  createBucket,
+  updateBucket,
+  deleteBucket,
+  listViewTasks,
+} from '../../../src/tools/projects/buckets';
 import { duplicateProject } from '../../../src/tools/projects/duplicate';
 
 const okResult = { content: [{ type: 'text' as const, text: 'ok' }] };
@@ -107,7 +113,12 @@ describe('vikunja_projects routing: views, buckets, duplicate', () => {
      */
     expectedMessage?: string;
   }> = [
-    { subcommand: 'list-views', args: { id: 5 }, fn: listViews as jest.Mock, missingIdMessage: 'list-views' },
+    {
+      subcommand: 'list-views',
+      args: { id: 5 },
+      fn: listViews as jest.Mock,
+      missingIdMessage: 'list-views',
+    },
     {
       subcommand: 'get-view',
       args: { id: 5, viewId: 11 },
@@ -194,10 +205,7 @@ describe('vikunja_projects routing: views, buckets, duplicate', () => {
       const result = await toolHandler({ subcommand, ...args });
 
       expect(fn).toHaveBeenCalledTimes(1);
-      expect(fn).toHaveBeenCalledWith(
-        expect.objectContaining(args),
-        mockAuthManager,
-      );
+      expect(fn).toHaveBeenCalledWith(expect.objectContaining(args), mockAuthManager);
       expect(result).toBe(okResult);
     });
 

@@ -10,7 +10,7 @@ import {
   withTaskRetry,
   withBulkRetry,
   CIRCUIT_BREAKER_NAMES,
-  RETRY_CONFIG
+  RETRY_CONFIG,
 } from '../../src/utils/retry';
 import { MCPError, ErrorCode } from '../../src/types/errors';
 
@@ -20,7 +20,7 @@ describe('Circuit Breaker State Sharing', () => {
     circuitBreakerRegistry.resetAll();
 
     // Wait a bit for circuit breakers to fully reset
-    return new Promise(resolve => setTimeout(resolve, 50));
+    return new Promise((resolve) => setTimeout(resolve, 50));
   });
 
   describe('Circuit Breaker Registry', () => {
@@ -99,7 +99,8 @@ describe('Circuit Breaker State Sharing', () => {
       let callCount = 0;
       const failingOperation = async () => {
         callCount++;
-        if (callCount <= 6) { // Fail enough to open circuit
+        if (callCount <= 6) {
+          // Fail enough to open circuit
           throw new Error('Simulated failure');
         }
         return 'success-after-recovery';
@@ -109,7 +110,7 @@ describe('Circuit Breaker State Sharing', () => {
       const promise = withCircuitBreaker(failingOperation, 'test-failing-circuit', {
         maxRetries: 0, // Disable retries to test circuit breaker behavior
         maxFailures: 3, // Open after 3 failures
-        resetTimeout: 100 // Quick reset for testing
+        resetTimeout: 100, // Quick reset for testing
       });
 
       await expect(promise).rejects.toThrow();
@@ -177,13 +178,19 @@ describe('Circuit Breaker State Sharing', () => {
       expect(RETRY_CONFIG.AUTH_ERRORS.circuitBreakerName).toBe(CIRCUIT_BREAKER_NAMES.AUTH_CONNECT);
 
       expect(RETRY_CONFIG.NETWORK_ERRORS).toHaveProperty('circuitBreakerName');
-      expect(RETRY_CONFIG.NETWORK_ERRORS.circuitBreakerName).toBe(CIRCUIT_BREAKER_NAMES.API_OPERATIONS);
+      expect(RETRY_CONFIG.NETWORK_ERRORS.circuitBreakerName).toBe(
+        CIRCUIT_BREAKER_NAMES.API_OPERATIONS,
+      );
 
       expect(RETRY_CONFIG.TASK_OPERATIONS).toHaveProperty('circuitBreakerName');
-      expect(RETRY_CONFIG.TASK_OPERATIONS.circuitBreakerName).toBe(CIRCUIT_BREAKER_NAMES.TASK_CREATE);
+      expect(RETRY_CONFIG.TASK_OPERATIONS.circuitBreakerName).toBe(
+        CIRCUIT_BREAKER_NAMES.TASK_CREATE,
+      );
 
       expect(RETRY_CONFIG.BULK_OPERATIONS).toHaveProperty('circuitBreakerName');
-      expect(RETRY_CONFIG.BULK_OPERATIONS.circuitBreakerName).toBe(CIRCUIT_BREAKER_NAMES.BULK_OPERATIONS);
+      expect(RETRY_CONFIG.BULK_OPERATIONS.circuitBreakerName).toBe(
+        CIRCUIT_BREAKER_NAMES.BULK_OPERATIONS,
+      );
     });
 
     it('should enable circuit breaker in retry configurations', () => {

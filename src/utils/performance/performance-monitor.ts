@@ -53,13 +53,13 @@ export class PerformanceMonitor {
   private operations: OperationMetrics[] = [];
   private alerts: PerformanceAlert[] = [];
   private activeOperations = new Map<string, OperationMetrics>();
-  
+
   // Configurable thresholds
   private readonly thresholds = {
-    highLatencyMs: 5000,        // 5 seconds
+    highLatencyMs: 5000, // 5 seconds
     lowThroughputItemsPerSec: 2, // 2 items per second
-    highFailureRatePercent: 20,  // 20% failure rate
-    lowCacheHitRatePercent: 30,  // 30% cache hit rate
+    highFailureRatePercent: 20, // 20% failure rate
+    lowCacheHitRatePercent: 30, // 30% cache hit rate
   };
 
   /**
@@ -70,7 +70,7 @@ export class PerformanceMonitor {
     operationType: string,
     itemCount: number,
     concurrencyLevel: number = 1,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
   ): void {
     const metrics: OperationMetrics = {
       operationType,
@@ -86,7 +86,7 @@ export class PerformanceMonitor {
     };
 
     this.activeOperations.set(operationId, metrics);
-    
+
     logger.debug('Performance monitoring started', {
       operationId,
       operationType,
@@ -100,7 +100,12 @@ export class PerformanceMonitor {
    */
   updateOperation(
     operationId: string,
-    updates: Partial<Pick<OperationMetrics, 'successCount' | 'failureCount' | 'apiCallCount' | 'cacheHits' | 'cacheMisses'>>
+    updates: Partial<
+      Pick<
+        OperationMetrics,
+        'successCount' | 'failureCount' | 'apiCallCount' | 'cacheHits' | 'cacheMisses'
+      >
+    >,
   ): void {
     const operation = this.activeOperations.get(operationId);
     if (!operation) {
@@ -177,7 +182,8 @@ export class PerformanceMonitor {
       duration: operation.duration,
       itemCount: operation.itemCount,
       apiCalls: operation.apiCallCount,
-      successRate: operation.itemCount > 0 ? (operation.successCount / operation.itemCount) * 100 : 0,
+      successRate:
+        operation.itemCount > 0 ? (operation.successCount / operation.itemCount) * 100 : 0,
     });
 
     return operation;
@@ -202,16 +208,27 @@ export class PerformanceMonitor {
         successes: acc.successes + op.successCount,
         failures: acc.failures + op.failureCount,
       }),
-      { duration: 0, items: 0, apiCalls: 0, cacheHits: 0, cacheMisses: 0, successes: 0, failures: 0 }
+      {
+        duration: 0,
+        items: 0,
+        apiCalls: 0,
+        cacheHits: 0,
+        cacheMisses: 0,
+        successes: 0,
+        failures: 0,
+      },
     );
 
-    const operationsByType = this.operations.reduce((acc, op) => {
-      acc[op.operationType] = (acc[op.operationType] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
+    const operationsByType = this.operations.reduce(
+      (acc, op) => {
+        acc[op.operationType] = (acc[op.operationType] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
 
-    const peakConcurrency = Math.max(...this.operations.map(op => op.concurrencyLevel));
-    
+    const peakConcurrency = Math.max(...this.operations.map((op) => op.concurrencyLevel));
+
     const last10Operations = this.operations.slice(-10);
     const last10Duration = last10Operations.reduce((sum, op) => sum + (op.duration || 0), 0);
     const last10Items = last10Operations.reduce((sum, op) => sum + op.itemCount, 0);
@@ -224,18 +241,20 @@ export class PerformanceMonitor {
       totalCacheHits: totals.cacheHits,
       totalCacheMisses: totals.cacheMisses,
       averageOperationDuration: totals.duration / totalOperations,
-      averageItemsPerSecond: totals.duration > 0 ? (totals.items / (totals.duration / 1000)) : 0,
+      averageItemsPerSecond: totals.duration > 0 ? totals.items / (totals.duration / 1000) : 0,
       averageApiCallsPerOperation: totals.apiCalls / totalOperations,
-      cacheHitRatio: (totals.cacheHits + totals.cacheMisses) > 0 
-        ? totals.cacheHits / (totals.cacheHits + totals.cacheMisses) 
-        : 0,
-      operationSuccessRate: totals.items > 0 ? (totals.successes / totals.items) : 0,
+      cacheHitRatio:
+        totals.cacheHits + totals.cacheMisses > 0
+          ? totals.cacheHits / (totals.cacheHits + totals.cacheMisses)
+          : 0,
+      operationSuccessRate: totals.items > 0 ? totals.successes / totals.items : 0,
       peakConcurrency,
       operationsByType,
       recentPerformance: {
         last10Operations,
-        averageDurationLast10: last10Operations.length > 0 ? last10Duration / last10Operations.length : 0,
-        throughputLast10: last10Duration > 0 ? (last10Items / (last10Duration / 1000)) : 0,
+        averageDurationLast10:
+          last10Operations.length > 0 ? last10Duration / last10Operations.length : 0,
+        throughputLast10: last10Duration > 0 ? last10Items / (last10Duration / 1000) : 0,
       },
     };
   }
@@ -249,7 +268,7 @@ export class PerformanceMonitor {
     }
 
     const cutoff = Date.now() - maxAge;
-    return this.alerts.filter(alert => alert.timestamp > cutoff);
+    return this.alerts.filter((alert) => alert.timestamp > cutoff);
   }
 
   /**
@@ -294,34 +313,48 @@ export class PerformanceMonitor {
 
     // Check for high latency
     if (operation.duration > this.thresholds.highLatencyMs) {
-      this.addAlert('high_latency', 'critical', 
+      this.addAlert(
+        'high_latency',
+        'critical',
         `Operation took ${operation.duration}ms (threshold: ${this.thresholds.highLatencyMs}ms)`,
-        operation);
+        operation,
+      );
     }
 
     // Check for low throughput
-    const throughput = operation.duration > 0 ? (operation.itemCount / (operation.duration / 1000)) : 0;
+    const throughput =
+      operation.duration > 0 ? operation.itemCount / (operation.duration / 1000) : 0;
     if (throughput < this.thresholds.lowThroughputItemsPerSec && operation.itemCount > 5) {
-      this.addAlert('low_throughput', 'warning',
+      this.addAlert(
+        'low_throughput',
+        'warning',
         `Low throughput: ${throughput.toFixed(2)} items/sec (threshold: ${this.thresholds.lowThroughputItemsPerSec})`,
-        operation);
+        operation,
+      );
     }
 
     // Check for high failure rate
-    const failureRate = operation.itemCount > 0 ? (operation.failureCount / operation.itemCount) * 100 : 0;
+    const failureRate =
+      operation.itemCount > 0 ? (operation.failureCount / operation.itemCount) * 100 : 0;
     if (failureRate > this.thresholds.highFailureRatePercent && operation.itemCount > 1) {
-      this.addAlert('high_failure_rate', 'critical',
+      this.addAlert(
+        'high_failure_rate',
+        'critical',
         `High failure rate: ${failureRate.toFixed(1)}% (threshold: ${this.thresholds.highFailureRatePercent}%)`,
-        operation);
+        operation,
+      );
     }
 
     // Check for cache inefficiency
     const totalCacheOps = operation.cacheHits + operation.cacheMisses;
     const cacheHitRate = totalCacheOps > 0 ? (operation.cacheHits / totalCacheOps) * 100 : 100;
     if (cacheHitRate < this.thresholds.lowCacheHitRatePercent && totalCacheOps > 5) {
-      this.addAlert('cache_inefficiency', 'warning',
+      this.addAlert(
+        'cache_inefficiency',
+        'warning',
         `Low cache hit rate: ${cacheHitRate.toFixed(1)}% (threshold: ${this.thresholds.lowCacheHitRatePercent}%)`,
-        operation);
+        operation,
+      );
     }
   }
 
@@ -332,7 +365,7 @@ export class PerformanceMonitor {
     type: PerformanceAlert['type'],
     severity: PerformanceAlert['severity'],
     message: string,
-    operation: OperationMetrics
+    operation: OperationMetrics,
   ): void {
     const alert: PerformanceAlert = {
       type,
@@ -394,18 +427,18 @@ export const monitorBulkOperation = <T>(
   operationType: string,
   itemCount: number,
   operation: () => Promise<T>,
-  concurrencyLevel?: number
+  concurrencyLevel?: number,
 ): Promise<T> => {
   const operationId = `${operationType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  
+
   performanceMonitor.startOperation(operationId, operationType, itemCount, concurrencyLevel);
-  
+
   return operation()
-    .then(result => {
+    .then((result) => {
       performanceMonitor.completeOperation(operationId);
       return result;
     })
-    .catch(error => {
+    .catch((error) => {
       performanceMonitor.updateOperation(operationId, { failureCount: itemCount });
       performanceMonitor.completeOperation(operationId);
       throw error;
@@ -414,7 +447,12 @@ export const monitorBulkOperation = <T>(
 
 export const recordPerformanceMetrics = (
   operationId: string,
-  metrics: Partial<Pick<OperationMetrics, 'successCount' | 'failureCount' | 'apiCallCount' | 'cacheHits' | 'cacheMisses'>>
+  metrics: Partial<
+    Pick<
+      OperationMetrics,
+      'successCount' | 'failureCount' | 'apiCallCount' | 'cacheHits' | 'cacheMisses'
+    >
+  >,
 ): void => {
   performanceMonitor.updateOperation(operationId, metrics);
 };

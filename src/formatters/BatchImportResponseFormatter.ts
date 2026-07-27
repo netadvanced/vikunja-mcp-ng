@@ -46,7 +46,7 @@ export class BatchImportResponseFormatter {
   formatResult(
     result: ImportResult,
     userFetchFailedDueToAuth: boolean = false,
-    hasAssignees: boolean = false
+    hasAssignees: boolean = false,
   ): string {
     let responseText = '';
 

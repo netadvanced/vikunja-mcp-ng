@@ -45,10 +45,7 @@ describe('FilterValidator.validateAndParseFilter — done folding', () => {
   });
 
   it('produces no filter when neither done nor filter is given', async () => {
-    const result = await FilterValidator.validateAndParseFilter(
-      {} as TaskListingArgs,
-      storage,
-    );
+    const result = await FilterValidator.validateAndParseFilter({} as TaskListingArgs, storage);
 
     expect(result.filterString).toBeUndefined();
     expect(result.filterExpression).toBeNull();

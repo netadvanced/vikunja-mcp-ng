@@ -91,7 +91,12 @@ describe('ensureLabelByTitle', () => {
 
   it('passes description/hexColor through on create', async () => {
     mockFetch.mockResolvedValueOnce(mockResponse({ body: [] }));
-    const createdLabel = { id: 43, title: 'Priority', description: 'High priority', hex_color: '#00ff00' };
+    const createdLabel = {
+      id: 43,
+      title: 'Priority',
+      description: 'High priority',
+      hex_color: '#00ff00',
+    };
     mockFetch.mockResolvedValueOnce(mockResponse({ body: createdLabel }));
 
     await ensureLabelByTitle(authManager, 'Priority', {

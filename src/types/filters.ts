@@ -11,7 +11,8 @@ type Task = components['schemas']['models.Task'];
 /**
  * Supported filter operators
  */
-export type FilterOperator = '=' | '!=' | '>' | '>=' | '<' | '<=' | 'like' | 'LIKE' | 'in' | 'not in';
+export type FilterOperator =
+  '=' | '!=' | '>' | '>=' | '<' | '<=' | 'like' | 'LIKE' | 'in' | 'not in';
 
 /**
  * Logical operators for combining conditions
@@ -40,22 +41,23 @@ export type FilterField =
 /**
  * Valid field types for validation
  */
-export const FIELD_TYPES: Record<FilterField, 'boolean' | 'number' | 'date' | 'string' | 'array'> = {
-  done: 'boolean',
-  priority: 'number',
-  percentDone: 'number',
-  dueDate: 'date',
-  startDate: 'date',
-  endDate: 'date',
-  doneAt: 'date',
-  project: 'number',
-  assignees: 'array',
-  labels: 'array',
-  created: 'date',
-  updated: 'date',
-  title: 'string',
-  description: 'string',
-};
+export const FIELD_TYPES: Record<FilterField, 'boolean' | 'number' | 'date' | 'string' | 'array'> =
+  {
+    done: 'boolean',
+    priority: 'number',
+    percentDone: 'number',
+    dueDate: 'date',
+    startDate: 'date',
+    endDate: 'date',
+    doneAt: 'date',
+    project: 'number',
+    assignees: 'array',
+    labels: 'array',
+    created: 'date',
+    updated: 'date',
+    title: 'string',
+    description: 'string',
+  };
 
 /**
  * Represents a single filter condition

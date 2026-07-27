@@ -99,7 +99,10 @@ const FILTER_OPERATOR_VALUES = ['=', '!=', '>', '>=', '<', '<=', 'like', 'in', '
  * or ambiguous set.
  */
 const FilterFieldWithAliasesSchema = z.preprocess((value) => {
-  if (typeof value === 'string' && Object.prototype.hasOwnProperty.call(FILTER_FIELD_ALIASES, value)) {
+  if (
+    typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(FILTER_FIELD_ALIASES, value)
+  ) {
     return FILTER_FIELD_ALIASES[value];
   }
   return value;
@@ -122,8 +125,18 @@ const FilterIdSchema = z.coerce.number().int().positive();
  * Schema for listing filters.
  */
 const ListFiltersSchema = z.object({
-  page: z.number().int().positive().optional().describe('Page of the underlying GET /projects call'),
-  perPage: z.number().int().positive().optional().describe('Items per page of the underlying GET /projects call'),
+  page: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('Page of the underlying GET /projects call'),
+  perPage: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('Items per page of the underlying GET /projects call'),
   favorite: z.boolean().optional().describe('Only include filters currently marked as favorite'),
 });
 
@@ -147,22 +160,30 @@ const CreateFilterSchema = z
       .describe(
         "Filter query string in this server's DSL (canonical fields are camelCase, " +
           'e.g. dueDate; snake_case aliases like due_date are also accepted and ' +
-          'normalized). Parsed, validated, and translated to the API\'s snake_case ' +
+          "normalized). Parsed, validated, and translated to the API's snake_case " +
           'field names (e.g. due_date) before being sent to Vikunja.',
       ),
     conditions: z
       .array(ConditionSchema)
       .optional()
       .describe('Alternative to `filter`: structured conditions built into a filter string'),
-    groupOperator: z.enum(['&&', '||']).optional().describe('Operator joining `conditions` (default &&)'),
+    groupOperator: z
+      .enum(['&&', '||'])
+      .optional()
+      .describe('Operator joining `conditions` (default &&)'),
     isFavorite: z
       .boolean()
       .optional()
-      .describe('Maps to is_favorite; favorite filters show up in the favorites parent alongside favorite projects'),
+      .describe(
+        'Maps to is_favorite; favorite filters show up in the favorites parent alongside favorite projects',
+      ),
   })
-  .refine((data) => Boolean(data.filter) || Boolean(data.conditions && data.conditions.length > 0), {
-    message: 'Either filter or conditions must be provided',
-  });
+  .refine(
+    (data) => Boolean(data.filter) || Boolean(data.conditions && data.conditions.length > 0),
+    {
+      message: 'Either filter or conditions must be provided',
+    },
+  );
 
 /**
  * Schema for updating a filter. Vikunja's `POST /filters/{id}` is a
@@ -226,7 +247,9 @@ type ConditionInput = {
 function translateFilterString(filterStr: string): string {
   const parseResult = parseFilterString(filterStr);
   if (!parseResult.expression) {
-    throw createValidationError(`Invalid filter: ${parseResult.error?.message || 'Invalid filter syntax'}`);
+    throw createValidationError(
+      `Invalid filter: ${parseResult.error?.message || 'Invalid filter syntax'}`,
+    );
   }
   const validation = validateFilterExpression(parseResult.expression);
   if (!validation.valid) {
@@ -243,7 +266,10 @@ function translateFilterString(filterStr: string): string {
  * @throws {MCPError} VALIDATION_ERROR when the built expression fails
  *         semantic validation (e.g. an operator incompatible with a field)
  */
-function buildFilterStringFromConditions(conditions: ConditionInput[], groupOperator?: '&&' | '||'): string {
+function buildFilterStringFromConditions(
+  conditions: ConditionInput[],
+  groupOperator?: '&&' | '||',
+): string {
   const builder = new FilterBuilder();
   conditions.forEach((condition, index) => {
     if (index > 0 && groupOperator === '||') {
@@ -265,7 +291,10 @@ function buildFilterStringFromConditions(conditions: ConditionInput[], groupOper
  * `models.SavedFilter` responses) to a single honest NOT_FOUND error rather
  * than leaking the ambiguity to the caller as a raw HTTP error.
  */
-async function fetchSavedFilterOrThrow(authManager: AuthManager, id: number): Promise<SavedFilterApi> {
+async function fetchSavedFilterOrThrow(
+  authManager: AuthManager,
+  id: number,
+): Promise<SavedFilterApi> {
   try {
     return await vikunjaRestRequest<SavedFilterApi>(authManager, 'GET', `/filters/${id}`);
   } catch (error) {
@@ -278,7 +307,10 @@ function mapNotFound(error: unknown, id: number): unknown {
   if (error instanceof MCPError) {
     const statusCode = error.details?.statusCode;
     if (statusCode === 403 || statusCode === 404) {
-      return new MCPError(ErrorCode.NOT_FOUND, `Filter with id ${id} not found (or you do not have access to it)`);
+      return new MCPError(
+        ErrorCode.NOT_FOUND,
+        `Filter with id ${id} not found (or you do not have access to it)`,
+      );
     }
   }
   return error;
@@ -343,14 +375,21 @@ async function listSavedFilters(
     )) ?? [];
 
   const pseudoEntries = Array.isArray(projects)
-    ? projects.filter((project): project is ProjectApi & { id: number } => typeof project.id === 'number' && project.id < 0)
+    ? projects.filter(
+        (project): project is ProjectApi & { id: number } =>
+          typeof project.id === 'number' && project.id < 0,
+      )
     : [];
 
   return Promise.all(
     pseudoEntries.map(async (entry): Promise<ListedFilter> => {
       const candidateId = pseudoProjectIdToFilterId(entry.id);
       try {
-        const full = await vikunjaRestRequest<SavedFilterApi>(authManager, 'GET', `/filters/${candidateId}`);
+        const full = await vikunjaRestRequest<SavedFilterApi>(
+          authManager,
+          'GET',
+          `/filters/${candidateId}`,
+        );
         return {
           id: full.id ?? candidateId,
           pseudoProjectId: entry.id,
@@ -382,7 +421,11 @@ async function listSavedFilters(
 /**
  * Register filters tool
  */
-export function registerFiltersTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerFiltersTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_filters',
     withReadOnlyNote(
@@ -394,10 +437,10 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
         "clients. Saved filters are NOT project-scoped (the API's SavedFilter " +
         'model has no project_id field); Vikunja instead surfaces each one as a ' +
         "pseudo-project with a negative id, and 'isFavorite' controls whether it " +
-        "also shows in the favorites parent. The API has no dedicated list-all " +
+        'also shows in the favorites parent. The API has no dedicated list-all ' +
         "endpoint, so 'list' is a best-effort derivation from GET /projects' " +
         'pseudo-project entries, verified per-item against GET /filters/{id}; ' +
-        "entries that could not be verified are still returned (title only) " +
+        'entries that could not be verified are still returned (title only) ' +
         "with hydrated:false rather than silently dropped. 'build'/'validate' " +
         'remain pure local utilities - they construct or check a filter query ' +
         'string without contacting the server or touching any saved filter. ' +
@@ -410,7 +453,7 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
         'Copy-pasteable examples: "priority >= 4" for high/urgent priority tasks ' +
         '(priority ranges 0-5, so >= 4 covers High and DO NOW); "dueDate < now+14d" ' +
         'for tasks due within the next 14 days; "priority >= 4 && dueDate < now+7d" ' +
-        'to combine both; "labels in \'bug\', \'urgent\'" to match either label. ' +
+        "to combine both; \"labels in 'bug', 'urgent'\" to match either label. " +
         'Date literals accept now, now+14d, now-1w (s/h/d/w/M/y units) or ISO 8601 ' +
         "dates. Use action='build' with structured conditions to have this tool " +
         "assemble the query string for you, or action='validate' to check a " +
@@ -450,13 +493,15 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
             const response = createStandardResponse(
               'list-saved-filters',
               `Found ${filters.length} saved filter${filters.length !== 1 ? 's' : ''}` +
-                (anyUnhydrated ? ' (some entries could not be fully resolved - see hydrated:false)' : ''),
+                (anyUnhydrated
+                  ? ' (some entries could not be fully resolved - see hydrated:false)'
+                  : ''),
               {
                 filters,
                 note:
-                  "Vikunja has no dedicated list-saved-filters endpoint. This list is " +
+                  'Vikunja has no dedicated list-saved-filters endpoint. This list is ' +
                   "derived from GET /projects' pseudo-project entries (negative ids) " +
-                  "and verified per-item against GET /filters/{id}; unverified " +
+                  'and verified per-item against GET /filters/{id}; unverified ' +
                   'entries are still included with hydrated:false rather than dropped.',
               },
               { count: filters.length },
@@ -501,7 +546,12 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
             if (params.description !== undefined) payload.description = params.description;
             if (params.isFavorite !== undefined) payload.is_favorite = params.isFavorite;
 
-            const created = await vikunjaRestRequest<SavedFilterApi>(authManager, 'PUT', '/filters', payload);
+            const created = await vikunjaRestRequest<SavedFilterApi>(
+              authManager,
+              'PUT',
+              '/filters',
+              payload,
+            );
 
             const response = createStandardResponse(
               'create-saved-filter',
@@ -524,12 +574,15 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
             if (params.filter) {
               filterQuery = translateFilterString(params.filter);
             } else if (params.conditions && params.conditions.length > 0) {
-              filterQuery = buildFilterStringFromConditions(params.conditions, params.groupOperator);
+              filterQuery = buildFilterStringFromConditions(
+                params.conditions,
+                params.groupOperator,
+              );
             }
 
-            const affectedFields = (['title', 'description', 'filter', 'conditions', 'isFavorite'] as const).filter(
-              (key) => params[key] !== undefined,
-            );
+            const affectedFields = (
+              ['title', 'description', 'filter', 'conditions', 'isFavorite'] as const
+            ).filter((key) => params[key] !== undefined);
 
             const mergedDescription = params.description ?? current.description;
             const mergedIsFavorite = params.isFavorite ?? current.is_favorite;
@@ -553,7 +606,12 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
 
             let updated: SavedFilterApi;
             try {
-              updated = await vikunjaRestRequest<SavedFilterApi>(authManager, 'POST', `/filters/${params.id}`, payload);
+              updated = await vikunjaRestRequest<SavedFilterApi>(
+                authManager,
+                'POST',
+                `/filters/${params.id}`,
+                payload,
+              );
             } catch (error) {
               throw mapNotFound(error, params.id);
             }
@@ -677,7 +735,10 @@ export function registerFiltersTool(server: McpServer, authManager: AuthManager,
                 ? 'update-saved-filter'
                 : `${action}-filter`;
 
-        const aorpErrorResult = createAorpErrorResponse(operation, error instanceof Error ? error.message : String(error));
+        const aorpErrorResult = createAorpErrorResponse(
+          operation,
+          error instanceof Error ? error.message : String(error),
+        );
 
         // Create compatibility result with required SimpleAorpResponse properties
         const compatibilityResult = {

@@ -24,7 +24,12 @@ jest.mock('../../src/auth/AuthManager');
 const mockFetch = jest.fn();
 global.fetch = mockFetch as any;
 
-function mockResponse(opts: { ok?: boolean; status?: number; statusText?: string; body?: unknown }): Response {
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  body?: unknown;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', body } = opts;
   const text = body === undefined ? '' : JSON.stringify(body);
   return {
@@ -192,7 +197,10 @@ describe('Tokens Tool', () => {
   describe('delete', () => {
     it('should require a valid tokenId', async () => {
       await expect(mockHandler({ subcommand: 'delete' })).rejects.toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'tokenId must be a number or positive integer string'),
+        new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          'tokenId must be a number or positive integer string',
+        ),
       );
       expect(mockFetch).not.toHaveBeenCalled();
     });
@@ -213,7 +221,12 @@ describe('Tokens Tool', () => {
   describe('error handling', () => {
     it('should throw a clear message when the server rejects with 401', async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse({ ok: false, status: 401, statusText: 'Unauthorized', body: { message: 'invalid token' } }),
+        mockResponse({
+          ok: false,
+          status: 401,
+          statusText: 'Unauthorized',
+          body: { message: 'invalid token' },
+        }),
       );
 
       await expect(mockHandler({ subcommand: 'list' })).rejects.toThrow(
@@ -262,7 +275,10 @@ describe('Tokens Tool', () => {
         });
 
         await expect(mockHandler({ subcommand: 'delete', tokenId: 1 })).rejects.toThrow(
-          new MCPError(ErrorCode.INTERNAL_ERROR, 'An unexpected error occurred during token operation'),
+          new MCPError(
+            ErrorCode.INTERNAL_ERROR,
+            'An unexpected error occurred during token operation',
+          ),
         );
       });
     });

@@ -5,7 +5,11 @@
 
 import type { components } from '../../../types/generated/vikunja-openapi';
 import type { FilterExpression, FilterGroup, ParseResult } from '../../../types/filters';
-import type { TaskListingArgs, TaskFilterValidationConfig, TaskFilterStorage } from '../types/filters';
+import type {
+  TaskListingArgs,
+  TaskFilterValidationConfig,
+  TaskFilterStorage,
+} from '../types/filters';
 import { MCPError, ErrorCode } from '../../../types';
 import { parseFilterString, expressionToString } from '../../../utils/filters';
 import { validateTaskCountLimit } from '../../../utils/memory';
@@ -50,7 +54,7 @@ export const FilterValidator = {
    */
   async validateAndParseFilter(
     args: TaskListingArgs,
-    storage: TaskFilterStorage
+    storage: TaskFilterStorage,
   ): Promise<{
     filterExpression: FilterExpression | null;
     filterString: string | undefined;
@@ -69,7 +73,7 @@ export const FilterValidator = {
         if (!savedFilter) {
           throw new MCPError(
             ErrorCode.VALIDATION_ERROR,
-            `Filter with id ${args.filterId} not found`
+            `Filter with id ${args.filterId} not found`,
           );
         }
         userFilter = savedFilter.filter;
@@ -83,7 +87,7 @@ export const FilterValidator = {
         if (parseResult.error) {
           throw new MCPError(
             ErrorCode.VALIDATION_ERROR,
-            `Invalid filter syntax: ${parseResult.error.message}${parseResult.error.context ? `\n${parseResult.error.context}` : ''}`
+            `Invalid filter syntax: ${parseResult.error.message}${parseResult.error.context ? `\n${parseResult.error.context}` : ''}`,
           );
         }
         filterExpression = parseResult.expression;
@@ -157,7 +161,7 @@ export const FilterValidator = {
       }
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
-        `Filter validation failed: ${error instanceof Error ? error.message : String(error)}`
+        `Filter validation failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   },
@@ -167,7 +171,7 @@ export const FilterValidator = {
    */
   validateMemoryConstraints(
     args: TaskListingArgs,
-    requestedPageSize: number
+    requestedPageSize: number,
   ): {
     isValid: boolean;
     warnings: string[];
@@ -179,24 +183,28 @@ export const FilterValidator = {
     const taskCountValidation = validateTaskCountLimit(
       requestedPageSize,
       undefined,
-      args.filter ? {
-        filterExpression: args.filter,
-        operationType: 'list'
-      } : undefined
+      args.filter
+        ? {
+            filterExpression: args.filter,
+            operationType: 'list',
+          }
+        : undefined,
     );
 
     if (!taskCountValidation.allowed) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
         `Task count limit exceeded. Requested: ${requestedPageSize}, Max allowed: ${taskCountValidation.maxAllowed}. ` +
-        `Estimated memory usage: ${taskCountValidation.estimatedMemoryMB}MB (risk: ${taskCountValidation.riskLevel}). ` +
-        'Reduce the perPage parameter, use pagination with smaller page sizes, or apply more specific filters.'
+          `Estimated memory usage: ${taskCountValidation.estimatedMemoryMB}MB (risk: ${taskCountValidation.riskLevel}). ` +
+          'Reduce the perPage parameter, use pagination with smaller page sizes, or apply more specific filters.',
       );
     }
 
     // Add warnings for large page sizes
     if (requestedPageSize > 500) {
-      warnings.push(`Large page size (${requestedPageSize}) may impact performance. Consider using smaller pages or more specific filters.`);
+      warnings.push(
+        `Large page size (${requestedPageSize}) may impact performance. Consider using smaller pages or more specific filters.`,
+      );
     }
 
     // Include enhanced memory validation warnings
@@ -207,20 +215,17 @@ export const FilterValidator = {
     return {
       isValid: true,
       warnings,
-      maxAllowed: taskCountValidation.maxAllowed
-    } as {
-      isValid: boolean;
-      warnings: string[];
-      maxAllowed?: number;
-      riskLevel?: 'low' | 'medium' | 'high';
-      estimatedMemoryMB?: number;
+      maxAllowed: taskCountValidation.maxAllowed,
     };
   },
 
   /**
    * Validates the actual loaded task count against limits
    */
-  validateLoadedTasks(actualTaskCount: number, sampleTask?: Task): {
+  validateLoadedTasks(
+    actualTaskCount: number,
+    sampleTask?: Task,
+  ): {
     isValid: boolean;
     warnings: string[];
     shouldThrow: boolean;
@@ -236,12 +241,12 @@ export const FilterValidator = {
         actualCount: actualTaskCount,
         maxRecommended: finalTaskCountValidation.maxAllowed,
         estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
-        riskLevel: finalTaskCountValidation.riskLevel
+        riskLevel: finalTaskCountValidation.riskLevel,
       });
 
       warnings.push(
         `Loaded ${actualTaskCount} tasks, which exceeds recommended limit of ${finalTaskCountValidation.maxAllowed}. ` +
-        `Estimated memory usage: ${finalTaskCountValidation.estimatedMemoryMB}MB (risk: ${finalTaskCountValidation.riskLevel}).`
+          `Estimated memory usage: ${finalTaskCountValidation.estimatedMemoryMB}MB (risk: ${finalTaskCountValidation.riskLevel}).`,
       );
 
       // For extremely large datasets, still enforce hard limits
@@ -251,7 +256,7 @@ export const FilterValidator = {
           warnings,
           shouldThrow: true,
           riskLevel: finalTaskCountValidation.riskLevel,
-          estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB
+          estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
         };
       }
     }
@@ -266,7 +271,7 @@ export const FilterValidator = {
       warnings,
       shouldThrow: false,
       riskLevel: finalTaskCountValidation.riskLevel,
-      estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB
+      estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
     };
   },
 
@@ -333,7 +338,7 @@ export const FilterValidator = {
   async validateTaskFiltering(
     args: TaskListingArgs,
     storage: TaskFilterStorage,
-    _config: TaskFilterValidationConfig = {}
+    _config: TaskFilterValidationConfig = {},
   ): Promise<{
     filterExpression: FilterExpression | null;
     filterString: string | undefined;
@@ -351,7 +356,7 @@ export const FilterValidator = {
     if (argValidationErrors.length > 0) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
-        `Invalid task listing arguments: ${argValidationErrors.join(', ')}`
+        `Invalid task listing arguments: ${argValidationErrors.join(', ')}`,
       );
     }
 
@@ -368,7 +373,7 @@ export const FilterValidator = {
       filterExpression: filterValidation.filterExpression,
       filterString: filterValidation.filterString,
       validationWarnings: allWarnings,
-      memoryValidation
+      memoryValidation,
     };
   },
 };
