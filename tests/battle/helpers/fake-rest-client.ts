@@ -49,6 +49,10 @@ export class FakeRestClient implements VikunjaRestClient {
     return this.tasksByProject[projectId] ?? [];
   }
 
+  async listAllTasks(): Promise<VikunjaTask[]> {
+    return Object.values(this.tasksByProject).flat();
+  }
+
   async getTask(taskId: number): Promise<VikunjaTask> {
     for (const tasks of Object.values(this.tasksByProject)) {
       const found = tasks.find((t) => t.id === taskId);

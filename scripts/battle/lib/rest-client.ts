@@ -65,6 +65,7 @@ export interface VikunjaRestClient {
   requestOrEmpty<T>(path: string): Promise<T[]>;
   listProjects(): Promise<VikunjaProject[]>;
   listTasksInProject(projectId: number): Promise<VikunjaTask[]>;
+  listAllTasks(): Promise<VikunjaTask[]>;
   getTask(taskId: number): Promise<VikunjaTask>;
   listLabels(): Promise<VikunjaLabel[]>;
   listViews(projectId: number): Promise<VikunjaProjectView[]>;
@@ -127,6 +128,25 @@ export class RestClient implements VikunjaRestClient {
     return this.requestOrEmpty<VikunjaTask>(
       `/tasks?filter=${encodeURIComponent(`project_id = ${projectId}`)}&per_page=200`,
     );
+  }
+
+  /**
+   * Cross-project `GET /tasks` with no `project_id` filter -- the same
+   * strategy the product's own tools use as their primary cross-project
+   * listing path (`RestCrossProjectFilteringStrategy`). Paginates via `page`
+   * since the endpoint returns no total count (see docs/API_NOTES.md):
+   * a full page means there may be more, so keep requesting pages until one
+   * comes back short.
+   */
+  async listAllTasks(): Promise<VikunjaTask[]> {
+    const perPage = 200;
+    const all: VikunjaTask[] = [];
+    for (let page = 1; ; page += 1) {
+      const batch = await this.requestOrEmpty<VikunjaTask>(`/tasks?page=${page}&per_page=${perPage}`);
+      all.push(...batch);
+      if (batch.length < perPage) break;
+    }
+    return all;
   }
 
   getTask(taskId: number): Promise<VikunjaTask> {
