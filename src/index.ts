@@ -15,12 +15,13 @@ import { logger } from './utils/logger';
 import { createSecureConnectionMessage, createSecureLogConfig } from './utils/security';
 import { createVikunjaClientFactory, setGlobalClientFactory, type VikunjaClientFactory } from './client';
 import { readSecretEnv } from './config/secrets';
+import { resolvePackageVersion } from './utils/version';
 
 dotenv.config({ quiet: true });
 
 const server = new McpServer({
   name: 'vikunja-mcp-ng',
-  version: '0.3.0',
+  version: resolvePackageVersion(__dirname),
 });
 
 const authManager = new AuthManager();

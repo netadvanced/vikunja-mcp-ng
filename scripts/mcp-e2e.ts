@@ -61,6 +61,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -74,6 +75,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DIST_ENTRY = path.join(REPO_ROOT, 'dist', 'index.js');
+
+// Read once at startup for the handshake-version regression guard below (issue #186).
+const PACKAGE_VERSION = (
+  JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf-8')) as { version: string }
+).version;
 
 // Deliberately NOT `process.env.VIKUNJA_URL` — see the safety note in the
 // file header. `MCP_E2E_VIKUNJA_URL` is a distinct name a developer would
@@ -502,6 +508,37 @@ const EXPECTED_TOOLS_ABSENT = [
   'vikunja_admin',
   'vikunja_user_deletion',
 ];
+
+/**
+ * Regression guard for netadvanced/vikunja-mcp-ng#186: the `initialize` handshake's
+ * serverInfo.version must equal package.json's version. A hardcoded literal in
+ * src/index.ts (`version: '0.3.0'`) silently drifted through 0.4.0, 0.5.x, 0.6.0, and
+ * 0.6.1 without ever failing a unit test, because unit tests mock the version rather
+ * than perform a real handshake. This is the live, no-mocks check that would have
+ * caught it: it reads serverInfo straight off the real MCP `Client` returned by the
+ * SDK's own handshake, against the built `dist/index.js` spawned as a real child
+ * process (see `main`), not against src/index.ts's source.
+ */
+function testHandshakeVersion(client: Client): void {
+  log('\n[Handshake version (netadvanced/vikunja-mcp-ng#186 regression guard)]');
+  const serverInfo = client.getServerVersion();
+  const actualVersion = serverInfo?.version;
+  const matches = actualVersion === PACKAGE_VERSION;
+  assertStep(
+    'initialize handshake reports the installed package.json version',
+    matches,
+    `expected version "${PACKAGE_VERSION}", got serverInfo=${JSON.stringify(serverInfo)}`,
+  );
+  if (!matches) {
+    record(
+      'tool-bug',
+      `MCP handshake advertises version "${String(actualVersion)}" instead of package.json's "${PACKAGE_VERSION}"`,
+      'The initialize handshake\'s serverInfo.version must be derived from package.json ' +
+        '(src/utils/version.ts resolvePackageVersion) — see netadvanced/vikunja-mcp-ng#186. ' +
+        `Full serverInfo: ${JSON.stringify(serverInfo)}`,
+    );
+  }
+}
 
 async function testToolList(h: McpHarness): Promise<void> {
   log('\n[Tool list]');
@@ -2089,6 +2126,7 @@ async function main(): Promise<void> {
   try {
     await client.connect(transport);
     log('Connected to MCP server over stdio.');
+    testHandshakeVersion(client);
 
     const h = new McpHarness(client);
     const ctx: FlowContext = {};
