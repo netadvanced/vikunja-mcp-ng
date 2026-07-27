@@ -4,10 +4,7 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import {
-  validateValue,
-  validateFilterExpression,
-} from '../../src/utils/validation';
+import { validateValue, validateFilterExpression } from '../../src/utils/validation';
 import { MCPError } from '../../src/types/errors';
 import type { FilterExpression } from '../../src/types/filters';
 
@@ -17,7 +14,9 @@ describe('Type Safety Verification Tests', () => {
       const mixedArray = [1, 'string', 2];
 
       expect(() => validateValue(mixedArray)).toThrow(MCPError);
-      expect(() => validateValue(mixedArray)).toThrow('Array elements must be all strings or all finite numbers, not mixed');
+      expect(() => validateValue(mixedArray)).toThrow(
+        'Array elements must be all strings or all finite numbers, not mixed',
+      );
     });
 
     it('should handle arrays with null/undefined elements safely', () => {
@@ -32,7 +31,9 @@ describe('Type Safety Verification Tests', () => {
       const arrayOfObjects = [{}, { key: 'value' }];
 
       expect(() => validateValue(arrayOfObjects)).toThrow(MCPError);
-      expect(() => validateValue(arrayOfObjects)).toThrow('Array elements must be all strings or all finite numbers, not mixed');
+      expect(() => validateValue(arrayOfObjects)).toThrow(
+        'Array elements must be all strings or all finite numbers, not mixed',
+      );
     });
 
     it('should still accept valid string arrays', () => {
@@ -70,7 +71,7 @@ describe('Type Safety Verification Tests', () => {
   describe('validateFilterExpression type safety verification', () => {
     it('should handle non-array groups safely (was line 315 unsafe assertion)', () => {
       const invalidObject = {
-        groups: 'not an array'
+        groups: 'not an array',
       };
 
       expect(() => validateFilterExpression(invalidObject)).toThrow(MCPError);
@@ -82,8 +83,8 @@ describe('Type Safety Verification Tests', () => {
         groups: {
           0: { operator: '&&', conditions: [{ field: 'title', operator: '=', value: 'test' }] },
           length: 1,
-          toString: () => '[object Object]'
-        }
+          toString: () => '[object Object]',
+        },
       };
 
       expect(() => validateFilterExpression(arrayLikeObject as any)).toThrow(MCPError);
@@ -91,7 +92,7 @@ describe('Type Safety Verification Tests', () => {
 
     it('should handle objects with missing groups property safely', () => {
       const noGroupsObject = {
-        operator: '&&'
+        operator: '&&',
       };
 
       expect(() => validateFilterExpression(noGroupsObject as any)).toThrow(MCPError);
@@ -107,9 +108,9 @@ describe('Type Safety Verification Tests', () => {
         groups: [
           {
             operator: '&&',
-            conditions: [{ field: 'title', operator: '=', value: 'test' }]
-          }
-        ]
+            conditions: [{ field: 'title', operator: '=', value: 'test' }],
+          },
+        ],
       };
 
       const result = validateFilterExpression(validExpression);
@@ -136,17 +137,15 @@ describe('Type Safety Verification Tests', () => {
             operator: '&&',
             conditions: [
               { field: 'title', operator: '=', value: 'test' },
-              { field: 'priority', operator: '>', value: 5 }
-            ]
+              { field: 'priority', operator: '>', value: 5 },
+            ],
           },
           {
             operator: '||',
-            conditions: [
-              { field: 'done', operator: '=', value: true }
-            ]
-          }
+            conditions: [{ field: 'done', operator: '=', value: true }],
+          },
         ],
-        operator: '&&'
+        operator: '&&',
       };
 
       expect(() => validateFilterExpression(complexExpression)).not.toThrow();
@@ -159,10 +158,10 @@ describe('Type Safety Verification Tests', () => {
             operator: '&&',
             conditions: [
               { field: 'title', operator: '=', value: 'Test Title' },
-              { field: 'assignees', operator: 'in', value: ['user1', 'user2'] }
-            ]
-          }
-        ]
+              { field: 'assignees', operator: 'in', value: ['user1', 'user2'] },
+            ],
+          },
+        ],
       };
 
       const result = validateFilterExpression(expression) as FilterExpression;
@@ -195,10 +194,12 @@ describe('Type Safety Verification Tests', () => {
     it('should handle objects with prototype pollution attempts', () => {
       const pollutedObject = Object.create({});
       pollutedObject.__proto__.groups = 'polluted';
-      (pollutedObject as any).groups = [{
-        operator: '&&',
-        conditions: [{ field: 'title', operator: '=', value: 'test' }]
-      }];
+      (pollutedObject as any).groups = [
+        {
+          operator: '&&',
+          conditions: [{ field: 'title', operator: '=', value: 'test' }],
+        },
+      ];
 
       // Should still work with legitimate groups
       expect(() => validateFilterExpression(pollutedObject)).not.toThrow();
@@ -209,8 +210,8 @@ describe('Type Safety Verification Tests', () => {
       const deepExpression = {
         groups: Array.from({ length: 15 }, (_, i) => ({
           operator: '&&',
-          conditions: [{ field: 'title', operator: '=', value: `test${i}` }]
-        }))
+          conditions: [{ field: 'title', operator: '=', value: `test${i}` }],
+        })),
       };
 
       expect(() => validateFilterExpression(deepExpression)).toThrow(MCPError);
@@ -219,14 +220,16 @@ describe('Type Safety Verification Tests', () => {
     it('should handle expressions with many conditions safely', () => {
       // Test that condition limit is enforced
       const largeExpression = {
-        groups: [{
-          operator: '&&',
-          conditions: Array.from({ length: 60 }, (_, i) => ({
-            field: 'title',
-            operator: '=',
-            value: `test${i}`
-          }))
-        }]
+        groups: [
+          {
+            operator: '&&',
+            conditions: Array.from({ length: 60 }, (_, i) => ({
+              field: 'title',
+              operator: '=',
+              value: `test${i}`,
+            })),
+          },
+        ],
       };
 
       expect(() => validateFilterExpression(largeExpression)).toThrow(MCPError);

@@ -4,10 +4,7 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import {
-  validateValue,
-  validateFilterExpression,
-} from '../../src/utils/validation';
+import { validateValue, validateFilterExpression } from '../../src/utils/validation';
 import { MCPError } from '../../src/types/errors';
 import type { FilterExpression } from '../../src/types/filters';
 
@@ -37,7 +34,10 @@ describe('Type Safety Validation Tests', () => {
     });
 
     it('should safely handle arrays with nested arrays', () => {
-      const arrayOfArrays = [[1, 2], [3, 4]];
+      const arrayOfArrays = [
+        [1, 2],
+        [3, 4],
+      ];
 
       expect(() => validateValue(arrayOfArrays)).toThrow(MCPError);
     });
@@ -50,12 +50,12 @@ describe('Type Safety Validation Tests', () => {
         groups: [
           {
             operator: '&&',
-            conditions: [{ field: 'title', operator: '=', value: 'test' }]
-          }
+            conditions: [{ field: 'title', operator: '=', value: 'test' }],
+          },
         ],
         __proto__: { groups: 'malicious' },
         constructor: { name: 'Array' },
-        toString: () => 'malicious'
+        toString: () => 'malicious',
       };
 
       // Before fix: unsafe type assertion could bypass validation
@@ -68,10 +68,12 @@ describe('Type Safety Validation Tests', () => {
     it('should safely handle objects with prototype pollution attempts', () => {
       const pollutedObject = Object.create({});
       pollutedObject.__proto__.groups = 'polluted';
-      (pollutedObject as any).groups = [{
-        operator: '&&',
-        conditions: [{ field: 'title', operator: '=', value: 'test' }]
-      }]; // Add legitimate groups
+      (pollutedObject as any).groups = [
+        {
+          operator: '&&',
+          conditions: [{ field: 'title', operator: '=', value: 'test' }],
+        },
+      ]; // Add legitimate groups
       pollutedObject.toString = () => 'polluted';
 
       const result = validateFilterExpression(pollutedObject);
@@ -89,8 +91,8 @@ describe('Type Safety Validation Tests', () => {
           [Symbol.iterator]: function* () {
             yield this[0];
             yield this[1];
-          }
-        }
+          },
+        },
       };
 
       // Before fix: type assertion might bypass Array.isArray check
@@ -101,7 +103,7 @@ describe('Type Safety Validation Tests', () => {
     it('should safely handle objects where groups property is a string', () => {
       const invalidObject = {
         groups: '["not", "an", "array"]',
-        toString: () => '{"groups": ["not", "an", "array"]}'
+        toString: () => '{"groups": ["not", "an", "array"]}',
       };
 
       expect(() => validateFilterExpression(invalidObject as any)).toThrow(MCPError);
@@ -112,15 +114,15 @@ describe('Type Safety Validation Tests', () => {
         groups: [
           {
             operator: '&&',
-            conditions: [{ field: 'title', operator: '=', value: 'test' }]
-          }
-        ]
+            conditions: [{ field: 'title', operator: '=', value: 'test' }],
+          },
+        ],
       };
       circular.self = circular;
       circular.groups.push({
         operator: '&&',
         conditions: [{ field: 'title', operator: '=', value: 'test' }],
-        circular: circular // Add circular reference in a way that doesn't break structure
+        circular: circular, // Add circular reference in a way that doesn't break structure
       });
 
       // Before fix: unsafe type assertion at line 388 could return malformed object
@@ -138,7 +140,7 @@ describe('Type Safety Validation Tests', () => {
         { input: 42, expectedType: 'number' },
         { input: true, expectedType: 'boolean' },
         { input: ['string1', 'string2'], expectedType: 'array' },
-        { input: [1, 2, 3], expectedType: 'array' }
+        { input: [1, 2, 3], expectedType: 'array' },
       ];
 
       testValues.forEach(({ input, expectedType }) => {
@@ -161,9 +163,9 @@ describe('Type Safety Validation Tests', () => {
         groups: [
           {
             operator: '&&' as const,
-            conditions: [{ field: 'title' as const, operator: '=' as const, value: 'test' }]
-          }
-        ]
+            conditions: [{ field: 'title' as const, operator: '=' as const, value: 'test' }],
+          },
+        ],
       };
 
       const result = validateFilterExpression(validExpression);

@@ -95,7 +95,7 @@ describe('ServerSideFilteringStrategy', () => {
       await expect(strategy.execute(params)).rejects.toThrow(MCPError);
       await expect(strategy.execute(params)).rejects.toMatchObject({
         code: ErrorCode.VALIDATION_ERROR,
-        message: 'Server-side filtering requires a filter string'
+        message: 'Server-side filtering requires a filter string',
       });
     });
 
@@ -253,7 +253,7 @@ describe('ServerSideFilteringStrategy', () => {
         serverSideFilteringUsed: true,
         serverSideFilteringAttempted: true,
         clientSideFiltering: false,
-        filteringNote: 'Server-side filtering used (modern Vikunja)'
+        filteringNote: 'Server-side filtering used (modern Vikunja)',
       });
     });
   });

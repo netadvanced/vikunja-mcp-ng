@@ -46,53 +46,71 @@ describe('Tasks CRUD - Validation Coverage', () => {
   describe('missing validation error paths', () => {
     it('should handle missing title in createTask (line 36)', async () => {
       await expect(
-        createTask({
-          projectId: 1,
-          title: undefined as any, // Missing title
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: undefined as any, // Missing title
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('title is required to create a task');
     });
 
     it('should handle empty string title in createTask', async () => {
       await expect(
-        createTask({
-          projectId: 1,
-          title: '', // Empty title
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: '', // Empty title
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('title is required to create a task');
     });
 
     it('should handle missing projectId in createTask (line 30)', async () => {
       await expect(
-        createTask({
-          projectId: undefined as any, // Missing projectId
-          title: 'Test Task',
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: undefined as any, // Missing projectId
+            title: 'Test Task',
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('projectId is required to create a task');
     });
 
     it('should handle missing id in getTask (line 202)', async () => {
       await expect(
-        getTask({
-          id: undefined as any, // Missing id
-        }, mockAuthManager)
+        getTask(
+          {
+            id: undefined as any, // Missing id
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Task id is required for get operation');
     });
 
     it('should handle missing id in updateTask (line 252)', async () => {
       await expect(
-        updateTask({
-          id: undefined as any, // Missing id
-          title: 'Updated Title',
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: undefined as any, // Missing id
+            title: 'Updated Title',
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Task id is required for update operation');
     });
 
     it('should handle missing id in deleteTask (line 420)', async () => {
       await expect(
-        deleteTask({
-          id: undefined as any, // Missing id
-        }, mockAuthManager)
+        deleteTask(
+          {
+            id: undefined as any, // Missing id
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Task id is required for delete operation');
     });
   });
@@ -204,10 +222,13 @@ describe('Tasks CRUD - Validation Coverage', () => {
       mockRest.mockRejectedValue(new Error('Generic error'));
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Failed to create task: Generic error');
     });
 
@@ -216,10 +237,13 @@ describe('Tasks CRUD - Validation Coverage', () => {
       mockRest.mockRejectedValue({ status: 500, message: 'Server error' });
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Failed to create task: Unknown error');
     });
 
@@ -228,9 +252,12 @@ describe('Tasks CRUD - Validation Coverage', () => {
       mockRest.mockRejectedValue(new Error('Database error'));
 
       await expect(
-        getTask({
-          id: 1,
-        }, mockAuthManager)
+        getTask(
+          {
+            id: 1,
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Failed to get task: Database error');
     });
 
@@ -239,9 +266,12 @@ describe('Tasks CRUD - Validation Coverage', () => {
       mockRest.mockRejectedValue({ code: 'DB_ERROR', details: 'Connection lost' });
 
       await expect(
-        getTask({
-          id: 1,
-        }, mockAuthManager)
+        getTask(
+          {
+            id: 1,
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Failed to get task: Unknown error');
     });
 
@@ -264,10 +294,13 @@ describe('Tasks CRUD - Validation Coverage', () => {
         .mockRejectedValueOnce(new Error('Update failed')); // POST /tasks/{id}
 
       await expect(
-        updateTask({
-          id: 1,
-          title: 'Updated Title',
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            title: 'Updated Title',
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Failed to update task: Update failed');
     });
 
@@ -293,10 +326,13 @@ describe('Tasks CRUD - Validation Coverage', () => {
         .mockRejectedValueOnce({ status: 503, message: 'Update service unavailable' });
 
       await expect(
-        updateTask({
-          id: 1,
-          title: 'Updated Title',
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            title: 'Updated Title',
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Failed to update task: Unknown error');
     });
 
@@ -308,9 +344,12 @@ describe('Tasks CRUD - Validation Coverage', () => {
         .mockRejectedValueOnce(new Error('Delete failed')); // DELETE
 
       await expect(
-        deleteTask({
-          id: 1,
-        }, mockAuthManager)
+        deleteTask(
+          {
+            id: 1,
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Failed to delete task: Delete failed');
     });
 
@@ -321,9 +360,12 @@ describe('Tasks CRUD - Validation Coverage', () => {
         .mockRejectedValueOnce(null); // DELETE
 
       await expect(
-        deleteTask({
-          id: 1,
-        }, mockAuthManager)
+        deleteTask(
+          {
+            id: 1,
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Failed to delete task: Unknown error');
     });
   });
@@ -334,10 +376,13 @@ describe('Tasks CRUD - Validation Coverage', () => {
       mockRest.mockRejectedValue(originalError);
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(originalError);
     });
 
@@ -360,10 +405,13 @@ describe('Tasks CRUD - Validation Coverage', () => {
         .mockRejectedValueOnce(originalError); // POST /tasks/{id}
 
       await expect(
-        updateTask({
-          id: 1,
-          title: 'Updated Title',
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            title: 'Updated Title',
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(originalError);
     });
   });
@@ -394,16 +442,19 @@ describe('Tasks CRUD - Validation Coverage', () => {
         .mockResolvedValueOnce(updatedTask) // POST /tasks/{id}
         .mockResolvedValueOnce(updatedTask); // final GET /tasks/{id}
 
-      const result = await updateTask({
-        id: 1,
-        title: 'New Title',
-        priority: 5,
-        done: true,
-      }, mockAuthManager);
+      const result = await updateTask(
+        {
+          id: 1,
+          title: 'New Title',
+          priority: 5,
+          done: true,
+        },
+        mockAuthManager,
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('update-task');
       expect(markdown).toContain('Task updated successfully');
     });

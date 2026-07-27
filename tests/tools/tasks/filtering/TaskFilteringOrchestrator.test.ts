@@ -124,7 +124,9 @@ describe('executeTaskFiltering', () => {
       validationResult({ validationWarnings: ['large page size'] }) as never,
     );
 
-    await expect(TaskFilteringOrchestrator.executeTaskFiltering({}, storage)).resolves.toBeDefined();
+    await expect(
+      TaskFilteringOrchestrator.executeTaskFiltering({}, storage),
+    ).resolves.toBeDefined();
     expect(logger.warn).toHaveBeenCalledWith('Task filtering validation warnings', {
       warnings: ['large page size'],
     });
@@ -136,7 +138,9 @@ describe('executeTaskFiltering', () => {
       shouldThrow: false,
     } as never);
 
-    await expect(TaskFilteringOrchestrator.executeTaskFiltering({}, storage)).resolves.toBeDefined();
+    await expect(
+      TaskFilteringOrchestrator.executeTaskFiltering({}, storage),
+    ).resolves.toBeDefined();
     expect(logger.warn).toHaveBeenCalledWith('Task filtering result warnings', {
       warnings: ['approaching memory limit'],
     });
@@ -151,16 +155,20 @@ describe('executeTaskFiltering', () => {
     await expect(TaskFilteringOrchestrator.executeTaskFiltering({}, storage)).rejects.toThrow(
       'Task filtering result validation failed: too many tasks loaded, memory exceeded',
     );
-    await expect(TaskFilteringOrchestrator.executeTaskFiltering({}, storage)).rejects.toMatchObject({
-      code: ErrorCode.INTERNAL_ERROR,
-    });
+    await expect(TaskFilteringOrchestrator.executeTaskFiltering({}, storage)).rejects.toMatchObject(
+      {
+        code: ErrorCode.INTERNAL_ERROR,
+      },
+    );
   });
 
   it('re-throws an MCPError from validation unchanged and without logging it as a crash', async () => {
     const mcpError = new MCPError(ErrorCode.VALIDATION_ERROR, 'Invalid filter syntax');
     mockValidator.validateTaskFiltering.mockRejectedValue(mcpError);
 
-    await expect(TaskFilteringOrchestrator.executeTaskFiltering({}, storage)).rejects.toBe(mcpError);
+    await expect(TaskFilteringOrchestrator.executeTaskFiltering({}, storage)).rejects.toBe(
+      mcpError,
+    );
     expect(logger.error).not.toHaveBeenCalled();
   });
 
@@ -169,7 +177,10 @@ describe('executeTaskFiltering', () => {
     mockExecutor.executeFiltering.mockRejectedValue(failure);
 
     await expect(
-      TaskFilteringOrchestrator.executeTaskFiltering({ filter: 'done = false', projectId: 9 }, storage),
+      TaskFilteringOrchestrator.executeTaskFiltering(
+        { filter: 'done = false', projectId: 9 },
+        storage,
+      ),
     ).rejects.toBe(failure);
     expect(logger.error).toHaveBeenCalledWith('Task filtering orchestration failed', {
       error: 'network down',
@@ -237,7 +248,9 @@ describe('validateTaskFiltering', () => {
   });
 
   it('forwards the config to the validator', async () => {
-    await TaskFilteringOrchestrator.validateTaskFiltering({ page: 1 }, storage, { maxTaskCount: 5 });
+    await TaskFilteringOrchestrator.validateTaskFiltering({ page: 1 }, storage, {
+      maxTaskCount: 5,
+    });
     expect(mockValidator.validateTaskFiltering).toHaveBeenCalledWith({ page: 1 }, storage, {
       maxTaskCount: 5,
     });

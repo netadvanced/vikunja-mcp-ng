@@ -18,12 +18,12 @@ export class AuthManager {
     if (token.startsWith('tk_')) {
       return 'api-token';
     }
-    
+
     // JWTs have 3 parts separated by dots and start with eyJ (base64 for {"alg":)
     if (token.startsWith('eyJ') && token.split('.').length === 3) {
       return 'jwt';
     }
-    
+
     // Default to API token for backward compatibility
     return 'api-token';
   }
@@ -216,9 +216,8 @@ export class AuthManager {
     if (!jestRunning && nodeEnv !== 'test' && nodeEnv !== 'development') {
       throw new Error(
         'AuthManager test methods can only be used in test environments. ' +
-        'This is a security measure to prevent testing methods from being accessible in production.'
+          'This is a security measure to prevent testing methods from being accessible in production.',
       );
     }
   }
-
 }

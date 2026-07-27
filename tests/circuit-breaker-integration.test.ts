@@ -43,8 +43,8 @@ describe('Circuit Breaker Integration with Retry Logic', () => {
         withRetry(mockOperation, {
           enableCircuitBreaker: true,
           circuitBreakerName: 'test-circuit',
-          maxRetries: 0 // No retries so each call maps to exactly one operation invocation
-        })
+          maxRetries: 0, // No retries so each call maps to exactly one operation invocation
+        }),
       ).rejects.toThrow('Internal Server Error');
     }
 
@@ -59,12 +59,12 @@ describe('Circuit Breaker Integration with Retry Logic', () => {
         withRetry(mockOperation, {
           enableCircuitBreaker: true,
           circuitBreakerName: 'test-circuit',
-          maxRetries: 0
-        }).catch(e => e.message)
-      )
+          maxRetries: 0,
+        }).catch((e) => e.message),
+      ),
     );
 
-    expect(results.every(r => r === 'Internal Server Error')).toBe(true);
+    expect(results.every((r) => r === 'Internal Server Error')).toBe(true);
     expect(mockOperation).toHaveBeenCalledTimes(11);
   });
 
@@ -91,7 +91,7 @@ describe('Circuit Breaker Integration with Retry Logic', () => {
         await withRetry(mockOperation, {
           maxRetries: 1,
           initialDelay: 10,
-          shouldRetry: () => expected
+          shouldRetry: () => expected,
         });
 
         // If expected to retry, should have been called twice
@@ -110,7 +110,7 @@ describe('Circuit Breaker Integration with Retry Logic', () => {
       await withRetry(mockOperation, {
         enableCircuitBreaker: false,
         circuitBreakerName: 'unused-circuit',
-        maxRetries: 1
+        maxRetries: 1,
       });
     } catch (error) {
       // Expected to fail

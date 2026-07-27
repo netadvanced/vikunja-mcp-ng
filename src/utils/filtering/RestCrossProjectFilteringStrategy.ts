@@ -26,7 +26,13 @@
  */
 
 import type { TaskFilteringStrategy } from './TaskFilteringStrategy';
-import type { FilteringArgs, FilteringParams, FilteringResult, TaskListApiParams, VikunjaTask } from './types';
+import type {
+  FilteringArgs,
+  FilteringParams,
+  FilteringResult,
+  TaskListApiParams,
+  VikunjaTask,
+} from './types';
 import { ClientSideFilteringStrategy } from './ClientSideFilteringStrategy';
 import { vikunjaRestRequest } from '../vikunja-rest';
 import { MCPError, ErrorCode } from '../../types';
@@ -121,8 +127,7 @@ export class RestCrossProjectFilteringStrategy implements TaskFilteringStrategy 
         metadata: {
           ...fallbackResult.metadata,
           serverSideFilteringAttempted: true,
-          filteringNote:
-            'Direct REST GET /tasks failed; used per-project aggregation fallback',
+          filteringNote: 'Direct REST GET /tasks failed; used per-project aggregation fallback',
         },
       };
     }

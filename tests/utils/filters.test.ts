@@ -27,7 +27,12 @@ import {
   FILTER_FIELD_ALIASES,
 } from '../../src/utils/filters';
 import { FIELD_TYPES } from '../../src/types/filters';
-import type { FilterCondition, FilterExpression, FilterField, FilterGroup } from '../../src/types/index';
+import type {
+  FilterCondition,
+  FilterExpression,
+  FilterField,
+  FilterGroup,
+} from '../../src/types/index';
 
 describe('Consolidated Filter Utilities', () => {
   describe('validateCondition', () => {
@@ -270,7 +275,8 @@ describe('Consolidated Filter Utilities', () => {
         'title',
         'description',
       ])('leaves %s unchanged (already matches the API field name)', (field) => {
-        const value = field === 'done' ? true : field === 'assignees' || field === 'labels' ? [1] : 'x';
+        const value =
+          field === 'done' ? true : field === 'assignees' || field === 'labels' ? [1] : 'x';
         const condition: FilterCondition = { field, operator: '=', value };
         expect(conditionToString(condition)).toBe(
           `${field} = ${Array.isArray(value) ? value.join(', ') : String(value)}`,
@@ -419,14 +425,21 @@ describe('Consolidated Filter Utilities', () => {
       ['endDate', '<=', '2024-12-31', 'endDate <= 2024-12-31'],
       ['doneAt', '!=', 'now', 'doneAt != now'],
       ['project', '=', 4, 'project = 4'],
-    ])('conditionToDslString keeps %s in DSL casing, unlike conditionToString', (field, operator, value, expected) => {
-      const condition: FilterCondition = { field, operator: operator as FilterCondition['operator'], value };
-      expect(conditionToDslString(condition)).toBe(expected);
-      // Sanity check that this genuinely differs from the API-casing sibling
-      // for every field where the two casings diverge - otherwise this test
-      // wouldn't actually be exercising the bug it targets.
-      expect(conditionToDslString(condition)).not.toBe(conditionToString(condition));
-    });
+    ])(
+      'conditionToDslString keeps %s in DSL casing, unlike conditionToString',
+      (field, operator, value, expected) => {
+        const condition: FilterCondition = {
+          field,
+          operator: operator as FilterCondition['operator'],
+          value,
+        };
+        expect(conditionToDslString(condition)).toBe(expected);
+        // Sanity check that this genuinely differs from the API-casing sibling
+        // for every field where the two casings diverge - otherwise this test
+        // wouldn't actually be exercising the bug it targets.
+        expect(conditionToDslString(condition)).not.toBe(conditionToString(condition));
+      },
+    );
 
     it('groupToDslString wraps a multi-condition group without translating field names', () => {
       const group: FilterGroup = {
@@ -600,7 +613,10 @@ describe('Consolidated Filter Utilities', () => {
     it('round-trips an "in" condition with a multi-value array (normalized spacing survives re-parse)', () => {
       const expression: FilterExpression = {
         groups: [
-          { conditions: [{ field: 'priority', operator: 'in', value: ['3', '4', '5'] }], operator: '&&' },
+          {
+            conditions: [{ field: 'priority', operator: 'in', value: ['3', '4', '5'] }],
+            operator: '&&',
+          },
         ],
       };
 
@@ -624,7 +640,10 @@ describe('Consolidated Filter Utilities', () => {
       // needed.
       const expression: FilterExpression = {
         groups: [
-          { conditions: [{ field: 'title', operator: 'like', value: 'she said "hi"' }], operator: '&&' },
+          {
+            conditions: [{ field: 'title', operator: 'like', value: 'she said "hi"' }],
+            operator: '&&',
+          },
         ],
       };
 
@@ -735,7 +754,15 @@ describe('Consolidated Filter Utilities', () => {
         expect(result.error).toBeUndefined();
         expect(result.expression?.groups[0]?.conditions[0]).toEqual({
           field: expectedField,
-          operator: filterStr.includes('!=') ? '!=' : filterStr.includes('>=') ? '>=' : filterStr.includes('<=') ? '<=' : filterStr.includes('<') ? '<' : '=',
+          operator: filterStr.includes('!=')
+            ? '!='
+            : filterStr.includes('>=')
+              ? '>='
+              : filterStr.includes('<=')
+                ? '<='
+                : filterStr.includes('<')
+                  ? '<'
+                  : '=',
           value: expectedValue,
         });
       });

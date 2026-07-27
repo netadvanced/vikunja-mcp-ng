@@ -144,7 +144,10 @@ export async function listViews(
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   if (!args.id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project id is required for list-views operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'Project id is required for list-views operation',
+    );
   }
   validateId(args.id, 'id');
 
@@ -217,13 +220,19 @@ export async function createView(
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   if (!args.id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project id is required for create-view operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'Project id is required for create-view operation',
+    );
   }
   if (!args.title || args.title.trim() === '') {
     throw new MCPError(ErrorCode.VALIDATION_ERROR, 'title is required for create-view operation');
   }
   if (!args.viewKind) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'viewKind is required for create-view operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'viewKind is required for create-view operation',
+    );
   }
   validateId(args.id, 'id');
 
@@ -268,7 +277,10 @@ export async function updateView(
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   if (!args.id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project id is required for update-view operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'Project id is required for update-view operation',
+    );
   }
   if (args.viewId === undefined || args.viewId === null) {
     throw new MCPError(ErrorCode.VALIDATION_ERROR, 'View id is required for update-view operation');
@@ -283,7 +295,10 @@ export async function updateView(
     args.doneBucketId !== undefined ||
     args.defaultBucketId !== undefined;
   if (!hasUpdateFields) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'No fields to update provided for update-view operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'No fields to update provided for update-view operation',
+    );
   }
   if (args.doneBucketId !== undefined) validateId(args.doneBucketId, 'doneBucketId');
   if (args.defaultBucketId !== undefined) validateId(args.defaultBucketId, 'defaultBucketId');
@@ -342,7 +357,10 @@ export async function deleteView(
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   if (!args.id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project id is required for delete-view operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'Project id is required for delete-view operation',
+    );
   }
   if (args.viewId === undefined || args.viewId === null) {
     throw new MCPError(ErrorCode.VALIDATION_ERROR, 'View id is required for delete-view operation');
@@ -381,7 +399,10 @@ export async function setDoneBucket(
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   if (!args.id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project id is required for set-done-bucket operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'Project id is required for set-done-bucket operation',
+    );
   }
   if (args.bucketId === undefined || args.bucketId === null) {
     throw new MCPError(

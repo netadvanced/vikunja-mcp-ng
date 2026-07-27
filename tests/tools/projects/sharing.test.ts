@@ -57,7 +57,12 @@ describe('project link sharing (REST-migrated)', () => {
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, title: 'Proj' }) }))
         .mockResolvedValueOnce(
           mockResponse({
-            text: JSON.stringify({ id: 5, hash: 'abc123', permission: 0, created: '2026-01-01T00:00:00Z' }),
+            text: JSON.stringify({
+              id: 5,
+              hash: 'abc123',
+              permission: 0,
+              created: '2026-01-01T00:00:00Z',
+            }),
           }),
         );
 
@@ -94,9 +99,9 @@ describe('project link sharing (REST-migrated)', () => {
     });
 
     it('validates permission level', async () => {
-      await expect(createProjectShare({ projectId: 1, right: 3 as never }, authManager)).rejects.toThrow(
-        'Invalid permission level. Use: 0=Read, 1=Write, 2=Admin',
-      );
+      await expect(
+        createProjectShare({ projectId: 1, right: 3 as never }, authManager),
+      ).rejects.toThrow('Invalid permission level. Use: 0=Read, 1=Write, 2=Admin');
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
@@ -111,17 +116,21 @@ describe('project link sharing (REST-migrated)', () => {
         mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'not found' }),
       );
 
-      await expect(createProjectShare({ projectId: 999, right: 'read' }, authManager)).rejects.toThrow(
-        'Project with ID 999 not found',
-      );
+      await expect(
+        createProjectShare({ projectId: 999, right: 'read' }, authManager),
+      ).rejects.toThrow('Project with ID 999 not found');
     });
 
     it('propagates a non-404 REST failure from the create call', async () => {
       mockFetch
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1 }) }))
-        .mockResolvedValueOnce(mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'boom' }));
+        .mockResolvedValueOnce(
+          mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'boom' }),
+        );
 
-      await expect(createProjectShare({ projectId: 1, right: 'read' }, authManager)).rejects.toThrow(MCPError);
+      await expect(
+        createProjectShare({ projectId: 1, right: 'read' }, authManager),
+      ).rejects.toThrow(MCPError);
     });
 
     it('rejects (does not remap) `title` reused as the share label when `name` is absent', async () => {
@@ -150,7 +159,9 @@ describe('project link sharing (REST-migrated)', () => {
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1 }) }))
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 5, permission: 0 }) }));
 
-      await expect(createProjectShare({ projectId: 1, right: 'read' }, authManager)).resolves.toBeDefined();
+      await expect(
+        createProjectShare({ projectId: 1, right: 'read' }, authManager),
+      ).resolves.toBeDefined();
     });
 
     it('does not reject when `name` is supplied alongside `title` (title simply ignored)', async () => {
@@ -202,7 +213,7 @@ describe('project link sharing (REST-migrated)', () => {
       expect(url).toBe('https://vikunja.test/api/v1/projects/1/shares?page=2&per_page=10');
     });
 
-    it('exposes the spec\'s `s` (search-by-hash) query param (LOW issue, docs/API-COVERAGE.md)', async () => {
+    it("exposes the spec's `s` (search-by-hash) query param (LOW issue, docs/API-COVERAGE.md)", async () => {
       // Reproduces the gap: GET /projects/{project}/shares documents page,
       // per_page AND s, but this tool used to only ever send page/per_page.
       mockFetch
@@ -278,7 +289,9 @@ describe('project link sharing (REST-migrated)', () => {
       // again, `mockFetch` would fall through with `undefined` and the test
       // would throw, not pass.
       mockFetch.mockResolvedValueOnce(
-        mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc123', permission: 2, name: 'Admin share' }]) }),
+        mockResponse({
+          text: JSON.stringify([{ id: 1, hash: 'abc123', permission: 2, name: 'Admin share' }]),
+        }),
       );
 
       const result = await getProjectShare({ projectId: 1, shareId: '1' }, authManager);
@@ -289,7 +302,9 @@ describe('project link sharing (REST-migrated)', () => {
     });
 
     it('falls back to a generic label when the share has no name', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc' }]) }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc' }]) }),
+      );
 
       const result = await getProjectShare({ projectId: 1, shareId: '1' }, authManager);
       expect(result.content[0].text).toContain('Retrieved link share: Share #1');
@@ -381,9 +396,9 @@ describe('project link sharing (REST-migrated)', () => {
         mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc', name: 'Other share' }]) }),
       );
 
-      await expect(deleteProjectShare({ projectId: 1, shareId: '999' }, authManager)).rejects.toThrow(
-        'Share with ID 999 not found for project 1',
-      );
+      await expect(
+        deleteProjectShare({ projectId: 1, shareId: '999' }, authManager),
+      ).rejects.toThrow('Share with ID 999 not found for project 1');
     });
 
     it('surfaces a friendly NOT_FOUND when the list route itself 404s (e.g. missing project)', async () => {
@@ -391,15 +406,17 @@ describe('project link sharing (REST-migrated)', () => {
         mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: '' }),
       );
 
-      await expect(deleteProjectShare({ projectId: 1, shareId: '999' }, authManager)).rejects.toThrow(
-        'Share with ID 999 not found for project 1',
-      );
+      await expect(
+        deleteProjectShare({ projectId: 1, shareId: '999' }, authManager),
+      ).rejects.toThrow('Share with ID 999 not found for project 1');
     });
   });
 
   describe('auth-share', () => {
     it('POSTs {password} to /shares/{hash}/auth and returns the token', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ token: 'jwt-token-here' }) }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ token: 'jwt-token-here' }) }),
+      );
 
       const result = await authProjectShare({ shareHash: 'abc123' }, authManager);
 

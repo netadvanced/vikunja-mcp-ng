@@ -5,7 +5,11 @@
  * extracted from batch-import.ts to improve maintainability and testability.
  */
 
-import { BatchImportResponseFormatter, ImportResult, FormatterOptions } from '../../src/formatters/BatchImportResponseFormatter';
+import {
+  BatchImportResponseFormatter,
+  ImportResult,
+  FormatterOptions,
+} from '../../src/formatters/BatchImportResponseFormatter';
 
 describe('BatchImportResponseFormatter', () => {
   let formatter: BatchImportResponseFormatter;
@@ -48,9 +52,7 @@ describe('BatchImportResponseFormatter', () => {
           { index: 0, title: 'Invalid Task', error: 'Missing required field: title' },
           { index: 2, title: 'Bad Task', error: 'Invalid date format' },
         ],
-        createdTasks: [
-          { id: 1, title: 'Valid Task' },
-        ],
+        createdTasks: [{ id: 1, title: 'Valid Task' }],
       };
 
       const formatted = formatter.formatResult(result);
@@ -97,15 +99,15 @@ describe('BatchImportResponseFormatter', () => {
         success: 1,
         failed: 0,
         errors: [],
-        createdTasks: [
-          { id: 1, title: 'Task with assignee' },
-        ],
+        createdTasks: [{ id: 1, title: 'Task with assignee' }],
       };
 
       const formatted = formatter.formatResult(result, true, true);
 
       expect(formatted).toContain('Import completed:');
-      expect(formatted).toContain('⚠️  Warning: Could not fetch users due to Vikunja API authentication issue.');
+      expect(formatted).toContain(
+        '⚠️  Warning: Could not fetch users due to Vikunja API authentication issue.',
+      );
       expect(formatted).toContain('Assignees were skipped for all tasks.');
     });
 
@@ -114,15 +116,15 @@ describe('BatchImportResponseFormatter', () => {
         success: 1,
         failed: 0,
         errors: [],
-        createdTasks: [
-          { id: 1, title: 'Task without assignee' },
-        ],
+        createdTasks: [{ id: 1, title: 'Task without assignee' }],
       };
 
       const formatted = formatter.formatResult(result, true, false);
 
       expect(formatted).toContain('Import completed:');
-      expect(formatted).not.toContain('Could not fetch users due to Vikunja API authentication issue');
+      expect(formatted).not.toContain(
+        'Could not fetch users due to Vikunja API authentication issue',
+      );
     });
 
     it('should not include authentication warning when users fetch succeeded', () => {
@@ -130,15 +132,15 @@ describe('BatchImportResponseFormatter', () => {
         success: 1,
         failed: 0,
         errors: [],
-        createdTasks: [
-          { id: 1, title: 'Task with assignee' },
-        ],
+        createdTasks: [{ id: 1, title: 'Task with assignee' }],
       };
 
       const formatted = formatter.formatResult(result, false, true);
 
       expect(formatted).toContain('Import completed:');
-      expect(formatted).not.toContain('Could not fetch users due to Vikunja API authentication issue');
+      expect(formatted).not.toContain(
+        'Could not fetch users due to Vikunja API authentication issue',
+      );
     });
 
     it('should format empty import results', () => {
@@ -210,12 +212,8 @@ describe('BatchImportResponseFormatter', () => {
       const result: ImportResult = {
         success: 1,
         failed: 1,
-        errors: [
-          { index: 0, title: 'A', error: 'Some error' },
-        ],
-        createdTasks: [
-          { id: 1, title: 'B' },
-        ],
+        errors: [{ index: 0, title: 'A', error: 'Some error' }],
+        createdTasks: [{ id: 1, title: 'B' }],
       };
 
       const formatted = formatter.formatResult(result);
@@ -229,16 +227,20 @@ describe('BatchImportResponseFormatter', () => {
         success: 1,
         failed: 1,
         errors: [
-          { index: 0, title: 'Task with "quotes" & symbols!', error: 'Error with special chars: #$%' },
+          {
+            index: 0,
+            title: 'Task with "quotes" & symbols!',
+            error: 'Error with special chars: #$%',
+          },
         ],
-        createdTasks: [
-          { id: 1, title: 'Valid "quoted" task & more' },
-        ],
+        createdTasks: [{ id: 1, title: 'Valid "quoted" task & more' }],
       };
 
       const formatted = formatter.formatResult(result);
 
-      expect(formatted).toContain('- Row 1 (Task with "quotes" & symbols!): Error with special chars: #$%');
+      expect(formatted).toContain(
+        '- Row 1 (Task with "quotes" & symbols!): Error with special chars: #$%',
+      );
       expect(formatted).toContain('- #1: Valid "quoted" task & more');
     });
 
@@ -247,9 +249,7 @@ describe('BatchImportResponseFormatter', () => {
         success: 1,
         failed: 0,
         errors: [],
-        createdTasks: [
-          { id: 1, title: 'Task' },
-        ],
+        createdTasks: [{ id: 1, title: 'Task' }],
         warnings: [],
       };
 
@@ -266,9 +266,7 @@ describe('BatchImportResponseFormatter', () => {
         success: 1,
         failed: 0,
         errors: [],
-        createdTasks: [
-          { id: 1, title: 'Task' },
-        ],
+        createdTasks: [{ id: 1, title: 'Task' }],
         warnings: undefined,
       };
 
@@ -301,9 +299,7 @@ describe('BatchImportResponseFormatter', () => {
         success: 1,
         failed: 0,
         errors: [],
-        createdTasks: [
-          { id: 1, title: 'Task with assignee' },
-        ],
+        createdTasks: [{ id: 1, title: 'Task with assignee' }],
       };
 
       const options: FormatterOptions = {
@@ -323,9 +319,7 @@ describe('BatchImportResponseFormatter', () => {
         success: 1,
         failed: 0,
         errors: [],
-        createdTasks: [
-          { id: 1, title: 'Task' },
-        ],
+        createdTasks: [{ id: 1, title: 'Task' }],
       };
 
       const options: FormatterOptions = {
@@ -336,7 +330,9 @@ describe('BatchImportResponseFormatter', () => {
       const formatted = formatter.formatResultWithOptions(result, options);
 
       expect(formatted).toContain('Import completed:');
-      expect(formatted).not.toContain('Could not fetch users due to Vikunja API authentication issue');
+      expect(formatted).not.toContain(
+        'Could not fetch users due to Vikunja API authentication issue',
+      );
     });
   });
 
@@ -345,21 +341,15 @@ describe('BatchImportResponseFormatter', () => {
       const result: ImportResult = {
         success: 1,
         failed: 1,
-        errors: [
-          { index: 1, title: 'Error Task', error: 'Some error' },
-        ],
-        createdTasks: [
-          { id: 1, title: 'Success Task' },
-        ],
-        warnings: [
-          { taskId: 1, title: 'Success Task', warning: 'Some warning' },
-        ],
+        errors: [{ index: 1, title: 'Error Task', error: 'Some error' }],
+        createdTasks: [{ id: 1, title: 'Success Task' }],
+        warnings: [{ taskId: 1, title: 'Success Task', warning: 'Some warning' }],
       };
 
       const formatted = formatter.formatResult(result, true, true);
 
       // Check order: Summary -> Auth Warning -> Created Tasks -> Warnings -> Errors
-      const lines = formatted.split('\n').filter(line => line.trim());
+      const lines = formatted.split('\n').filter((line) => line.trim());
 
       // Summary should be first
       expect(lines[0]).toBe('Import completed:');
@@ -367,13 +357,13 @@ describe('BatchImportResponseFormatter', () => {
       expect(lines[2]).toContain('Failed:');
 
       // Auth warning should come after summary
-      const authWarningIndex = lines.findIndex(line => line.includes('Could not fetch users'));
+      const authWarningIndex = lines.findIndex((line) => line.includes('Could not fetch users'));
       expect(authWarningIndex).toBeGreaterThan(2); // After summary (0, 1, 2 are summary lines)
 
       // Created tasks should come before warnings and errors
-      const createdTasksIndex = lines.findIndex(line => line.includes('Created tasks:'));
-      const warningsIndex = lines.findIndex(line => line.includes('Warnings:'));
-      const errorsIndex = lines.findIndex(line => line.includes('Errors:'));
+      const createdTasksIndex = lines.findIndex((line) => line.includes('Created tasks:'));
+      const warningsIndex = lines.findIndex((line) => line.includes('Warnings:'));
+      const errorsIndex = lines.findIndex((line) => line.includes('Errors:'));
 
       expect(createdTasksIndex).toBeLessThan(warningsIndex);
       expect(warningsIndex).toBeLessThan(errorsIndex);

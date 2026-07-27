@@ -21,7 +21,7 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 export function registerTaskLabelsTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_task_labels',
@@ -95,7 +95,7 @@ export function registerTaskLabelsTool(
                 id: args.id,
                 taskIds: args.taskIds,
                 labels: args.labels || [],
-                labelTitles: args.labelTitles || []
+                labelTitles: args.labelTitles || [],
               },
               authManager,
             );
@@ -105,7 +105,7 @@ export function registerTaskLabelsTool(
               {
                 id: args.id,
                 taskIds: args.taskIds,
-                labels: args.labels || []
+                labels: args.labels || [],
               },
               authManager,
             );

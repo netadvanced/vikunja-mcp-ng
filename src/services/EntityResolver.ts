@@ -101,7 +101,7 @@ export class EntityResolver {
    */
   private async fetchLabels(
     authManager: AuthManager,
-    result: EntityResolutionResult
+    result: EntityResolutionResult,
   ): Promise<void> {
     try {
       // GET /labels per the OpenAPI spec (models.Label[]).
@@ -132,7 +132,10 @@ export class EntityResolver {
       result.projectLabels = labelsResponse;
       logger.debug('Labels fetched', {
         count: result.projectLabels.length,
-        labels: result.projectLabels.map((l): { id: number; title: string } => ({ id: l.id ?? 0, title: l.title ?? '' })),
+        labels: result.projectLabels.map((l): { id: number; title: string } => ({
+          id: l.id ?? 0,
+          title: l.title ?? '',
+        })),
       });
     } catch (error) {
       logger.error('Failed to fetch labels', {
@@ -173,11 +176,13 @@ export class EntityResolver {
   private async fetchUsers(
     authManager: AuthManager,
     assigneeUsernames: string[],
-    result: EntityResolutionResult
+    result: EntityResolutionResult,
   ): Promise<void> {
     if (assigneeUsernames.length === 0) {
       result.projectUsers = [];
-      logger.debug('No assignee usernames referenced by this batch; skipping /users search entirely');
+      logger.debug(
+        'No assignee usernames referenced by this batch; skipping /users search entirely',
+      );
       return;
     }
 
@@ -244,7 +249,10 @@ export class EntityResolver {
     // Create case-insensitive label name to ID map
     result.labelMap = new Map(
       (result.projectLabels || [])
-        .filter((label): label is VikunjaLabel & { id: number } => label !== null && label.id !== null && label.id !== undefined)
+        .filter(
+          (label): label is VikunjaLabel & { id: number } =>
+            label !== null && label.id !== null && label.id !== undefined,
+        )
         .map((label) => {
           let key: string;
           if (!('title' in label)) {
@@ -257,13 +265,16 @@ export class EntityResolver {
             key = String(label.title).toLowerCase();
           }
           return [key, label.id];
-        })
+        }),
     );
 
     // Create case-insensitive username to ID map
     result.userMap = new Map(
       (result.projectUsers || [])
-        .filter((user): user is VikunjaUser & { id: number } => user !== null && user.id !== null && user.id !== undefined)
+        .filter(
+          (user): user is VikunjaUser & { id: number } =>
+            user !== null && user.id !== null && user.id !== undefined,
+        )
         .map((user) => {
           let key: string;
           if (!('username' in user)) {
@@ -276,7 +287,7 @@ export class EntityResolver {
             key = String(user.username).toLowerCase();
           }
           return [key, user.id];
-        })
+        }),
     );
   }
 }

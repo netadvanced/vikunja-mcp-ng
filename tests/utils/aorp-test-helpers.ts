@@ -87,7 +87,10 @@ export function getAorpDebug(result: AorpFactoryResult | AorpResponse): unknown 
 /**
  * Expect AORP response to have success status
  */
-export function expectAorpSuccess(result: AorpFactoryResult | AorpResponse, expectedOperation?: string): void {
+export function expectAorpSuccess(
+  result: AorpFactoryResult | AorpResponse,
+  expectedOperation?: string,
+): void {
   const response = getAorpResponse(result);
 
   expect(response.immediate.status).toBe('success');
@@ -101,7 +104,10 @@ export function expectAorpSuccess(result: AorpFactoryResult | AorpResponse, expe
 /**
  * Expect AORP response to have error status
  */
-export function expectAorpError(result: AorpFactoryResult | AorpResponse, expectedOperation?: string): void {
+export function expectAorpError(
+  result: AorpFactoryResult | AorpResponse,
+  expectedOperation?: string,
+): void {
   const response = getAorpResponse(result);
 
   expect(response.immediate.status).toBe('error');

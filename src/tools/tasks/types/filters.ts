@@ -3,11 +3,7 @@
  * Extends the base filter types with task-specific functionality
  */
 
-import type {
-  FilterExpression,
-  SavedFilter,
-  FilterValidationConfig
-} from '../../../types/filters';
+import type { FilterExpression, SavedFilter, FilterValidationConfig } from '../../../types/filters';
 import type { AorpBuilderConfig } from '../../../types';
 import type { SimpleFilterStorage } from '../../../storage';
 import type { AuthManager } from '../../../auth/AuthManager';

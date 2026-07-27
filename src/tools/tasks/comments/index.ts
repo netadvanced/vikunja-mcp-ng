@@ -33,14 +33,20 @@ export async function handleComment(
 
     // Create a new comment
     if (!commentText) {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Comment text is required for comment creation');
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'Comment text is required for comment creation',
+      );
     }
-    const newComment = await CommentOperationsService.createComment(authManager, taskId, commentText);
+    const newComment = await CommentOperationsService.createComment(
+      authManager,
+      taskId,
+      commentText,
+    );
 
     // Format and return response
     const response = commentResponseFormatter.formatCreateCommentResponse(newComment);
     return commentResponseFormatter.formatMcpResponse(response);
-
   } catch (error) {
     throw new MCPError(
       ErrorCode.API_ERROR,
@@ -66,7 +72,6 @@ export async function listComments(
     // Format and return response
     const response = commentResponseFormatter.formatListCommentsResponse(comments);
     return commentResponseFormatter.formatMcpResponse(response);
-
   } catch (error) {
     throw new MCPError(
       ErrorCode.API_ERROR,

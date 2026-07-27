@@ -36,24 +36,48 @@ export class FieldSelector {
     ];
 
     const contextFields: FieldDefinition[] = [
-      { fieldName: 'description', category: FieldCategory.CONTEXT, minVerbosity: Verbosity.STANDARD },
-      { fieldName: 'project_id', category: FieldCategory.CONTEXT, minVerbosity: Verbosity.STANDARD },
+      {
+        fieldName: 'description',
+        category: FieldCategory.CONTEXT,
+        minVerbosity: Verbosity.STANDARD,
+      },
+      {
+        fieldName: 'project_id',
+        category: FieldCategory.CONTEXT,
+        minVerbosity: Verbosity.STANDARD,
+      },
       { fieldName: 'priority', category: FieldCategory.CONTEXT, minVerbosity: Verbosity.STANDARD },
     ];
 
     const schedulingFields: FieldDefinition[] = [
-      { fieldName: 'due_date', category: FieldCategory.SCHEDULING, minVerbosity: Verbosity.DETAILED },
-      { fieldName: 'created_at', category: FieldCategory.SCHEDULING, minVerbosity: Verbosity.DETAILED },
-      { fieldName: 'updated_at', category: FieldCategory.SCHEDULING, minVerbosity: Verbosity.DETAILED },
+      {
+        fieldName: 'due_date',
+        category: FieldCategory.SCHEDULING,
+        minVerbosity: Verbosity.DETAILED,
+      },
+      {
+        fieldName: 'created_at',
+        category: FieldCategory.SCHEDULING,
+        minVerbosity: Verbosity.DETAILED,
+      },
+      {
+        fieldName: 'updated_at',
+        category: FieldCategory.SCHEDULING,
+        minVerbosity: Verbosity.DETAILED,
+      },
     ];
 
     const metadataFields: FieldDefinition[] = [
-      { fieldName: 'hex_color', category: FieldCategory.METADATA, minVerbosity: Verbosity.COMPLETE },
+      {
+        fieldName: 'hex_color',
+        category: FieldCategory.METADATA,
+        minVerbosity: Verbosity.COMPLETE,
+      },
       { fieldName: 'position', category: FieldCategory.METADATA, minVerbosity: Verbosity.COMPLETE },
       { fieldName: 'index', category: FieldCategory.METADATA, minVerbosity: Verbosity.COMPLETE },
     ];
 
-    [...coreFields, ...contextFields, ...schedulingFields, ...metadataFields].forEach(field => {
+    [...coreFields, ...contextFields, ...schedulingFields, ...metadataFields].forEach((field) => {
       this.fieldDefinitions.set(field.fieldName, field);
     });
   }
@@ -63,20 +87,20 @@ export class FieldSelector {
     const selectedFields = new Set<string>([...verbosityFields]);
 
     if (config.fieldOverrides?.include) {
-      config.fieldOverrides.include.forEach(field => selectedFields.add(field));
+      config.fieldOverrides.include.forEach((field) => selectedFields.add(field));
     }
 
     if (config.fieldOverrides?.exclude) {
-      config.fieldOverrides.exclude.forEach(field => selectedFields.delete(field));
+      config.fieldOverrides.exclude.forEach((field) => selectedFields.delete(field));
     }
 
-    const finalSelectedFields = Array.from(selectedFields).filter(field =>
-      availableFields.includes(field)
+    const finalSelectedFields = Array.from(selectedFields).filter((field) =>
+      availableFields.includes(field),
     );
 
-    const excludedFields = availableFields.filter(field => !finalSelectedFields.includes(field));
+    const excludedFields = availableFields.filter((field) => !finalSelectedFields.includes(field));
 
-    const fieldDefinitions: FieldDefinition[] = finalSelectedFields.map(fieldName => {
+    const fieldDefinitions: FieldDefinition[] = finalSelectedFields.map((fieldName) => {
       const existingDef = this.fieldDefinitions.get(fieldName);
       if (existingDef) {
         return existingDef;
@@ -84,18 +108,18 @@ export class FieldSelector {
       return {
         fieldName,
         category: this.inferFieldCategory(fieldName),
-        minVerbosity: Verbosity.STANDARD
+        minVerbosity: Verbosity.STANDARD,
       };
     });
 
     const activeCategories = new Set<FieldCategory>();
-    fieldDefinitions.forEach(def => activeCategories.add(def.category));
+    fieldDefinitions.forEach((def) => activeCategories.add(def.category));
 
     return {
       includedFields: finalSelectedFields,
       excludedFields,
       activeCategories: Array.from(activeCategories),
-      fieldDefinitions
+      fieldDefinitions,
     };
   }
 

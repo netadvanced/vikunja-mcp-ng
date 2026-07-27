@@ -92,7 +92,10 @@ export async function ensureLabelByTitle(
   const created = await vikunjaRestRequest<VikunjaLabel>(authManager, 'PUT', '/labels', labelData);
 
   if (typeof created.id !== 'number' || typeof created.title !== 'string') {
-    throw new MCPError(ErrorCode.API_ERROR, `Label "${title}" was created but returned no numeric id`);
+    throw new MCPError(
+      ErrorCode.API_ERROR,
+      `Label "${title}" was created but returned no numeric id`,
+    );
   }
 
   return { id: created.id, title: created.title, created: true, label: created };

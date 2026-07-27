@@ -25,10 +25,7 @@ export function parseInputData(options: ParseInputOptions): ImportedTask[] {
 
   // Validate input parameters
   if (!data || data.trim() === '') {
-    throw new MCPError(
-      ErrorCode.VALIDATION_ERROR,
-      'Input data cannot be empty'
-    );
+    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Input data cannot be empty');
   }
 
   try {
@@ -43,7 +40,7 @@ export function parseInputData(options: ParseInputOptions): ImportedTask[] {
         // Use format directly for error message
         throw new MCPError(
           ErrorCode.VALIDATION_ERROR,
-          `Unsupported format: ${String(format)}. Supported formats are: csv, json`
+          `Unsupported format: ${String(format)}. Supported formats are: csv, json`,
         );
       }
     }
@@ -56,7 +53,7 @@ export function parseInputData(options: ParseInputOptions): ImportedTask[] {
     // Wrap other errors in MCPError
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      `Failed to parse ${format} input: ${error instanceof Error ? error.message : 'Unknown error'}`
+      `Failed to parse ${format} input: ${error instanceof Error ? error.message : 'Unknown error'}`,
     );
   }
 }
@@ -78,7 +75,7 @@ function parseCSVInput(data: string, skipErrors: boolean = false): ImportedTask[
   if (lines.length < 2) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'CSV must have at least a header row and one data row'
+      'CSV must have at least a header row and one data row',
     );
   }
 
@@ -90,7 +87,7 @@ function parseCSVInput(data: string, skipErrors: boolean = false): ImportedTask[
   if (missingHeaders.length > 0) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      `Missing required CSV headers: ${missingHeaders.join(', ')}`
+      `Missing required CSV headers: ${missingHeaders.join(', ')}`,
     );
   }
 
@@ -141,14 +138,24 @@ function parseCSVInput(data: string, skipErrors: boolean = false): ImportedTask[
             taskData.priority = parseInt(value, 10);
             break;
           case 'labels':
-            taskData.labels = value ? value.split(';').map((l) => l.trim()).filter((l) => l.length > 0) : [];
+            taskData.labels = value
+              ? value
+                  .split(';')
+                  .map((l) => l.trim())
+                  .filter((l) => l.length > 0)
+              : [];
             logger.debug('Parsed labels from CSV', {
               rawValue: value,
               parsedLabels: taskData.labels,
             });
             break;
           case 'assignees':
-            taskData.assignees = value ? value.split(';').map((a) => a.trim()).filter((a) => a.length > 0) : [];
+            taskData.assignees = value
+              ? value
+                  .split(';')
+                  .map((a) => a.trim())
+                  .filter((a) => a.length > 0)
+              : [];
             break;
           case 'startDate':
             taskData.startDate = value;
@@ -179,7 +186,7 @@ function parseCSVInput(data: string, skipErrors: boolean = false): ImportedTask[
       if (!skipErrors) {
         throw new MCPError(
           ErrorCode.VALIDATION_ERROR,
-          `Invalid task data at row ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`
+          `Invalid task data at row ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`,
         );
       }
       // If skipErrors is true, we skip this row and continue

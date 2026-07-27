@@ -157,5 +157,5 @@ export const commentValidationService = {
    */
   shouldCreateComment(commentText?: string): boolean {
     return commentText !== undefined && commentText.trim() !== '';
-  }
+  },
 };

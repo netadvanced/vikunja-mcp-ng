@@ -10,25 +10,27 @@ import { MCPError, ErrorCode } from '../types';
  * Zod schema for validating imported task data from JSON
  * Defines the structure and validation rules for task objects
  */
-export const importedTaskSchema = z.object({
-  title: z.string().min(1),
-  description: z.string().optional(),
-  done: z.boolean().optional(),
-  dueDate: z.string().optional(),
-  priority: z.number().optional(),
-  labels: z.array(z.string()).optional(),
-  assignees: z.array(z.string()).optional(),
-  startDate: z.string().optional(),
-  endDate: z.string().optional(),
-  hexColor: z
-    .string()
-    .regex(/^#[0-9A-Fa-f]{6}$/)
-    .optional(),
-  percentDone: z.number().min(0).max(100).optional(),
-  repeatAfter: z.number().optional(),
-  repeatMode: z.number().optional(),
-  reminders: z.array(z.string()).optional(),
-}).strict(); // Reject unknown properties
+export const importedTaskSchema = z
+  .object({
+    title: z.string().min(1),
+    description: z.string().optional(),
+    done: z.boolean().optional(),
+    dueDate: z.string().optional(),
+    priority: z.number().optional(),
+    labels: z.array(z.string()).optional(),
+    assignees: z.array(z.string()).optional(),
+    startDate: z.string().optional(),
+    endDate: z.string().optional(),
+    hexColor: z
+      .string()
+      .regex(/^#[0-9A-Fa-f]{6}$/)
+      .optional(),
+    percentDone: z.number().min(0).max(100).optional(),
+    repeatAfter: z.number().optional(),
+    repeatMode: z.number().optional(),
+    reminders: z.array(z.string()).optional(),
+  })
+  .strict(); // Reject unknown properties
 
 /**
  * TypeScript type inferred from the importedTaskSchema

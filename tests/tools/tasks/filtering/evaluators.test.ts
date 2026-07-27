@@ -116,7 +116,9 @@ describe('parseRelativeDate', () => {
   });
 
   it('parses an ISO datetime', () => {
-    expect(parseRelativeDate('2026-03-04T10:30:00Z')?.toISOString()).toBe('2026-03-04T10:30:00.000Z');
+    expect(parseRelativeDate('2026-03-04T10:30:00Z')?.toISOString()).toBe(
+      '2026-03-04T10:30:00.000Z',
+    );
   });
 
   it('parses bare `now`', () => {
@@ -224,24 +226,34 @@ describe('evaluateCondition', () => {
 
   it('evaluates `priority`, defaulting a missing priority to 0', () => {
     expect(evaluateCondition(task({ priority: 5 }), condition('priority', '>=', 4))).toBe(true);
-    expect(evaluateCondition(task({ priority: undefined }), condition('priority', '=', 0))).toBe(true);
+    expect(evaluateCondition(task({ priority: undefined }), condition('priority', '=', 0))).toBe(
+      true,
+    );
   });
 
   it('evaluates `percentDone`, defaulting a missing value to 0', () => {
-    expect(evaluateCondition(task({ percent_done: 50 }), condition('percentDone', '>', 25))).toBe(true);
-    expect(evaluateCondition(task({ percent_done: undefined }), condition('percentDone', '=', 0))).toBe(true);
+    expect(evaluateCondition(task({ percent_done: 50 }), condition('percentDone', '>', 25))).toBe(
+      true,
+    );
+    expect(
+      evaluateCondition(task({ percent_done: undefined }), condition('percentDone', '=', 0)),
+    ).toBe(true);
   });
 
   it('evaluates `project`, defaulting a missing project to 0', () => {
     expect(evaluateCondition(task({ project_id: 7 }), condition('project', '=', 7))).toBe(true);
-    expect(evaluateCondition(task({ project_id: undefined }), condition('project', '=', 0))).toBe(true);
+    expect(evaluateCondition(task({ project_id: undefined }), condition('project', '=', 0))).toBe(
+      true,
+    );
   });
 
   it('evaluates `title` and `description` as strings', () => {
     expect(evaluateCondition(task(), condition('title', 'like', 'REPORT'))).toBe(true);
     expect(evaluateCondition(task({ title: undefined }), condition('title', '=', ''))).toBe(true);
     expect(evaluateCondition(task(), condition('description', 'like', 'numbers'))).toBe(true);
-    expect(evaluateCondition(task({ description: undefined }), condition('description', '=', ''))).toBe(true);
+    expect(
+      evaluateCondition(task({ description: undefined }), condition('description', '=', '')),
+    ).toBe(true);
   });
 
   describe('due dates', () => {
@@ -330,7 +342,10 @@ describe('evaluateGroup', () => {
   it('requires every condition for &&', () => {
     const t = task({ done: false, priority: 5 });
     expect(
-      evaluateGroup(t, group('&&', [condition('done', '=', false), condition('priority', '>=', 4)])),
+      evaluateGroup(
+        t,
+        group('&&', [condition('done', '=', false), condition('priority', '>=', 4)]),
+      ),
     ).toBe(true);
     expect(
       evaluateGroup(t, group('&&', [condition('done', '=', true), condition('priority', '>=', 4)])),
@@ -357,11 +372,14 @@ describe('applyFilter', () => {
 
   const expression = (
     operator: '&&' | '||' | undefined,
-    groups: Array<[('&&' | '||'), FilterCondition[]]>,
+    groups: Array<['&&' | '||', FilterCondition[]]>,
   ): FilterExpression =>
     ({
       ...(operator ? { operator } : {}),
-      groups: groups.map(([groupOperator, conditions]) => ({ operator: groupOperator, conditions })),
+      groups: groups.map(([groupOperator, conditions]) => ({
+        operator: groupOperator,
+        conditions,
+      })),
     }) as unknown as FilterExpression;
 
   it('ANDs groups together by default', () => {
@@ -391,6 +409,8 @@ describe('applyFilter', () => {
   });
 
   it('returns an empty list when nothing matches', () => {
-    expect(applyFilter(tasks, expression('&&', [['&&', [condition('priority', '>', 9)]]]))).toEqual([]);
+    expect(applyFilter(tasks, expression('&&', [['&&', [condition('priority', '>', 9)]]]))).toEqual(
+      [],
+    );
   });
 });

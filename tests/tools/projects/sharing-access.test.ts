@@ -190,7 +190,9 @@ describe('direct project sharing (users & teams)', () => {
 
   describe('remove-project-user', () => {
     it('DELETEs /projects/{id}/users/{userId}', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ message: 'removed' }) }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ message: 'removed' }) }),
+      );
 
       const result = await removeProjectUser({ projectId: 1, userId: 10 }, authManager);
 
@@ -265,7 +267,9 @@ describe('direct project sharing (users & teams)', () => {
 
   describe('remove-project-team', () => {
     it('DELETEs /projects/{id}/teams/{teamId}', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ message: 'removed' }) }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ message: 'removed' }) }),
+      );
 
       const result = await removeProjectTeam({ projectId: 1, teamId: 3 }, authManager);
 
@@ -293,7 +297,9 @@ describe('direct project sharing (users & teams)', () => {
           }),
         )
         // 2) add-user: PUT /projects/1/users
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }),
+        )
         // 3) verify-membership: GET /projects/1/users
         .mockResolvedValueOnce(
           mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice', permission: 1 }]) }),
@@ -319,9 +325,15 @@ describe('direct project sharing (users & teams)', () => {
 
     it('matches the username case-insensitively', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 1, username: 'Alice' }]) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ username: 'Alice', permission: 0 }) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 1, username: 'Alice' }]) }));
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 1, username: 'Alice' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'Alice', permission: 0 }) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 1, username: 'Alice' }]) }),
+        );
 
       await expect(
         shareProjectWithUser({ projectId: 1, username: 'alice', right: 'read' }, authManager),
@@ -341,8 +353,12 @@ describe('direct project sharing (users & teams)', () => {
 
     it('best-effort (default): leaves the grant in place when verification fails, and reports it in guidance', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice' }]) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }),
+        )
         // verify-membership finds nobody -> triggers failure
         .mockResolvedValueOnce(mockResponse({ text: '[]' }));
 
@@ -357,14 +373,21 @@ describe('direct project sharing (users & teams)', () => {
 
     it('atomic:true removes the grant when verification fails', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice' }]) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }),
+        )
         .mockResolvedValueOnce(mockResponse({ text: '[]' }))
         // compensation: DELETE /projects/1/users/42
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ message: 'removed' }) }));
 
       await expect(
-        shareProjectWithUser({ projectId: 1, username: 'alice', right: 'write', atomic: true }, authManager),
+        shareProjectWithUser(
+          { projectId: 1, username: 'alice', right: 'write', atomic: true },
+          authManager,
+        ),
       ).rejects.toThrow(MCPError);
 
       expect(mockFetch).toHaveBeenCalledTimes(4);
@@ -379,7 +402,10 @@ describe('direct project sharing (users & teams)', () => {
       ).rejects.toThrow('username is required');
 
       await expect(
-        shareProjectWithUser({ projectId: 1, username: 'alice', right: undefined as never }, authManager),
+        shareProjectWithUser(
+          { projectId: 1, username: 'alice', right: undefined as never },
+          authManager,
+        ),
       ).rejects.toThrow('Share right is required');
 
       expect(mockFetch).not.toHaveBeenCalled();
@@ -396,7 +422,9 @@ describe('direct project sharing (users & teams)', () => {
         .mockResolvedValueOnce(
           mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering' }]) }),
         )
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ team_id: 7, permission: 2 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ team_id: 7, permission: 2 }) }),
+        )
         .mockResolvedValueOnce(
           mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering', permission: 2 }]) }),
         );
@@ -412,11 +440,15 @@ describe('direct project sharing (users & teams)', () => {
       expect(JSON.parse(calls[1][1]?.body as string)).toEqual({ team_id: 7, permission: 2 });
       expect(calls[2][0]).toBe('https://vikunja.test/api/v1/projects/1/teams');
 
-      expect(result.content[0].text).toContain('Shared project 1 with team "Engineering" (permission 2)');
+      expect(result.content[0].text).toContain(
+        'Shared project 1 with team "Engineering" (permission 2)',
+      );
     });
 
     it('throws NOT_FOUND when no exact team name match exists', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 1, name: 'Marketing' }]) }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify([{ id: 1, name: 'Marketing' }]) }),
+      );
 
       await expect(
         shareProjectWithTeam({ projectId: 1, teamName: 'Engineering', right: 'read' }, authManager),
@@ -426,8 +458,12 @@ describe('direct project sharing (users & teams)', () => {
 
     it('atomic:true removes the grant when verification fails', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering' }]) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ team_id: 7, permission: 1 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ team_id: 7, permission: 1 }) }),
+        )
         .mockResolvedValueOnce(mockResponse({ text: '[]' }))
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ message: 'removed' }) }));
 
@@ -507,7 +543,9 @@ describe('direct project sharing (users & teams)', () => {
     it('degrades gracefully when the link-share sub-call fails, still reporting users/teams', async () => {
       mockFetch.mockImplementation((url: string) => {
         if (url.endsWith('/projects/1/users')) {
-          return Promise.resolve(mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice' }]) }));
+          return Promise.resolve(
+            mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice' }]) }),
+          );
         }
         if (url.endsWith('/projects/1/teams')) {
           return Promise.resolve(mockResponse({ text: '[]' }));

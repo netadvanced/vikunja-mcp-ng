@@ -147,7 +147,8 @@ describe('CSV Parser', () => {
       });
 
       it('should parse complete task CSV with all fields', () => {
-        const csvLine = '"Complete Task","Full desc",true,2025-01-01T00:00:00Z,5,"bug;feature","john;jane",2024-12-01T00:00:00Z,2025-01-31T00:00:00Z,#FF0000,50';
+        const csvLine =
+          '"Complete Task","Full desc",true,2025-01-01T00:00:00Z,5,"bug;feature","john;jane",2024-12-01T00:00:00Z,2025-01-31T00:00:00Z,#FF0000,50';
         const result = parseCSVLine(csvLine);
         expect(result).toEqual([
           'Complete Task',
@@ -160,7 +161,7 @@ describe('CSV Parser', () => {
           '2024-12-01T00:00:00Z',
           '2025-01-31T00:00:00Z',
           '#FF0000',
-          '50'
+          '50',
         ]);
       });
 

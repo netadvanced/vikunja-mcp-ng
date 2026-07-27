@@ -64,7 +64,9 @@ describe('Labels Tool', () => {
     } as unknown as MockAuthManager;
 
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     registerLabelsTool(mockServer, mockAuthManager as unknown as AuthManager);
@@ -302,7 +304,12 @@ describe('Labels Tool', () => {
 
     it('should throw API_ERROR for bad request', async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse({ ok: false, status: 400, statusText: 'Bad Request', text: 'Invalid hex color' }),
+        mockResponse({
+          ok: false,
+          status: 400,
+          statusText: 'Bad Request',
+          text: 'Invalid hex color',
+        }),
       );
 
       await expect(
@@ -458,9 +465,7 @@ describe('Labels Tool', () => {
     });
 
     it('should delete a label by ID', async () => {
-      mockFetch.mockResolvedValueOnce(
-        mockResponse({ body: { id: 1, title: 'Bug' } }),
-      );
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: { id: 1, title: 'Bug' } }));
 
       const result = await mockHandler({
         subcommand: 'delete',
@@ -555,7 +560,12 @@ describe('Labels Tool', () => {
 
     it('passes description/hexColor through when creating on a miss', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ body: [] }));
-      const createdLabel = { id: 43, title: 'Priority', description: 'High priority', hex_color: '#00ff00' };
+      const createdLabel = {
+        id: 43,
+        title: 'Priority',
+        description: 'High priority',
+        hex_color: '#00ff00',
+      };
       mockFetch.mockResolvedValueOnce(mockResponse({ body: createdLabel }));
 
       await mockHandler({

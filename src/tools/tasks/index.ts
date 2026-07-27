@@ -18,7 +18,6 @@ import { createAuthRequiredError, handleFetchError } from '../../utils/error-han
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../../utils/read-only';
 
-
 // Import all operation handlers
 import { createTask, getTask, updateTask, deleteTask, createTaskResponse } from './crud';
 import { bulkCreateTasks, bulkUpdateTasks, bulkDeleteTasks } from './bulk-operations';
@@ -40,7 +39,6 @@ import { getTaskByIndex } from './by-index';
 import { createSubtask, listSubtasks, bulkCreateSubtasks } from './subtasks';
 import { duplicateTask } from './duplicate';
 import { markTaskRead } from './mark-read';
-
 
 /**
  * Subcommands where `id` is accepted as an alias for `parentTaskId`.
@@ -64,9 +62,13 @@ const SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS = new Set<string>([
 /**
  * Get session-scoped storage instance
  */
-async function getSessionStorage(authManager: AuthManager): ReturnType<typeof storageManager.getStorage> {
+async function getSessionStorage(
+  authManager: AuthManager,
+): ReturnType<typeof storageManager.getStorage> {
   const session = authManager.getSession();
-  const sessionId = session.apiToken ? `${session.apiUrl}:${session.apiToken.substring(0, 8)}` : 'anonymous';
+  const sessionId = session.apiToken
+    ? `${session.apiUrl}:${session.apiToken.substring(0, 8)}`
+    : 'anonymous';
   return storageManager.getStorage(sessionId, session.userId, session.apiUrl);
 }
 
@@ -105,7 +107,7 @@ async function listTasks(
     const response = createTaskResponse(
       'list-tasks',
       `Found ${taskCount} tasks${filteringMessage}`,
-      { tasks: filteringResult.tasks || [] } as unknown as Parameters<typeof createTaskResponse>[2],
+      { tasks: filteringResult.tasks || [] },
       {
         timestamp: new Date().toISOString(),
         count: taskCount,
@@ -115,7 +117,7 @@ async function listTasks(
       undefined, // useOptimizedFormat (ignored - using standard AORP)
       undefined, // useAorp (ignored - always using AORP)
       undefined, // aorpConfig (using auto-generated)
-      args.sessionId
+      args.sessionId,
     );
 
     logger.debug('Tasks tool response', { subcommand: 'list', itemCount: taskCount });
@@ -145,9 +147,9 @@ async function listTasks(
 }
 
 export function registerTasksTool(
-  server: McpServer, 
-  authManager: AuthManager, 
-  clientFactory?: VikunjaClientFactory
+  server: McpServer,
+  authManager: AuthManager,
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_tasks',
@@ -209,8 +211,8 @@ export function registerTasksTool(
         .optional()
         .describe(
           'The project id, used by create/list/etc. to scope the task(s). On set-bucket/' +
-            "bulk-set-bucket this is optional and only needed to override auto-resolution " +
-            "(normally resolved from the task itself); it is NOT the bucket id.",
+            'bulk-set-bucket this is optional and only needed to override auto-resolution ' +
+            '(normally resolved from the task itself); it is NOT the bucket id.',
         ),
       dueDate: z.string().optional(),
       startDate: z.string().optional(),
@@ -234,7 +236,7 @@ export function registerTasksTool(
         .number()
         .optional()
         .describe(
-          "Optional Kanban view id for set-bucket/bulk-set-bucket, auto-resolved from the " +
+          'Optional Kanban view id for set-bucket/bulk-set-bucket, auto-resolved from the ' +
             "task's project when omitted. Get an explicit value from vikunja_projects " +
             "list-views (look for viewKind: 'kanban'). This is a view id, not a bucket id.",
         ),
@@ -272,7 +274,7 @@ export function registerTasksTool(
             'conditions with && (AND) or || (OR); group with parentheses. Examples: ' +
             '"priority >= 4" (high priority, priority is 0-5, so >= 4 means urgent/DO NOW); ' +
             '"dueDate < now+14d" (due within 14 days); "priority >= 4 && dueDate < now+7d" ' +
-            '(high priority AND due soon); "labels in \'bug\', \'urgent\'" (has either label); ' +
+            "(high priority AND due soon); \"labels in 'bug', 'urgent'\" (has either label); " +
             '"done = false && dueDate <= now" (overdue, not done). Date literals: now, ' +
             'now+14d, now-1w, or ISO 8601 (2024-12-31). Fields use camelCase (dueDate, ' +
             'percentDone, startDate, endDate, doneAt, project, plus ' +
@@ -459,7 +461,7 @@ export function registerTasksTool(
             return listAssignees(args as Parameters<typeof listAssignees>[0], authManager);
 
           case 'comment':
-            return handleComment(args as Parameters<typeof handleComment>[0], authManager);
+            return handleComment(args, authManager);
 
           case 'attach':
             return handleAttach(args as TaskAttachArgs, authManager);
@@ -504,18 +506,18 @@ export function registerTasksTool(
             return addReminder(args as Parameters<typeof addReminder>[0], authManager);
 
           case 'remove-reminder':
-            return removeReminder(args as Parameters<typeof removeReminder>[0], authManager);
+            return removeReminder(args, authManager);
 
           case 'list-reminders':
             return listReminders(args as Parameters<typeof listReminders>[0], authManager);
           case 'apply-label':
-            return applyLabels(args as Parameters<typeof applyLabels>[0], authManager);
+            return applyLabels(args, authManager);
 
           case 'remove-label':
-            return removeLabels(args as Parameters<typeof removeLabels>[0], authManager);
+            return removeLabels(args, authManager);
 
           case 'list-labels':
-            return listTaskLabels(args as Parameters<typeof listTaskLabels>[0], authManager);
+            return listTaskLabels(args, authManager);
 
           case 'set-bucket':
             return setTaskBucket(args as Parameters<typeof setTaskBucket>[0], authManager);
@@ -533,7 +535,10 @@ export function registerTasksTool(
             return createSubtask(args as Parameters<typeof createSubtask>[0], authManager);
 
           case 'bulk-create-subtasks':
-            return bulkCreateSubtasks(args as Parameters<typeof bulkCreateSubtasks>[0], authManager);
+            return bulkCreateSubtasks(
+              args as Parameters<typeof bulkCreateSubtasks>[0],
+              authManager,
+            );
 
           case 'list-subtasks':
             return listSubtasks(args as Parameters<typeof listSubtasks>[0], authManager);

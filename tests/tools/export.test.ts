@@ -89,9 +89,9 @@ describe('Export Tool', () => {
         mockServer.tool.mockClear();
         registerExportTool(mockServer, mockAuthManagerNoAuth);
 
-        const handler = mockServer.tool.mock.calls.find(
-          (call) => call[0] === 'vikunja_export_project',
-        )?.at(-1);
+        const handler = mockServer.tool.mock.calls
+          .find((call) => call[0] === 'vikunja_export_project')
+          ?.at(-1);
 
         await expect(handler?.({ projectId: 1 })).rejects.toThrow(
           'Authentication required. Please use vikunja_auth.connect first.',
@@ -107,9 +107,9 @@ describe('Export Tool', () => {
         mockServer.tool.mockClear();
         registerExportTool(mockServer, mockAuthManagerApiToken);
 
-        const handler = mockServer.tool.mock.calls.find(
-          (call) => call[0] === 'vikunja_export_project',
-        )?.at(-1);
+        const handler = mockServer.tool.mock.calls
+          .find((call) => call[0] === 'vikunja_export_project')
+          ?.at(-1);
 
         await expect(handler?.({ projectId: 1 })).rejects.toThrow(
           'Export operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',
@@ -143,9 +143,9 @@ describe('Export Tool', () => {
         fetchOkOnce(mockProject);
         fetchOkOnce([]);
 
-        const handler = mockServer.tool.mock.calls.find(
-          (call) => call[0] === 'vikunja_export_project',
-        )?.at(-1);
+        const handler = mockServer.tool.mock.calls
+          .find((call) => call[0] === 'vikunja_export_project')
+          ?.at(-1);
 
         const result = await handler?.({ projectId: 1, includeChildren: false });
 
@@ -211,9 +211,9 @@ describe('Export Tool', () => {
         .mockResolvedValueOnce(mockLabels[0])
         .mockResolvedValueOnce(mockLabels[1]);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       const result = await handler?.({ projectId: 1, includeChildren: false });
 
@@ -273,9 +273,9 @@ describe('Export Tool', () => {
       fetchOkOnce(mockChildProject);
       fetchOkOnce([]);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       const result = await handler?.({ projectId: 1, includeChildren: true });
 
@@ -320,9 +320,9 @@ describe('Export Tool', () => {
       fetchOkOnce([]);
       fetchOkOnce([mockProject]);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       await expect(handler?.({ projectId: 1, includeChildren: true })).rejects.toThrow(
         'Circular reference detected in project hierarchy',
@@ -330,9 +330,9 @@ describe('Export Tool', () => {
     });
 
     it('should validate project ID', async () => {
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       await expect(handler?.({ projectId: 0 })).rejects.toThrow(
         'projectId must be a positive integer',
@@ -353,9 +353,9 @@ describe('Export Tool', () => {
       // `getProject.mockResolvedValue(null)` scenario.
       fetchOkOnce(null);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       await expect(handler?.({ projectId: 999 })).rejects.toThrow('Project with ID 999 not found');
     });
@@ -390,9 +390,9 @@ describe('Export Tool', () => {
       fetchOkOnce(mockTasks);
       jest.mocked(mockClient.labels.getLabel).mockRejectedValue(new Error('Label not found'));
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       const result = await handler?.({ projectId: 1 });
 
@@ -431,9 +431,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -474,9 +474,9 @@ describe('Export Tool', () => {
         statusText: 'Unauthorized',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'wrong-password' })).rejects.toThrow('Invalid password');
     });
@@ -488,9 +488,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -505,9 +505,9 @@ describe('Export Tool', () => {
         apiToken: null,
       });
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'No authentication token available',
@@ -541,9 +541,9 @@ describe('Export Tool', () => {
         statusText: 'Bad Gateway',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'HTTP 502 Bad Gateway',
@@ -555,9 +555,9 @@ describe('Export Tool', () => {
       // policy, so every retry attempt must see the same rejection.
       jest.mocked(global.fetch).mockRejectedValue(new Error('Request timeout'));
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow('Request timeout');
     });
@@ -584,9 +584,9 @@ describe('Export Tool', () => {
         apiToken: null,
       });
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'No authentication token available',
@@ -601,9 +601,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -645,9 +645,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -664,9 +664,9 @@ describe('Export Tool', () => {
         statusText: 'Not Found',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow('Export not ready');
     });
@@ -681,9 +681,9 @@ describe('Export Tool', () => {
         statusText: 'Server Error',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'HTTP 500 Server Error',
@@ -695,9 +695,9 @@ describe('Export Tool', () => {
       // policy, so every retry attempt must see the same rejection.
       jest.mocked(global.fetch).mockRejectedValue(new Error('Network request failed'));
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'Network request failed',
@@ -729,9 +729,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       const result = await handler?.({});
 
@@ -770,9 +770,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       const result = await handler?.({});
 
@@ -787,9 +787,9 @@ describe('Export Tool', () => {
         apiToken: null,
       });
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       await expect(handler?.({})).rejects.toThrow('No authentication token available');
       expect(global.fetch).not.toHaveBeenCalled();
@@ -803,9 +803,9 @@ describe('Export Tool', () => {
         statusText: 'Not Found',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       await expect(handler?.({})).rejects.toThrow('Not found');
     });
@@ -820,9 +820,9 @@ describe('Export Tool', () => {
         statusText: 'Server Error',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       await expect(handler?.({})).rejects.toThrow('HTTP 500 Server Error');
     });
@@ -832,9 +832,9 @@ describe('Export Tool', () => {
       // policy, so every retry attempt must see the same rejection.
       jest.mocked(global.fetch).mockRejectedValue(new Error('Network request failed'));
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       await expect(handler?.({})).rejects.toThrow('Network request failed');
     });
@@ -858,7 +858,9 @@ describe('Export Tool', () => {
       ConfigurationManager.getInstance({ sources: { readOnly: true } });
 
       expect(
-        isReadOnlyRejection(await callAndCatch(getHandler('vikunja_export_project'), { projectId: 1 })),
+        isReadOnlyRejection(
+          await callAndCatch(getHandler('vikunja_export_project'), { projectId: 1 }),
+        ),
       ).toBe(false);
     });
 

@@ -52,26 +52,20 @@ describe('setTaskPosition', () => {
   describe('validation', () => {
     it('throws a VALIDATION_ERROR when the task id is missing', async () => {
       await expect(setTaskPosition({ position: 100 }, authManager)).rejects.toThrow(
-        new MCPError(
-          ErrorCode.VALIDATION_ERROR,
-          'Task id is required for set-position operation',
-        ),
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'Task id is required for set-position operation'),
       );
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('throws a VALIDATION_ERROR when the task id is zero (falsy)', async () => {
-      await expect(
-        setTaskPosition({ id: 0, position: 100 }, authManager),
-      ).rejects.toThrow('Task id is required for set-position operation');
+      await expect(setTaskPosition({ id: 0, position: 100 }, authManager)).rejects.toThrow(
+        'Task id is required for set-position operation',
+      );
     });
 
     it('throws a VALIDATION_ERROR when position is undefined', async () => {
       await expect(setTaskPosition({ id: 1 }, authManager)).rejects.toThrow(
-        new MCPError(
-          ErrorCode.VALIDATION_ERROR,
-          'position is required for set-position operation',
-        ),
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'position is required for set-position operation'),
       );
       expect(mockFetch).not.toHaveBeenCalled();
     });
@@ -87,18 +81,15 @@ describe('setTaskPosition', () => {
         .mockResolvedValueOnce(mockResponse({ text: projectViews }))
         .mockResolvedValueOnce(mockResponse({ text: '' }));
 
-      const result = await setTaskPosition(
-        { id: 1, position: 0, projectId: 5 },
-        authManager,
-      );
+      const result = await setTaskPosition({ id: 1, position: 0, projectId: 5 }, authManager);
 
       expect(result.content[0].text).toContain('Task 1 repositioned to 0');
     });
 
     it('throws when the task id is not a positive integer', async () => {
-      await expect(
-        setTaskPosition({ id: -2, position: 100 }, authManager),
-      ).rejects.toThrow('id must be a positive integer');
+      await expect(setTaskPosition({ id: -2, position: 100 }, authManager)).rejects.toThrow(
+        'id must be a positive integer',
+      );
     });
 
     it('throws when an explicit projectViewId is invalid', async () => {
@@ -147,21 +138,14 @@ describe('setTaskPosition', () => {
 
     it('resolves the Kanban view when viewKind is explicitly set to kanban', async () => {
       mockFetch
-        .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ id: 1, project_id: 5 }) }),
-        )
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, project_id: 5 }) }))
         .mockResolvedValueOnce(mockResponse({ text: projectViews }))
         .mockResolvedValueOnce(mockResponse({ text: '' }));
 
-      await setTaskPosition(
-        { id: 1, position: 5, viewKind: 'kanban' },
-        authManager,
-      );
+      await setTaskPosition({ id: 1, position: 5, viewKind: 'kanban' }, authManager);
 
       const [, postInit] = mockFetch.mock.calls[2] as [string, RequestInit];
-      expect(postInit.body).toBe(
-        JSON.stringify({ task_id: 1, project_view_id: 11, position: 5 }),
-      );
+      expect(postInit.body).toBe(JSON.stringify({ task_id: 1, project_view_id: 11, position: 5 }));
     });
 
     it('does not fetch the task when projectId is supplied explicitly', async () => {
@@ -179,9 +163,7 @@ describe('setTaskPosition', () => {
 
     it('does not resolve the view when projectViewId is supplied explicitly', async () => {
       mockFetch
-        .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ id: 1, project_id: 8 }) }),
-        )
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, project_id: 8 }) }))
         .mockResolvedValueOnce(mockResponse({ text: '' }));
 
       await setTaskPosition({ id: 1, position: 5, projectViewId: 22 }, authManager);
@@ -192,9 +174,7 @@ describe('setTaskPosition', () => {
       expect(urls[1]).toBe('https://vikunja.test/api/v1/tasks/1/position');
 
       const [, postInit] = mockFetch.mock.calls[1] as [string, RequestInit];
-      expect(postInit.body).toBe(
-        JSON.stringify({ task_id: 1, project_view_id: 22, position: 5 }),
-      );
+      expect(postInit.body).toBe(JSON.stringify({ task_id: 1, project_view_id: 22, position: 5 }));
     });
 
     it('issues only the position POST when both projectId and projectViewId are supplied', async () => {
@@ -214,13 +194,8 @@ describe('setTaskPosition', () => {
     it('throws NOT_FOUND when the task lookup returns no body', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ text: '' }));
 
-      await expect(
-        setTaskPosition({ id: 1, position: 5 }, authManager),
-      ).rejects.toThrow(
-        new MCPError(
-          ErrorCode.NOT_FOUND,
-          'Could not resolve the project of task 1',
-        ),
+      await expect(setTaskPosition({ id: 1, position: 5 }, authManager)).rejects.toThrow(
+        new MCPError(ErrorCode.NOT_FOUND, 'Could not resolve the project of task 1'),
       );
     });
 
@@ -240,20 +215,16 @@ describe('setTaskPosition', () => {
 
     it('throws NOT_FOUND when the project has no view of the requested kind', async () => {
       mockFetch
-        .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ id: 1, project_id: 5 }) }),
-        )
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, project_id: 5 }) }))
         .mockResolvedValueOnce(
           mockResponse({
-            text: JSON.stringify([
-              { id: 11, title: 'Kanban', project_id: 5, view_kind: 'kanban' },
-            ]),
+            text: JSON.stringify([{ id: 11, title: 'Kanban', project_id: 5, view_kind: 'kanban' }]),
           }),
         );
 
-      await expect(
-        setTaskPosition({ id: 1, position: 5 }, authManager),
-      ).rejects.toThrow('Project 5 has no list view');
+      await expect(setTaskPosition({ id: 1, position: 5 }, authManager)).rejects.toThrow(
+        'Project 5 has no list view',
+      );
     });
   });
 
@@ -269,19 +240,16 @@ describe('setTaskPosition', () => {
       );
 
       await expect(
-        setTaskPosition(
-          { id: 1, position: 5, projectId: 5, projectViewId: 10 },
-          authManager,
-        ),
+        setTaskPosition({ id: 1, position: 5, projectId: 5, projectViewId: 10 }, authManager),
       ).rejects.toThrow(MCPError);
     });
 
     it('propagates a network error raised while resolving the task', async () => {
       mockFetch.mockRejectedValue(new Error('network down'));
 
-      await expect(
-        setTaskPosition({ id: 1, position: 5 }, authManager),
-      ).rejects.toThrow('Vikunja REST request failed (GET /tasks/1): network down');
+      await expect(setTaskPosition({ id: 1, position: 5 }, authManager)).rejects.toThrow(
+        'Vikunja REST request failed (GET /tasks/1): network down',
+      );
     });
   });
 });

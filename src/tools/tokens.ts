@@ -76,7 +76,9 @@ export function registerTokensTool(
         .int()
         .positive()
         .optional()
-        .describe("Bot user id to create this token for; omitted defaults to the authenticated user"),
+        .describe(
+          'Bot user id to create this token for; omitted defaults to the authenticated user',
+        ),
 
       // delete
       tokenId: z.number().int().positive().optional(),
@@ -200,7 +202,10 @@ export function registerTokensTool(
           throw new MCPError(ErrorCode.API_ERROR, `Token operation failed: ${error.message}`);
         }
 
-        throw new MCPError(ErrorCode.INTERNAL_ERROR, 'An unexpected error occurred during token operation');
+        throw new MCPError(
+          ErrorCode.INTERNAL_ERROR,
+          'An unexpected error occurred during token operation',
+        );
       }
     },
   );

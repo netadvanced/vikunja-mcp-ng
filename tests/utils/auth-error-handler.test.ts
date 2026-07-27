@@ -14,7 +14,7 @@ describe('Auth Error Handler', () => {
       const tokenExpiredError = new Error('Token expired') as Error & { code: string };
       tokenExpiredError.code = 'TokenExpiredError';
       expect(isJWTExpiredError(tokenExpiredError)).toBe(true);
-      
+
       // Test structured error with name property
       const namedExpiredError = new Error('JWT expired') as Error & { name: string };
       namedExpiredError.name = 'TokenExpiredError';
@@ -64,16 +64,16 @@ describe('Auth Error Handler', () => {
       const error401 = new Error('Unauthorized') as Error & { status: number };
       error401.status = 401;
       expect(isAuthenticationError(error401)).toBe(true);
-      
+
       const error403 = new Error('Forbidden') as Error & { status: number };
       error403.status = 403;
       expect(isAuthenticationError(error403)).toBe(true);
-      
+
       // Test Axios-style errors with response.status
       const axiosError = new Error('Request failed') as Error & { response: { status: number } };
       axiosError.response = { status: 401 };
       expect(isAuthenticationError(axiosError)).toBe(true);
-      
+
       const axiosForbidden = new Error('Access denied') as Error & { response: { status: number } };
       axiosForbidden.response = { status: 403 };
       expect(isAuthenticationError(axiosForbidden)).toBe(true);
@@ -289,7 +289,7 @@ describe('Auth Error Handler', () => {
     });
 
     it('should NOT misclassify false positive errors', () => {
-      const falsePositiveError = new Error('cannot tokenize the author\'s 401k document');
+      const falsePositiveError = new Error("cannot tokenize the author's 401k document");
 
       expect(() => handleAuthError(falsePositiveError, 'parse-document')).toThrow(MCPError);
 
@@ -299,7 +299,9 @@ describe('Auth Error Handler', () => {
         expect(e).toBeInstanceOf(MCPError);
         expect((e as MCPError).code).toBe(ErrorCode.API_ERROR);
         // Should use default error message, not auth-specific message
-        expect((e as MCPError).message).toBe('parse-document failed: cannot tokenize the author\'s 401k document');
+        expect((e as MCPError).message).toBe(
+          "parse-document failed: cannot tokenize the author's 401k document",
+        );
         expect((e as MCPError).message).not.toContain('Authentication error');
         expect((e as MCPError).message).not.toContain('JWT token');
       }
@@ -316,10 +318,10 @@ describe('Auth Error Handler', () => {
         'unauthorized autobiography published',
         'token ring network topology',
         'authentication-aware but not authentication error',
-        'HTTP 401 appears in log message'
+        'HTTP 401 appears in log message',
       ];
 
-      testCases.forEach(message => {
+      testCases.forEach((message) => {
         expect(isAuthenticationError(new Error(message))).toBe(false);
         expect(isJWTExpiredError(new Error(message))).toBe(false);
       });
@@ -335,10 +337,10 @@ describe('Auth Error Handler', () => {
         'token invalid',
         'access denied',
         '401 Unauthorized',
-        'Error: 403'
+        'Error: 403',
       ];
 
-      authErrors.forEach(message => {
+      authErrors.forEach((message) => {
         expect(isAuthenticationError(new Error(message))).toBe(true);
       });
 
@@ -348,10 +350,10 @@ describe('Auth Error Handler', () => {
         'jwt expired',
         'exp claim failed',
         'expired token',
-        'token has expired'
+        'token has expired',
       ];
 
-      jwtErrors.forEach(message => {
+      jwtErrors.forEach((message) => {
         expect(isJWTExpiredError(new Error(message))).toBe(true);
       });
     });
@@ -360,11 +362,11 @@ describe('Auth Error Handler', () => {
       // Test case sensitivity
       expect(isAuthenticationError(new Error('UNAUTHORIZED'))).toBe(true);
       expect(isAuthenticationError(new Error('Authentication Failed'))).toBe(true);
-      
+
       // Test with extra whitespace
       expect(isAuthenticationError(new Error('  unauthorized  '))).toBe(true);
       expect(isJWTExpiredError(new Error('  token expired  '))).toBe(true);
-      
+
       // Test with punctuation
       expect(isAuthenticationError(new Error('unauthorized!'))).toBe(true);
       expect(isAuthenticationError(new Error('forbidden.'))).toBe(true);

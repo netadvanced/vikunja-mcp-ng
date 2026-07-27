@@ -4,11 +4,11 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import { 
+import {
   ServerSideFilteringStrategy,
   ClientSideFilteringStrategy,
   HybridFilteringStrategy,
-  FilteringContext
+  FilteringContext,
 } from '../../../src/utils/filtering';
 
 describe('Filtering Strategy Pattern Exports', () => {

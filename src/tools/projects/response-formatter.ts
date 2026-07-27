@@ -33,7 +33,7 @@ export function createProjectResponse(
   _metadata: Partial<ResponseMetadata> = {},
   _verbosity?: string,
   _useOptimizedFormat?: boolean,
-  _useAorp?: boolean
+  _useAorp?: boolean,
 ): AorpFactoryResult {
   // An explicit per-call verbosity always takes precedence over the
   // VIKUNJA_RESPONSE_VERBOSITY environment default.
@@ -58,7 +58,7 @@ export function createProjectResponse(
     data: responseData,
     metadata: {
       timestamp: new Date().toISOString(),
-    }
+    },
   };
 
   return {
@@ -73,19 +73,19 @@ export function createProjectResponse(
         verbosity: selectedVerbosity,
         verbosityLevel: 'simple' as AorpVerbosityLevel,
         complexityFactors: {
-        dataSize: JSON.stringify(responseData).length >= 1024,
-        hasWarnings: false,
-        hasErrors: false,
-        isBulkOperation: false,
-        isPartialSuccess: false,
-        custom: {}
-      }
+          dataSize: JSON.stringify(responseData).length >= 1024,
+          hasWarnings: false,
+          hasErrors: false,
+          isBulkOperation: false,
+          isPartialSuccess: false,
+          custom: {},
+        },
       },
       metrics: {
         aorpProcessingTime: 0,
-        totalTime: 0
-      }
-    }
+        totalTime: 0,
+      },
+    },
   };
 }
 
@@ -101,14 +101,14 @@ export function createProjectSuccessResponse(
     useOptimizedFormat?: boolean;
     useAorp?: boolean;
     metadata?: Partial<ResponseMetadata>;
-  } = {}
+  } = {},
 ): AorpFactoryResult {
   const {
     message = `${operation} operation completed successfully`,
     verbosity,
     useOptimizedFormat,
     useAorp,
-    metadata = {}
+    metadata = {},
   } = options;
 
   return createProjectResponse(
@@ -118,7 +118,7 @@ export function createProjectSuccessResponse(
     metadata,
     verbosity,
     useOptimizedFormat,
-    useAorp
+    useAorp,
   );
 }
 
@@ -139,7 +139,7 @@ export function createProjectListResponse(
     verbosity?: string;
     useOptimizedFormat?: boolean;
     useAorp?: boolean;
-  } = {}
+  } = {},
 ): AorpFactoryResult {
   const hasMore = perPage > 0 && projects.length >= perPage;
   const metadata: Partial<ResponseMetadata> = {
@@ -155,15 +155,11 @@ export function createProjectListResponse(
   const projectWord = projects.length === 1 ? 'project' : 'projects';
   const message = `Retrieved ${projects.length} ${projectWord}`;
 
-  return createProjectSuccessResponse(
-    'list_projects',
-    projects,
-    {
-      message,
-      ...options,
-      metadata
-    }
-  );
+  return createProjectSuccessResponse('list_projects', projects, {
+    message,
+    ...options,
+    metadata,
+  });
 }
 
 /**
@@ -177,7 +173,7 @@ export function createProjectTreeResponse(
     verbosity?: string;
     useOptimizedFormat?: boolean;
     useAorp?: boolean;
-  } = {}
+  } = {},
 ): AorpFactoryResult {
   const metadata: Partial<ResponseMetadata> = {
     hierarchy: {
@@ -195,8 +191,8 @@ export function createProjectTreeResponse(
     {
       message: `Retrieved project tree with ${totalNodes} nodes at depth ${depth}`,
       ...options,
-      metadata
-    }
+      metadata,
+    },
   );
 }
 
@@ -209,7 +205,7 @@ export function createBreadcrumbResponse(
     verbosity?: string;
     useOptimizedFormat?: boolean;
     useAorp?: boolean;
-  } = {}
+  } = {},
 ): AorpFactoryResult {
   const metadata: Partial<ResponseMetadata> = {
     navigation: {
@@ -226,7 +222,7 @@ export function createBreadcrumbResponse(
     {
       message: `Retrieved breadcrumb path with ${breadcrumb.length} items`,
       ...options,
-      metadata
-    }
+      metadata,
+    },
   );
 }

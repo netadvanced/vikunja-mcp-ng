@@ -17,9 +17,17 @@ describe('renderScenario', () => {
 
     const rendered = renderScenario(scenario, 'battle-abc123-fixture-');
 
-    expect(rendered.prompt).toBe('Create a project called "battle-abc123-fixture-Demo" with a task "battle-abc123-fixture-task-1".');
-    expect(rendered.checks[0]).toMatchObject({ type: 'project-exists', titleContains: 'battle-abc123-fixture-Demo' });
-    expect(rendered.checks[1]).toMatchObject({ projectTitleContains: 'battle-abc123-fixture-Demo', min: 1 });
+    expect(rendered.prompt).toBe(
+      'Create a project called "battle-abc123-fixture-Demo" with a task "battle-abc123-fixture-task-1".',
+    );
+    expect(rendered.checks[0]).toMatchObject({
+      type: 'project-exists',
+      titleContains: 'battle-abc123-fixture-Demo',
+    });
+    expect(rendered.checks[1]).toMatchObject({
+      projectTitleContains: 'battle-abc123-fixture-Demo',
+      min: 1,
+    });
   });
 
   it('leaves non-string check fields (numbers, enums) untouched', () => {
@@ -28,7 +36,16 @@ describe('renderScenario', () => {
       title: 'Fixture 2',
       promptTemplate: '{{prefix}} whatever',
       optimalCallCount: 1,
-      verify: [{ type: 'tasks-field-match-count', projectTitleContains: '{{prefix}}P', field: 'priority', op: 'gte', value: 4, min: 3 }],
+      verify: [
+        {
+          type: 'tasks-field-match-count',
+          projectTitleContains: '{{prefix}}P',
+          field: 'priority',
+          op: 'gte',
+          value: 4,
+          min: 3,
+        },
+      ],
     });
 
     const rendered = renderScenario(scenario, 'battle-xyz-fixture2-');
@@ -92,20 +109,23 @@ describe('shipped scenario library (scripts/battle/scenarios/*.json)', () => {
     expect(singleTaskSmoke?.optimalCallCount).toBeLessThanOrEqual(3);
   });
 
-  it.each(loadAllScenarios(SCENARIOS_DIR).map((s) => [s.id, s] as const))('%s renders and every check/setup action substitutes cleanly', (_id, scenario) => {
-    const rendered = renderScenario(scenario, 'battle-testrun-x-');
-    expect(rendered.prompt).not.toContain('{{prefix}}');
-    for (const check of rendered.checks) {
-      for (const value of Object.values(check)) {
-        if (typeof value === 'string') expect(value).not.toContain('{{prefix}}');
+  it.each(loadAllScenarios(SCENARIOS_DIR).map((s) => [s.id, s] as const))(
+    '%s renders and every check/setup action substitutes cleanly',
+    (_id, scenario) => {
+      const rendered = renderScenario(scenario, 'battle-testrun-x-');
+      expect(rendered.prompt).not.toContain('{{prefix}}');
+      for (const check of rendered.checks) {
+        for (const value of Object.values(check)) {
+          if (typeof value === 'string') expect(value).not.toContain('{{prefix}}');
+        }
       }
-    }
-    for (const action of rendered.setup) {
-      for (const value of Object.values(action)) {
-        if (typeof value === 'string') expect(value).not.toContain('{{prefix}}');
+      for (const action of rendered.setup) {
+        for (const value of Object.values(action)) {
+          if (typeof value === 'string') expect(value).not.toContain('{{prefix}}');
+        }
       }
-    }
-  });
+    },
+  );
 
   it('at least one shipped scenario seeds data via `setup` (evidence-gap coverage for find-then-apply flows)', () => {
     expect(scenarios.some((s) => (s.setup ?? []).length > 0)).toBe(true);

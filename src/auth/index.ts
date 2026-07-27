@@ -4,4 +4,9 @@
  */
 
 export { AuthManager } from './AuthManager';
-export { Permission, PermissionManager, TOOL_PERMISSIONS, type PermissionCheckResult } from './permissions';
+export {
+  Permission,
+  PermissionManager,
+  TOOL_PERMISSIONS,
+  type PermissionCheckResult,
+} from './permissions';

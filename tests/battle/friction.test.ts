@@ -44,14 +44,46 @@ describe('computeFriction', () => {
     const lines: unknown[] = [
       {
         type: 'assistant',
-        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'mcp__vikunja-battle__vikunja_tasks', input: { subcommand: 'create', title: 't' } }] },
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'a',
+              name: 'mcp__vikunja-battle__vikunja_tasks',
+              input: { subcommand: 'create', title: 't' },
+            },
+          ],
+        },
       },
-      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'HTTP 500', is_error: true }] } },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'a', content: 'HTTP 500', is_error: true }],
+        },
+      },
       {
         type: 'assistant',
-        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'b', name: 'mcp__vikunja-battle__vikunja_tasks', input: { subcommand: 'create', title: 't' } }] },
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'b',
+              name: 'mcp__vikunja-battle__vikunja_tasks',
+              input: { subcommand: 'create', title: 't' },
+            },
+          ],
+        },
       },
-      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'b', content: 'ok', is_error: false }] } },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'b', content: 'ok', is_error: false }],
+        },
+      },
       { type: 'result', subtype: 'success', is_error: false, result: 'done' },
     ];
     const transcript = parseTranscriptText(lines.map((l) => JSON.stringify(l)).join('\n'));
@@ -77,7 +109,9 @@ describe('computeFriction', () => {
   it('surfaces transcript parser warnings as a friction note', () => {
     const transcript = parseTranscriptText(loadFixture('malformed-and-no-result.jsonl'));
     const friction = computeFriction(baseScenario, transcript, 'vikunja-battle');
-    expect(friction.frictionNotes.some((n) => n.startsWith('transcript parser warnings:'))).toBe(true);
+    expect(friction.frictionNotes.some((n) => n.startsWith('transcript parser warnings:'))).toBe(
+      true,
+    );
   });
 
   it('counts ToolSearch calls separately -- not as wrong-tool attempts, not as vikunja tool calls', () => {
@@ -96,7 +130,12 @@ describe('computeFriction', () => {
       numTurns: 1,
       durationMs: 100,
       totalCostUsd: 0.02,
-      usage: { inputTokens: 1, outputTokens: 2, cacheCreationInputTokens: 3, cacheReadInputTokens: 4 },
+      usage: {
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheCreationInputTokens: 3,
+        cacheReadInputTokens: 4,
+      },
       finalResultText: 'ok',
       resultIsError: false,
       mcpServers: [],

@@ -7,7 +7,10 @@ import { MCPError, ErrorCode } from '../types';
 import { parseInputData } from '../parsers/InputParserFactory';
 import { EntityResolver } from '../services/EntityResolver';
 import { TaskCreationService } from '../services/TaskCreationService';
-import { BatchImportResponseFormatter, type ImportResult } from '../formatters/BatchImportResponseFormatter';
+import {
+  BatchImportResponseFormatter,
+  type ImportResult,
+} from '../formatters/BatchImportResponseFormatter';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 const MAX_BATCH_SIZE = 100;
@@ -17,7 +20,11 @@ const MAX_BATCH_SIZE = 100;
  * Main tool registration and orchestration layer for batch task import
  * =================================================================== */
 
-export function registerBatchImportTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerBatchImportTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_batch_import',
     withReadOnlyNote(
@@ -61,7 +68,7 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
           format: args.format,
           data: args.data,
           ...(args.skipErrors !== undefined && { skipErrors: args.skipErrors }),
-        } as { format: 'csv' | 'json'; data: string; skipErrors?: boolean };
+        };
 
         const tasks = parseInputData(parseOptions);
 
@@ -80,10 +87,12 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
         // Handle dry run
         if (args.dryRun) {
           return {
-            content: [{
-              type: 'text',
-              text: `Validation successful. ${tasks.length} tasks ready to import.`,
-            }],
+            content: [
+              {
+                type: 'text',
+                text: `Validation successful. ${tasks.length} tasks ready to import.`,
+              },
+            ],
           };
         }
 
@@ -97,9 +106,7 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
         // unique username actually referenced by this batch's assignees and
         // search for each one individually.
         const assigneeUsernames = Array.from(
-          new Set(
-            tasks.flatMap((task) => task.assignees ?? []),
-          ),
+          new Set(tasks.flatMap((task) => task.assignees ?? [])),
         );
         const entityResult = await entityResolver.resolveEntities(authManager, assigneeUsernames);
         const { userFetchFailedDueToAuth } = entityResult;
@@ -122,7 +129,7 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
               args.projectId,
               authManager,
               entityResult,
-              args.skipErrors === true
+              args.skipErrors === true,
             );
 
             if (creationResult.success) {
@@ -168,13 +175,19 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
 
         // Format and return response
         const hasAssignees = tasks.some((t) => t.assignees && t.assignees.length > 0);
-        const responseText = responseFormatter.formatResult(result, userFetchFailedDueToAuth, hasAssignees);
+        const responseText = responseFormatter.formatResult(
+          result,
+          userFetchFailedDueToAuth,
+          hasAssignees,
+        );
 
         return {
-          content: [{
-            type: 'text',
-            text: responseText,
-          }],
+          content: [
+            {
+              type: 'text',
+              text: responseText,
+            },
+          ],
         };
       } catch (error) {
         if (error instanceof MCPError) {
@@ -189,10 +202,12 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
         });
 
         return {
-          content: [{
-            type: 'text',
-            text: `Failed to import tasks: ${error instanceof Error ? error.message : String(error)}`,
-          }],
+          content: [
+            {
+              type: 'text',
+              text: `Failed to import tasks: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
         };
       }
     },

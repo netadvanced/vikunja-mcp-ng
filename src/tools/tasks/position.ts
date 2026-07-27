@@ -62,7 +62,10 @@ export async function setTaskPosition(
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   if (!args.id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Task id is required for set-position operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'Task id is required for set-position operation',
+    );
   }
   if (args.position === undefined || args.position === null) {
     throw new MCPError(
@@ -83,10 +86,7 @@ export async function setTaskPosition(
       `/tasks/${args.id}`,
     );
     if (!task || typeof task.project_id !== 'number') {
-      throw new MCPError(
-        ErrorCode.NOT_FOUND,
-        `Could not resolve the project of task ${args.id}`,
-      );
+      throw new MCPError(ErrorCode.NOT_FOUND, `Could not resolve the project of task ${args.id}`);
     }
     projectId = task.project_id;
   }
@@ -101,12 +101,11 @@ export async function setTaskPosition(
   // Update the position. Vikunja's endpoint takes the full TaskPosition
   // model; task_id is also part of the URL but is sent in the body too, as
   // the API model documents it as a body field.
-  await vikunjaRestRequest(
-    authManager,
-    'POST',
-    `/tasks/${args.id}/position`,
-    { task_id: args.id, project_view_id: projectViewId, position: args.position },
-  );
+  await vikunjaRestRequest(authManager, 'POST', `/tasks/${args.id}/position`, {
+    task_id: args.id,
+    project_view_id: projectViewId,
+    position: args.position,
+  });
 
   const response = createStandardResponse(
     'set-task-position',

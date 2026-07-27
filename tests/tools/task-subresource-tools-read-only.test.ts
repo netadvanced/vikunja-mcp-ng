@@ -18,7 +18,9 @@ import type { AuthManager } from '../../src/auth/AuthManager';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 jest.mock('../../src/client', () => ({
-  getAuthManagerFromContext: jest.fn().mockRejectedValue(new Error('no client context in this test')),
+  getAuthManagerFromContext: jest
+    .fn()
+    .mockRejectedValue(new Error('no client context in this test')),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));

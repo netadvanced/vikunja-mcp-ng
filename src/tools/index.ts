@@ -90,7 +90,7 @@ function resolveModulesConfig(): ModulesConfig {
     logger.error(
       'Failed to load module gating configuration; falling back to defaults ' +
         '(ordinary modules ON, dangerous modules OFF):',
-      error
+      error,
     );
     return ModulesConfigSchema.parse({});
   }
@@ -110,7 +110,7 @@ function resolveModulesConfig(): ModulesConfig {
 export function registerTools(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   // Register tools with conditional availability based on dependencies, module
   // gating configuration, and authentication.
@@ -147,7 +147,12 @@ export function registerTools(
       // tool; the resolved flag is passed down so registerProjectsTool
       // builds its subcommand enum accordingly. See that function's doc
       // comment and src/config/types.ts's `backgrounds` key.
-      registerProjectsTool(server, authManager, clientFactory, isModuleEnabled(modules.backgrounds));
+      registerProjectsTool(
+        server,
+        authManager,
+        clientFactory,
+        isModuleEnabled(modules.backgrounds),
+      );
     }
 
     if (isModuleEnabled(modules.labels)) {
@@ -245,4 +250,3 @@ export function registerTools(
     }
   }
 }
-

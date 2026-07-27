@@ -90,7 +90,12 @@ describe('vikunja_projects backgrounds module gating (G7)', () => {
 
   it('excludes the background subcommands when explicitly overridden to false', () => {
     const mockServer = makeMockServer();
-    registerProjectsTool(mockServer, makeMockAuthManager() as unknown as AuthManager, undefined, false);
+    registerProjectsTool(
+      mockServer,
+      makeMockAuthManager() as unknown as AuthManager,
+      undefined,
+      false,
+    );
 
     const values = subcommandValuesFrom(mockServer);
     for (const sub of BACKGROUND_SUBCOMMANDS) {
@@ -100,7 +105,12 @@ describe('vikunja_projects backgrounds module gating (G7)', () => {
 
   it('includes the three background subcommands when explicitly overridden to true', () => {
     const mockServer = makeMockServer();
-    registerProjectsTool(mockServer, makeMockAuthManager() as unknown as AuthManager, undefined, true);
+    registerProjectsTool(
+      mockServer,
+      makeMockAuthManager() as unknown as AuthManager,
+      undefined,
+      true,
+    );
 
     const values = subcommandValuesFrom(mockServer);
     for (const sub of BACKGROUND_SUBCOMMANDS) {
@@ -110,11 +120,21 @@ describe('vikunja_projects backgrounds module gating (G7)', () => {
 
   it('mentions the opt-in backgrounds module in the tool description only when enabled', () => {
     const disabledServer = makeMockServer();
-    registerProjectsTool(disabledServer, makeMockAuthManager() as unknown as AuthManager, undefined, false);
+    registerProjectsTool(
+      disabledServer,
+      makeMockAuthManager() as unknown as AuthManager,
+      undefined,
+      false,
+    );
     expect(descriptionFrom(disabledServer)).not.toContain('backgrounds module');
 
     const enabledServer = makeMockServer();
-    registerProjectsTool(enabledServer, makeMockAuthManager() as unknown as AuthManager, undefined, true);
+    registerProjectsTool(
+      enabledServer,
+      makeMockAuthManager() as unknown as AuthManager,
+      undefined,
+      true,
+    );
     expect(descriptionFrom(enabledServer)).toContain('backgrounds module');
   });
 
@@ -141,7 +161,11 @@ describe('vikunja_projects backgrounds module gating (G7)', () => {
       statusText: 'OK',
       text: jest.fn(async () => JSON.stringify({ id: 5, title: 'Project 5' })),
     } as unknown as Response);
-    const setResult = await handler({ subcommand: 'set-unsplash-background', id: 5, unsplashImageId: 'p1' });
+    const setResult = await handler({
+      subcommand: 'set-unsplash-background',
+      id: 5,
+      unsplashImageId: 'p1',
+    });
     expect(setResult.content[0].text).toContain('background set to unsplash photo p1');
 
     mockFetch.mockResolvedValueOnce({
