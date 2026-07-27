@@ -461,10 +461,7 @@ export async function bulkCreateSubtasks(
   authManager: AuthManager,
 ): Promise<McpResponse> {
   if (!args.parentTaskId) {
-    throw new MCPError(
-      ErrorCode.VALIDATION_ERROR,
-      'parentTaskId is required to create subtasks',
-    );
+    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'parentTaskId is required to create subtasks');
   }
   validateId(args.parentTaskId, 'parentTaskId');
 
@@ -627,7 +624,10 @@ interface SubtaskSummary {
  * slice of `GET /tasks/{id}`'s `related_tasks` map, summarized to
  * id/title/done/assignees rather than the full related `Task` objects.
  */
-export async function listSubtasks(args: ListSubtasksArgs, authManager: AuthManager): Promise<McpResponse> {
+export async function listSubtasks(
+  args: ListSubtasksArgs,
+  authManager: AuthManager,
+): Promise<McpResponse> {
   if (!args.id) {
     throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Task ID is required');
   }

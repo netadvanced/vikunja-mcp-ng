@@ -33,13 +33,7 @@ function mockResponse(opts: {
   text?: string;
   textThrows?: boolean;
 }): Response {
-  const {
-    ok = true,
-    status = 200,
-    statusText = 'OK',
-    text = '',
-    textThrows = false,
-  } = opts;
+  const { ok = true, status = 200, statusText = 'OK', text = '', textThrows = false } = opts;
   return {
     ok,
     status,
@@ -84,12 +78,8 @@ describe('vikunja-rest helper', () => {
       // apiUrl had no /api/v1 prefix, so it must have been appended.
       expect(url).toBe('https://vikunja.test/api/v1/tasks/7');
       expect(init.method).toBe('GET');
-      expect((init.headers as Record<string, string>).Authorization).toBe(
-        'Bearer tk_test-token',
-      );
-      expect((init.headers as Record<string, string>)['Content-Type']).toBe(
-        'application/json',
-      );
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tk_test-token');
+      expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
       // No body when none is supplied.
       expect(init.body).toBeUndefined();
     });
@@ -168,9 +158,7 @@ describe('vikunja-rest helper', () => {
       ).rejects.toThrow(MCPError);
       await expect(
         vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, noRetry),
-      ).rejects.toThrow(
-        'Vikunja REST request failed (GET /tasks/1): connection refused',
-      );
+      ).rejects.toThrow('Vikunja REST request failed (GET /tasks/1): connection refused');
     });
 
     it('includes the error code API_ERROR on network failure', async () => {
@@ -188,9 +176,7 @@ describe('vikunja-rest helper', () => {
     it('stringifies a non-Error rejection value', async () => {
       mockFetch.mockRejectedValueOnce('plain string failure');
 
-      await expect(
-        vikunjaRestRequest(authManager, 'GET', '/tasks/1'),
-      ).rejects.toThrow(
+      await expect(vikunjaRestRequest(authManager, 'GET', '/tasks/1')).rejects.toThrow(
         'Vikunja REST request failed (GET /tasks/1): plain string failure',
       );
     });
@@ -205,9 +191,7 @@ describe('vikunja-rest helper', () => {
         }),
       );
 
-      await expect(
-        vikunjaRestRequest(authManager, 'GET', '/tasks/999'),
-      ).rejects.toThrow(
+      await expect(vikunjaRestRequest(authManager, 'GET', '/tasks/999')).rejects.toThrow(
         'Vikunja REST request failed (GET /tasks/999): HTTP 404 Not Found — task does not exist',
       );
     });
@@ -320,9 +304,7 @@ describe('vikunja-rest helper', () => {
         vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, {
           retry: { maxRetries: 0 },
         }),
-      ).rejects.toThrow(
-        'Vikunja REST request failed (GET /tasks/1): HTTP 502 Bad Gateway',
-      );
+      ).rejects.toThrow('Vikunja REST request failed (GET /tasks/1): HTTP 502 Bad Gateway');
     });
   });
 
@@ -347,10 +329,7 @@ describe('vikunja-rest helper', () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify(views) }));
 
       await expect(resolveKanbanViewId(authManager, 4)).rejects.toThrow(
-        new MCPError(
-          ErrorCode.NOT_FOUND,
-          'Project 4 has no Kanban view, so it has no buckets',
-        ),
+        new MCPError(ErrorCode.NOT_FOUND, 'Project 4 has no Kanban view, so it has no buckets'),
       );
     });
 
@@ -382,9 +361,7 @@ describe('vikunja-rest helper', () => {
   describe('deriveRestBreakerName', () => {
     it('groups by the first two non-numeric path segments', () => {
       expect(deriveRestBreakerName('/webhooks/events')).toBe('vikunja-rest-webhooks-events');
-      expect(deriveRestBreakerName('/projects/4/webhooks')).toBe(
-        'vikunja-rest-projects-webhooks',
-      );
+      expect(deriveRestBreakerName('/projects/4/webhooks')).toBe('vikunja-rest-projects-webhooks');
       expect(deriveRestBreakerName('/tasks/7')).toBe('vikunja-rest-tasks');
       expect(deriveRestBreakerName('/teams/3/members/alice')).toBe('vikunja-rest-teams-members');
     });
@@ -427,9 +404,7 @@ describe('vikunja-rest helper', () => {
     it('does not retry a network error with no recognizable transient signal', async () => {
       mockFetch.mockRejectedValueOnce(new Error('boom'));
 
-      await expect(
-        vikunjaRestRequest(authManager, 'GET', '/tasks/1'),
-      ).rejects.toThrow('boom');
+      await expect(vikunjaRestRequest(authManager, 'GET', '/tasks/1')).rejects.toThrow('boom');
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
@@ -473,9 +448,7 @@ describe('vikunja-rest helper', () => {
         mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: '' }),
       );
 
-      await expect(
-        vikunjaRestRequest(authManager, 'GET', '/tasks/1'),
-      ).rejects.toThrow('HTTP 404');
+      await expect(vikunjaRestRequest(authManager, 'GET', '/tasks/1')).rejects.toThrow('HTTP 404');
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
@@ -621,7 +594,12 @@ describe('vikunja-rest helper', () => {
       );
       const opts = {
         breakerName: 'test-breaker-500-still-trips',
-        retry: { maxRetries: 0, errorThresholdPercentage: 1, volumeThreshold: 1, resetTimeout: 60_000 },
+        retry: {
+          maxRetries: 0,
+          errorThresholdPercentage: 1,
+          volumeThreshold: 1,
+          resetTimeout: 60_000,
+        },
       };
 
       await expect(
@@ -643,7 +621,12 @@ describe('vikunja-rest helper', () => {
       );
       const opts = {
         breakerName: 'test-breaker-network-still-trips',
-        retry: { maxRetries: 0, errorThresholdPercentage: 1, volumeThreshold: 1, resetTimeout: 60_000 },
+        retry: {
+          maxRetries: 0,
+          errorThresholdPercentage: 1,
+          volumeThreshold: 1,
+          resetTimeout: 60_000,
+        },
       };
 
       await expect(
@@ -732,9 +715,7 @@ describe('vikunja-rest helper', () => {
 
       await expect(
         vikunjaRestMultipartRequest(authManager, 'PUT', '/tasks/1/attachments', makeForm()),
-      ).rejects.toThrow(
-        'Vikunja REST request failed (PUT /tasks/1/attachments): ECONNREFUSED',
-      );
+      ).rejects.toThrow('Vikunja REST request failed (PUT /tasks/1/attachments): ECONNREFUSED');
     });
   });
 });

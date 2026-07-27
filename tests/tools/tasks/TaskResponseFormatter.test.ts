@@ -68,7 +68,7 @@ describe('TaskResponseFormatter', () => {
         'Task retrieved',
         taskData,
         { timestamp: new Date().toISOString() },
-        'minimal'
+        'minimal',
       );
 
       expect(result.transformation.context.verbosity).toBe('minimal');
@@ -84,7 +84,7 @@ describe('TaskResponseFormatter', () => {
         'Tasks retrieved',
         { tasks: [] },
         { timestamp: new Date().toISOString() },
-        'complete'
+        'complete',
       );
 
       expect(result.transformation.context.verbosity).toBe('complete');
@@ -106,7 +106,9 @@ describe('TaskResponseFormatter', () => {
     it('defaults to standard verbosity when no env var is set', () => {
       jest.resetModules();
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { createTaskErrorResponse } = require('../../../src/tools/tasks/crud/TaskResponseFormatter');
+      const {
+        createTaskErrorResponse,
+      } = require('../../../src/tools/tasks/crud/TaskResponseFormatter');
 
       const result = createTaskErrorResponse('get-task', new Error('boom'));
 
@@ -117,7 +119,9 @@ describe('TaskResponseFormatter', () => {
       process.env[VERBOSITY_ENV_VAR] = 'complete';
       jest.resetModules();
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { createTaskErrorResponse } = require('../../../src/tools/tasks/crud/TaskResponseFormatter');
+      const {
+        createTaskErrorResponse,
+      } = require('../../../src/tools/tasks/crud/TaskResponseFormatter');
 
       const result = createTaskErrorResponse('get-task', new Error('boom'));
 
@@ -128,7 +132,9 @@ describe('TaskResponseFormatter', () => {
       process.env[VERBOSITY_ENV_VAR] = 'garbage';
       jest.resetModules();
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { createTaskErrorResponse } = require('../../../src/tools/tasks/crud/TaskResponseFormatter');
+      const {
+        createTaskErrorResponse,
+      } = require('../../../src/tools/tasks/crud/TaskResponseFormatter');
 
       const result = createTaskErrorResponse('get-task', new Error('boom'));
 

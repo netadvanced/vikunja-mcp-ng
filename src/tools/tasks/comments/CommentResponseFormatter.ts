@@ -91,16 +91,22 @@ export const commentResponseFormatter = {
   /**
    * Format MCP response wrapper
    */
-  formatMcpResponse(response: StandardTaskResponse): { content: Array<{ type: 'text'; text: string }> } {
+  formatMcpResponse(response: StandardTaskResponse): {
+    content: Array<{ type: 'text'; text: string }>;
+  } {
     // Handle metadata properly to avoid type issues
     const safeMetadata: ResponseMetadata = {
       timestamp: response.metadata?.timestamp || new Date().toISOString(),
       ...(response.metadata?.count !== undefined ? { count: response.metadata.count } : {}),
-      ...(response.metadata?.affectedFields ? { affectedFields: response.metadata.affectedFields } : {}),
+      ...(response.metadata?.affectedFields
+        ? { affectedFields: response.metadata.affectedFields }
+        : {}),
       // Convert previousState to proper Record<string, unknown> if it exists
-      ...(response.metadata?.previousState && typeof response.metadata.previousState === 'object' && response.metadata.previousState !== null
+      ...(response.metadata?.previousState &&
+      typeof response.metadata.previousState === 'object' &&
+      response.metadata.previousState !== null
         ? { previousState: response.metadata.previousState as Record<string, unknown> }
-        : {})
+        : {}),
     };
 
     const aorpResponse = createStandardResponse(
@@ -110,7 +116,7 @@ export const commentResponseFormatter = {
       // spec-optional); the formatter's `ResponseData` wants the local `Task`.
       // The formatter reads fields defensively, so narrow via the param type.
       response as unknown as Parameters<typeof createStandardResponse>[2],
-      safeMetadata
+      safeMetadata,
     );
 
     return {
@@ -121,5 +127,5 @@ export const commentResponseFormatter = {
         },
       ],
     };
-  }
+  },
 };

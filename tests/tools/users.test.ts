@@ -92,7 +92,9 @@ describe('Users Tool', () => {
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     // Register the tool
@@ -142,8 +144,8 @@ describe('Users Tool', () => {
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** get-current-user");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** get-current-user');
     });
   });
 
@@ -157,8 +159,8 @@ describe('Users Tool', () => {
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** get-current-user");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** get-current-user');
       expect(markdown).toContain('Current user retrieved successfully');
     });
 
@@ -206,8 +208,8 @@ describe('Users Tool', () => {
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** search-users");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** search-users');
       expect(markdown).toContain('Found 2 users');
     });
 
@@ -219,8 +221,8 @@ describe('Users Tool', () => {
       expect(vikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/users?s=test');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** search-users");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** search-users');
     });
 
     it('should accept pagination parameters without sending them (GET /users has no page/per_page)', async () => {
@@ -259,8 +261,8 @@ describe('Users Tool', () => {
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** get-user-settings");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** get-user-settings');
       expect(markdown).toContain('User settings retrieved successfully');
     });
 
@@ -314,8 +316,8 @@ describe('Users Tool', () => {
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** update-user-settings");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** update-user-settings');
       expect(markdown).toContain('User settings updated successfully');
     });
 
@@ -557,14 +559,20 @@ describe('Users Tool', () => {
       // Documents the exact accepted set (sourced from the Vikunja server's
       // own validation, not just the freeform-string OpenAPI field) that the
       // Zod schema enforces before this handler ever runs.
-      const validProviders = ['gravatar', 'upload', 'initials', 'marble', 'ldap', 'openid', 'default'];
+      const validProviders = [
+        'gravatar',
+        'upload',
+        'initials',
+        'marble',
+        'ldap',
+        'openid',
+        'default',
+      ];
       expect(validProviders).toHaveLength(7);
     });
 
     it('should require avatarProvider', async () => {
-      await expect(callTool('set-avatar')).rejects.toThrow(
-        'set-avatar requires avatarProvider',
-      );
+      await expect(callTool('set-avatar')).rejects.toThrow('set-avatar requires avatarProvider');
       expect(vikunjaRestRequest).not.toHaveBeenCalled();
     });
 
@@ -666,7 +674,9 @@ describe('Users Tool', () => {
     it('throws explanatory error when filePath does not exist', async () => {
       await expect(
         callTool('upload-avatar', { filePath: '/no/such/dir/xyz-avatar-test.bin' }),
-      ).rejects.toThrow(/^upload-avatar: cannot read filePath \/no\/such\/dir\/xyz-avatar-test\.bin:/);
+      ).rejects.toThrow(
+        /^upload-avatar: cannot read filePath \/no\/such\/dir\/xyz-avatar-test\.bin:/,
+      );
     });
 
     it('should handle API errors', async () => {
@@ -713,9 +723,13 @@ describe('Users Tool', () => {
       // "User Endpoint Authentication"), detected structurally in the
       // catch block (see src/tools/users.ts) rather than by message pattern.
       (vikunjaRestRequest as jest.Mock).mockRejectedValue(
-        new MCPError(ErrorCode.API_ERROR, 'Vikunja REST request failed (GET /user): HTTP 401 Unauthorized', {
-          statusCode: 401,
-        }),
+        new MCPError(
+          ErrorCode.API_ERROR,
+          'Vikunja REST request failed (GET /user): HTTP 401 Unauthorized',
+          {
+            statusCode: 401,
+          },
+        ),
       );
 
       await expect(callTool('current')).rejects.toThrow(
@@ -729,15 +743,19 @@ describe('Users Tool', () => {
       (vikunjaRestRequest as jest.Mock).mockRejectedValue(new Error('Token validation failed'));
 
       await expect(callTool('current')).rejects.toThrow(
-        'User operation error: Token validation failed'
+        'User operation error: Token validation failed',
       );
     });
 
     it('should handle auth errors for search operation', async () => {
       (vikunjaRestRequest as jest.Mock).mockRejectedValue(
-        new MCPError(ErrorCode.API_ERROR, 'Vikunja REST request failed (GET /users): HTTP 403 Forbidden', {
-          statusCode: 403,
-        }),
+        new MCPError(
+          ErrorCode.API_ERROR,
+          'Vikunja REST request failed (GET /users): HTTP 403 Forbidden',
+          {
+            statusCode: 403,
+          },
+        ),
       );
 
       await expect(callTool('search')).rejects.toThrow(
@@ -747,9 +765,13 @@ describe('Users Tool', () => {
 
     it('should handle auth errors for settings operation', async () => {
       (vikunjaRestRequest as jest.Mock).mockRejectedValue(
-        new MCPError(ErrorCode.API_ERROR, 'Vikunja REST request failed (GET /user): HTTP 401 Unauthorized', {
-          statusCode: 401,
-        }),
+        new MCPError(
+          ErrorCode.API_ERROR,
+          'Vikunja REST request failed (GET /user): HTTP 401 Unauthorized',
+          {
+            statusCode: 401,
+          },
+        ),
       );
 
       await expect(callTool('settings')).rejects.toThrow(

@@ -16,7 +16,7 @@ jest.mock('../../src/utils/logger', () => ({
     info: jest.fn(),
     warn: jest.fn(),
     error: jest.fn(),
-  }
+  },
 }));
 
 describe('Rate Limiting Integration', () => {
@@ -30,24 +30,27 @@ describe('Rate Limiting Integration', () => {
     });
 
     // Create middleware with very low limits for testing
-    middleware = new SimplifiedRateLimitMiddleware({
-      default: {
-        requestsPerMinute: 3,
-        requestsPerHour: 10,
-        maxRequestSize: 100,
-        maxResponseSize: 200,
-        executionTimeout: 500,
-        enabled: true,
+    middleware = new SimplifiedRateLimitMiddleware(
+      {
+        default: {
+          requestsPerMinute: 3,
+          requestsPerHour: 10,
+          maxRequestSize: 100,
+          maxResponseSize: 200,
+          executionTimeout: 500,
+          enabled: true,
+        },
+        bulk: {
+          requestsPerMinute: 1,
+          requestsPerHour: 5,
+          maxRequestSize: 500,
+          maxResponseSize: 1000,
+          executionTimeout: 1000,
+          enabled: true,
+        },
       },
-      bulk: {
-        requestsPerMinute: 1,
-        requestsPerHour: 5,
-        maxRequestSize: 500,
-        maxResponseSize: 1000,
-        executionTimeout: 1000,
-        enabled: true,
-      },
-    }, true); // Enable testing mode
+      true,
+    ); // Enable testing mode
 
     // Clear any existing session data
     middleware.clearSession();
@@ -63,7 +66,7 @@ describe('Rate Limiting Integration', () => {
           action: z.enum(['test']),
           data: z.string().optional(),
         },
-        applyRateLimiting('test_tool', mockHandler)
+        applyRateLimiting('test_tool', mockHandler),
       );
 
       // Tool should be registered (we can't easily test private properties)
@@ -86,7 +89,7 @@ describe('Rate Limiting Integration', () => {
         expect.objectContaining({
           code: ErrorCode.RATE_LIMIT_EXCEEDED,
           message: expect.stringContaining('requests per minute'),
-        })
+        }),
       );
 
       expect(mockHandler).toHaveBeenCalledTimes(3);
@@ -107,7 +110,7 @@ describe('Rate Limiting Integration', () => {
         expect.objectContaining({
           code: ErrorCode.REQUEST_TOO_LARGE,
           message: expect.stringContaining('exceeds limit'),
-        })
+        }),
       );
     });
 
@@ -115,7 +118,8 @@ describe('Rate Limiting Integration', () => {
       const smallResponse = { success: true, data: 'small' };
       const largeResponse = { success: true, data: 'x'.repeat(300) };
 
-      const mockHandler = jest.fn()
+      const mockHandler = jest
+        .fn()
         .mockResolvedValueOnce(smallResponse)
         .mockResolvedValueOnce(largeResponse);
 
@@ -130,14 +134,16 @@ describe('Rate Limiting Integration', () => {
         expect.objectContaining({
           code: ErrorCode.REQUEST_TOO_LARGE,
           message: expect.stringContaining('Response size'),
-        })
+        }),
       );
     });
 
     it('should enforce timeouts', async () => {
-      const slowHandler = jest.fn().mockImplementation(
-        () => new Promise(resolve => setTimeout(() => resolve({ success: true }), 1000))
-      );
+      const slowHandler = jest
+        .fn()
+        .mockImplementation(
+          () => new Promise((resolve) => setTimeout(() => resolve({ success: true }), 1000)),
+        );
 
       const wrappedHandler = middleware.withRateLimit('vikunja_auth', slowHandler);
 
@@ -145,30 +151,33 @@ describe('Rate Limiting Integration', () => {
         expect.objectContaining({
           code: ErrorCode.TIMEOUT_ERROR,
           message: expect.stringContaining('timeout after 500ms'),
-        })
+        }),
       );
     });
 
     it('should apply different limits for different tool categories', async () => {
       // Create a fresh middleware instance for this test
-      const freshMiddleware = new SimplifiedRateLimitMiddleware({
-        default: {
-          requestsPerMinute: 3,
-          requestsPerHour: 10,
-          maxRequestSize: 100,
-          maxResponseSize: 200,
-          executionTimeout: 500,
-          enabled: true,
+      const freshMiddleware = new SimplifiedRateLimitMiddleware(
+        {
+          default: {
+            requestsPerMinute: 3,
+            requestsPerHour: 10,
+            maxRequestSize: 100,
+            maxResponseSize: 200,
+            executionTimeout: 500,
+            enabled: true,
+          },
+          bulk: {
+            requestsPerMinute: 1,
+            requestsPerHour: 5,
+            maxRequestSize: 500,
+            maxResponseSize: 1000,
+            executionTimeout: 1000,
+            enabled: true,
+          },
         },
-        bulk: {
-          requestsPerMinute: 1,
-          requestsPerHour: 5,
-          maxRequestSize: 500,
-          maxResponseSize: 1000,
-          executionTimeout: 1000,
-          enabled: true,
-        },
-      }, true); // Enable testing mode
+        true,
+      ); // Enable testing mode
 
       const authHandler = jest.fn().mockResolvedValue({ auth: true });
       const bulkHandler = jest.fn().mockResolvedValue({ bulk: true });
@@ -178,11 +187,11 @@ describe('Rate Limiting Integration', () => {
 
       // Bulk tool should only allow 1 request per minute
       await wrappedBulkHandler({ action: 'test' });
-      
+
       await expect(wrappedBulkHandler({ action: 'test' })).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.RATE_LIMIT_EXCEEDED,
-        })
+        }),
       );
 
       // Auth tool should still allow requests
@@ -201,7 +210,7 @@ describe('Rate Limiting Integration', () => {
         expect.objectContaining({
           code: ErrorCode.AUTH_REQUIRED,
           message: 'Authentication required',
-        })
+        }),
       );
     });
 
@@ -231,7 +240,7 @@ describe('Rate Limiting Integration', () => {
       await expect(wrappedHandler({ action: 'test' })).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.RATE_LIMIT_EXCEEDED,
-        })
+        }),
       );
     });
   });
@@ -248,7 +257,7 @@ describe('Rate Limiting Integration', () => {
       // SECURITY: Sync status returns 0 to avoid dual source of truth vulnerability
       const status = middleware.getRateLimitStatus();
       expect(status.requestsLastMinute).toBe(0); // Security feature
-      expect(status.requestsLastHour).toBe(0);   // Security feature
+      expect(status.requestsLastHour).toBe(0); // Security feature
 
       // Test async version for accurate counts
       const asyncStatus = await middleware.getRateLimitStatusAsync();
@@ -295,7 +304,7 @@ describe('Rate Limiting Integration', () => {
       await expect(wrappedHandler({ action: 'test' })).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.RATE_LIMIT_EXCEEDED,
-        })
+        }),
       );
 
       // Clear session
@@ -309,16 +318,19 @@ describe('Rate Limiting Integration', () => {
 
   describe('Configuration', () => {
     it('should respect disabled rate limiting', async () => {
-      const disabledMiddleware = new SimplifiedRateLimitMiddleware({
-        default: {
-          requestsPerMinute: 1,
-          requestsPerHour: 1,
-          maxRequestSize: 10,
-          maxResponseSize: 10,
-          executionTimeout: 100,
-          enabled: false,
+      const disabledMiddleware = new SimplifiedRateLimitMiddleware(
+        {
+          default: {
+            requestsPerMinute: 1,
+            requestsPerHour: 1,
+            maxRequestSize: 10,
+            maxResponseSize: 10,
+            executionTimeout: 100,
+            enabled: false,
+          },
         },
-      }, true); // Enable testing mode
+        true,
+      ); // Enable testing mode
 
       const mockHandler = jest.fn().mockResolvedValue('x'.repeat(100));
       const wrappedHandler = disabledMiddleware.withRateLimit('vikunja_auth', mockHandler);
@@ -332,7 +344,7 @@ describe('Rate Limiting Integration', () => {
 
     it('should provide access to configuration', () => {
       const config = middleware.getConfig();
-      
+
       expect(config).toMatchObject({
         default: expect.objectContaining({
           requestsPerMinute: 3,

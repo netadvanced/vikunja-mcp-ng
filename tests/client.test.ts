@@ -52,7 +52,7 @@ describe('Async-Only Client Context Operations', () => {
       const instances = await Promise.all(promises);
 
       const firstInstance = instances[0];
-      expect(instances.every(instance => instance === firstInstance)).toBe(true);
+      expect(instances.every((instance) => instance === firstInstance)).toBe(true);
     });
 
     it('should create only one instance even with rapid concurrent calls', async () => {
@@ -62,7 +62,7 @@ describe('Async-Only Client Context Operations', () => {
       const instances = await Promise.all(promises);
 
       const firstInstance = instances[0];
-      expect(instances.every(instance => instance === firstInstance)).toBe(true);
+      expect(instances.every((instance) => instance === firstInstance)).toBe(true);
 
       const uniqueInstances = new Set(instances);
       expect(uniqueInstances.size).toBe(1);

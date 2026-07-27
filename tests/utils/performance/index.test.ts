@@ -67,7 +67,6 @@ describe('Performance Module Index', () => {
     });
   });
 
-  
   describe('PerformanceMonitor Exports', () => {
     it('should export PerformanceMonitor class', () => {
       expect(PerformanceMonitor).toBeDefined();
@@ -133,7 +132,7 @@ describe('Performance Module Index', () => {
 
     it('should have all required configuration keys', () => {
       const configs = ['HIGH_THROUGHPUT', 'RATE_LIMITED', 'DEFAULT'];
-      configs.forEach(configName => {
+      configs.forEach((configName) => {
         const config = BULK_OPERATION_CONFIGS[configName as keyof typeof BULK_OPERATION_CONFIGS];
         expect(config).toHaveProperty('batchOptions');
         expect(config).toHaveProperty('enableMonitoring');
@@ -142,13 +141,13 @@ describe('Performance Module Index', () => {
 
     it('should have valid batch options in all configurations', () => {
       const configs = ['HIGH_THROUGHPUT', 'RATE_LIMITED', 'DEFAULT'] as const;
-      configs.forEach(configName => {
+      configs.forEach((configName) => {
         const config = BULK_OPERATION_CONFIGS[configName];
         expect(config.batchOptions).toHaveProperty('maxConcurrency');
         expect(config.batchOptions).toHaveProperty('batchSize');
         expect(config.batchOptions).toHaveProperty('enableMetrics');
         expect(config.batchOptions).toHaveProperty('batchDelay');
-        
+
         // Validate reasonable values
         expect(config.batchOptions.maxConcurrency).toBeGreaterThan(0);
         expect(config.batchOptions.batchSize).toBeGreaterThan(0);
@@ -176,7 +175,7 @@ describe('Performance Module Index', () => {
     it('should support optional properties in OptimizedBulkConfig', () => {
       const minimalConfig: OptimizedBulkConfig = {};
       expect(minimalConfig).toBeDefined();
-      
+
       const partialConfig: OptimizedBulkConfig = {
         enableMonitoring: false,
       };

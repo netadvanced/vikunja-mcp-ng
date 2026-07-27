@@ -35,9 +35,13 @@ type VikunjaTask = components['schemas']['models.Task'];
  * Get session-scoped storage instance, hydrated from the templates
  * persistence file (if configured) on first touch for that session.
  */
-async function getSessionStorage(authManager: AuthManager): ReturnType<typeof storageManager.getStorage> {
+async function getSessionStorage(
+  authManager: AuthManager,
+): ReturnType<typeof storageManager.getStorage> {
   const session = authManager.getSession();
-  const sessionId = session.apiToken ? `${session.apiUrl}:${session.apiToken.substring(0, 8)}` : 'anonymous';
+  const sessionId = session.apiToken
+    ? `${session.apiUrl}:${session.apiToken.substring(0, 8)}`
+    : 'anonymous';
   const storage = await storageManager.getStorage(sessionId, session.userId, session.apiUrl);
 
   const persistPath = getTemplatesPersistPath();
@@ -55,7 +59,8 @@ async function getSessionStorage(authManager: AuthManager): ReturnType<typeof st
  * before this file-backed persistence support was added.
  */
 function getTemplatesPersistPath(): string | undefined {
-  const configuredPath = ConfigurationManager.getInstance().loadConfiguration().templates.persistPath;
+  const configuredPath =
+    ConfigurationManager.getInstance().loadConfiguration().templates.persistPath;
   return resolveTemplatesPersistPath(configuredPath);
 }
 
@@ -147,7 +152,11 @@ interface TemplateData {
   variables?: Record<string, string>;
 }
 
-export function registerTemplatesTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerTemplatesTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_templates',
     withReadOnlyNote(

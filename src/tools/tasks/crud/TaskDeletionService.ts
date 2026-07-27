@@ -7,7 +7,11 @@ import { MCPError, ErrorCode } from '../../../types';
 import type { AuthManager } from '../../../auth/AuthManager';
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import { validateId } from '../validation';
-import { transformApiError, handleFetchError, handleStatusCodeError } from '../../../utils/error-handler';
+import {
+  transformApiError,
+  handleFetchError,
+  handleStatusCodeError,
+} from '../../../utils/error-handler';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
 import type { components } from '../../../types/generated/vikunja-openapi';
@@ -44,19 +48,21 @@ export async function deleteTask(
       deletionContext.taskToDelete
         ? `Task "${deletionContext.taskToDelete.title}" deleted successfully`
         : `Task ${args.id} deleted successfully`,
-      (deletionContext.taskToDelete
+      deletionContext.taskToDelete
         ? { task: deletionContext.taskToDelete }
-        : { deletedTaskId: args.id }) as unknown as Parameters<typeof createTaskResponse>[2],
+        : { deletedTaskId: args.id },
       {
         timestamp: new Date().toISOString(),
         taskId: args.id,
-        ...(deletionContext.taskToDelete?.title && { taskTitle: deletionContext.taskToDelete.title }),
+        ...(deletionContext.taskToDelete?.title && {
+          taskTitle: deletionContext.taskToDelete.title,
+        }),
       },
       undefined, // verbosity (ignored)
       undefined, // useOptimizedFormat (ignored)
       undefined, // useAorp (ignored)
       undefined, // aorpConfig (using auto-generated)
-      args.sessionId
+      args.sessionId,
     );
 
     return {
@@ -80,17 +86,23 @@ export async function deleteTask(
     }
 
     // Handle fetch/connection errors with helpful guidance
-    if (error instanceof Error && (
-      error.message.includes('fetch failed') ||
-      error.message.includes('ECONNREFUSED') ||
-      error.message.includes('ENOTFOUND')
-    )) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('fetch failed') ||
+        error.message.includes('ECONNREFUSED') ||
+        error.message.includes('ENOTFOUND'))
+    ) {
       throw handleFetchError(error, 'delete task');
     }
 
     // Use standardized error transformation for all other errors
     if (args.id) {
-      throw handleStatusCodeError(error, 'delete task', args.id, `Task with ID ${args.id} not found`);
+      throw handleStatusCodeError(
+        error,
+        'delete task',
+        args.id,
+        `Task with ID ${args.id} not found`,
+      );
     }
     throw transformApiError(error, 'Failed to delete task');
   }
@@ -108,7 +120,10 @@ interface DeletionContext {
  * Gathers information about the task before deletion for better response messaging
  * Handles cases where the task might not exist or be accessible
  */
-async function gatherDeletionContext(authManager: AuthManager, taskId: number): Promise<DeletionContext> {
+async function gatherDeletionContext(
+  authManager: AuthManager,
+  taskId: number,
+): Promise<DeletionContext> {
   let taskToDelete: VikunjaTask | undefined;
   let retrievalSuccess = false;
 
@@ -125,6 +140,6 @@ async function gatherDeletionContext(authManager: AuthManager, taskId: number): 
 
   return {
     taskToDelete,
-    retrievalSuccess
+    retrievalSuccess,
   };
 }

@@ -12,7 +12,10 @@ describe('Test Helper Function Type Safety', () => {
       type CallToolFunction = (subcommand: string, args?: Record<string, any>) => Promise<any>;
 
       // This is a type assertion to verify the expected function signature
-      const expectedCallTool: CallToolFunction = async (subcommand: string, args?: Record<string, any>) => {
+      const expectedCallTool: CallToolFunction = async (
+        subcommand: string,
+        args?: Record<string, any>,
+      ) => {
         return Promise.resolve({});
       };
 
@@ -37,7 +40,7 @@ describe('Test Helper Function Type Safety', () => {
       const expectedCreateMockServer: CreateMockServerFunction = () => {
         return {
           tool: jest.fn(),
-          executeTool: jest.fn()
+          executeTool: jest.fn(),
         };
       };
 
@@ -55,7 +58,7 @@ describe('Test Helper Function Type Safety', () => {
       const mockTask: MockData = {
         id: 1,
         title: 'Test Task',
-        done: false
+        done: false,
       };
 
       expect(typeof mockTask.id).toBe('number');
@@ -76,7 +79,7 @@ describe('Test Helper Function Type Safety', () => {
       const testArgs: TestArgs = {
         subcommand: 'create',
         id: 1,
-        title: 'Test Task'
+        title: 'Test Task',
       };
 
       expect(typeof testArgs.subcommand).toBe('string');

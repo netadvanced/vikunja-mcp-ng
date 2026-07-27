@@ -236,7 +236,11 @@ async function validateWebhookEvents(
   }
 }
 
-export function registerWebhooksTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerWebhooksTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_webhooks',
     withReadOnlyNote(
@@ -306,7 +310,8 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
       try {
         switch (subcommand) {
           case 'list': {
-            const projectId = scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
+            const projectId =
+              scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
 
             const webhooks =
               (await vikunjaRestRequest<Webhook[]>(
@@ -332,9 +337,10 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
                 metadata: {
                   count: webhooks.length,
                   ...(scope === 'project' && args.page !== undefined && { page: args.page }),
-                  ...(scope === 'project' && args.perPage !== undefined && { perPage: args.perPage }),
-                }
-              }
+                  ...(scope === 'project' &&
+                    args.perPage !== undefined && { perPage: args.perPage }),
+                },
+              },
             );
 
             return {
@@ -348,7 +354,8 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
           }
 
           case 'get': {
-            const projectId = scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
+            const projectId =
+              scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
             const webhookId = validateAndConvertId(args.webhookId, 'webhookId');
 
             // Get all webhooks and find the specific one - the spec has no
@@ -383,9 +390,9 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               {
                 success: true,
                 metadata: {
-                  count: 1
-                }
-              }
+                  count: 1,
+                },
+              },
             );
 
             return {
@@ -399,7 +406,8 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
           }
 
           case 'create': {
-            const projectId = scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
+            const projectId =
+              scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
 
             if (!args.targetUrl) {
               throw new MCPError(
@@ -444,9 +452,9 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               {
                 success: true,
                 metadata: {
-                  count: 1
-                }
-              }
+                  count: 1,
+                },
+              },
             );
 
             return {
@@ -460,7 +468,8 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
           }
 
           case 'update': {
-            const projectId = scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
+            const projectId =
+              scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
             const webhookId = validateAndConvertId(args.webhookId, 'webhookId');
 
             if (!args.events || args.events.length === 0) {
@@ -485,7 +494,12 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               updateData,
             );
 
-            logger.info('Updated webhook events', { scope, projectId, webhookId, events: args.events });
+            logger.info('Updated webhook events', {
+              scope,
+              projectId,
+              webhookId,
+              events: args.events,
+            });
 
             // Use AORP factory for consistent response format
             const aorpResult = createAorpResponse(
@@ -496,9 +510,9 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
                 success: true,
                 metadata: {
                   count: 1,
-                  affectedFields: ['events']
-                }
-              }
+                  affectedFields: ['events'],
+                },
+              },
             );
 
             return {
@@ -512,7 +526,8 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
           }
 
           case 'delete': {
-            const projectId = scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
+            const projectId =
+              scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
             const webhookId = validateAndConvertId(args.webhookId, 'webhookId');
 
             await vikunjaRestRequest(
@@ -531,9 +546,9 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               {
                 success: true,
                 metadata: {
-                  count: 1
-                }
-              }
+                  count: 1,
+                },
+              },
             );
 
             return {
@@ -561,9 +576,9 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               {
                 success: true,
                 metadata: {
-                  count: events.length
-                }
-              }
+                  count: events.length,
+                },
+              },
             );
 
             return {

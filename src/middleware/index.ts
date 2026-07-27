@@ -13,13 +13,6 @@ export {
 } from './simplified-rate-limit';
 
 // Backward compatibility exports
-export {
-  rateLimitingMiddleware,
-  RateLimitingMiddleware,
-} from './simplified-rate-limit';
+export { rateLimitingMiddleware, RateLimitingMiddleware } from './simplified-rate-limit';
 
-export {
-  applyRateLimiting,
-  applyPermissions,
-  applyBothMiddleware,
-} from './direct-middleware';
+export { applyRateLimiting, applyPermissions, applyBothMiddleware } from './direct-middleware';

@@ -13,7 +13,11 @@ import { AuthManager } from './auth/AuthManager';
 import { registerTools } from './tools';
 import { logger } from './utils/logger';
 import { createSecureConnectionMessage, createSecureLogConfig } from './utils/security';
-import { createVikunjaClientFactory, setGlobalClientFactory, type VikunjaClientFactory } from './client';
+import {
+  createVikunjaClientFactory,
+  setGlobalClientFactory,
+  type VikunjaClientFactory,
+} from './client';
 import { readSecretEnv } from './config/secrets';
 import { resolvePackageVersion } from './utils/version';
 
@@ -73,10 +77,7 @@ try {
 }
 
 if (process.env.VIKUNJA_URL && vikunjaApiToken) {
-  const connectionMessage = createSecureConnectionMessage(
-    process.env.VIKUNJA_URL,
-    vikunjaApiToken
-  );
+  const connectionMessage = createSecureConnectionMessage(process.env.VIKUNJA_URL, vikunjaApiToken);
   logger.info(`Auto-authenticating: ${connectionMessage}`);
   authManager.connect(process.env.VIKUNJA_URL, vikunjaApiToken);
   const detectedAuthType = authManager.getAuthType();
@@ -90,7 +91,7 @@ async function main(): Promise<void> {
   await server.connect(transport);
 
   logger.info('Vikunja MCP server started');
-  
+
   const config = createSecureLogConfig({
     mode: process.env.MCP_MODE,
     debug: process.env.DEBUG,
@@ -98,7 +99,7 @@ async function main(): Promise<void> {
     url: process.env.VIKUNJA_URL,
     token: vikunjaApiToken,
   });
-  
+
   logger.debug('Configuration loaded', config);
 }
 
@@ -126,7 +127,10 @@ export { withRetry, RETRY_CONFIG } from './utils/retry';
 export { transformApiError, handleFetchError, handleStatusCodeError } from './utils/error-handler';
 export { parseFilterString } from './utils/filters';
 export { validateTaskCountLimit } from './utils/memory';
-export { createStandardResponse, createAorpErrorResponse as createErrorResponse } from './utils/response-factory';
+export {
+  createStandardResponse,
+  createAorpErrorResponse as createErrorResponse,
+} from './utils/response-factory';
 
 // Additional exports for task modules
 export type { SimpleResponse } from './utils/simple-response';

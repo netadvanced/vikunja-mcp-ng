@@ -51,7 +51,10 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
   const mockResolveKanbanViewId = resolveKanbanViewId as jest.Mock;
 
   /** Sentinel wrapper marking a routeRest handler value as a rejection. */
-  const REJECT = (value: unknown): { __reject: true; value: unknown } => ({ __reject: true, value });
+  const REJECT = (value: unknown): { __reject: true; value: unknown } => ({
+    __reject: true,
+    value,
+  });
 
   type RestHandler = unknown | ((path: string) => unknown);
 
@@ -70,13 +73,19 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
    * a method handler may be a function of the request path so one method can
    * succeed for one path and fail for another.
    */
-  function routeRest(handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', RestHandler>>): void {
+  function routeRest(
+    handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', RestHandler>>,
+  ): void {
     mockRest.mockImplementation((_auth: unknown, method: string, path: string) => {
       let handler = handlers[method as 'GET' | 'POST' | 'PUT' | 'DELETE'];
       if (typeof handler === 'function') {
         handler = (handler as (p: string) => unknown)(path);
       }
-      if (handler && typeof handler === 'object' && (handler as { __reject?: true }).__reject === true) {
+      if (
+        handler &&
+        typeof handler === 'object' &&
+        (handler as { __reject?: true }).__reject === true
+      ) {
         return Promise.reject((handler as { value: unknown }).value);
       }
       return Promise.resolve(handler);
@@ -109,11 +118,14 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
       routeRest({ PUT: createdTask, GET: createdTask });
 
-      const result = await createTask({
-        projectId: 1,
-        title: 'Test Task',
-        description: '', // Empty string
-      }, mockAuthManager);
+      const result = await createTask(
+        {
+          projectId: 1,
+          title: 'Test Task',
+          description: '', // Empty string
+        },
+        mockAuthManager,
+      );
 
       expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/projects/1/tasks', {
         title: 'Test Task',
@@ -131,13 +143,16 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
       routeRest({ PUT: createdTask, GET: createdTask });
 
-      const result = await createTask({
-        projectId: 1,
-        title: 'Test Task',
-        description: undefined,
-        dueDate: undefined,
-        priority: undefined,
-      }, mockAuthManager);
+      const result = await createTask(
+        {
+          projectId: 1,
+          title: 'Test Task',
+          description: undefined,
+          dueDate: undefined,
+          priority: undefined,
+        },
+        mockAuthManager,
+      );
 
       expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/projects/1/tasks', {
         title: 'Test Task',
@@ -154,12 +169,15 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1, priority: 0 };
       routeRest({ PUT: createdTask, GET: createdTask });
 
-      const result = await createTask({
-        projectId: 1,
-        title: 'Test Task',
-        priority: 0, // Zero is valid
-        repeatAfter: 0, // Zero is valid
-      }, mockAuthManager);
+      const result = await createTask(
+        {
+          projectId: 1,
+          title: 'Test Task',
+          priority: 0, // Zero is valid
+          repeatAfter: 0, // Zero is valid
+        },
+        mockAuthManager,
+      );
 
       expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/projects/1/tasks', {
         title: 'Test Task',
@@ -179,12 +197,15 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       const createdTask = { id: 1, title: 'Test Task', project_id: 1 };
       routeRest({ PUT: createdTask, GET: createdTask });
 
-      const result = await createTask({
-        projectId: 1,
-        title: 'Test Task',
-        labels: [], // Empty array
-        assignees: [], // Empty array
-      }, mockAuthManager);
+      const result = await createTask(
+        {
+          projectId: 1,
+          title: 'Test Task',
+          labels: [], // Empty array
+          assignees: [], // Empty array
+        },
+        mockAuthManager,
+      );
 
       expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/projects/1/tasks', {
         title: 'Test Task',
@@ -206,11 +227,14 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       routeRest({ PUT: createdTaskNoId });
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-          labels: [1, 2], // Labels provided but task has no ID
-        }, mockAuthManager),
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            labels: [1, 2], // Labels provided but task has no ID
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('did not return a task id');
 
       // Should not attempt label operations without task ID
@@ -223,11 +247,14 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       routeRest({ PUT: createdTaskNoId });
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-          assignees: [1, 2], // Assignees provided but task has no ID
-        }, mockAuthManager),
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            assignees: [1, 2], // Assignees provided but task has no ID
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('did not return a task id');
 
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
@@ -251,13 +278,16 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
     it('should handle updating with same values (no changes)', async () => {
       routeRest({ GET: mockTask, POST: mockTask });
 
-      const result = await updateTask({
-        id: 1,
-        title: 'Original Title', // Same value
-        description: 'Original Description', // Same value
-        priority: 1, // Same value
-        done: false, // Same value
-      }, mockAuthManager);
+      const result = await updateTask(
+        {
+          id: 1,
+          title: 'Original Title', // Same value
+          description: 'Original Description', // Same value
+          priority: 1, // Same value
+          done: false, // Same value
+        },
+        mockAuthManager,
+      );
 
       // Should still call the update endpoint but with no affected fields
       expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'POST', '/tasks/1', {
@@ -284,15 +314,23 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
       routeRest({ GET: currentTask, POST: currentTask });
 
-      const result = await updateTask({
-        id: 1,
-        repeatMode: 'week', // Should convert to number
-      }, mockAuthManager);
+      const result = await updateTask(
+        {
+          id: 1,
+          repeatMode: 'week', // Should convert to number
+        },
+        mockAuthManager,
+      );
 
       // Should call the update endpoint with expected repeat configuration
-      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'POST', '/tasks/1', expect.objectContaining({
-        repeat_mode: 0, // Week mode converts to 0
-      }));
+      expect(mockRest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'POST',
+        '/tasks/1',
+        expect.objectContaining({
+          repeat_mode: 0, // Week mode converts to 0
+        }),
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -309,10 +347,13 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
       routeRest({ GET: currentTask, POST: currentTask });
 
-      const result = await updateTask({
-        id: 1,
-        repeatAfter: 5, // Only update repeat after
-      }, mockAuthManager);
+      const result = await updateTask(
+        {
+          id: 1,
+          repeatAfter: 5, // Only update repeat after
+        },
+        mockAuthManager,
+      );
 
       expect(mockRest).toHaveBeenCalledWith(
         mockAuthManager,
@@ -320,7 +361,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         '/tasks/1',
         expect.objectContaining({
           repeat_after: 5, // Without repeatMode, value is used as-is (seconds)
-        })
+        }),
       );
 
       const markdown = result.content[0].text;
@@ -339,10 +380,13 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       // diff-calculation fetch (both now GET /tasks/1 via vikunjaRestRequest).
       routeRest({ GET: taskWithAssignees, POST: taskWithAssignees, DELETE: null });
 
-      const result = await updateTask({
-        id: 1,
-        assignees: [], // Remove all assignees
-      }, mockAuthManager);
+      const result = await updateTask(
+        {
+          id: 1,
+          assignees: [], // Remove all assignees
+        },
+        mockAuthManager,
+      );
 
       // Should remove all existing assignees via DELETE /tasks/1/assignees/{userId}
       expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'DELETE', '/tasks/1/assignees/1');
@@ -369,15 +413,22 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
       routeRest({ GET: taskWithNullAssignees, POST: taskWithNullAssignees, PUT: {} });
 
-      const result = await updateTask({
-        id: 1,
-        assignees: [1, 2], // Add assignees to task with null assignees
-      }, mockAuthManager);
+      const result = await updateTask(
+        {
+          id: 1,
+          assignees: [1, 2], // Add assignees to task with null assignees
+        },
+        mockAuthManager,
+      );
 
       // Should add all assignees (since current is empty due to null), one
       // additive per-user PUT /tasks/1/assignees { user_id } call each
-      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', { user_id: 1 });
-      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', { user_id: 2 });
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', {
+        user_id: 1,
+      });
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', {
+        user_id: 2,
+      });
       // Should not remove any assignees (no DELETE to the assignees endpoint)
       expect(mockRest).not.toHaveBeenCalledWith(
         mockAuthManager,
@@ -506,16 +557,16 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
     });
 
     it('rejects a non-positive bucketId before making any REST calls', async () => {
-      await expect(
-        updateTask({ id: 1, bucketId: 0 }, mockAuthManager),
-      ).rejects.toThrow('bucketId must be a positive integer');
+      await expect(updateTask({ id: 1, bucketId: 0 }, mockAuthManager)).rejects.toThrow(
+        'bucketId must be a positive integer',
+      );
       expect(mockRest).not.toHaveBeenCalled();
     });
 
     it('rejects a non-positive viewId before making any REST calls', async () => {
-      await expect(
-        updateTask({ id: 1, bucketId: 7, viewId: -1 }, mockAuthManager),
-      ).rejects.toThrow('viewId must be a positive integer');
+      await expect(updateTask({ id: 1, bucketId: 7, viewId: -1 }, mockAuthManager)).rejects.toThrow(
+        'viewId must be a positive integer',
+      );
       expect(mockRest).not.toHaveBeenCalled();
     });
 
@@ -531,9 +582,9 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
         new MCPError(ErrorCode.NOT_FOUND, 'Project 5 has no Kanban view, so it has no buckets'),
       );
 
-      await expect(
-        updateTask({ id: 1, bucketId: 7 }, mockAuthManager),
-      ).rejects.toThrow('Project 5 has no Kanban view, so it has no buckets');
+      await expect(updateTask({ id: 1, bucketId: 7 }, mockAuthManager)).rejects.toThrow(
+        'Project 5 has no Kanban view, so it has no buckets',
+      );
     });
   });
 
@@ -561,7 +612,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       routeRest({ GET: mockTask, DELETE: REJECT({ status: 500, message: 'Server error' }) });
 
       await expect(deleteTask({ id: 1 }, mockAuthManager)).rejects.toThrow(
-        'Failed to delete task: Unknown error'
+        'Failed to delete task: Unknown error',
       );
     });
 
@@ -572,7 +623,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
       // The error handler now preserves string messages for better debugging
       await expect(deleteTask({ id: 1 }, mockAuthManager)).rejects.toThrow(
-        'Failed to delete task: String error message'
+        'Failed to delete task: String error message',
       );
     });
   });
@@ -582,7 +633,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       routeRest({ GET: REJECT({ code: 404, message: 'Not found' }) });
 
       await expect(getTask({ id: 1 }, mockAuthManager)).rejects.toThrow(
-        'Failed to get task: Unknown error'
+        'Failed to get task: Unknown error',
       );
     });
 
@@ -591,7 +642,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
       // The error handler now preserves string messages for better debugging
       await expect(getTask({ id: 1 }, mockAuthManager)).rejects.toThrow(
-        'Failed to get task: Database connection lost'
+        'Failed to get task: Database connection lost',
       );
     });
 
@@ -600,7 +651,7 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
 
       // Undefined errors still show as "Unknown error"
       await expect(getTask({ id: 1 }, mockAuthManager)).rejects.toThrow(
-        'Failed to get task: Unknown error'
+        'Failed to get task: Unknown error',
       );
     });
   });
@@ -609,58 +660,70 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
     it('should handle validation errors for zero and negative IDs', async () => {
       // Zero projectId triggers the "required" check first
       await expect(createTask({ projectId: 0, title: 'Test' }, mockAuthManager)).rejects.toThrow(
-        'projectId is required to create a task'
+        'projectId is required to create a task',
       );
 
       await expect(createTask({ projectId: -1, title: 'Test' }, mockAuthManager)).rejects.toThrow(
-        'projectId must be a positive integer'
+        'projectId must be a positive integer',
       );
 
       await expect(getTask({ id: 0 }, mockAuthManager)).rejects.toThrow(
-        'Task id is required for get operation'
+        'Task id is required for get operation',
       );
 
       await expect(updateTask({ id: -1, title: 'Test' }, mockAuthManager)).rejects.toThrow(
-        'id must be a positive integer'
+        'id must be a positive integer',
       );
 
       await expect(deleteTask({ id: 0 }, mockAuthManager)).rejects.toThrow(
-        'Task id is required for delete operation'
+        'Task id is required for delete operation',
       );
     });
 
     it('should handle validation errors for invalid dates', async () => {
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test',
-          dueDate: 'invalid-date',
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test',
+            dueDate: 'invalid-date',
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('dueDate must be a valid ISO 8601 date string');
 
       await expect(
-        updateTask({
-          id: 1,
-          dueDate: '2024-13-45', // Invalid date
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            dueDate: '2024-13-45', // Invalid date
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('dueDate must be a valid ISO 8601 date string');
     });
 
     it('should handle validation errors for invalid assignee IDs in createTask', async () => {
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test',
-          assignees: [1, 0, 2], // 0 is invalid
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test',
+            assignees: [1, 0, 2], // 0 is invalid
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('assignee ID must be a positive integer');
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test',
-          assignees: [1, -5, 2], // -5 is invalid
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test',
+            assignees: [1, -5, 2], // -5 is invalid
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('assignee ID must be a positive integer');
     });
   });
@@ -672,17 +735,19 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       // fails; DELETE (rollback) succeeds.
       const assigneeError = new Error('Assignee assignment failed');
       routeRest({
-        PUT: (path) =>
-          path === '/projects/1/tasks' ? createdTask : REJECT(assigneeError),
+        PUT: (path) => (path === '/projects/1/tasks' ? createdTask : REJECT(assigneeError)),
         DELETE: null,
       });
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-          assignees: [1, 2],
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            assignees: [1, 2],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Failed to complete task creation: Assignee assignment failed');
 
       expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'DELETE', '/tasks/1');
@@ -700,11 +765,14 @@ describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
       });
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-          labels: [1, 2],
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            labels: [1, 2],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Task rollback also failed');
     });
   });

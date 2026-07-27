@@ -50,7 +50,10 @@ describe('Tasks Tool - Race Condition Fix', () => {
   const mockRest = vikunjaRestRequest as jest.Mock;
 
   /** Sentinel wrapper marking a routeRest handler value as a rejection. */
-  const REJECT = (value: unknown): { __reject: true; value: unknown } => ({ __reject: true, value });
+  const REJECT = (value: unknown): { __reject: true; value: unknown } => ({
+    __reject: true,
+    value,
+  });
 
   type RestHandler = unknown | ((path: string) => unknown);
 
@@ -61,13 +64,19 @@ describe('Tasks Tool - Race Condition Fix', () => {
    * `/tasks/{id}/assignees`), a method handler may be a function of the request
    * path so a single method can succeed for one path and fail for another.
    */
-  function routeRest(handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', RestHandler>>): void {
+  function routeRest(
+    handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', RestHandler>>,
+  ): void {
     mockRest.mockImplementation((_auth: unknown, method: string, path: string) => {
       let handler = handlers[method as 'GET' | 'POST' | 'PUT' | 'DELETE'];
       if (typeof handler === 'function') {
         handler = (handler as (p: string) => unknown)(path);
       }
-      if (handler && typeof handler === 'object' && (handler as { __reject?: true }).__reject === true) {
+      if (
+        handler &&
+        typeof handler === 'object' &&
+        (handler as { __reject?: true }).__reject === true
+      ) {
         return Promise.reject((handler as { value: unknown }).value);
       }
       return Promise.resolve(handler);
@@ -140,12 +149,12 @@ describe('Tasks Tool - Race Condition Fix', () => {
     // Capture the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      expect.any(String),  // description parameter
-      expect.any(Object),  // schema parameter
+      expect.any(String), // description parameter
+      expect.any(Object), // schema parameter
       expect.any(Object), // ToolAnnotations
       expect.any(Function), // handler parameter
     );
-    toolHandler = mockServer.tool.mock.calls[0][mockServer.tool.mock.calls[0].length - 1];  // Handler is always the last argument
+    toolHandler = mockServer.tool.mock.calls[0][mockServer.tool.mock.calls[0].length - 1]; // Handler is always the last argument
   });
 
   afterEach(() => {
@@ -164,9 +173,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       // Base create succeeds; the first label add (PUT /tasks/123/labels) fails.
       routeRest({
         PUT: (path) =>
-          path === '/projects/1/tasks'
-            ? createdTask
-            : REJECT(new Error('Label assignment failed')),
+          path === '/projects/1/tasks' ? createdTask : REJECT(new Error('Label assignment failed')),
         DELETE: null,
       });
 
@@ -233,9 +240,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       // Label add fails, and the rollback DELETE also fails.
       routeRest({
         PUT: (path) =>
-          path === '/projects/1/tasks'
-            ? createdTask
-            : REJECT(new Error('Label assignment failed')),
+          path === '/projects/1/tasks' ? createdTask : REJECT(new Error('Label assignment failed')),
         DELETE: REJECT(new Error('Delete failed')),
       });
 
@@ -306,7 +311,7 @@ describe('Tasks Tool - Race Condition Fix', () => {
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
 
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-task');
       expect(markdown).toContain('Task created successfully');
 

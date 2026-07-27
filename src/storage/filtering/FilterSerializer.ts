@@ -112,7 +112,9 @@ export class FilterSerializer {
 
       return parsed as FilterExpression;
     } catch (error) {
-      throw new Error(`Failed to deserialize filter expression: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `Failed to deserialize filter expression: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
     }
   }
 

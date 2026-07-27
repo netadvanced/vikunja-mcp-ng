@@ -940,9 +940,7 @@ describe('Webhooks Tool', () => {
     // validateAndConvertId is one such dependency; mock it to simulate an
     // unexpected non-MCPError failure and confirm the safety net still works.
     describe('unexpected (non-MCPError) failures from other dependencies', () => {
-      let validateAndConvertIdSpy: jest.SpiedFunction<
-        typeof validationUtils.validateAndConvertId
-      >;
+      let validateAndConvertIdSpy: jest.SpiedFunction<typeof validationUtils.validateAndConvertId>;
 
       beforeEach(() => {
         validateAndConvertIdSpy = jest.spyOn(validationUtils, 'validateAndConvertId');
@@ -1148,9 +1146,7 @@ describe('Webhooks Tool', () => {
         }),
       );
 
-      await expect(
-        mockHandler({ subcommand: 'list', scope: 'user' }),
-      ).rejects.toThrow(
+      await expect(mockHandler({ subcommand: 'list', scope: 'user' })).rejects.toThrow(
         new MCPError(
           ErrorCode.API_ERROR,
           "User-level webhook operations require JWT authentication (per the OpenAPI spec, /user/settings/webhooks* endpoints are JWTKeyAuth-only). Reconnect via vikunja_auth.connect with a JWT token, or use scope: 'project' if you only have an API token.",
@@ -1214,7 +1210,12 @@ describe('Webhooks Tool', () => {
 
       expect(
         isReadOnlyRejection(
-          await callAndCatch(mockHandler, { subcommand: 'create', projectId: 1, targetUrl: 'https://x', events: [] }),
+          await callAndCatch(mockHandler, {
+            subcommand: 'create',
+            projectId: 1,
+            targetUrl: 'https://x',
+            events: [],
+          }),
         ),
       ).toBe(true);
       expect(
@@ -1252,7 +1253,12 @@ describe('Webhooks Tool', () => {
 
       expect(
         isReadOnlyRejection(
-          await callAndCatch(mockHandler, { subcommand: 'create', projectId: 1, targetUrl: 'https://x', events: [] }),
+          await callAndCatch(mockHandler, {
+            subcommand: 'create',
+            projectId: 1,
+            targetUrl: 'https://x',
+            events: [],
+          }),
         ),
       ).toBe(false);
     });

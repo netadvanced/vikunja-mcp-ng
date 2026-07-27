@@ -151,16 +151,23 @@ describe('ClientSideFilteringStrategy', () => {
 
       const taskA = makeTask(10, 1);
       const taskB = makeTask(20, 2);
-      (vikunjaRestRequest as jest.Mock).mockImplementation((_auth: unknown, _method: string, path: string) => {
-        if (path === '/projects?per_page=1000') return Promise.resolve([makeProject(1), makeProject(2)]);
-        if (path.startsWith('/projects/1/tasks')) return Promise.resolve([taskA]);
-        if (path.startsWith('/projects/2/tasks')) return Promise.resolve([taskB]);
-        return Promise.resolve([]);
-      });
+      (vikunjaRestRequest as jest.Mock).mockImplementation(
+        (_auth: unknown, _method: string, path: string) => {
+          if (path === '/projects?per_page=1000')
+            return Promise.resolve([makeProject(1), makeProject(2)]);
+          if (path.startsWith('/projects/1/tasks')) return Promise.resolve([taskA]);
+          if (path.startsWith('/projects/2/tasks')) return Promise.resolve([taskB]);
+          return Promise.resolve([]);
+        },
+      );
 
       const result = await strategy.execute(params);
 
-      expect(vikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/projects?per_page=1000');
+      expect(vikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/projects?per_page=1000',
+      );
       expect(vikunjaRestRequest).toHaveBeenCalledWith(
         mockAuthManager,
         'GET',
@@ -184,10 +191,12 @@ describe('ClientSideFilteringStrategy', () => {
       };
 
       const task = makeTask(30, 3);
-      (vikunjaRestRequest as jest.Mock).mockImplementation((_auth: unknown, _method: string, path: string) => {
-        if (path === '/projects?per_page=1000') return Promise.resolve([makeProject(3)]);
-        return Promise.resolve([task]);
-      });
+      (vikunjaRestRequest as jest.Mock).mockImplementation(
+        (_auth: unknown, _method: string, path: string) => {
+          if (path === '/projects?per_page=1000') return Promise.resolve([makeProject(3)]);
+          return Promise.resolve([task]);
+        },
+      );
 
       const result = await strategy.execute(params);
 
@@ -209,20 +218,25 @@ describe('ClientSideFilteringStrategy', () => {
       };
 
       const realTask = makeTask(50, 5);
-      (vikunjaRestRequest as jest.Mock).mockImplementation((_auth: unknown, _method: string, path: string) => {
-        // -1 (Favorites pseudo-project), 0 (invalid), and a valid real project.
-        if (path === '/projects?per_page=1000') {
-          return Promise.resolve([makeProject(-1), makeProject(0), makeProject(5)]);
-        }
-        if (path.startsWith('/projects/5/tasks')) return Promise.resolve([realTask]);
-        return Promise.resolve([]);
-      });
+      (vikunjaRestRequest as jest.Mock).mockImplementation(
+        (_auth: unknown, _method: string, path: string) => {
+          // -1 (Favorites pseudo-project), 0 (invalid), and a valid real project.
+          if (path === '/projects?per_page=1000') {
+            return Promise.resolve([makeProject(-1), makeProject(0), makeProject(5)]);
+          }
+          if (path.startsWith('/projects/5/tasks')) return Promise.resolve([realTask]);
+          return Promise.resolve([]);
+        },
+      );
 
       const result = await strategy.execute(params);
 
       // Only the real project (id 5) should be fetched.
       const projectTaskCalls = (vikunjaRestRequest as jest.Mock).mock.calls.filter(
-        (call) => typeof call[2] === 'string' && (call[2] as string).startsWith('/projects/') && (call[2] as string).includes('/tasks'),
+        (call) =>
+          typeof call[2] === 'string' &&
+          (call[2] as string).startsWith('/projects/') &&
+          (call[2] as string).includes('/tasks'),
       );
       expect(projectTaskCalls).toHaveLength(1);
       expect(projectTaskCalls[0]?.[2]).toBe('/projects/5/tasks?page=1&per_page=50');
@@ -239,13 +253,15 @@ describe('ClientSideFilteringStrategy', () => {
       };
 
       const realTask = makeTask(70, 7);
-      (vikunjaRestRequest as jest.Mock).mockImplementation((_auth: unknown, _method: string, path: string) => {
-        if (path === '/projects?per_page=1000') {
-          return Promise.resolve([{ id: undefined, title: 'No id' }, makeProject(7)]);
-        }
-        if (path.startsWith('/projects/7/tasks')) return Promise.resolve([realTask]);
-        return Promise.resolve([]);
-      });
+      (vikunjaRestRequest as jest.Mock).mockImplementation(
+        (_auth: unknown, _method: string, path: string) => {
+          if (path === '/projects?per_page=1000') {
+            return Promise.resolve([{ id: undefined, title: 'No id' }, makeProject(7)]);
+          }
+          if (path.startsWith('/projects/7/tasks')) return Promise.resolve([realTask]);
+          return Promise.resolve([]);
+        },
+      );
 
       const result = await strategy.execute(params);
 
@@ -262,12 +278,16 @@ describe('ClientSideFilteringStrategy', () => {
       };
 
       const goodTask = makeTask(10, 1);
-      (vikunjaRestRequest as jest.Mock).mockImplementation((_auth: unknown, _method: string, path: string) => {
-        if (path === '/projects?per_page=1000') return Promise.resolve([makeProject(1), makeProject(2)]);
-        if (path.startsWith('/projects/1/tasks')) return Promise.resolve([goodTask]);
-        if (path.startsWith('/projects/2/tasks')) return Promise.reject(new Error('boom on project 2'));
-        return Promise.resolve([]);
-      });
+      (vikunjaRestRequest as jest.Mock).mockImplementation(
+        (_auth: unknown, _method: string, path: string) => {
+          if (path === '/projects?per_page=1000')
+            return Promise.resolve([makeProject(1), makeProject(2)]);
+          if (path.startsWith('/projects/1/tasks')) return Promise.resolve([goodTask]);
+          if (path.startsWith('/projects/2/tasks'))
+            return Promise.reject(new Error('boom on project 2'));
+          return Promise.resolve([]);
+        },
+      );
 
       const result = await strategy.execute(params);
 
@@ -288,11 +308,13 @@ describe('ClientSideFilteringStrategy', () => {
         authManager: mockAuthManager,
       };
 
-      (vikunjaRestRequest as jest.Mock).mockImplementation((_auth: unknown, _method: string, path: string) => {
-        if (path === '/projects?per_page=1000') return Promise.resolve([makeProject(9)]);
-        // eslint-disable-next-line prefer-promise-reject-errors
-        return Promise.reject('plain string failure');
-      });
+      (vikunjaRestRequest as jest.Mock).mockImplementation(
+        (_auth: unknown, _method: string, path: string) => {
+          if (path === '/projects?per_page=1000') return Promise.resolve([makeProject(9)]);
+          // eslint-disable-next-line prefer-promise-reject-errors
+          return Promise.reject('plain string failure');
+        },
+      );
 
       const result = await strategy.execute(params);
 
@@ -324,10 +346,12 @@ describe('ClientSideFilteringStrategy', () => {
         authManager: mockAuthManager,
       };
 
-      (vikunjaRestRequest as jest.Mock).mockImplementation((_auth: unknown, _method: string, path: string) => {
-        if (path === '/projects?per_page=1000') return Promise.resolve([makeProject(1)]);
-        return Promise.resolve([doneTask, openTask]);
-      });
+      (vikunjaRestRequest as jest.Mock).mockImplementation(
+        (_auth: unknown, _method: string, path: string) => {
+          if (path === '/projects?per_page=1000') return Promise.resolve([makeProject(1)]);
+          return Promise.resolve([doneTask, openTask]);
+        },
+      );
 
       const result = await strategy.execute(params);
 
@@ -346,15 +370,20 @@ describe('ClientSideFilteringStrategy', () => {
         authManager: mockAuthManager,
       };
 
-      (vikunjaRestRequest as jest.Mock).mockImplementation((_auth: unknown, _method: string, path: string) => {
-        if (path === '/projects?per_page=1000') return Promise.resolve([]);
-        return Promise.resolve([]);
-      });
+      (vikunjaRestRequest as jest.Mock).mockImplementation(
+        (_auth: unknown, _method: string, path: string) => {
+          if (path === '/projects?per_page=1000') return Promise.resolve([]);
+          return Promise.resolve([]);
+        },
+      );
 
       const result = await strategy.execute(params);
 
       const projectTaskCalls = (vikunjaRestRequest as jest.Mock).mock.calls.filter(
-        (call) => typeof call[2] === 'string' && (call[2] as string).startsWith('/projects/') && (call[2] as string).includes('/tasks'),
+        (call) =>
+          typeof call[2] === 'string' &&
+          (call[2] as string).startsWith('/projects/') &&
+          (call[2] as string).includes('/tasks'),
       );
       expect(projectTaskCalls).toHaveLength(0);
       expect(result.tasks).toEqual([]);

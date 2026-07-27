@@ -21,7 +21,7 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 export function registerTaskAssigneesTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_task_assignees',
@@ -43,7 +43,11 @@ export function registerTaskAssigneesTool(
     getToolAnnotations('vikunja_task_assignees'),
     async (args) => {
       try {
-        logger.debug('Executing task assignees tool', { operation: args.operation, taskId: args.id, assigneeCount: args.assignees?.length });
+        logger.debug('Executing task assignees tool', {
+          operation: args.operation,
+          taskId: args.id,
+          assigneeCount: args.assignees?.length,
+        });
 
         // Check authentication
         if (!authManager.isAuthenticated()) {
@@ -65,7 +69,7 @@ export function registerTaskAssigneesTool(
             return assignUsers(
               {
                 id: args.id,
-                assignees: args.assignees || []
+                assignees: args.assignees || [],
               },
               authManager,
             );
@@ -74,7 +78,7 @@ export function registerTaskAssigneesTool(
             return unassignUsers(
               {
                 id: args.id,
-                assignees: args.assignees || []
+                assignees: args.assignees || [],
               },
               authManager,
             );

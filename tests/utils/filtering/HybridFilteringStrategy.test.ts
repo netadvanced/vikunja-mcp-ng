@@ -11,14 +11,14 @@ import type { Task } from 'node-vikunja';
 // Mock the strategies
 jest.mock('../../../src/utils/filtering/ServerSideFilteringStrategy', () => ({
   ServerSideFilteringStrategy: jest.fn().mockImplementation(() => ({
-    execute: jest.fn()
-  }))
+    execute: jest.fn(),
+  })),
 }));
 
 jest.mock('../../../src/utils/filtering/ClientSideFilteringStrategy', () => ({
   ClientSideFilteringStrategy: jest.fn().mockImplementation(() => ({
-    execute: jest.fn()
-  }))
+    execute: jest.fn(),
+  })),
 }));
 
 // Mock logger
@@ -39,7 +39,7 @@ describe('HybridFilteringStrategy', () => {
   let strategy: HybridFilteringStrategy;
   let mockServerStrategy: jest.Mocked<ServerSideFilteringStrategy>;
   let mockClientStrategy: jest.Mocked<ClientSideFilteringStrategy>;
-  
+
   const mockTask: Task = {
     id: 1,
     title: 'Test Task',
@@ -59,25 +59,29 @@ describe('HybridFilteringStrategy', () => {
     args: {},
     filterExpression: null,
     filterString: 'priority >= 3',
-    params: { page: 1, per_page: 10 }
+    params: { page: 1, per_page: 10 },
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
-    
+
     // Create mock instances
     mockServerStrategy = {
-      execute: jest.fn()
+      execute: jest.fn(),
     } as any;
-    
+
     mockClientStrategy = {
-      execute: jest.fn()
+      execute: jest.fn(),
     } as any;
-    
+
     // Mock the constructor calls
-    (ServerSideFilteringStrategy as jest.MockedClass<typeof ServerSideFilteringStrategy>).mockImplementation(() => mockServerStrategy);
-    (ClientSideFilteringStrategy as jest.MockedClass<typeof ClientSideFilteringStrategy>).mockImplementation(() => mockClientStrategy);
-    
+    (
+      ServerSideFilteringStrategy as jest.MockedClass<typeof ServerSideFilteringStrategy>
+    ).mockImplementation(() => mockServerStrategy);
+    (
+      ClientSideFilteringStrategy as jest.MockedClass<typeof ClientSideFilteringStrategy>
+    ).mockImplementation(() => mockClientStrategy);
+
     strategy = new HybridFilteringStrategy();
   });
 
@@ -85,7 +89,7 @@ describe('HybridFilteringStrategy', () => {
     it('should delegate to client-side strategy when no filter string provided', async () => {
       const paramsNoFilter: FilteringParams = {
         ...baseParams,
-        filterString: undefined
+        filterString: undefined,
       };
 
       const clientResult: FilteringResult = {
@@ -94,8 +98,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: false,
           serverSideFilteringAttempted: false,
           clientSideFiltering: false,
-          filteringNote: 'No filtering applied'
-        }
+          filteringNote: 'No filtering applied',
+        },
       };
 
       mockClientStrategy.execute.mockResolvedValue(clientResult);
@@ -110,7 +114,7 @@ describe('HybridFilteringStrategy', () => {
     it('should delegate to client-side strategy when filter string is empty', async () => {
       const paramsEmptyFilter: FilteringParams = {
         ...baseParams,
-        filterString: ''
+        filterString: '',
       };
 
       const clientResult: FilteringResult = {
@@ -119,8 +123,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: false,
           serverSideFilteringAttempted: false,
           clientSideFiltering: false,
-          filteringNote: 'No filtering applied'
-        }
+          filteringNote: 'No filtering applied',
+        },
       };
 
       mockClientStrategy.execute.mockResolvedValue(clientResult);
@@ -141,8 +145,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: true,
           serverSideFilteringAttempted: true,
           clientSideFiltering: false,
-          filteringNote: 'Server-side filtering used (modern Vikunja)'
-        }
+          filteringNote: 'Server-side filtering used (modern Vikunja)',
+        },
       };
 
       mockServerStrategy.execute.mockResolvedValue(serverResult);
@@ -154,11 +158,11 @@ describe('HybridFilteringStrategy', () => {
       expect(result).toEqual(serverResult);
       expect(logger.info).toHaveBeenCalledWith(
         'Hybrid filtering: attempting server-side filtering first',
-        { filter: 'priority >= 3' }
+        { filter: 'priority >= 3' },
       );
       expect(logger.info).toHaveBeenCalledWith(
         'Hybrid filtering: server-side filtering succeeded',
-        { taskCount: 1, filter: 'priority >= 3' }
+        { taskCount: 1, filter: 'priority >= 3' },
       );
     });
 
@@ -169,8 +173,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: true,
           serverSideFilteringAttempted: true,
           clientSideFiltering: false,
-          filteringNote: 'Server-side filtering used (modern Vikunja)'
-        }
+          filteringNote: 'Server-side filtering used (modern Vikunja)',
+        },
       };
 
       mockServerStrategy.execute.mockResolvedValue(serverResult);
@@ -179,11 +183,11 @@ describe('HybridFilteringStrategy', () => {
 
       expect(logger.info).toHaveBeenCalledWith(
         'Hybrid filtering: attempting server-side filtering first',
-        { filter: 'priority >= 3' }
+        { filter: 'priority >= 3' },
       );
       expect(logger.info).toHaveBeenCalledWith(
         'Hybrid filtering: server-side filtering succeeded',
-        { taskCount: 2, filter: 'priority >= 3' }
+        { taskCount: 2, filter: 'priority >= 3' },
       );
     });
   });
@@ -199,8 +203,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: false,
           serverSideFilteringAttempted: false,
           clientSideFiltering: true,
-          filteringNote: 'Client-side filtering applied'
-        }
+          filteringNote: 'Client-side filtering applied',
+        },
       };
       mockClientStrategy.execute.mockResolvedValue(clientResult);
 
@@ -208,11 +212,13 @@ describe('HybridFilteringStrategy', () => {
 
       expect(mockServerStrategy.execute).toHaveBeenCalledWith(baseParams);
       expect(mockClientStrategy.execute).toHaveBeenCalledWith(baseParams);
-      
+
       // Should return client result with updated metadata
       expect(result.tasks).toEqual([mockTask]);
       expect(result.metadata.serverSideFilteringAttempted).toBe(true);
-      expect(result.metadata.filteringNote).toBe('Server-side filtering failed, client-side filtering applied as fallback');
+      expect(result.metadata.filteringNote).toBe(
+        'Server-side filtering failed, client-side filtering applied as fallback',
+      );
     });
 
     it('should preserve client-side result and update metadata correctly', async () => {
@@ -225,8 +231,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: false,
           serverSideFilteringAttempted: false,
           clientSideFiltering: true,
-          filteringNote: 'Client-side filtering applied'
-        }
+          filteringNote: 'Client-side filtering applied',
+        },
       };
       mockClientStrategy.execute.mockResolvedValue(clientResult);
 
@@ -238,8 +244,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: false,
           serverSideFilteringAttempted: true, // Updated from false
           clientSideFiltering: true,
-          filteringNote: 'Server-side filtering failed, client-side filtering applied as fallback' // Updated
-        }
+          filteringNote: 'Server-side filtering failed, client-side filtering applied as fallback', // Updated
+        },
       });
     });
 
@@ -253,8 +259,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: false,
           serverSideFilteringAttempted: false,
           clientSideFiltering: true,
-          filteringNote: 'Client-side filtering applied'
-        }
+          filteringNote: 'Client-side filtering applied',
+        },
       };
       mockClientStrategy.execute.mockResolvedValue(clientResult);
 
@@ -262,10 +268,10 @@ describe('HybridFilteringStrategy', () => {
 
       expect(logger.warn).toHaveBeenCalledWith(
         'Hybrid filtering: server-side filtering failed, falling back to client-side',
-        { 
+        {
           error: 'Invalid filter syntax',
-          filter: 'priority >= 3' 
-        }
+          filter: 'priority >= 3',
+        },
       );
     });
 
@@ -279,8 +285,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: false,
           serverSideFilteringAttempted: false,
           clientSideFiltering: true,
-          filteringNote: 'Client-side filtering applied'
-        }
+          filteringNote: 'Client-side filtering applied',
+        },
       };
       mockClientStrategy.execute.mockResolvedValue(clientResult);
 
@@ -288,10 +294,10 @@ describe('HybridFilteringStrategy', () => {
 
       expect(logger.warn).toHaveBeenCalledWith(
         'Hybrid filtering: server-side filtering failed, falling back to client-side',
-        { 
+        {
           error: 'String error',
-          filter: 'priority >= 3' 
-        }
+          filter: 'priority >= 3',
+        },
       );
     });
 
@@ -304,8 +310,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: false,
           serverSideFilteringAttempted: false,
           clientSideFiltering: true,
-          filteringNote: 'Client-side filtering applied'
-        }
+          filteringNote: 'Client-side filtering applied',
+        },
       };
       mockClientStrategy.execute.mockResolvedValue(clientResult);
 
@@ -313,10 +319,10 @@ describe('HybridFilteringStrategy', () => {
 
       expect(logger.warn).toHaveBeenCalledWith(
         'Hybrid filtering: server-side filtering failed, falling back to client-side',
-        { 
+        {
           error: 'null',
-          filter: 'priority >= 3' 
-        }
+          filter: 'priority >= 3',
+        },
       );
     });
   });
@@ -325,12 +331,12 @@ describe('HybridFilteringStrategy', () => {
     it('should propagate client-side errors when fallback also fails', async () => {
       const serverError = new Error('Server-side filtering not supported');
       const clientError = new Error('Client-side filtering failed');
-      
+
       mockServerStrategy.execute.mockRejectedValue(serverError);
       mockClientStrategy.execute.mockRejectedValue(clientError);
 
       await expect(strategy.execute(baseParams)).rejects.toThrow(clientError);
-      
+
       expect(mockServerStrategy.execute).toHaveBeenCalledWith(baseParams);
       expect(mockClientStrategy.execute).toHaveBeenCalledWith(baseParams);
     });
@@ -340,7 +346,7 @@ describe('HybridFilteringStrategy', () => {
     it('should handle complex filter expressions', async () => {
       const complexParams: FilteringParams = {
         ...baseParams,
-        filterString: '(priority >= 3 && done = false) || (priority = 5)'
+        filterString: '(priority >= 3 && done = false) || (priority = 5)',
       };
 
       const serverResult: FilteringResult = {
@@ -349,8 +355,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: true,
           serverSideFilteringAttempted: true,
           clientSideFiltering: false,
-          filteringNote: 'Server-side filtering used (modern Vikunja)'
-        }
+          filteringNote: 'Server-side filtering used (modern Vikunja)',
+        },
       };
 
       mockServerStrategy.execute.mockResolvedValue(serverResult);
@@ -364,7 +370,7 @@ describe('HybridFilteringStrategy', () => {
     it('should handle whitespace-only filter strings', async () => {
       const whitespaceParams: FilteringParams = {
         ...baseParams,
-        filterString: '   '
+        filterString: '   ',
       };
 
       const serverResult: FilteringResult = {
@@ -373,8 +379,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: true,
           serverSideFilteringAttempted: true,
           clientSideFiltering: false,
-          filteringNote: 'Server-side filtering used (modern Vikunja)'
-        }
+          filteringNote: 'Server-side filtering used (modern Vikunja)',
+        },
       };
 
       mockServerStrategy.execute.mockResolvedValue(serverResult);
@@ -397,8 +403,8 @@ describe('HybridFilteringStrategy', () => {
           clientSideFiltering: true,
           filteringNote: 'Original client note',
           // Add any other metadata fields that might exist
-          customField: 'custom value'
-        } as any
+          customField: 'custom value',
+        } as any,
       };
       mockClientStrategy.execute.mockResolvedValue(clientResult);
 
@@ -409,7 +415,7 @@ describe('HybridFilteringStrategy', () => {
         serverSideFilteringAttempted: true, // Updated
         clientSideFiltering: true,
         filteringNote: 'Server-side filtering failed, client-side filtering applied as fallback', // Updated
-        customField: 'custom value' // Preserved
+        customField: 'custom value', // Preserved
       });
     });
 
@@ -420,8 +426,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: true,
           serverSideFilteringAttempted: true,
           clientSideFiltering: false,
-          filteringNote: 'Server-side filtering used (modern Vikunja)'
-        }
+          filteringNote: 'Server-side filtering used (modern Vikunja)',
+        },
       };
 
       mockServerStrategy.execute.mockResolvedValue(serverResult);
@@ -431,7 +437,7 @@ describe('HybridFilteringStrategy', () => {
       expect(result.tasks).toEqual([]);
       expect(logger.info).toHaveBeenCalledWith(
         'Hybrid filtering: server-side filtering succeeded',
-        { taskCount: 0, filter: 'priority >= 3' }
+        { taskCount: 0, filter: 'priority >= 3' },
       );
     });
 
@@ -445,8 +451,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: false,
           serverSideFilteringAttempted: false,
           clientSideFiltering: true,
-          filteringNote: 'Client-side filtering applied'
-        }
+          filteringNote: 'Client-side filtering applied',
+        },
       };
       mockClientStrategy.execute.mockResolvedValue(clientResult);
 

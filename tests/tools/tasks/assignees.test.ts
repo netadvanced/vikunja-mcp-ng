@@ -69,7 +69,8 @@ describe('Assignee operations', () => {
       const method = init?.method ?? 'GET';
       const path = new URL(url).pathname;
       if (method === 'GET' && /^\/api\/v1\/tasks\/\d+$/.test(path)) {
-        const task = typeof taskProvider === 'function' ? (taskProvider as () => unknown)() : taskProvider;
+        const task =
+          typeof taskProvider === 'function' ? (taskProvider as () => unknown)() : taskProvider;
         return restOk(task);
       }
       return restOk({});
@@ -97,14 +98,20 @@ describe('Assignee operations', () => {
       const mockTask = {
         id: 123,
         title: 'Test Task',
-        assignees: [{ id: 1, name: 'User 1' }, { id: 2, name: 'User 2' }],
+        assignees: [
+          { id: 1, name: 'User 1' },
+          { id: 2, name: 'User 2' },
+        ],
       };
       routeTaskFetch(mockTask);
 
-      const result = await assignUsers({
-        id: 123,
-        assignees: [1, 2],
-      }, authManager);
+      const result = await assignUsers(
+        {
+          id: 123,
+          assignees: [1, 2],
+        },
+        authManager,
+      );
 
       // Uses the additive per-user endpoint (one PUT call per assignee), NOT
       // the bulk endpoint that would silently unassign everyone (upstream #15).
@@ -125,7 +132,7 @@ describe('Assignee operations', () => {
       );
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('assign');
       expect(markdown).toContain('Users assigned to task successfully');
     });
@@ -137,7 +144,11 @@ describe('Assignee operations', () => {
       // at once (the same class of bug PR #89/#95 fixed for bulk-update's
       // assignee restore). This asserts the second PUT is only issued after
       // the first one's response has resolved.
-      const mockTask = { id: 123, title: 'Test Task', assignees: [{ id: 1 }, { id: 2 }, { id: 3 }] };
+      const mockTask = {
+        id: 123,
+        title: 'Test Task',
+        assignees: [{ id: 1 }, { id: 2 }, { id: 3 }],
+      };
       let inFlight = 0;
       let maxConcurrentPuts = 0;
       fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -173,10 +184,13 @@ describe('Assignee operations', () => {
       };
       routeTaskFetch(mockTaskNoAssignees);
 
-      const result = await assignUsers({
-        id: 123,
-        assignees: [1, 2],
-      }, authManager);
+      const result = await assignUsers(
+        {
+          id: 123,
+          assignees: [1, 2],
+        },
+        authManager,
+      );
 
       const markdown = result.content[0].text;
       expect(markdown).toContain('not persisted');
@@ -191,7 +205,10 @@ describe('Assignee operations', () => {
       const mockTask = {
         id: 123,
         title: 'Test Task',
-        assignees: [{ id: 1, name: 'User 1' }, { id: 2, name: 'User 2' }],
+        assignees: [
+          { id: 1, name: 'User 1' },
+          { id: 2, name: 'User 2' },
+        ],
       };
       let getCount = 0;
       fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -205,49 +222,52 @@ describe('Assignee operations', () => {
         return restOk({});
       });
 
-      const result = await assignUsers({
-        id: 123,
-        assignees: [1, 2],
-      }, authManager);
+      const result = await assignUsers(
+        {
+          id: 123,
+          assignees: [1, 2],
+        },
+        authManager,
+      );
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).not.toContain('not persisted');
     });
 
     it('should throw error when task id is missing', async () => {
       await expect(assignUsers({ assignees: [1, 2] }, authManager)).rejects.toThrow(
-        'Task id is required for assign operation'
+        'Task id is required for assign operation',
       );
     });
 
     it('should throw error when task id is zero', async () => {
       await expect(assignUsers({ id: 0, assignees: [1, 2] }, authManager)).rejects.toThrow(
-        'Task id is required for assign operation'
+        'Task id is required for assign operation',
       );
     });
 
     it('should throw error when task id is negative', async () => {
       await expect(assignUsers({ id: -1, assignees: [1, 2] }, authManager)).rejects.toThrow(
-        'id must be a positive integer'
+        'id must be a positive integer',
       );
     });
 
     it('should throw error when assignees array is missing', async () => {
       await expect(assignUsers({ id: 123 }, authManager)).rejects.toThrow(
-        'At least one assignee (user id) is required'
+        'At least one assignee (user id) is required',
       );
     });
 
     it('should throw error when assignees array is empty', async () => {
       await expect(assignUsers({ id: 123, assignees: [] }, authManager)).rejects.toThrow(
-        'At least one assignee (user id) is required'
+        'At least one assignee (user id) is required',
       );
     });
 
     it('should throw error when assignee id is invalid', async () => {
       await expect(assignUsers({ id: 123, assignees: [1, -2] }, authManager)).rejects.toThrow(
-        'assignee ID must be a positive integer'
+        'assignee ID must be a positive integer',
       );
     });
 
@@ -255,13 +275,18 @@ describe('Assignee operations', () => {
       fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
         const method = init?.method ?? 'GET';
         if (method === 'PUT') {
-          return { ok: false, status: 401, statusText: 'Unauthorized', text: jest.fn(async () => '') } as unknown as Response;
+          return {
+            ok: false,
+            status: 401,
+            statusText: 'Unauthorized',
+            text: jest.fn(async () => ''),
+          } as unknown as Response;
         }
         return restOk({});
       });
 
       await expect(assignUsers({ id: 123, assignees: [1] }, authManager)).rejects.toThrow(
-        /prevents assigning users to tasks\. \(Retried 3 times\)/
+        /prevents assigning users to tasks\. \(Retried 3 times\)/,
       );
 
       // A genuine 401 is retried by the outer auth-retry loop (1 initial + 3).
@@ -274,12 +299,19 @@ describe('Assignee operations', () => {
       fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
         const method = init?.method ?? 'GET';
         if (method === 'PUT') {
-          return { ok: false, status: 403, statusText: 'Forbidden', text: jest.fn(async () => 'forbidden') } as unknown as Response;
+          return {
+            ok: false,
+            status: 403,
+            statusText: 'Forbidden',
+            text: jest.fn(async () => 'forbidden'),
+          } as unknown as Response;
         }
         return restOk({});
       });
 
-      await expect(assignUsers({ id: 123, assignees: [1] }, authManager)).rejects.toThrow(/HTTP 403/);
+      await expect(assignUsers({ id: 123, assignees: [1] }, authManager)).rejects.toThrow(
+        /HTTP 403/,
+      );
 
       const putCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'PUT');
       expect(putCalls).toHaveLength(1);
@@ -300,7 +332,7 @@ describe('Assignee operations', () => {
       });
 
       await expect(assignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
-        /Failed to assign users to task:.*Validation failed/
+        /Failed to assign users to task:.*Validation failed/,
       );
     });
   });
@@ -314,12 +346,17 @@ describe('Assignee operations', () => {
       };
       routeTaskFetch(mockTask);
 
-      const result = await unassignUsers({
-        id: 123,
-        assignees: [1, 2],
-      }, authManager);
+      const result = await unassignUsers(
+        {
+          id: 123,
+          assignees: [1, 2],
+        },
+        authManager,
+      );
 
-      const deleteCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'DELETE');
+      const deleteCalls = fetchMock.mock.calls.filter(
+        (c) => (c[1] as RequestInit)?.method === 'DELETE',
+      );
       expect(deleteCalls).toHaveLength(2);
       expect(fetchMock).toHaveBeenCalledWith(
         'https://vikunja.test/api/v1/tasks/123/assignees/1',
@@ -336,32 +373,32 @@ describe('Assignee operations', () => {
       );
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('unassign');
       expect(markdown).toContain('Users removed from task successfully');
     });
 
     it('should throw error when task id is missing', async () => {
       await expect(unassignUsers({ assignees: [1, 2] }, authManager)).rejects.toThrow(
-        'Task id is required for unassign operation'
+        'Task id is required for unassign operation',
       );
     });
 
     it('should throw error when task id is zero', async () => {
       await expect(unassignUsers({ id: 0, assignees: [1, 2] }, authManager)).rejects.toThrow(
-        'Task id is required for unassign operation'
+        'Task id is required for unassign operation',
       );
     });
 
     it('should throw error when assignees array is missing', async () => {
       await expect(unassignUsers({ id: 123 }, authManager)).rejects.toThrow(
-        'At least one assignee (user id) is required to unassign'
+        'At least one assignee (user id) is required to unassign',
       );
     });
 
     it('should throw error when assignees array is empty', async () => {
       await expect(unassignUsers({ id: 123, assignees: [] }, authManager)).rejects.toThrow(
-        'At least one assignee (user id) is required to unassign'
+        'At least one assignee (user id) is required to unassign',
       );
     });
 
@@ -369,17 +406,24 @@ describe('Assignee operations', () => {
       fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
         const method = init?.method ?? 'GET';
         if (method === 'DELETE') {
-          return { ok: false, status: 401, statusText: 'Unauthorized', text: jest.fn(async () => '') } as unknown as Response;
+          return {
+            ok: false,
+            status: 401,
+            statusText: 'Unauthorized',
+            text: jest.fn(async () => ''),
+          } as unknown as Response;
         }
         return restOk({});
       });
 
       await expect(unassignUsers({ id: 123, assignees: [1] }, authManager)).rejects.toThrow(
-        /prevents removing users from tasks\. \(Retried 3 times\)/
+        /prevents removing users from tasks\. \(Retried 3 times\)/,
       );
 
       // A genuine 401 is retried by the outer auth-retry loop (1 initial + 3).
-      const deleteCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'DELETE');
+      const deleteCalls = fetchMock.mock.calls.filter(
+        (c) => (c[1] as RequestInit)?.method === 'DELETE',
+      );
       expect(deleteCalls).toHaveLength(4);
     });
 
@@ -391,7 +435,12 @@ describe('Assignee operations', () => {
         const method = init?.method ?? 'GET';
         const path = new URL(url).pathname;
         if (method === 'DELETE') {
-          return { ok: false, status: 403, statusText: 'Forbidden', text: jest.fn(async () => '') } as unknown as Response;
+          return {
+            ok: false,
+            status: 403,
+            statusText: 'Forbidden',
+            text: jest.fn(async () => ''),
+          } as unknown as Response;
         }
         // Reconcile: user 5 is genuinely not assigned.
         if (method === 'GET' && path === '/api/v1/tasks/123/assignees') {
@@ -404,7 +453,9 @@ describe('Assignee operations', () => {
       expect(result.content[0].text).toContain('## ✅ Success');
 
       // The 403 must be attempted exactly once, never retried.
-      const deleteCalls = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'DELETE');
+      const deleteCalls = fetchMock.mock.calls.filter(
+        (c) => (c[1] as RequestInit)?.method === 'DELETE',
+      );
       expect(deleteCalls).toHaveLength(1);
     });
 
@@ -413,7 +464,12 @@ describe('Assignee operations', () => {
         const method = init?.method ?? 'GET';
         const path = new URL(url).pathname;
         if (method === 'DELETE') {
-          return { ok: false, status: 403, statusText: 'Forbidden', text: jest.fn(async () => '') } as unknown as Response;
+          return {
+            ok: false,
+            status: 403,
+            statusText: 'Forbidden',
+            text: jest.fn(async () => ''),
+          } as unknown as Response;
         }
         // Reconcile: user 5 is STILL assigned (e.g. no write access).
         if (method === 'GET' && path === '/api/v1/tasks/123/assignees') {
@@ -423,7 +479,7 @@ describe('Assignee operations', () => {
       });
 
       await expect(unassignUsers({ id: 123, assignees: [5] }, authManager)).rejects.toThrow(
-        /Could not remove user 5 from task 123/
+        /Could not remove user 5 from task 123/,
       );
     });
 
@@ -432,7 +488,12 @@ describe('Assignee operations', () => {
         const method = init?.method ?? 'GET';
         const path = new URL(url).pathname;
         if (method === 'DELETE' && path.endsWith('/assignees/2')) {
-          return { ok: false, status: 403, statusText: 'Forbidden', text: jest.fn(async () => '') } as unknown as Response;
+          return {
+            ok: false,
+            status: 403,
+            statusText: 'Forbidden',
+            text: jest.fn(async () => ''),
+          } as unknown as Response;
         }
         if (method === 'DELETE') return restOk({}); // user 1 removed
         // Reconcile: user 2 is still assigned.
@@ -443,7 +504,7 @@ describe('Assignee operations', () => {
       });
 
       await expect(unassignUsers({ id: 123, assignees: [1, 2] }, authManager)).rejects.toThrow(
-        /Could not remove user 2 from task 123/
+        /Could not remove user 2 from task 123/,
       );
     });
   });
@@ -526,33 +587,33 @@ describe('Assignee operations', () => {
 
     it('should throw error when task id is undefined', async () => {
       await expect(listAssignees({}, authManager)).rejects.toThrow(
-        'Task id is required for list-assignees operation'
+        'Task id is required for list-assignees operation',
       );
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('should handle zero task id', async () => {
       await expect(listAssignees({ id: 0 }, authManager)).rejects.toThrow(
-        'id must be a positive integer'
+        'id must be a positive integer',
       );
     });
 
     it('should handle negative task id', async () => {
       await expect(listAssignees({ id: -1 }, authManager)).rejects.toThrow(
-        'id must be a positive integer'
+        'id must be a positive integer',
       );
     });
 
     it('rejects a non-positive page', async () => {
       await expect(listAssignees({ id: 123, page: 0 }, authManager)).rejects.toThrow(
-        'page must be a positive integer'
+        'page must be a positive integer',
       );
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('rejects a non-positive perPage', async () => {
       await expect(listAssignees({ id: 123, perPage: -1 }, authManager)).rejects.toThrow(
-        'perPage must be a positive integer'
+        'perPage must be a positive integer',
       );
     });
 
@@ -617,10 +678,15 @@ describe('Assignee operations', () => {
     });
 
     it('should handle multiple assignees with mixed validation errors', async () => {
-      await expect(assignUsers({
-        id: 123,
-        assignees: [1, 0, -1] // Mix of valid and invalid IDs
-      }, authManager)).rejects.toThrow('assignee ID must be a positive integer');
+      await expect(
+        assignUsers(
+          {
+            id: 123,
+            assignees: [1, 0, -1], // Mix of valid and invalid IDs
+          },
+          authManager,
+        ),
+      ).rejects.toThrow('assignee ID must be a positive integer');
     });
   });
 });

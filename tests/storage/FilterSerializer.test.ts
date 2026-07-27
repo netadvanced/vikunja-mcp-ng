@@ -20,12 +20,12 @@ describe('FilterSerializer Type Safety', () => {
               {
                 field: 'title',
                 operator: '=',
-                value: 'Test Task'
-              }
+                value: 'Test Task',
+              },
             ],
-            operator: '&&'
-          }
-        ]
+            operator: '&&',
+          },
+        ],
       };
 
       // This should not throw and should return true for valid structure
@@ -48,7 +48,7 @@ describe('FilterSerializer Type Safety', () => {
         { groups: [{ conditions: [], operator: '&&' }] }, // missing field/operator/value
       ];
 
-      invalidInputs.forEach(input => {
+      invalidInputs.forEach((input) => {
         const result = (serializer as any).isValidExpression(input);
         // Most invalid inputs should return false, but let's see what actually happens
         expect(typeof result).toBe('boolean');
@@ -58,12 +58,16 @@ describe('FilterSerializer Type Safety', () => {
     it('should type-check unknown inputs properly', () => {
       const unknownInputs: unknown[] = [
         { groups: [] },
-        { groups: [{ conditions: [{ field: 'title', operator: '=', value: 'test' }], operator: '&&' }] },
+        {
+          groups: [
+            { conditions: [{ field: 'title', operator: '=', value: 'test' }], operator: '&&' },
+          ],
+        },
         { invalid: 'structure' },
-        'random string'
+        'random string',
       ];
 
-      unknownInputs.forEach(input => {
+      unknownInputs.forEach((input) => {
         expect(() => {
           const result = (serializer as any).isValidExpression(input);
           expect(typeof result).toBe('boolean');

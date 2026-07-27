@@ -106,9 +106,7 @@ describe('Attachments read-side subcommands', () => {
 
       await listAttachments({ id: 42 }, authManager);
 
-      expect(fetchMock.mock.calls[0][0]).toBe(
-        'https://vikunja.test/api/v1/tasks/42/attachments',
-      );
+      expect(fetchMock.mock.calls[0][0]).toBe('https://vikunja.test/api/v1/tasks/42/attachments');
     });
 
     it('treats a non-array response as an empty list', async () => {
@@ -185,9 +183,7 @@ describe('Attachments read-side subcommands', () => {
     it('throws NOT_FOUND when the attachment id is not in the list', async () => {
       fetchMock.mockResolvedValue(restOk(attachmentsPayload));
 
-      await expect(
-        getAttachmentInfo({ id: 42, attachmentId: 999 }, authManager),
-      ).rejects.toThrow(
+      await expect(getAttachmentInfo({ id: 42, attachmentId: 999 }, authManager)).rejects.toThrow(
         'Attachment 999 not found on task 42 on the default page — pass page/perPage to search further pages if the task has many attachments',
       );
     });
@@ -216,9 +212,9 @@ describe('Attachments read-side subcommands', () => {
     });
 
     it('rejects a non-positive attachment id', async () => {
-      await expect(
-        getAttachmentInfo({ id: 42, attachmentId: 0 }, authManager),
-      ).rejects.toThrow('attachmentId must be a positive integer');
+      await expect(getAttachmentInfo({ id: 42, attachmentId: 0 }, authManager)).rejects.toThrow(
+        'attachmentId must be a positive integer',
+      );
     });
 
     it('handles an attachment with no created_by (omitted, not thrown)', async () => {
@@ -269,9 +265,7 @@ describe('Attachments read-side subcommands', () => {
     it('propagates a non-OK HTTP response', async () => {
       fetchMock.mockResolvedValue(restError(404, 'Not Found', 'no such attachment'));
 
-      await expect(
-        deleteAttachment({ id: 42, attachmentId: 999 }, authManager),
-      ).rejects.toThrow(
+      await expect(deleteAttachment({ id: 42, attachmentId: 999 }, authManager)).rejects.toThrow(
         'Vikunja REST request failed (DELETE /tasks/42/attachments/999): HTTP 404 Not Found — no such attachment',
       );
     });

@@ -153,7 +153,9 @@ Task with labels,label1;label2,user1;user2`;
         };
 
         expect(() => parseInputData(options)).toThrow(MCPError);
-        expect(() => parseInputData(options)).toThrow('CSV must have at least a header row and one data row');
+        expect(() => parseInputData(options)).toThrow(
+          'CSV must have at least a header row and one data row',
+        );
       });
 
       it('should throw MCPError for CSV with empty lines only', () => {

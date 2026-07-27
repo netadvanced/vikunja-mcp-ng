@@ -182,7 +182,10 @@ async function findShareByIdViaList(
   const numericShareId = Number(shareId);
   const share = shareList.find((candidate) => candidate.id === numericShareId);
   if (!share) {
-    throw new MCPError(ErrorCode.NOT_FOUND, `Share with ID ${shareId} not found for project ${projectId}`);
+    throw new MCPError(
+      ErrorCode.NOT_FOUND,
+      `Share with ID ${shareId} not found for project ${projectId}`,
+    );
   }
   return share;
 }
@@ -209,16 +212,7 @@ export async function createProjectShare(
   args: CreateShareArgs,
   authManager: AuthManager,
 ): Promise<McpResponse> {
-  const {
-    projectId,
-    right,
-    name,
-    title,
-    password,
-    verbosity,
-    useOptimizedFormat,
-    useAorp
-  } = args;
+  const { projectId, right, name, title, password, verbosity, useOptimizedFormat, useAorp } = args;
 
   try {
     // Reject, don't remap: `name` (the share's label) and `title` (the
@@ -269,11 +263,11 @@ export async function createProjectShare(
       {
         projectId,
         shareRight: right,
-        hasPassword: !!password
+        hasPassword: !!password,
       },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -281,8 +275,8 @@ export async function createProjectShare(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
@@ -306,7 +300,7 @@ export async function listProjectShares(
     search,
     verbosity,
     useOptimizedFormat,
-    useAorp
+    useAorp,
   } = args;
 
   try {
@@ -341,11 +335,11 @@ export async function listProjectShares(
         perPage,
         ...(search !== undefined && { search }),
         count: shareList.length,
-        totalShares: shareList.length
+        totalShares: shareList.length,
       },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -353,8 +347,8 @@ export async function listProjectShares(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
@@ -375,17 +369,11 @@ export async function getProjectShare(
 
   try {
     if (!shareId || typeof shareId !== 'string' || shareId.trim().length === 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Share ID must be a non-empty string'
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID must be a non-empty string');
     }
 
     if (!projectId || typeof projectId !== 'number' || projectId <= 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Project ID is required'
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
     }
 
     // Routed via the LIST endpoint, not the by-id GET — see
@@ -401,7 +389,7 @@ export async function getProjectShare(
       { shareId },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -409,13 +397,16 @@ export async function getProjectShare(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError) {
       if (error.details?.statusCode === 404) {
-        throw new MCPError(ErrorCode.NOT_FOUND, `Share with ID ${shareId} not found for project ${projectId}`);
+        throw new MCPError(
+          ErrorCode.NOT_FOUND,
+          `Share with ID ${shareId} not found for project ${projectId}`,
+        );
       }
       throw error;
     }
@@ -434,17 +425,11 @@ export async function deleteProjectShare(
 
   try {
     if (!shareId || typeof shareId !== 'string' || shareId.trim().length === 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Share ID must be a non-empty string'
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID must be a non-empty string');
     }
 
     if (!projectId || typeof projectId !== 'number' || projectId <= 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Project ID is required'
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
     }
 
     // Get share details before deletion so the response can report the
@@ -473,11 +458,11 @@ export async function deleteProjectShare(
       {
         projectId,
         shareId,
-        shareName: share.name
+        shareName: share.name,
       },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -485,13 +470,16 @@ export async function deleteProjectShare(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError) {
       if (error.details?.statusCode === 404) {
-        throw new MCPError(ErrorCode.NOT_FOUND, `Share with ID ${shareId} not found for project ${projectId}`);
+        throw new MCPError(
+          ErrorCode.NOT_FOUND,
+          `Share with ID ${shareId} not found for project ${projectId}`,
+        );
       }
       throw error;
     }
@@ -510,10 +498,7 @@ export async function authProjectShare(
 
   try {
     if (!shareHash || typeof shareHash !== 'string' || shareHash.trim().length === 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Share hash must be a non-empty string'
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share hash must be a non-empty string');
     }
 
     // v1.LinkShareAuth: {password}. Unauthenticated endpoint (no share-scoped
@@ -535,11 +520,11 @@ export async function authProjectShare(
       {
         shareHash,
         hasPassword: !!password,
-        authenticated: true
+        authenticated: true,
       },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -547,8 +532,8 @@ export async function authProjectShare(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError) {

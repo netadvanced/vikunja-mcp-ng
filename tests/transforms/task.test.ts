@@ -3,7 +3,15 @@
  * Ensures comprehensive coverage of task transformation for different verbosity levels
  */
 
-import { TaskTransformer, transformTask, transformTasks, createMinimalTask, createStandardTask, createDetailedTask, createCompleteTask } from '../../src/transforms/task';
+import {
+  TaskTransformer,
+  transformTask,
+  transformTasks,
+  createMinimalTask,
+  createStandardTask,
+  createDetailedTask,
+  createCompleteTask,
+} from '../../src/transforms/task';
 import { Verbosity, FieldCategory } from '../../src/transforms/base';
 import type { Task } from '../../src/transforms/task';
 
@@ -31,7 +39,7 @@ describe('Task Transformer', () => {
       identifier: 'TEST-001',
       index: 0,
       parent_task_id: null,
-      repeat_after: 0
+      repeat_after: 0,
     };
   });
 
@@ -44,7 +52,7 @@ describe('Task Transformer', () => {
         expect(result.data).toEqual({
           id: 1,
           title: 'Test Task',
-          done: false
+          done: false,
         });
         expect(result.metrics.fieldsIncluded).toBe(3);
         expect(result.metrics.totalFields).toBe(Object.keys(sampleTask).length);
@@ -57,7 +65,7 @@ describe('Task Transformer', () => {
           id: 1,
           title: 'Test Task',
           // Missing done field
-          description: 'This is a test'
+          description: 'This is a test',
         } as Task;
 
         const config = { verbosity: Verbosity.MINIMAL };
@@ -65,7 +73,7 @@ describe('Task Transformer', () => {
 
         expect(result.data).toEqual({
           id: 1,
-          title: 'Test Task'
+          title: 'Test Task',
         });
         expect(result.data.done).toBeUndefined();
       });
@@ -92,7 +100,7 @@ describe('Task Transformer', () => {
           done: false,
           description: 'This is a test task',
           priority: 3,
-          project_id: 5
+          project_id: 5,
         });
         expect(result.metrics.fieldsIncluded).toBeGreaterThan(3);
         expect(result.metadata.categoriesIncluded).toContain(FieldCategory.CONTEXT);
@@ -103,7 +111,7 @@ describe('Task Transformer', () => {
           id: 1,
           title: 'Test Task',
           done: true,
-          priority: 1
+          priority: 1,
           // Missing description and project_id
         } as Task;
 
@@ -133,7 +141,7 @@ describe('Task Transformer', () => {
           due_date: expect.stringMatching(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z/),
           created_at: expect.stringMatching(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z/),
           updated_at: expect.stringMatching(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z/),
-          project_id: 5
+          project_id: 5,
         });
 
         expect(result.metadata.categoriesIncluded).toContain(FieldCategory.SCHEDULING);
@@ -154,7 +162,7 @@ describe('Task Transformer', () => {
         const taskWithNullDates = {
           ...sampleTask,
           due_date: null,
-          completed_at: null
+          completed_at: null,
         };
 
         const config = { verbosity: Verbosity.DETAILED };
@@ -171,7 +179,7 @@ describe('Task Transformer', () => {
         const result = taskTransformer.transformTask(sampleTask, config);
 
         // Should include all available fields
-        Object.keys(sampleTask).forEach(key => {
+        Object.keys(sampleTask).forEach((key) => {
           if (sampleTask[key] !== null) {
             expect(result.data).toHaveProperty(key);
           }
@@ -226,7 +234,7 @@ describe('Task Transformer', () => {
           created_at: '2024-01-02T10:00:00Z',
           updated_at: '2024-01-03T15:00:00Z',
           completed_at: '2024-01-03T15:00:00Z',
-          project_id: 5
+          project_id: 5,
         } as Task,
         {
           id: 3,
@@ -235,8 +243,8 @@ describe('Task Transformer', () => {
           priority: 2,
           due_date: '2024-02-01T09:00:00Z',
           created_at: '2024-01-04T11:00:00Z',
-          project_id: 6
-        } as Task
+          project_id: 6,
+        } as Task,
       ];
     });
 
@@ -270,7 +278,7 @@ describe('Task Transformer', () => {
 
       // Should get unique fields across all tasks (determined by field selector)
       const allFields = new Set<string>();
-      tasks.forEach(task => Object.keys(task).forEach(field => allFields.add(field)));
+      tasks.forEach((task) => Object.keys(task).forEach((field) => allFields.add(field)));
 
       // Fields included should be the minimal fields (id, title, done) available across all tasks
       expect(result.metrics.fieldsIncluded).toBeGreaterThan(0);
@@ -308,7 +316,7 @@ describe('Task Transformer', () => {
         expect(minimalTask).toEqual({
           id: 1,
           title: 'Test Task',
-          done: false
+          done: false,
         });
       });
     });
@@ -323,7 +331,7 @@ describe('Task Transformer', () => {
           done: false,
           priority: 3,
           description: 'This is a test task',
-          project_id: 5
+          project_id: 5,
         });
       });
 
@@ -331,7 +339,7 @@ describe('Task Transformer', () => {
         const taskWithoutOptionals = {
           id: 1,
           title: 'Test',
-          done: false
+          done: false,
         } as Task;
 
         const standardTask = createStandardTask(taskWithoutOptionals);
@@ -339,7 +347,7 @@ describe('Task Transformer', () => {
         expect(standardTask).toEqual({
           id: 1,
           title: 'Test',
-          done: false
+          done: false,
         });
         expect(standardTask.description).toBeUndefined();
         expect(standardTask.project_id).toBeUndefined();
@@ -357,7 +365,7 @@ describe('Task Transformer', () => {
           priority: 3,
           description: 'This is a test task',
           project_id: 5,
-          hex_color: '#ff0000'
+          hex_color: '#ff0000',
         });
 
         expect(detailedTask.due_date).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z/);
@@ -369,7 +377,7 @@ describe('Task Transformer', () => {
         const taskWithNullDates = {
           ...sampleTask,
           due_date: null,
-          start_date: null
+          start_date: null,
         };
 
         const detailedTask = createDetailedTask(taskWithNullDates);
@@ -385,7 +393,7 @@ describe('Task Transformer', () => {
         const completeTask = createCompleteTask(sampleTask);
 
         // Should include all fields from the original task
-        Object.keys(sampleTask).forEach(key => {
+        Object.keys(sampleTask).forEach((key) => {
           if (sampleTask[key] !== null) {
             expect(completeTask).toHaveProperty(key);
           }
@@ -400,7 +408,7 @@ describe('Task Transformer', () => {
         const taskWithNulls = {
           ...sampleTask,
           completed_at: null,
-          parent_task_id: null
+          parent_task_id: null,
         };
 
         const completeTask = createCompleteTask(taskWithNulls);
@@ -420,7 +428,7 @@ describe('Task Transformer', () => {
           id: 1,
           title: 'Test Task',
           done: false,
-          priority: 3
+          priority: 3,
         });
         expect(result.metadata.verbosity).toBe(Verbosity.DETAILED);
       });
@@ -435,7 +443,7 @@ describe('Task Transformer', () => {
         expect(result.data[0]).toEqual({
           id: 1,
           title: 'Test Task',
-          done: false
+          done: false,
         });
         expect(result.metadata.verbosity).toBe(Verbosity.MINIMAL);
       });
@@ -446,14 +454,14 @@ describe('Task Transformer', () => {
     it('should handle task with only id and title', () => {
       const minimalTask = {
         id: 1,
-        title: 'Minimal Task'
+        title: 'Minimal Task',
       } as Task;
 
       const result = taskTransformer.transformTask(minimalTask, { verbosity: Verbosity.STANDARD });
 
       expect(result.data).toEqual({
         id: 1,
-        title: 'Minimal Task'
+        title: 'Minimal Task',
       });
     });
 
@@ -472,12 +480,12 @@ describe('Task Transformer', () => {
         ...sampleTask,
         custom_field: 'custom value',
         another_custom: 42,
-        custom_date: '2024-01-20T10:00:00Z'
+        custom_date: '2024-01-20T10:00:00Z',
       };
 
       const config = {
         verbosity: Verbosity.STANDARD,
-        fieldOverrides: { include: ['custom_field', 'another_custom', 'custom_date'] }
+        fieldOverrides: { include: ['custom_field', 'another_custom', 'custom_date'] },
       };
 
       const result = taskTransformer.transformTask(taskWithCustomFields, config);
@@ -494,11 +502,13 @@ describe('Task Transformer', () => {
         done: i % 2 === 0,
         priority: (i % 5) + 1,
         description: `Description for task ${i + 1}`,
-        created_at: new Date(Date.now() - i * 1000000).toISOString()
+        created_at: new Date(Date.now() - i * 1000000).toISOString(),
       }));
 
       const startTime = Date.now();
-      const result = taskTransformer.transformTasks(largeTaskList, { verbosity: Verbosity.STANDARD });
+      const result = taskTransformer.transformTasks(largeTaskList, {
+        verbosity: Verbosity.STANDARD,
+      });
       const endTime = Date.now();
 
       expect(endTime - startTime).toBeLessThan(500); // Should complete in < 500ms

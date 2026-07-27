@@ -66,7 +66,7 @@ type McpResponse = { content: Array<{ type: 'text'; text: string }> };
  * without smuggling anything past runtime behavior.
  */
 function toResponseData(data: Record<string, unknown>): ResponseData {
-  return data as unknown as ResponseData;
+  return data;
 }
 
 function buildQuery(params: Record<string, string | number | undefined>): string {
@@ -202,7 +202,11 @@ export async function addProjectUser(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `Project with ID ${projectId} not found, or user "${username}" does not exist`, 'Failed to add project user');
+    rethrow(
+      error,
+      `Project with ID ${projectId} not found, or user "${username}" does not exist`,
+      'Failed to add project user',
+    );
   }
 }
 
@@ -241,7 +245,11 @@ export async function updateProjectUserPermission(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `User ${userId} does not have access to project ${projectId}`, 'Failed to update project user permission');
+    rethrow(
+      error,
+      `User ${userId} does not have access to project ${projectId}`,
+      'Failed to update project user permission',
+    );
   }
 }
 
@@ -276,7 +284,11 @@ export async function removeProjectUser(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `User ${userId} does not have access to project ${projectId}`, 'Failed to remove project user');
+    rethrow(
+      error,
+      `User ${userId} does not have access to project ${projectId}`,
+      'Failed to remove project user',
+    );
   }
 }
 
@@ -356,7 +368,11 @@ export async function addProjectTeam(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `Project with ID ${projectId} not found, or team ${teamId} does not exist`, 'Failed to add project team');
+    rethrow(
+      error,
+      `Project with ID ${projectId} not found, or team ${teamId} does not exist`,
+      'Failed to add project team',
+    );
   }
 }
 
@@ -395,7 +411,11 @@ export async function updateProjectTeamPermission(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `Team ${teamId} does not have access to project ${projectId}`, 'Failed to update project team permission');
+    rethrow(
+      error,
+      `Team ${teamId} does not have access to project ${projectId}`,
+      'Failed to update project team permission',
+    );
   }
 }
 
@@ -430,7 +450,11 @@ export async function removeProjectTeam(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `Team ${teamId} does not have access to project ${projectId}`, 'Failed to remove project team');
+    rethrow(
+      error,
+      `Team ${teamId} does not have access to project ${projectId}`,
+      'Failed to remove project team',
+    );
   }
 }
 
@@ -504,10 +528,7 @@ export async function shareProjectWithUser(
       }
       const match = findExactUsername(Array.isArray(candidates) ? candidates : [], username);
       if (!match || match.id === undefined) {
-        throw new MCPError(
-          ErrorCode.NOT_FOUND,
-          `No user found with username "${username}"`,
-        );
+        throw new MCPError(ErrorCode.NOT_FOUND, `No user found with username "${username}"`);
       }
       resolvedUserId = match.id;
       return match;
@@ -573,10 +594,7 @@ export async function shareProjectWithUser(
   const result = await op.run({ atomic });
 
   if (!result.ok) {
-    const err =
-      result.error instanceof Error
-        ? result.error
-        : new Error(String(result.error));
+    const err = result.error instanceof Error ? result.error : new Error(String(result.error));
     throw new MCPError(
       err instanceof MCPError ? err.code : ErrorCode.API_ERROR,
       `share-with-user failed: ${err.message}${result.guidance ? `\n${result.guidance}` : ''}`,
@@ -702,10 +720,7 @@ export async function shareProjectWithTeam(
   const result = await op.run({ atomic });
 
   if (!result.ok) {
-    const err =
-      result.error instanceof Error
-        ? result.error
-        : new Error(String(result.error));
+    const err = result.error instanceof Error ? result.error : new Error(String(result.error));
     throw new MCPError(
       err instanceof MCPError ? err.code : ErrorCode.API_ERROR,
       `share-with-team failed: ${err.message}${result.guidance ? `\n${result.guidance}` : ''}`,
@@ -742,17 +757,31 @@ export async function listProjectMembers(
   validateId(projectId, 'projectId');
 
   const [usersResult, teamsResult, sharesResult] = await Promise.allSettled([
-    vikunjaRestRequest<VikunjaUserWithPermission[]>(authManager, 'GET', `/projects/${projectId}/users`),
-    vikunjaRestRequest<VikunjaTeamWithPermission[]>(authManager, 'GET', `/projects/${projectId}/teams`),
+    vikunjaRestRequest<VikunjaUserWithPermission[]>(
+      authManager,
+      'GET',
+      `/projects/${projectId}/users`,
+    ),
+    vikunjaRestRequest<VikunjaTeamWithPermission[]>(
+      authManager,
+      'GET',
+      `/projects/${projectId}/teams`,
+    ),
     listProjectShares({ projectId }, authManager),
   ]);
 
   if (usersResult.status === 'rejected') {
-    rethrow(usersResult.reason, `Project with ID ${projectId} not found`, 'Failed to list project members');
+    rethrow(
+      usersResult.reason,
+      `Project with ID ${projectId} not found`,
+      'Failed to list project members',
+    );
   }
 
-  const users = usersResult.status === 'fulfilled' && Array.isArray(usersResult.value) ? usersResult.value : [];
-  const teams = teamsResult.status === 'fulfilled' && Array.isArray(teamsResult.value) ? teamsResult.value : [];
+  const users =
+    usersResult.status === 'fulfilled' && Array.isArray(usersResult.value) ? usersResult.value : [];
+  const teams =
+    teamsResult.status === 'fulfilled' && Array.isArray(teamsResult.value) ? teamsResult.value : [];
 
   // listProjectShares() already returns a fully-formatted MCP response, not
   // raw data — extract the share count from it best-effort for the summary

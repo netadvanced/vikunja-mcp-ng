@@ -17,12 +17,12 @@ export function isAuthenticationError(error: unknown): boolean {
 
   // Layer 1: Check structured error properties (most reliable)
   const errorWithStatus = error as Error & { status?: number; response?: { status?: number } };
-  
+
   // Check for HTTP status codes as numbers (not strings)
   if (errorWithStatus.status === 401 || errorWithStatus.status === 403) {
     return true;
   }
-  
+
   // Check for Axios-style errors with response.status
   if (errorWithStatus.response?.status === 401 || errorWithStatus.response?.status === 403) {
     return true;
@@ -30,40 +30,40 @@ export function isAuthenticationError(error: unknown): boolean {
 
   // Layer 2: Precise pattern matching for error messages (avoid false positives)
   const errorMessage = error.message.toLowerCase();
-  
+
   // Use regex patterns for exact matching instead of substring matching
   // Trim and normalize the message first
   const normalizedMessage = errorMessage.trim();
-  
+
   const authErrorPatterns = [
-    /^unauthorized[!.]*$/i,        // "unauthorized" with optional punctuation
-    /^forbidden[!.]*$/i,          // "forbidden" with optional punctuation
+    /^unauthorized[!.]*$/i, // "unauthorized" with optional punctuation
+    /^forbidden[!.]*$/i, // "forbidden" with optional punctuation
     /^unauthorized\s+\w+[!.]*$/i, // "unauthorized" + single word with optional punctuation
-    /^forbidden\s+\w+[!.]*$/i,    // "forbidden" + single word with optional punctuation
-    /^\w+\s+forbidden[!.]*$/i,    // single word + "forbidden" with optional punctuation
+    /^forbidden\s+\w+[!.]*$/i, // "forbidden" + single word with optional punctuation
+    /^\w+\s+forbidden[!.]*$/i, // single word + "forbidden" with optional punctuation
     /^\w+\s+unauthorized[!.]*$/i, // single word + "unauthorized" with optional punctuation
     /\bauthentication\s+failed\b/i, // "authentication failed" as phrase
     /\bauthentication\s+required\b/i, // "authentication required" as phrase
-    /\bnot\s+authenticated\b/i,   // "not authenticated" as phrase
-    /\binvalid\s+token\b/i,       // "invalid token" as phrase
-    /\btoken\s+invalid\b/i,       // "token invalid" as phrase
-    /\btoken\s+expired\b/i,       // "token expired" as phrase (for auth detection)
-    /\baccess\s+denied\b/i,       // "access denied" as phrase
-    /\bauth\s+failed\b/i,         // "auth failed" as phrase
-    /\bauth_required\b/i,         // "auth_required" pattern
-    /\btoken_invalid\b/i,         // "token_invalid" pattern
-    /^401\b/,                   // HTTP status at start of message
-    /^403\b/,                   // HTTP status at start of message
-    /\berror:\s*401\b/i,          // "Error: 401" pattern
-    /\berror:\s*403\b/i,           // "Error: 403" pattern
+    /\bnot\s+authenticated\b/i, // "not authenticated" as phrase
+    /\binvalid\s+token\b/i, // "invalid token" as phrase
+    /\btoken\s+invalid\b/i, // "token invalid" as phrase
+    /\btoken\s+expired\b/i, // "token expired" as phrase (for auth detection)
+    /\baccess\s+denied\b/i, // "access denied" as phrase
+    /\bauth\s+failed\b/i, // "auth failed" as phrase
+    /\bauth_required\b/i, // "auth_required" pattern
+    /\btoken_invalid\b/i, // "token_invalid" pattern
+    /^401\b/, // HTTP status at start of message
+    /^403\b/, // HTTP status at start of message
+    /\berror:\s*401\b/i, // "Error: 401" pattern
+    /\berror:\s*403\b/i, // "Error: 403" pattern
     // Vikunja-specific patterns
     /\bmissing,\s+malformed,\s+expired\s+or\s+otherwise\s+invalid\s+token\s+provided\b/i, // Vikunja API error
-    /\bmalformed\s+token\b/i,     // "malformed token"
-    /\bexpired\s+token\b/i,       // "expired token"
-    /\bmissing\s+token\b/i        // "missing token"
+    /\bmalformed\s+token\b/i, // "malformed token"
+    /\bexpired\s+token\b/i, // "expired token"
+    /\bmissing\s+token\b/i, // "missing token"
   ];
-  
-  return authErrorPatterns.some(pattern => pattern.test(normalizedMessage));
+
+  return authErrorPatterns.some((pattern) => pattern.test(normalizedMessage));
 }
 
 /**
@@ -77,7 +77,7 @@ export function isJWTExpiredError(error: unknown): boolean {
 
   // Check for known JWT library error codes or properties
   const errorWithCode = error as Error & { code?: string; name?: string };
-  
+
   // Check for specific JWT library error codes
   if (errorWithCode.code === 'TokenExpiredError' || errorWithCode.name === 'TokenExpiredError') {
     return true;
@@ -85,18 +85,18 @@ export function isJWTExpiredError(error: unknown): boolean {
 
   // Use precise regex patterns for JWT expiration messages
   const errorMessage = error.message.toLowerCase();
-  
+
   const jwtExpirationPatterns = [
-    /\btoken\s+expired\b/,           // "token expired" as phrase
-    /\bjwt\s+expired\b/,             // "jwt expired" as phrase
-    /\bexp\s+claim\b/,               // "exp claim" for JWT exp validation
-    /\btoken\s+has\s+expired\b/,     // "token has expired"
-    /\bjwt\s+has\s+expired\b/,       // "jwt has expired"
-    /\bexpired\s+token\b/,           // "expired token"
-    /\bexpired\s+jwt\b/              // "expired jwt"
+    /\btoken\s+expired\b/, // "token expired" as phrase
+    /\bjwt\s+expired\b/, // "jwt expired" as phrase
+    /\bexp\s+claim\b/, // "exp claim" for JWT exp validation
+    /\btoken\s+has\s+expired\b/, // "token has expired"
+    /\bjwt\s+has\s+expired\b/, // "jwt has expired"
+    /\bexpired\s+token\b/, // "expired token"
+    /\bexpired\s+jwt\b/, // "expired jwt"
   ];
-  
-  return jwtExpirationPatterns.some(pattern => pattern.test(errorMessage));
+
+  return jwtExpirationPatterns.some((pattern) => pattern.test(errorMessage));
 }
 
 /**
@@ -133,18 +133,21 @@ export function createAuthErrorMessage(operation: string, originalError: string)
 
   // Check for specific Vikunja token errors and provide enhanced guidance
   const errorMessage = originalError.toLowerCase();
-  if (errorMessage.includes('missing, malformed, expired') ||
-      errorMessage.includes('malformed token') ||
-      errorMessage.includes('expired token') ||
-      errorMessage.includes('missing token')) {
-
-    return `Authentication failed: Invalid or expired API token.\n\n` +
+  if (
+    errorMessage.includes('missing, malformed, expired') ||
+    errorMessage.includes('malformed token') ||
+    errorMessage.includes('expired token') ||
+    errorMessage.includes('missing token')
+  ) {
+    return (
+      `Authentication failed: Invalid or expired API token.\n\n` +
       `To fix this:\n` +
       `1. Log into your Vikunja instance\n` +
       `2. Go to Settings > API Access\n` +
       `3. Generate a new API token or copy your existing one\n` +
       `4. Reconnect with: vikunja_auth.connect({ apiUrl: '${process.env.VIKUNJA_URL || 'https://your-vikunja.com/api/v1'}', apiToken: 'your-new-token' })\n\n` +
-      `Note: API tokens start with 'tk_' and JWT tokens start with 'eyJ'. Make sure you're using the correct token type.`;
+      `Note: API tokens start with 'tk_' and JWT tokens start with 'eyJ'. Make sure you're using the correct token type.`
+    );
   }
 
   return (
@@ -163,7 +166,7 @@ export function handleAuthError(
   fallbackMessage?: string,
 ): never {
   const errorMessage = error instanceof Error ? error.message : String(error);
-  
+
   logger.debug('Auth error detected during %s: %s', operation, errorMessage);
 
   // Check for JWT expiration first (more specific error)
@@ -172,10 +175,10 @@ export function handleAuthError(
     throw new MCPError(
       ErrorCode.AUTH_REQUIRED,
       `JWT token has expired. Please reconnect with a fresh JWT token:\n` +
-      `1. Log into Vikunja in your browser\n` +
-      `2. Open DevTools → Application → Local Storage\n` +
-      `3. Copy the new JWT token\n` +
-      `4. Run: vikunja_auth.connect with the new token`,
+        `1. Log into Vikunja in your browser\n` +
+        `2. Open DevTools → Application → Local Storage\n` +
+        `3. Copy the new JWT token\n` +
+        `4. Run: vikunja_auth.connect with the new token`,
     );
   }
 

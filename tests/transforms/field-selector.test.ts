@@ -62,7 +62,16 @@ describe('Field Selector', () => {
 
   describe('Detailed Verbosity', () => {
     it('should select core, context, and scheduling fields for detailed verbosity', () => {
-      const availableFields = ['id', 'title', 'done', 'description', 'priority', 'due_date', 'created_at', 'updated_at'];
+      const availableFields = [
+        'id',
+        'title',
+        'done',
+        'description',
+        'priority',
+        'due_date',
+        'created_at',
+        'updated_at',
+      ];
       const config = { verbosity: Verbosity.DETAILED };
 
       const result = fieldSelector.selectFields(config, availableFields);
@@ -78,7 +87,9 @@ describe('Field Selector', () => {
       expect(result.includedFields).toHaveLength(8);
       expect(result.excludedFields).toEqual([]);
       expect(result.activeCategories).toEqual([
-        FieldCategory.CORE, FieldCategory.CONTEXT, FieldCategory.SCHEDULING
+        FieldCategory.CORE,
+        FieldCategory.CONTEXT,
+        FieldCategory.SCHEDULING,
       ]);
     });
 
@@ -95,18 +106,31 @@ describe('Field Selector', () => {
 
   describe('Complete Verbosity', () => {
     it('should select all available fields for complete verbosity', () => {
-      const availableFields = ['id', 'title', 'done', 'description', 'priority', 'due_date', 'hex_color', 'position', 'index'];
+      const availableFields = [
+        'id',
+        'title',
+        'done',
+        'description',
+        'priority',
+        'due_date',
+        'hex_color',
+        'position',
+        'index',
+      ];
       const config = { verbosity: Verbosity.COMPLETE };
 
       const result = fieldSelector.selectFields(config, availableFields);
 
       expect(result.includedFields).toHaveLength(availableFields.length);
-      availableFields.forEach(field => {
+      availableFields.forEach((field) => {
         expect(result.includedFields).toContain(field);
       });
       expect(result.excludedFields).toEqual([]);
       expect(result.activeCategories).toEqual([
-        FieldCategory.CORE, FieldCategory.CONTEXT, FieldCategory.SCHEDULING, FieldCategory.METADATA
+        FieldCategory.CORE,
+        FieldCategory.CONTEXT,
+        FieldCategory.SCHEDULING,
+        FieldCategory.METADATA,
       ]);
     });
 
@@ -128,7 +152,7 @@ describe('Field Selector', () => {
       const availableFields = ['id', 'title', 'done', 'description', 'custom_field'];
       const config = {
         verbosity: Verbosity.MINIMAL,
-        fieldOverrides: { include: ['custom_field'] }
+        fieldOverrides: { include: ['custom_field'] },
       };
 
       const result = fieldSelector.selectFields(config, availableFields);
@@ -141,7 +165,7 @@ describe('Field Selector', () => {
       const availableFields = ['id', 'title', 'done', 'description'];
       const config = {
         verbosity: Verbosity.STANDARD,
-        fieldOverrides: { exclude: ['description'] }
+        fieldOverrides: { exclude: ['description'] },
       };
 
       const result = fieldSelector.selectFields(config, availableFields);
@@ -156,8 +180,8 @@ describe('Field Selector', () => {
         verbosity: Verbosity.STANDARD,
         fieldOverrides: {
           include: ['custom_field'],
-          exclude: ['description']
-        }
+          exclude: ['description'],
+        },
       };
 
       const result = fieldSelector.selectFields(config, availableFields);
@@ -170,7 +194,7 @@ describe('Field Selector', () => {
       const availableFields = ['id', 'title', 'done'];
       const config = {
         verbosity: Verbosity.MINIMAL,
-        fieldOverrides: { include: [], exclude: [] }
+        fieldOverrides: { include: [], exclude: [] },
       };
 
       const result = fieldSelector.selectFields(config, availableFields);
@@ -190,12 +214,12 @@ describe('Field Selector', () => {
       expect(result.fieldDefinitions).toHaveLength(5);
 
       // Check core field definitions
-      const idField = result.fieldDefinitions.find(f => f.fieldName === 'id');
+      const idField = result.fieldDefinitions.find((f) => f.fieldName === 'id');
       expect(idField?.category).toBe(FieldCategory.CORE);
       expect(idField?.minVerbosity).toBe(Verbosity.MINIMAL);
 
       // Check scheduling field definitions
-      const dueDateField = result.fieldDefinitions.find(f => f.fieldName === 'due_date');
+      const dueDateField = result.fieldDefinitions.find((f) => f.fieldName === 'due_date');
       expect(dueDateField?.category).toBe(FieldCategory.SCHEDULING);
       expect(dueDateField?.minVerbosity).toBe(Verbosity.DETAILED);
     });
@@ -204,18 +228,18 @@ describe('Field Selector', () => {
       const availableFields = ['id', 'unknown_date_field', 'description', 'unknown_field'];
       const config = {
         verbosity: Verbosity.COMPLETE,
-        fieldOverrides: { include: ['unknown_date_field', 'description', 'unknown_field'] }
+        fieldOverrides: { include: ['unknown_date_field', 'description', 'unknown_field'] },
       };
 
       const result = fieldSelector.selectFields(config, availableFields);
 
-      const dateField = result.fieldDefinitions.find(f => f.fieldName === 'unknown_date_field');
+      const dateField = result.fieldDefinitions.find((f) => f.fieldName === 'unknown_date_field');
       expect(dateField?.category).toBe(FieldCategory.SCHEDULING);
 
-      const descField = result.fieldDefinitions.find(f => f.fieldName === 'description');
+      const descField = result.fieldDefinitions.find((f) => f.fieldName === 'description');
       expect(descField?.category).toBe(FieldCategory.CONTEXT);
 
-      const unknownField = result.fieldDefinitions.find(f => f.fieldName === 'unknown_field');
+      const unknownField = result.fieldDefinitions.find((f) => f.fieldName === 'unknown_field');
       expect(unknownField?.category).toBe(FieldCategory.METADATA);
     });
 
@@ -223,12 +247,12 @@ describe('Field Selector', () => {
       const availableFields = ['unknown_field'];
       const config = {
         verbosity: Verbosity.MINIMAL,
-        fieldOverrides: { include: ['unknown_field'] }
+        fieldOverrides: { include: ['unknown_field'] },
       };
 
       const result = fieldSelector.selectFields(config, availableFields);
 
-      const unknownField = result.fieldDefinitions.find(f => f.fieldName === 'unknown_field');
+      const unknownField = result.fieldDefinitions.find((f) => f.fieldName === 'unknown_field');
       expect(unknownField?.minVerbosity).toBe(Verbosity.STANDARD);
     });
   });
@@ -253,8 +277,8 @@ describe('Field Selector', () => {
       const result = fieldSelector.selectFields(config, availableFields);
 
       // Should not include duplicates
-      expect(result.includedFields.filter(f => f === 'id')).toHaveLength(1);
-      expect(result.excludedFields.filter(f => f === 'id')).toHaveLength(0);
+      expect(result.includedFields.filter((f) => f === 'id')).toHaveLength(1);
+      expect(result.excludedFields.filter((f) => f === 'id')).toHaveLength(0);
     });
 
     it('should handle null/undefined values in field overrides', () => {
@@ -263,8 +287,8 @@ describe('Field Selector', () => {
         verbosity: Verbosity.MINIMAL,
         fieldOverrides: {
           include: null as any,
-          exclude: undefined as any
-        }
+          exclude: undefined as any,
+        },
       };
 
       expect(() => {

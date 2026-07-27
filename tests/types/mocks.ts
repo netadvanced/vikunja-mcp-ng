@@ -1,14 +1,7 @@
 import { AuthManager } from '../../src/auth/AuthManager';
 import type { TestableAuthManager } from '../utils/test-utils';
 import { Server } from '@modelcontextprotocol/sdk/server';
-import type {
-  Task,
-  Project,
-  Label,
-  User,
-  Team,
-  Message,
-} from '../../src/types/vikunja';
+import type { Task, Project, Label, User, Team, Message } from '../../src/types/vikunja';
 import type { GetTasksParams } from '../../src/utils/filtering/types';
 import type { ZodSchema } from 'zod';
 import type { TaskComment, ProjectShare, SavedFilter } from '../../src/types/vikunja';
@@ -69,7 +62,9 @@ export interface MockProjectService {
   getProject: MockedFunction<(projectId: number) => Promise<Project>>;
   updateProject: MockedFunction<(projectId: number, project: Partial<Project>) => Promise<Project>>;
   deleteProject: MockedFunction<(projectId: number) => Promise<Message>>;
-  createLinkShare: MockedFunction<(projectId: number, shareData: LinkShareData) => Promise<LinkShare>>;
+  createLinkShare: MockedFunction<
+    (projectId: number, shareData: LinkShareData) => Promise<LinkShare>
+  >;
   getLinkShares: MockedFunction<(projectId: number) => Promise<LinkShare[]>>;
   getLinkShare: MockedFunction<(projectId: number, shareId: number) => Promise<LinkShare>>;
   deleteLinkShare: MockedFunction<(projectId: number, shareId: number) => Promise<Message>>;
@@ -104,7 +99,9 @@ export interface ShareAuthResponse {
 }
 
 export interface MockShareService {
-  getShareAuth: MockedFunction<(linkShareHash: string, password?: string) => Promise<ShareAuthResponse>>;
+  getShareAuth: MockedFunction<
+    (linkShareHash: string, password?: string) => Promise<ShareAuthResponse>
+  >;
 }
 
 export interface MockVikunjaClient {

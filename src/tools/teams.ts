@@ -71,7 +71,11 @@ interface VikunjaMessage {
   message: string;
 }
 
-export function registerTeamsTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerTeamsTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_teams',
     withReadOnlyNote(
@@ -121,7 +125,6 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
       }
 
       try {
-
         switch (subcommand) {
           case 'list': {
             const params: TeamListParams = {};
@@ -177,7 +180,7 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
               'create-team',
               `Team "${team.name}" created successfully`,
               { team },
-              { affectedFields: Object.keys(teamData).filter(key => typeof key === 'string') },
+              { affectedFields: Object.keys(teamData).filter((key) => typeof key === 'string') },
             );
 
             return {
@@ -197,11 +200,7 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
 
             const teamId = validateAndConvertId(args.id, 'id');
 
-            const team = await vikunjaRestRequest<Team>(
-              authManager,
-              'GET',
-              `/teams/${teamId}`,
-            );
+            const team = await vikunjaRestRequest<Team>(authManager, 'GET', `/teams/${teamId}`);
 
             const standardResponse = createStandardResponse(
               'get-team',

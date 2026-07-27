@@ -3,8 +3,17 @@
  * Centralizes AORP response formatting logic for task operations
  */
 
-import { type TaskResponseData, type TaskResponseMetadata, type AorpBuilderConfig, type AorpVerbosityLevel } from '../../../types';
-import { createAorpResponse, createTaskAorpResponse, createAorpErrorResponse } from '../../../utils/response-factory';
+import {
+  type TaskResponseData,
+  type TaskResponseMetadata,
+  type AorpBuilderConfig,
+  type AorpVerbosityLevel,
+} from '../../../types';
+import {
+  createAorpResponse,
+  createTaskAorpResponse,
+  createAorpErrorResponse,
+} from '../../../utils/response-factory';
 import { getDefaultVerbosity } from '../../../transforms/base';
 import type { AorpFactoryResult } from '../../../types';
 import type { Task } from '../../../types/vikunja';
@@ -17,7 +26,7 @@ import type { ResponseData } from '../../../utils/simple-response';
 function generateAorpConfig(
   _operation: string,
   _data: TaskResponseData,
-  _verbosity: string
+  _verbosity: string,
 ): AorpBuilderConfig {
   // Base configuration
   const baseConfig: AorpBuilderConfig = {
@@ -27,8 +36,8 @@ function generateAorpConfig(
       success: 0.4,
       dataSize: 0.2,
       responseTime: 0.2,
-      completeness: 0.2
-    }
+      completeness: 0.2,
+    },
   };
 
   // Operation-specific adjustments
@@ -40,8 +49,8 @@ function generateAorpConfig(
           success: 0.5,
           dataSize: 0.1,
           responseTime: 0.2,
-          completeness: 0.2
-        }
+          completeness: 0.2,
+        },
       };
 
     case 'bulk-create-tasks':
@@ -53,8 +62,8 @@ function generateAorpConfig(
           success: 0.6,
           dataSize: 0.3,
           responseTime: 0.1,
-          completeness: 0.0
-        }
+          completeness: 0.0,
+        },
       };
 
     case 'list-tasks':
@@ -64,15 +73,14 @@ function generateAorpConfig(
           success: 0.3,
           dataSize: 0.4,
           responseTime: 0.2,
-          completeness: 0.1
-        }
+          completeness: 0.1,
+        },
       };
 
     default:
       return baseConfig;
   }
 }
-
 
 /**
  * Creates an AORP response for task operations with optimized configuration
@@ -82,13 +90,13 @@ export function createTaskResponse(
   message: string,
   _data: TaskResponseData,
   _metadata: TaskResponseMetadata = {
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   },
   _verbosity?: string, // Explicit per-call override; falls back to VIKUNJA_RESPONSE_VERBOSITY (or 'standard') when not provided
   _useOptimizedFormat?: boolean, // Parameter kept for backward compatibility but ignored
   _useAorp?: boolean, // Parameter kept for backward compatibility but ignored
   _aorpConfig?: AorpBuilderConfig,
-  _sessionId?: string
+  _sessionId?: string,
 ): AorpFactoryResult {
   // An explicit per-call verbosity always takes precedence over the
   // VIKUNJA_RESPONSE_VERBOSITY environment default.
@@ -101,7 +109,9 @@ export function createTaskResponse(
   const taskData = _data.task || _data.tasks;
   if (taskData) {
     // Convert Task | Task[] to proper ResponseData format
-    const formattedTaskData = Array.isArray(taskData) ? { tasks: taskData as ResponseData[] } : taskData as ResponseData;
+    const formattedTaskData = Array.isArray(taskData)
+      ? { tasks: taskData as ResponseData[] }
+      : (taskData as ResponseData);
     const taskResult = createTaskAorpResponse(operation, message, formattedTaskData, _metadata);
 
     // Add transformation property for compatibility
@@ -112,7 +122,7 @@ export function createTaskResponse(
       data: taskData,
       metadata: {
         timestamp: new Date().toISOString(),
-      }
+      },
     };
 
     return {
@@ -132,14 +142,14 @@ export function createTaskResponse(
             hasErrors: false,
             isBulkOperation: false,
             isPartialSuccess: false,
-            custom: {}
-          }
+            custom: {},
+          },
         },
         metrics: {
           aorpProcessingTime: 0,
-          totalTime: 0
-        }
-      }
+          totalTime: 0,
+        },
+      },
     };
   }
 
@@ -160,7 +170,10 @@ export function createTaskResponse(
     }
   });
 
-  const fallbackResult = createAorpResponse(operation, message, responseData, { success: true, metadata: _metadata });
+  const fallbackResult = createAorpResponse(operation, message, responseData, {
+    success: true,
+    metadata: _metadata,
+  });
 
   // Add transformation property for compatibility
   const mockOptimizedResponse = {
@@ -170,7 +183,7 @@ export function createTaskResponse(
     data: responseData,
     metadata: {
       timestamp: new Date().toISOString(),
-    }
+    },
   };
 
   return {
@@ -190,14 +203,14 @@ export function createTaskResponse(
           hasErrors: false,
           isBulkOperation: false,
           isPartialSuccess: false,
-          custom: {}
-        }
+          custom: {},
+        },
       },
       metrics: {
         aorpProcessingTime: 0,
-        totalTime: 0
-      }
-    }
+        totalTime: 0,
+      },
+    },
   };
 }
 
@@ -208,17 +221,23 @@ export function createTaskErrorResponse(
   operation: string,
   error: Error | Record<string, unknown>,
   metadata: TaskResponseMetadata = {
-    timestamp: new Date().toISOString()
-  }
+    timestamp: new Date().toISOString(),
+  },
 ): AorpFactoryResult {
   // Extract error message
-  const errorMessage = error instanceof Error ? error.message :
-    (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string')
+  const errorMessage =
+    error instanceof Error
       ? error.message
-      : 'Unknown error occurred';
-  const errorCode = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
-    ? error.code
-    : 'UNKNOWN_ERROR';
+      : error &&
+          typeof error === 'object' &&
+          'message' in error &&
+          typeof error.message === 'string'
+        ? error.message
+        : 'Unknown error occurred';
+  const errorCode =
+    error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : 'UNKNOWN_ERROR';
 
   // Create simple error response
   const rawErrorResult = createAorpErrorResponse(operation, errorMessage, errorCode, {
@@ -232,15 +251,15 @@ export function createTaskErrorResponse(
     immediate: {
       status: 'error' as const,
       key_insight: errorMessage,
-      confidence: 0.0
+      confidence: 0.0,
     },
     summary: errorMessage,
     metadata: {
       timestamp: rawErrorResult.metadata?.timestamp || new Date().toISOString(),
       operation,
       success: false,
-      ...(rawErrorResult.metadata || {})
-    }
+      ...(rawErrorResult.metadata || {}),
+    },
   };
 
   // Add transformation property for compatibility
@@ -251,7 +270,7 @@ export function createTaskErrorResponse(
     data: { error: errorMessage },
     metadata: {
       timestamp: new Date().toISOString(),
-    }
+    },
   };
 
   return {
@@ -271,14 +290,14 @@ export function createTaskErrorResponse(
           hasErrors: true,
           isBulkOperation: false,
           isPartialSuccess: false,
-          custom: {}
+          custom: {},
         },
-        error: errorMessage
+        error: errorMessage,
       },
       metrics: {
         aorpProcessingTime: 0,
-        totalTime: 0
-      }
-    }
+        totalTime: 0,
+      },
+    },
   };
 }

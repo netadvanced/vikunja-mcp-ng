@@ -21,7 +21,7 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
     if (!filterString) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
-        'Server-side filtering requires a filter string'
+        'Server-side filtering requires a filter string',
       );
     }
 
@@ -40,7 +40,7 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
 
     logger.info('Attempting server-side filtering', {
       filter: filterString,
-      endpoint: singleProject ? 'getProjectTasks' : 'getAllTasks'
+      endpoint: singleProject ? 'getProjectTasks' : 'getAllTasks',
     });
 
     let tasks;
@@ -74,7 +74,7 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
 
       logger.info('Server-side filtering completed successfully', {
         taskCount: tasks?.length || 0,
-        filter: filterString
+        filter: filterString,
       });
 
       return {
@@ -83,14 +83,13 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
           serverSideFilteringUsed: true,
           serverSideFilteringAttempted: true,
           clientSideFiltering: false,
-          filteringNote: 'Server-side filtering used (modern Vikunja)'
-        }
+          filteringNote: 'Server-side filtering used (modern Vikunja)',
+        },
       };
-
     } catch (error) {
       logger.error('Server-side filtering failed', {
         error: error instanceof Error ? error.message : String(error),
-        filter: filterString
+        filter: filterString,
       });
 
       // Re-throw the error to be handled by the calling code

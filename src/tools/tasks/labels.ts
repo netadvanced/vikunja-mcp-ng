@@ -222,7 +222,8 @@ export async function applyLabels(
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     const hasId = args.id !== undefined && args.id !== null;
-    const hasTaskIds = args.taskIds !== undefined && args.taskIds !== null && args.taskIds.length > 0;
+    const hasTaskIds =
+      args.taskIds !== undefined && args.taskIds !== null && args.taskIds.length > 0;
 
     if (hasId && hasTaskIds) {
       throw new MCPError(
@@ -405,7 +406,7 @@ export async function applyLabels(
           labelsCreated: createdLabels.map((l) => ({ id: l.id, title: l.title })),
           labelsReused: reusedLabels.map((l) => ({ id: l.id, title: l.title })),
         },
-      }
+      },
     );
 
     return {
@@ -519,9 +520,7 @@ async function removeLabelIdsFromOneTask(
   // Everything requested is off the task. Some ids may never have been
   // attached (Vikunja 403 → confirmed absent by the reconcile above); report
   // those as skipped, mirroring applyLabels' idempotent messaging.
-  const alreadyAbsent = removeFailures.filter(
-    (id) => attachedIds === null || !attachedIds.has(id),
-  );
+  const alreadyAbsent = removeFailures.filter((id) => attachedIds === null || !attachedIds.has(id));
   const removed = labelIds.filter((id) => !removeFailures.includes(id));
 
   return { removed, alreadyAbsent };
@@ -583,7 +582,8 @@ export async function removeLabels(
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     const hasId = args.id !== undefined && args.id !== null;
-    const hasTaskIds = args.taskIds !== undefined && args.taskIds !== null && args.taskIds.length > 0;
+    const hasTaskIds =
+      args.taskIds !== undefined && args.taskIds !== null && args.taskIds.length > 0;
 
     if (hasId && hasTaskIds) {
       throw new MCPError(
@@ -695,7 +695,11 @@ export async function removeLabels(
     validateId(args.id as number, 'id');
     const taskId = args.id as number;
 
-    const { removed, alreadyAbsent } = await removeLabelIdsFromOneTask(taskId, labelIds, authManager);
+    const { removed, alreadyAbsent } = await removeLabelIdsFromOneTask(
+      taskId,
+      labelIds,
+      authManager,
+    );
 
     let message: string;
     if (removed.length > 0) {
@@ -721,7 +725,7 @@ export async function removeLabels(
           labelsRemoved: removed,
           labelsAlreadyAbsent: alreadyAbsent,
         },
-      }
+      },
     );
 
     return {
@@ -786,7 +790,7 @@ export async function listTaskLabels(
       'list-labels',
       `Task has ${labels.length} label(s)`,
       { task: { ...minimalTask, labels: labels } },
-      { metadata: { count: labels.length } }
+      { metadata: { count: labels.length } },
     );
 
     return {

@@ -129,7 +129,11 @@ export const bulkOperationValidator = {
     }
 
     // Handle numeric fields that come as strings
-    if (args.field && ['priority', 'project_id', 'repeat_after'].includes(args.field) && typeof args.value === 'string') {
+    if (
+      args.field &&
+      ['priority', 'project_id', 'repeat_after'].includes(args.field) &&
+      typeof args.value === 'string'
+    ) {
       const numValue = Number(args.value);
       if (!isNaN(numValue)) {
         args.value = numValue;
@@ -304,5 +308,5 @@ export const bulkOperationValidator = {
         task.labels.forEach((id) => validateId(id, `tasks[${index}].label ID`));
       }
     });
-  }
+  },
 };

@@ -258,9 +258,7 @@ async function resolveColumns(
   // ["Backlog", "Done"] — a single pass would consume "Done" as the
   // leftover for "Doing" before ever reaching the "Done" column itself,
   // wrongly renaming the one bucket that should have been reused as-is).
-  type Assignment =
-    | { kind: 'exact' | 'leftover'; bucket: VikunjaBucket }
-    | { kind: 'create' };
+  type Assignment = { kind: 'exact' | 'leftover'; bucket: VikunjaBucket } | { kind: 'create' };
   const assignments: Assignment[] = new Array(columnNames.length) as Assignment[];
 
   for (let i = 0; i < columnNames.length; i++) {
@@ -302,7 +300,9 @@ async function resolveColumns(
       let status: KanbanColumnOutcome['status'];
       const position = bucketPositionForIndex(i);
       if (assignment.kind === 'exact') {
-        bucket = await updateBucketRaw(authManager, projectId, viewId, assignment.bucket, { position });
+        bucket = await updateBucketRaw(authManager, projectId, viewId, assignment.bucket, {
+          position,
+        });
         status = 'reused';
       } else if (assignment.kind === 'leftover') {
         bucket = await updateBucketRaw(authManager, projectId, viewId, assignment.bucket, {
@@ -403,8 +403,20 @@ async function createAndPlaceTasks(
       try {
         // bucketId only resolves on the columns path, where viewId is
         // always set before resolveColumns runs (setupKanban step 2/3).
-        await moveTaskToBucket(authManager, { taskId, bucketId, viewId: viewId as number, projectId });
-        results.push({ index: i, title: t.title, taskId, column: t.column, bucketId, status: 'placed' });
+        await moveTaskToBucket(authManager, {
+          taskId,
+          bucketId,
+          viewId: viewId,
+          projectId,
+        });
+        results.push({
+          index: i,
+          title: t.title,
+          taskId,
+          column: t.column,
+          bucketId,
+          status: 'placed',
+        });
       } catch (moveError) {
         results.push({
           index: i,
@@ -575,7 +587,13 @@ export async function setupKanban(
   }
 
   // 4. Bulk-create the requested tasks and place each into its column.
-  const taskResults = await createAndPlaceTasks(authManager, projectId, viewId, bucketIdByColumn, tasks);
+  const taskResults = await createAndPlaceTasks(
+    authManager,
+    projectId,
+    viewId,
+    bucketIdByColumn,
+    tasks,
+  );
 
   // 5. Build the honest, server-derived summary — never claim success for
   // anything that did not land.
@@ -593,9 +611,13 @@ export async function setupKanban(
   // place a caller can recover the id of a project that really was
   // created — never leave it as bare prose ("project 15 created") that no
   // extractor can parse.
-  const summaryParts = [`project ${projectId} ${projectCreated ? 'created' : 'reused'} (ID: ${projectId})`];
+  const summaryParts = [
+    `project ${projectId} ${projectCreated ? 'created' : 'reused'} (ID: ${projectId})`,
+  ];
   if (hasColumns) {
-    summaryParts.push(`${columnResults.length - columnFailures.length}/${columnResults.length} columns ready`);
+    summaryParts.push(
+      `${columnResults.length - columnFailures.length}/${columnResults.length} columns ready`,
+    );
   }
   if (tasks.length > 0) {
     summaryParts.push(`${tasks.length - taskFailures.length}/${tasks.length} tasks created`);
@@ -630,7 +652,10 @@ export async function setupKanban(
   if (taskNotPlaced.length > 0) {
     detailParts.push(
       `Created but not placed: ${taskNotPlaced
-        .map((t) => `#${t.index} "${t.title}" -> "${String(t.column)}" (${t.error ?? 'unknown error'})`)
+        .map(
+          (t) =>
+            `#${t.index} "${t.title}" -> "${String(t.column)}" (${t.error ?? 'unknown error'})`,
+        )
         .join('; ')}.`,
     );
   }
@@ -640,7 +665,12 @@ export async function setupKanban(
 
   const failures = [
     ...columnFailures.map((c) => ({ type: 'column' as const, column: c.column, error: c.error })),
-    ...taskFailures.map((t) => ({ type: 'task' as const, index: t.index, title: t.title, error: t.error })),
+    ...taskFailures.map((t) => ({
+      type: 'task' as const,
+      index: t.index,
+      title: t.title,
+      error: t.error,
+    })),
     ...taskNotPlaced.map((t) => ({
       type: 'task-not-placed' as const,
       index: t.index,

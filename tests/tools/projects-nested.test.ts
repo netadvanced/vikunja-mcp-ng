@@ -141,7 +141,9 @@ describe('Projects Tool - Nested Project Features', () => {
     registerProjectsTool(mockServer, mockAuthManager as unknown as AuthManager);
 
     if (typeof toolHandler !== 'function') {
-      throw new Error('toolHandler was not set properly by registerProjectsTool in projects-nested test');
+      throw new Error(
+        'toolHandler was not set properly by registerProjectsTool in projects-nested test',
+      );
     }
   });
 
@@ -188,7 +190,12 @@ describe('Projects Tool - Nested Project Features', () => {
 
     it('should handle API errors', async () => {
       routeFetch({
-        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+        'GET /projects/1': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API Error',
+        }),
       });
 
       await expect(callTool('get-children', { id: 1 })).rejects.toThrow('HTTP 500');
@@ -328,7 +335,9 @@ describe('Projects Tool - Nested Project Features', () => {
     it('should move project to root level', async () => {
       routeFetch({
         'GET /projects': mockResponse({ body: mockProjects }),
-        'POST /projects/2': mockResponse({ body: { ...mockProjects[1], parent_project_id: undefined } }),
+        'POST /projects/2': mockResponse({
+          body: { ...mockProjects[1], parent_project_id: undefined },
+        }),
       });
 
       const result = await callTool('move', { id: 2, parentProjectId: undefined });
@@ -427,7 +436,9 @@ describe('Projects Tool - Nested Project Features', () => {
     it('should allow creating project within depth limit', async () => {
       routeFetch({
         'GET /projects': mockResponse({ body: mockProjects }),
-        'PUT /projects': mockResponse({ body: { id: 6, title: 'New Project', parent_project_id: 4 } }),
+        'PUT /projects': mockResponse({
+          body: { id: 6, title: 'New Project', parent_project_id: 4 },
+        }),
       });
 
       const result = await callTool('create', { title: 'New Project', parentProjectId: 4 });
@@ -533,8 +544,12 @@ describe('Projects Tool - Nested Project Features', () => {
 
     it('should handle empty children array in getMaxSubtreeDepth', async () => {
       routeFetch({
-        'GET /projects': mockResponse({ body: [{ id: 1, title: 'Leaf Node', parent_project_id: undefined }] }),
-        'POST /projects/1': mockResponse({ body: { id: 1, title: 'Leaf Node', parent_project_id: undefined } }),
+        'GET /projects': mockResponse({
+          body: [{ id: 1, title: 'Leaf Node', parent_project_id: undefined }],
+        }),
+        'POST /projects/1': mockResponse({
+          body: { id: 1, title: 'Leaf Node', parent_project_id: undefined },
+        }),
       });
 
       // Move should work fine with leaf node
@@ -568,7 +583,9 @@ describe('Projects Tool - Nested Project Features', () => {
       ];
       routeFetch({
         'GET /projects': mockResponse({ body: hierarchyProjects }),
-        'POST /projects/1': mockResponse({ body: { id: 1, title: 'Parent', parent_project_id: 3 } }),
+        'POST /projects/1': mockResponse({
+          body: { id: 1, title: 'Parent', parent_project_id: 3 },
+        }),
       });
 
       // Should prevent moving parent (1) under its grandchild (3)
@@ -626,7 +643,9 @@ describe('Projects Tool - Nested Project Features', () => {
 
       routeFetch({
         'GET /projects': mockResponse({ body: diamondProjects }),
-        'POST /projects/1': mockResponse({ body: { id: 1, title: 'A', parent_project_id: undefined } }),
+        'POST /projects/1': mockResponse({
+          body: { id: 1, title: 'A', parent_project_id: undefined },
+        }),
       });
 
       // The move should still work because getMaxSubtreeDepth handles duplicate IDs
@@ -644,7 +663,9 @@ describe('Projects Tool - Nested Project Features', () => {
 
       routeFetch({
         'GET /projects': mockResponse({ body: projectsWithMissingId }),
-        'POST /projects/1': mockResponse({ body: { id: 1, title: 'Parent', parent_project_id: undefined } }),
+        'POST /projects/1': mockResponse({
+          body: { id: 1, title: 'Parent', parent_project_id: undefined },
+        }),
       });
 
       // Should handle missing ID gracefully
@@ -654,7 +675,12 @@ describe('Projects Tool - Nested Project Features', () => {
 
     it('should throw API_ERROR when get-tree fails with non-MCP error', async () => {
       routeFetch({
-        'GET /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'Network error' }),
+        'GET /projects': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'Network error',
+        }),
       });
 
       await expect(callTool('get-tree', { id: 1 })).rejects.toThrow('HTTP 500');

@@ -20,24 +20,27 @@ describe('RateLimitingMiddleware', () => {
   beforeEach(() => {
     // Create a fresh middleware instance for each test
     // Use testing mode for faster test execution
-    middleware = new SimplifiedRateLimitMiddleware({
-      default: {
-        requestsPerMinute: 5,
-        requestsPerHour: 20,
-        maxRequestSize: 1000,
-        maxResponseSize: 2000,
-        executionTimeout: 1000,
-        enabled: true,
+    middleware = new SimplifiedRateLimitMiddleware(
+      {
+        default: {
+          requestsPerMinute: 5,
+          requestsPerHour: 20,
+          maxRequestSize: 1000,
+          maxResponseSize: 2000,
+          executionTimeout: 1000,
+          enabled: true,
+        },
+        bulk: {
+          requestsPerMinute: 2,
+          requestsPerHour: 10,
+          maxRequestSize: 5000,
+          maxResponseSize: 10000,
+          executionTimeout: 5000,
+          enabled: true,
+        },
       },
-      bulk: {
-        requestsPerMinute: 2,
-        requestsPerHour: 10,
-        maxRequestSize: 5000,
-        maxResponseSize: 10000,
-        executionTimeout: 5000,
-        enabled: true,
-      },
-    }, true); // Enable testing mode
+      true,
+    ); // Enable testing mode
   });
 
   afterEach(() => {
@@ -73,46 +76,49 @@ describe('RateLimitingMiddleware', () => {
         expect.objectContaining({
           code: ErrorCode.RATE_LIMIT_EXCEEDED,
           message: expect.stringContaining('5/5 requests per minute'),
-        })
+        }),
       );
     });
 
     it('should apply different limits for different tool categories', async () => {
       // Create a fresh middleware for this test
-      const freshMiddleware = new RateLimitingMiddleware({
-        default: {
-          requestsPerMinute: 5,
-          requestsPerHour: 20,
-          maxRequestSize: 1000,
-          maxResponseSize: 2000,
-          executionTimeout: 1000,
-          enabled: true,
+      const freshMiddleware = new RateLimitingMiddleware(
+        {
+          default: {
+            requestsPerMinute: 5,
+            requestsPerHour: 20,
+            maxRequestSize: 1000,
+            maxResponseSize: 2000,
+            executionTimeout: 1000,
+            enabled: true,
+          },
+          bulk: {
+            requestsPerMinute: 2,
+            requestsPerHour: 10,
+            maxRequestSize: 5000,
+            maxResponseSize: 10000,
+            executionTimeout: 5000,
+            enabled: true,
+          },
         },
-        bulk: {
-          requestsPerMinute: 2,
-          requestsPerHour: 10,
-          maxRequestSize: 5000,
-          maxResponseSize: 10000,
-          executionTimeout: 5000,
-          enabled: true,
-        },
-      }, true); // Enable testing mode
+        true,
+      ); // Enable testing mode
 
       const authHandler = jest.fn().mockResolvedValue('auth-success');
       const bulkHandler = jest.fn().mockResolvedValue('bulk-success');
-      
+
       const wrappedAuthHandler = freshMiddleware.withRateLimit('vikunja_auth', authHandler);
       const wrappedBulkHandler = freshMiddleware.withRateLimit('vikunja_batch_import', bulkHandler);
 
       // Bulk tool should have lower limit (2/min), so 3rd call should fail
       await wrappedBulkHandler({ test: 'data' });
       await wrappedBulkHandler({ test: 'data' });
-      
+
       await expect(wrappedBulkHandler({ test: 'data' })).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.RATE_LIMIT_EXCEEDED,
           message: expect.stringContaining('2/2 requests per minute'),
-        })
+        }),
       );
 
       // Auth tool should still allow more requests
@@ -142,16 +148,19 @@ describe('RateLimitingMiddleware', () => {
     it('should track per-hour limits separately', async () => {
       // Create a fresh middleware for this test
       // SECURITY: Use lower minute limit than hourly limit to test both limits
-      const freshMiddleware = new RateLimitingMiddleware({
-        default: {
-          requestsPerMinute: 3, // Lower than hourly to test minute limit first
-          requestsPerHour: 5,   // Higher than minute to test hourly limit after clearing
-          maxRequestSize: 1000,
-          maxResponseSize: 2000,
-          executionTimeout: 1000,
-          enabled: true,
+      const freshMiddleware = new RateLimitingMiddleware(
+        {
+          default: {
+            requestsPerMinute: 3, // Lower than hourly to test minute limit first
+            requestsPerHour: 5, // Higher than minute to test hourly limit after clearing
+            maxRequestSize: 1000,
+            maxResponseSize: 2000,
+            executionTimeout: 1000,
+            enabled: true,
+          },
         },
-      }, true); // Enable testing mode
+        true,
+      ); // Enable testing mode
 
       const mockHandler = jest.fn().mockResolvedValue('success');
       const wrappedHandler = freshMiddleware.withRateLimit('vikunja_auth', mockHandler);
@@ -166,7 +175,7 @@ describe('RateLimitingMiddleware', () => {
         expect.objectContaining({
           code: ErrorCode.RATE_LIMIT_EXCEEDED,
           message: expect.stringContaining('3/3 requests per minute'),
-        })
+        }),
       );
 
       // Clear minute limit and test that we can make more requests (up to hourly limit)
@@ -195,19 +204,19 @@ describe('RateLimitingMiddleware', () => {
 
       // Create a large request (over 1000 bytes)
       const largeData = { test: 'x'.repeat(2000) };
-      
+
       await expect(wrappedHandler(largeData)).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.REQUEST_TOO_LARGE,
           message: expect.stringContaining('exceeds limit of 1000 bytes'),
-        })
+        }),
       );
     });
 
     it('should apply different size limits for different tool categories', async () => {
       const authHandler = jest.fn().mockResolvedValue('auth-success');
       const bulkHandler = jest.fn().mockResolvedValue('bulk-success');
-      
+
       const wrappedAuthHandler = middleware.withRateLimit('vikunja_auth', authHandler);
       const wrappedBulkHandler = middleware.withRateLimit('vikunja_batch_import', bulkHandler);
 
@@ -218,7 +227,7 @@ describe('RateLimitingMiddleware', () => {
       await expect(wrappedAuthHandler(mediumData)).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.REQUEST_TOO_LARGE,
-        })
+        }),
       );
 
       // But succeed for bulk tool
@@ -245,7 +254,7 @@ describe('RateLimitingMiddleware', () => {
         expect.objectContaining({
           code: ErrorCode.REQUEST_TOO_LARGE,
           message: expect.stringContaining('Response size'),
-        })
+        }),
       );
     });
   });
@@ -260,27 +269,33 @@ describe('RateLimitingMiddleware', () => {
     });
 
     it('should timeout slow operations', async () => {
-      const slowHandler = jest.fn().mockImplementation(() => 
-        new Promise(resolve => setTimeout(() => resolve('slow result'), 2000))
-      );
+      const slowHandler = jest
+        .fn()
+        .mockImplementation(
+          () => new Promise((resolve) => setTimeout(() => resolve('slow result'), 2000)),
+        );
       const wrappedHandler = middleware.withRateLimit('vikunja_auth', slowHandler);
 
       await expect(wrappedHandler({ test: 'data' })).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.TIMEOUT_ERROR,
           message: expect.stringContaining('timeout after 1000ms'),
-        })
+        }),
       );
     });
 
     it('should apply different timeouts for different tool categories', async () => {
-      const authHandler = jest.fn().mockImplementation(() => 
-        new Promise(resolve => setTimeout(() => resolve('auth result'), 1500))
-      );
-      const bulkHandler = jest.fn().mockImplementation(() => 
-        new Promise(resolve => setTimeout(() => resolve('bulk result'), 1500))
-      );
-      
+      const authHandler = jest
+        .fn()
+        .mockImplementation(
+          () => new Promise((resolve) => setTimeout(() => resolve('auth result'), 1500)),
+        );
+      const bulkHandler = jest
+        .fn()
+        .mockImplementation(
+          () => new Promise((resolve) => setTimeout(() => resolve('bulk result'), 1500)),
+        );
+
       const wrappedAuthHandler = middleware.withRateLimit('vikunja_auth', authHandler);
       const wrappedBulkHandler = middleware.withRateLimit('vikunja_batch_import', bulkHandler);
 
@@ -288,7 +303,7 @@ describe('RateLimitingMiddleware', () => {
       await expect(wrappedAuthHandler({ test: 'data' })).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.TIMEOUT_ERROR,
-        })
+        }),
       );
 
       // But succeed for bulk tool (5000ms limit)
@@ -325,7 +340,7 @@ describe('RateLimitingMiddleware', () => {
       // For accurate counts, use getRateLimitStatusAsync()
       const status = middleware.getRateLimitStatus();
       expect(status.requestsLastMinute).toBe(0); // Sync returns 0 for security
-      expect(status.requestsLastHour).toBe(0);   // Sync returns 0 for security
+      expect(status.requestsLastHour).toBe(0); // Sync returns 0 for security
 
       // Test async version for accurate counts
       const asyncStatus = await middleware.getRateLimitStatusAsync();
@@ -334,16 +349,19 @@ describe('RateLimitingMiddleware', () => {
     });
 
     it('should support disabling rate limiting', async () => {
-      const disabledMiddleware = new RateLimitingMiddleware({
-        default: {
-          requestsPerMinute: 1,
-          requestsPerHour: 1,
-          maxRequestSize: 10,
-          maxResponseSize: 10,
-          executionTimeout: 100,
-          enabled: false,
+      const disabledMiddleware = new RateLimitingMiddleware(
+        {
+          default: {
+            requestsPerMinute: 1,
+            requestsPerHour: 1,
+            maxRequestSize: 10,
+            maxResponseSize: 10,
+            executionTimeout: 100,
+            enabled: false,
+          },
         },
-      }, true); // Enable testing mode
+        true,
+      ); // Enable testing mode
 
       const mockHandler = jest.fn().mockResolvedValue('x'.repeat(100));
       const wrappedHandler = disabledMiddleware.withRateLimit('vikunja_auth', mockHandler);
@@ -397,7 +415,7 @@ describe('RateLimitingMiddleware', () => {
       await expect(wrappedHandler({ test: 'data' })).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.RATE_LIMIT_EXCEEDED,
-        })
+        }),
       );
     });
   });
@@ -418,9 +436,12 @@ describe('RateLimitingMiddleware', () => {
 
   describe('Error Handling', () => {
     it('should preserve original errors when rate limiting is disabled', async () => {
-      const disabledMiddleware = new RateLimitingMiddleware({
-        default: { enabled: false } as any,
-      }, true); // Enable testing mode
+      const disabledMiddleware = new RateLimitingMiddleware(
+        {
+          default: { enabled: false } as any,
+        },
+        true,
+      ); // Enable testing mode
 
       const errorHandler = jest.fn().mockRejectedValue(new Error('Original error'));
       const wrappedHandler = disabledMiddleware.withRateLimit('vikunja_auth', errorHandler);
@@ -437,7 +458,7 @@ describe('RateLimitingMiddleware', () => {
         expect.objectContaining({
           code: ErrorCode.VALIDATION_ERROR,
           message: 'Test validation error',
-        })
+        }),
       );
     });
   });

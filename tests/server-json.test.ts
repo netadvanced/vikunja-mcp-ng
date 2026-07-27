@@ -10,7 +10,9 @@ import * as path from 'path';
 const REPO_ROOT = path.resolve(__dirname, '..');
 
 describe('server.json version fields', () => {
-  const packageJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf-8')) as {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf-8'),
+  ) as {
     version: string;
   };
   const serverJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'server.json'), 'utf-8')) as {

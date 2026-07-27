@@ -63,8 +63,8 @@ export const AssigneeOperationsService = {
             // resource 403 (e.g. no write access) must not be masked as auth
             // and retried — that was bug #154 in the labels tool. The inner
             // vikunjaRestRequest already retries 5xx/429 on its own.
-            shouldRetry: (error) => extractHttpStatus(error) === 401
-          }
+            shouldRetry: (error) => extractHttpStatus(error) === 401,
+          },
         );
       }
     } catch (assigneeError) {
@@ -72,7 +72,7 @@ export const AssigneeOperationsService = {
       if (extractHttpStatus(assigneeError) === 401) {
         throw new MCPError(
           ErrorCode.API_ERROR,
-          `${AUTH_ERROR_MESSAGES.ASSIGNEE_ASSIGN} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`
+          `${AUTH_ERROR_MESSAGES.ASSIGNEE_ASSIGN} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`,
         );
       }
       throw assigneeError;
@@ -103,15 +103,15 @@ export const AssigneeOperationsService = {
           () => vikunjaRestRequest(authManager, 'DELETE', `/tasks/${taskId}/assignees/${userId}`),
           {
             ...RETRY_CONFIG.AUTH_ERRORS,
-            shouldRetry: (error) => extractHttpStatus(error) === 401
-          }
+            shouldRetry: (error) => extractHttpStatus(error) === 401,
+          },
         );
       } catch (removeError) {
         // A genuine session failure can't be masked as an absent assignee.
         if (extractHttpStatus(removeError) === 401) {
           throw new MCPError(
             ErrorCode.API_ERROR,
-            `${AUTH_ERROR_MESSAGES.ASSIGNEE_REMOVE} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`
+            `${AUTH_ERROR_MESSAGES.ASSIGNEE_REMOVE} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`,
           );
         }
         // Non-auth failure (typically Vikunja's 403 for a user not assigned).
@@ -161,7 +161,10 @@ export const AssigneeOperationsService = {
     const task = await getTaskViaRest(authManager, taskId);
     // Ensure required properties exist for TaskWithAssignees
     if (!task.id) {
-      throw new MCPError(ErrorCode.INTERNAL_ERROR, 'Task returned from API is missing required id field');
+      throw new MCPError(
+        ErrorCode.INTERNAL_ERROR,
+        'Task returned from API is missing required id field',
+      );
     }
     return {
       ...task,
@@ -236,12 +239,12 @@ export const AssigneeOperationsService = {
     try {
       const task = await AssigneeOperationsService.fetchTaskWithAssignees(authManager, taskId);
       const persistedIds = new Set(
-        AssigneeOperationsService.extractAssignees(task).map((a: Assignee) => a.id)
+        AssigneeOperationsService.extractAssignees(task).map((a: Assignee) => a.id),
       );
       return requestedIds.filter((id) => !persistedIds.has(id));
     } catch {
       // If we can't verify, don't block — assume the assignment is fine.
       return [];
     }
-  }
+  },
 };

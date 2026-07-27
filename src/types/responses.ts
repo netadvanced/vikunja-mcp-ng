@@ -67,15 +67,18 @@ export interface QualityIndicatorData {
  * Quality indicator function type
  * Functions that calculate quality scores from task data
  */
-export type QualityIndicatorFunction = (data: unknown, context: {
-  operation: string;
-  success: boolean;
-  dataSize: number;
-  processingTime: number;
-  complexity?: number;
-  cacheHit?: boolean;
-  [key: string]: unknown;
-}) => number;
+export type QualityIndicatorFunction = (
+  data: unknown,
+  context: {
+    operation: string;
+    success: boolean;
+    dataSize: number;
+    processingTime: number;
+    complexity?: number;
+    cacheHit?: boolean;
+    [key: string]: unknown;
+  },
+) => number;
 
 /**
  * Standard metadata included in all responses

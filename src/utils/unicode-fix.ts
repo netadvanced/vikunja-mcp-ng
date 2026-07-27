@@ -55,7 +55,7 @@ export function fixLiteralUnicodeEscapesInData(input: unknown): unknown {
 
   // Handle arrays
   if (Array.isArray(input)) {
-    return input.map(item => fixLiteralUnicodeEscapesInData(item));
+    return input.map((item) => fixLiteralUnicodeEscapesInData(item));
   }
 
   // Handle objects

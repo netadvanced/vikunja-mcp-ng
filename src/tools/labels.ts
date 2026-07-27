@@ -71,7 +71,11 @@ function rethrowLabelNotFound(error: unknown, id: number): never {
   throw error;
 }
 
-export function registerLabelsTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerLabelsTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_labels',
     withReadOnlyNote(
@@ -116,7 +120,6 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
       assertWriteAllowed('vikunja_labels', subcommand);
 
       try {
-
         switch (subcommand) {
           case 'list': {
             const params = new URLSearchParams();
@@ -163,7 +166,11 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
 
             let label: VikunjaLabel;
             try {
-              label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'GET', `/labels/${args.id}`);
+              label = await vikunjaRestRequest<VikunjaLabel>(
+                authManager,
+                'GET',
+                `/labels/${args.id}`,
+              );
             } catch (error) {
               rethrowLabelNotFound(error, args.id);
             }
@@ -195,13 +202,18 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
             if (args.description) labelData.description = args.description;
             if (args.hexColor) labelData.hex_color = args.hexColor;
 
-            const label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'PUT', '/labels', labelData);
+            const label = await vikunjaRestRequest<VikunjaLabel>(
+              authManager,
+              'PUT',
+              '/labels',
+              labelData,
+            );
 
             const response = createStandardResponse(
               'create-label',
               `Label "${label.title}" created successfully`,
               { label },
-              { affectedFields: Object.keys(labelData).filter(key => typeof key === 'string') },
+              { affectedFields: Object.keys(labelData).filter((key) => typeof key === 'string') },
             );
 
             return {
@@ -234,7 +246,12 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
 
             let label: VikunjaLabel;
             try {
-              label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'PUT', `/labels/${args.id}`, updates);
+              label = await vikunjaRestRequest<VikunjaLabel>(
+                authManager,
+                'PUT',
+                `/labels/${args.id}`,
+                updates,
+              );
             } catch (error) {
               rethrowLabelNotFound(error, args.id);
             }
@@ -243,7 +260,7 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
               'update-label',
               `Label "${label.title}" updated successfully`,
               { label },
-              { affectedFields: Object.keys(updates).filter(key => typeof key === 'string') },
+              { affectedFields: Object.keys(updates).filter((key) => typeof key === 'string') },
             );
 
             return {

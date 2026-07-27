@@ -81,7 +81,7 @@ describe('Mock Type Safety', () => {
       mockComplexFn.mockReturnValue({
         id: 1,
         data: ['test'],
-        metadata: { timestamp: '2023-01-01T00:00:00Z', count: 1 }
+        metadata: { timestamp: '2023-01-01T00:00:00Z', count: 1 },
       });
 
       const result = mockComplexFn();

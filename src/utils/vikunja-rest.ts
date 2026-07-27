@@ -25,7 +25,13 @@
 
 import type { AuthManager } from '../auth/AuthManager';
 import { MCPError, ErrorCode } from '../types';
-import { createCircuitBreaker, withRetry, isRetryableError, rewordBreakerOpenError, type RetryOptions } from './retry';
+import {
+  createCircuitBreaker,
+  withRetry,
+  isRetryableError,
+  rewordBreakerOpenError,
+  type RetryOptions,
+} from './retry';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
@@ -384,11 +390,7 @@ export async function vikunjaRestMultipartRequest<T = unknown>(
     shouldRetry: defaultRestShouldRetry,
     ...options?.retry,
   };
-  const breaker = createCircuitBreaker(
-    vikunjaRestMultipartRequestRaw,
-    breakerName,
-    retryOptions,
-  );
+  const breaker = createCircuitBreaker(vikunjaRestMultipartRequestRaw, breakerName, retryOptions);
   const result = await withRetry(
     () =>
       breaker.fire(authManager, method, path, form).catch((error: unknown) => {

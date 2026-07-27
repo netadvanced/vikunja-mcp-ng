@@ -107,12 +107,14 @@ describe('updateTaskLabels surfaces real HTTP status', () => {
   // vikunjaRestRequest. Core calls resolve the base task; label failures are
   // injected per-test by rejecting the /labels/bulk path.
   const mockRestRejectingLabels = (err: unknown): void => {
-    (vikunjaRestRequest as jest.Mock).mockImplementation(async (_am: unknown, _method: string, path?: unknown) => {
-      if (typeof path === 'string' && path.includes('/labels/bulk')) {
-        throw err;
-      }
-      return { ...baseTask };
-    });
+    (vikunjaRestRequest as jest.Mock).mockImplementation(
+      async (_am: unknown, _method: string, path?: unknown) => {
+        if (typeof path === 'string' && path.includes('/labels/bulk')) {
+          throw err;
+        }
+        return { ...baseTask };
+      },
+    );
   };
 
   beforeEach(() => {

@@ -313,7 +313,9 @@ describe('CompositeOperation', () => {
       const result = await op.run();
       const trace = result.steps.find((s) => s.name === 'update-task');
       expect(trace?.status).toBe('compensation-skipped-concurrent-edit');
-      expect(trace?.guidance).toBe('Task was modified by someone else after our update; leaving it alone.');
+      expect(trace?.guidance).toBe(
+        'Task was modified by someone else after our update; leaving it alone.',
+      );
       expect(result.manualFixRequired).toBe(true);
       expect(result.guidance).toContain('rollback skipped (concurrent edit detected)');
     });
@@ -390,7 +392,11 @@ describe('CompositeOperation', () => {
 
       await op.run();
 
-      expect(captured?.before).toEqual({ id: 1, title: 'Original title', updated: '2026-01-01T00:00:00Z' });
+      expect(captured?.before).toEqual({
+        id: 1,
+        title: 'Original title',
+        updated: '2026-01-01T00:00:00Z',
+      });
     });
 
     it('marks a succeeded destructive step with no compensate() as needing manual verification (no undelete)', async () => {
@@ -433,19 +439,21 @@ describe('CompositeOperation', () => {
     it('rejects duplicate step names', () => {
       const op = new CompositeOperation();
       op.addStep({ name: 'dup', execute: () => 1 });
-      expect(() => op.addStep({ name: 'dup', execute: () => 2 })).toThrow(CompositeOperationValidationError);
+      expect(() => op.addStep({ name: 'dup', execute: () => 2 })).toThrow(
+        CompositeOperationValidationError,
+      );
       expect(() => op.addStep({ name: 'dup', execute: () => 2 })).toThrow(/Duplicate step name/);
     });
 
     it('rejects a compensatable step registered after a destructive step by default', () => {
       const op = new CompositeOperation();
       op.addStep({ name: 'delete-it', destructive: true, execute: () => 1 });
-      expect(() => op.addStep({ name: 'after', execute: () => 2, compensate: () => undefined })).toThrow(
-        CompositeOperationValidationError,
-      );
-      expect(() => op.addStep({ name: 'after2', execute: () => 2, compensate: () => undefined })).toThrow(
-        /must be sequenced last/,
-      );
+      expect(() =>
+        op.addStep({ name: 'after', execute: () => 2, compensate: () => undefined }),
+      ).toThrow(CompositeOperationValidationError);
+      expect(() =>
+        op.addStep({ name: 'after2', execute: () => 2, compensate: () => undefined }),
+      ).toThrow(/must be sequenced last/);
     });
 
     it('allows a non-compensatable step registered after a destructive step', () => {
@@ -457,7 +465,12 @@ describe('CompositeOperation', () => {
     it('allows the destructive step itself to define compensate()', () => {
       const op = new CompositeOperation();
       expect(() =>
-        op.addStep({ name: 'delete-it', destructive: true, execute: () => 1, compensate: () => undefined }),
+        op.addStep({
+          name: 'delete-it',
+          destructive: true,
+          execute: () => 1,
+          compensate: () => undefined,
+        }),
       ).not.toThrow();
     });
 
@@ -491,7 +504,9 @@ describe('CompositeOperation', () => {
 
     it('addStep returns `this` for chaining and getSteps() reflects registration order', () => {
       const op = new CompositeOperation();
-      const returned = op.addStep({ name: 'a', execute: () => 1 }).addStep({ name: 'b', execute: () => 2 });
+      const returned = op
+        .addStep({ name: 'a', execute: () => 1 })
+        .addStep({ name: 'b', execute: () => 2 });
       expect(returned).toBe(op);
       expect(op.getSteps().map((s) => s.name)).toEqual(['a', 'b']);
     });

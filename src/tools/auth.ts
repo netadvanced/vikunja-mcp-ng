@@ -98,16 +98,18 @@ async function verifyConnection(
       ErrorCode.AUTH_REQUIRED,
       `Vikunja server at ${apiUrl} was reachable, but the provided ${
         authType === 'jwt' ? 'JWT' : 'API'
-      } token was rejected: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      } token was rejected: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
   return getOrDetectCapabilities(authManager, info);
 }
 
-export function registerAuthTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerAuthTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_auth',
     withReadOnlyNote(
@@ -214,7 +216,7 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
               // needed.
               const response = createStandardResponse(
                 'auth-refresh',
-                'JWT tokens expire and this server cannot refresh them automatically. Vikunja\'s POST /user/token/refresh endpoint requires a refresh-token cookie issued at login, but this server authenticates with a static Bearer token and holds no such cookie. When your JWT expires, obtain a new one (e.g. by logging in to Vikunja again) and call vikunja_auth connect with the new token.',
+                "JWT tokens expire and this server cannot refresh them automatically. Vikunja's POST /user/token/refresh endpoint requires a refresh-token cookie issued at login, but this server authenticates with a static Bearer token and holds no such cookie. When your JWT expires, obtain a new one (e.g. by logging in to Vikunja again) and call vikunja_auth connect with the new token.",
                 { refreshed: false, authType: 'jwt', tokenExpires: true },
                 {
                   reason:
@@ -263,11 +265,7 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
                 'Authentication required. Please use vikunja_auth.connect first.',
               );
             }
-            const info = await vikunjaRestRequest<VikunjaInfoResponse>(
-              authManager,
-              'GET',
-              '/info',
-            );
+            const info = await vikunjaRestRequest<VikunjaInfoResponse>(authManager, 'GET', '/info');
 
             // Refreshes the info-derived capability fields from this fresh
             // /info response while reusing the cached hasV2Api probe result
@@ -301,6 +299,6 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
       } catch (error) {
         throw wrapAuthError(error, args.subcommand);
       }
-    })
+    }),
   );
 }

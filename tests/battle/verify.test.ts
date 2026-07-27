@@ -33,7 +33,9 @@ describe('runVerification / project-exists', () => {
 describe('runVerification / min-tasks-in-project', () => {
   it('fails cleanly when the project itself does not exist', async () => {
     const client = new FakeRestClient();
-    const checks: VerifyCheck[] = [{ type: 'min-tasks-in-project', projectTitleContains: 'nope', min: 1 }];
+    const checks: VerifyCheck[] = [
+      { type: 'min-tasks-in-project', projectTitleContains: 'nope', min: 1 },
+    ];
     const verdict = await runVerification(scenario(), checks, client);
     expect(verdict.passed).toBe(false);
   });
@@ -45,7 +47,9 @@ describe('runVerification / min-tasks-in-project', () => {
       { id: 1, title: 't1', project_id: 5 },
       { id: 2, title: 't2', project_id: 5 },
     ];
-    const checks: VerifyCheck[] = [{ type: 'min-tasks-in-project', projectTitleContains: 'Sprint', min: 3 }];
+    const checks: VerifyCheck[] = [
+      { type: 'min-tasks-in-project', projectTitleContains: 'Sprint', min: 3 },
+    ];
     expect((await runVerification(scenario(), checks, client)).passed).toBe(false);
 
     client.tasksByProject[5]!.push({ id: 3, title: 't3', project_id: 5 });
@@ -54,11 +58,17 @@ describe('runVerification / min-tasks-in-project', () => {
 });
 
 describe('runVerification / min-buckets-in-project', () => {
-  it('counts buckets returned for the resolved project (kanban-view resolution is RestClient\'s own concern, per the VikunjaRestClient contract)', async () => {
+  it("counts buckets returned for the resolved project (kanban-view resolution is RestClient's own concern, per the VikunjaRestClient contract)", async () => {
     const client = new FakeRestClient();
     client.projects = [{ id: 7, title: 'battle-x-Board' }];
-    client.buckets[7] = [{ id: 10, title: 'To do' }, { id: 11, title: 'Doing' }, { id: 12, title: 'Done' }];
-    const checks: VerifyCheck[] = [{ type: 'min-buckets-in-project', projectTitleContains: 'Board', min: 3 }];
+    client.buckets[7] = [
+      { id: 10, title: 'To do' },
+      { id: 11, title: 'Doing' },
+      { id: 12, title: 'Done' },
+    ];
+    const checks: VerifyCheck[] = [
+      { type: 'min-buckets-in-project', projectTitleContains: 'Board', min: 3 },
+    ];
     const verdict = await runVerification(scenario(), checks, client);
     expect(verdict.passed).toBe(true);
   });
@@ -67,7 +77,9 @@ describe('runVerification / min-buckets-in-project', () => {
     const client = new FakeRestClient();
     client.projects = [{ id: 7, title: 'battle-x-Board' }];
     client.buckets[7] = [{ id: 10, title: 'To do' }];
-    const checks: VerifyCheck[] = [{ type: 'min-buckets-in-project', projectTitleContains: 'Board', min: 3 }];
+    const checks: VerifyCheck[] = [
+      { type: 'min-buckets-in-project', projectTitleContains: 'Board', min: 3 },
+    ];
     const verdict = await runVerification(scenario(), checks, client);
     expect(verdict.passed).toBe(false);
   });
@@ -82,7 +94,9 @@ describe('runVerification / buckets-with-tasks-count', () => {
       { id: 11, title: 'Doing', count: 3 },
       { id: 12, title: 'Done', count: 0 },
     ];
-    const checks: VerifyCheck[] = [{ type: 'buckets-with-tasks-count', projectTitleContains: 'Sprint Board', min: 3 }];
+    const checks: VerifyCheck[] = [
+      { type: 'buckets-with-tasks-count', projectTitleContains: 'Sprint Board', min: 3 },
+    ];
     const verdict = await runVerification(scenario(), checks, client);
     expect(verdict.passed).toBe(false);
     expect(verdict.checks[0]?.detail).toContain('2/3');
@@ -96,13 +110,17 @@ describe('runVerification / buckets-with-tasks-count', () => {
       { id: 11, title: 'Doing', count: 3 },
       { id: 12, title: 'Done', count: 3 },
     ];
-    const checks: VerifyCheck[] = [{ type: 'buckets-with-tasks-count', projectTitleContains: 'Sprint Board', min: 3 }];
+    const checks: VerifyCheck[] = [
+      { type: 'buckets-with-tasks-count', projectTitleContains: 'Sprint Board', min: 3 },
+    ];
     expect((await runVerification(scenario(), checks, client)).passed).toBe(true);
   });
 
   it('fails cleanly when the project itself does not exist', async () => {
     const client = new FakeRestClient();
-    const checks: VerifyCheck[] = [{ type: 'buckets-with-tasks-count', projectTitleContains: 'nope', min: 1 }];
+    const checks: VerifyCheck[] = [
+      { type: 'buckets-with-tasks-count', projectTitleContains: 'nope', min: 1 },
+    ];
     expect((await runVerification(scenario(), checks, client)).passed).toBe(false);
   });
 
@@ -110,7 +128,9 @@ describe('runVerification / buckets-with-tasks-count', () => {
     const client = new FakeRestClient();
     client.projects = [{ id: 7, title: 'battle-x-Board' }];
     client.buckets[7] = [{ id: 10, title: 'To Do' }];
-    const checks: VerifyCheck[] = [{ type: 'buckets-with-tasks-count', projectTitleContains: 'Board', min: 1 }];
+    const checks: VerifyCheck[] = [
+      { type: 'buckets-with-tasks-count', projectTitleContains: 'Board', min: 1 },
+    ];
     expect((await runVerification(scenario(), checks, client)).passed).toBe(false);
   });
 });
@@ -125,20 +145,55 @@ describe('runVerification / tasks-field-match-count', () => {
   ];
 
   it('supports "set" (non-default value present)', async () => {
-    const checks: VerifyCheck[] = [{ type: 'tasks-field-match-count', projectTitleContains: 'P', field: 'priority', op: 'set', min: 2 }];
+    const checks: VerifyCheck[] = [
+      {
+        type: 'tasks-field-match-count',
+        projectTitleContains: 'P',
+        field: 'priority',
+        op: 'set',
+        min: 2,
+      },
+    ];
     expect((await runVerification(scenario(), checks, client)).passed).toBe(true);
   });
 
   it('supports "gte"', async () => {
-    const checks: VerifyCheck[] = [{ type: 'tasks-field-match-count', projectTitleContains: 'P', field: 'priority', op: 'gte', value: 5, min: 1 }];
+    const checks: VerifyCheck[] = [
+      {
+        type: 'tasks-field-match-count',
+        projectTitleContains: 'P',
+        field: 'priority',
+        op: 'gte',
+        value: 5,
+        min: 1,
+      },
+    ];
     expect((await runVerification(scenario(), checks, client)).passed).toBe(true);
   });
 
   it('supports "eq" on a boolean field (done)', async () => {
-    const checks: VerifyCheck[] = [{ type: 'tasks-field-match-count', projectTitleContains: 'P', field: 'done', op: 'eq', value: true, min: 1 }];
+    const checks: VerifyCheck[] = [
+      {
+        type: 'tasks-field-match-count',
+        projectTitleContains: 'P',
+        field: 'done',
+        op: 'eq',
+        value: true,
+        min: 1,
+      },
+    ];
     expect((await runVerification(scenario(), checks, client)).passed).toBe(true);
 
-    const checksTooMany: VerifyCheck[] = [{ type: 'tasks-field-match-count', projectTitleContains: 'P', field: 'done', op: 'eq', value: true, min: 2 }];
+    const checksTooMany: VerifyCheck[] = [
+      {
+        type: 'tasks-field-match-count',
+        projectTitleContains: 'P',
+        field: 'done',
+        op: 'eq',
+        value: true,
+        min: 2,
+      },
+    ];
     expect((await runVerification(scenario(), checksTooMany, client)).passed).toBe(false);
   });
 });
@@ -152,7 +207,13 @@ describe('runVerification / tasks-due-date-in-range', () => {
       { id: 2, title: 'b', project_id: 1, due_date: '2026-09-15T00:00:00Z' },
     ];
     const checks: VerifyCheck[] = [
-      { type: 'tasks-due-date-in-range', projectTitleContains: 'P', startDate: '2026-09-01T00:00:00Z', endDate: '2026-09-30T23:59:59Z', min: 2 },
+      {
+        type: 'tasks-due-date-in-range',
+        projectTitleContains: 'P',
+        startDate: '2026-09-01T00:00:00Z',
+        endDate: '2026-09-30T23:59:59Z',
+        min: 2,
+      },
     ];
     const verdict = await runVerification(scenario(), checks, client);
     expect(verdict.passed).toBe(false);
@@ -175,16 +236,30 @@ describe('runVerification / label-exists and tasks-with-label-count', () => {
     const labelCheck: VerifyCheck[] = [{ type: 'label-exists', titleContains: 'urgent' }];
     expect((await runVerification(scenario(), labelCheck, client)).passed).toBe(true);
 
-    const countCheck: VerifyCheck[] = [{ type: 'tasks-with-label-count', projectTitleContains: 'Sprint', labelTitleContains: 'urgent', min: 1 }];
+    const countCheck: VerifyCheck[] = [
+      {
+        type: 'tasks-with-label-count',
+        projectTitleContains: 'Sprint',
+        labelTitleContains: 'urgent',
+        min: 1,
+      },
+    ];
     expect((await runVerification(scenario(), countCheck, client)).passed).toBe(true);
 
-    const countCheckTooMany: VerifyCheck[] = [{ type: 'tasks-with-label-count', projectTitleContains: 'Sprint', labelTitleContains: 'urgent', min: 2 }];
+    const countCheckTooMany: VerifyCheck[] = [
+      {
+        type: 'tasks-with-label-count',
+        projectTitleContains: 'Sprint',
+        labelTitleContains: 'urgent',
+        min: 2,
+      },
+    ];
     expect((await runVerification(scenario(), countCheckTooMany, client)).passed).toBe(false);
   });
 });
 
 describe('runVerification / task-has-subtasks', () => {
-  it('reads subtasks off the parent\'s related_tasks.subtask array', async () => {
+  it("reads subtasks off the parent's related_tasks.subtask array", async () => {
     const client = new FakeRestClient();
     client.projects = [{ id: 1, title: 'battle-x-Launch' }];
     client.tasksByProject[1] = [
@@ -192,13 +267,32 @@ describe('runVerification / task-has-subtasks', () => {
         id: 1,
         title: 'battle-x-Prepare launch',
         project_id: 1,
-        related_tasks: { subtask: [{ id: 2, title: 'child1', project_id: 1 }, { id: 3, title: 'child2', project_id: 1 }] },
+        related_tasks: {
+          subtask: [
+            { id: 2, title: 'child1', project_id: 1 },
+            { id: 3, title: 'child2', project_id: 1 },
+          ],
+        },
       },
     ];
-    const checks: VerifyCheck[] = [{ type: 'task-has-subtasks', projectTitleContains: 'Launch', parentTitleContains: 'Prepare launch', min: 2 }];
+    const checks: VerifyCheck[] = [
+      {
+        type: 'task-has-subtasks',
+        projectTitleContains: 'Launch',
+        parentTitleContains: 'Prepare launch',
+        min: 2,
+      },
+    ];
     expect((await runVerification(scenario(), checks, client)).passed).toBe(true);
 
-    const tooMany: VerifyCheck[] = [{ type: 'task-has-subtasks', projectTitleContains: 'Launch', parentTitleContains: 'Prepare launch', min: 3 }];
+    const tooMany: VerifyCheck[] = [
+      {
+        type: 'task-has-subtasks',
+        projectTitleContains: 'Launch',
+        parentTitleContains: 'Prepare launch',
+        min: 3,
+      },
+    ];
     expect((await runVerification(scenario(), tooMany, client)).passed).toBe(false);
   });
 
@@ -206,7 +300,14 @@ describe('runVerification / task-has-subtasks', () => {
     const client = new FakeRestClient();
     client.projects = [{ id: 1, title: 'battle-x-Launch' }];
     client.tasksByProject[1] = [{ id: 1, title: 'unrelated', project_id: 1 }];
-    const checks: VerifyCheck[] = [{ type: 'task-has-subtasks', projectTitleContains: 'Launch', parentTitleContains: 'Prepare launch', min: 1 }];
+    const checks: VerifyCheck[] = [
+      {
+        type: 'task-has-subtasks',
+        projectTitleContains: 'Launch',
+        parentTitleContains: 'Prepare launch',
+        min: 1,
+      },
+    ];
     expect((await runVerification(scenario(), checks, client)).passed).toBe(false);
   });
 });
@@ -283,7 +384,11 @@ describe('runVerification / buckets-in-order', () => {
       { id: 12, title: 'Done' },
     ];
     const checks: VerifyCheck[] = [
-      { type: 'buckets-in-order', projectTitleContains: 'Board', order: ['To Do', 'Doing', 'Done'] },
+      {
+        type: 'buckets-in-order',
+        projectTitleContains: 'Board',
+        order: ['To Do', 'Doing', 'Done'],
+      },
     ];
     const verdict = await runVerification(scenario(), checks, client);
     expect(verdict.passed).toBe(true);
@@ -292,7 +397,10 @@ describe('runVerification / buckets-in-order', () => {
   it('matches column names case-insensitively', async () => {
     const client = new FakeRestClient();
     client.projects = [{ id: 7, title: 'battle-x-Board' }];
-    client.buckets[7] = [{ id: 10, title: 'to do' }, { id: 11, title: 'DOING' }];
+    client.buckets[7] = [
+      { id: 10, title: 'to do' },
+      { id: 11, title: 'DOING' },
+    ];
     const checks: VerifyCheck[] = [
       { type: 'buckets-in-order', projectTitleContains: 'Board', order: ['To Do', 'Doing'] },
     ];
@@ -303,9 +411,16 @@ describe('runVerification / buckets-in-order', () => {
   it('fails when an expected column is missing entirely', async () => {
     const client = new FakeRestClient();
     client.projects = [{ id: 7, title: 'battle-x-Board' }];
-    client.buckets[7] = [{ id: 10, title: 'To Do' }, { id: 11, title: 'Doing' }];
+    client.buckets[7] = [
+      { id: 10, title: 'To Do' },
+      { id: 11, title: 'Doing' },
+    ];
     const checks: VerifyCheck[] = [
-      { type: 'buckets-in-order', projectTitleContains: 'Board', order: ['To Do', 'Doing', 'Done'] },
+      {
+        type: 'buckets-in-order',
+        projectTitleContains: 'Board',
+        order: ['To Do', 'Doing', 'Done'],
+      },
     ];
     const verdict = await runVerification(scenario(), checks, client);
     expect(verdict.passed).toBe(false);

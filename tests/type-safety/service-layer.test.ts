@@ -13,12 +13,14 @@ describe('Service Layer Type Safety', () => {
     beforeEach(() => {
       circuitBreaker = createCircuitBreaker(
         'test-breaker',
-        async () => { /* placeholder operation */ },
+        async () => {
+          /* placeholder operation */
+        },
         {
           timeout: 30000,
           resetTimeout: 30000,
-          maxFailures: 5
-        }
+          maxFailures: 5,
+        },
       );
     });
 
@@ -64,16 +66,19 @@ describe('Service Layer Type Safety', () => {
         expect(typeof stats).toBe('object');
 
         // Type assertion to verify the return type structure
-        const typedStats: Record<string, {
-          failures: number;
-          fires: number;
-          successes: number;
-          timeouts: number;
-          rejects: number;
-          latencyMean: number;
-          latencyTimes: number[];
-          percentiles: Record<string, number>;
-        }> = stats;
+        const typedStats: Record<
+          string,
+          {
+            failures: number;
+            fires: number;
+            successes: number;
+            timeouts: number;
+            rejects: number;
+            latencyMean: number;
+            latencyTimes: number[];
+            percentiles: Record<string, number>;
+          }
+        > = stats;
 
         expect(typeof typedStats).toBe('object');
       });
@@ -85,16 +90,19 @@ describe('Service Layer Type Safety', () => {
         expect(typeof stats).toBe('object');
 
         // Type assertion to verify the return type structure
-        const typedStats: Record<string, {
-          failures: number;
-          fires: number;
-          successes: number;
-          timeouts: number;
-          rejects: number;
-          latencyMean: number;
-          latencyTimes: number[];
-          percentiles: Record<string, number>;
-        }> = stats;
+        const typedStats: Record<
+          string,
+          {
+            failures: number;
+            fires: number;
+            successes: number;
+            timeouts: number;
+            rejects: number;
+            latencyMean: number;
+            latencyTimes: number[];
+            percentiles: Record<string, number>;
+          }
+        > = stats;
 
         expect(typeof typedStats).toBe('object');
       });
@@ -110,8 +118,8 @@ describe('Service Layer Type Safety', () => {
           'test-fire-operation',
           {
             timeout: 30000,
-            resetTimeout: 30000
-          }
+            resetTimeout: 30000,
+          },
         );
 
         const result = await testBreaker.fire();
@@ -131,14 +139,14 @@ describe('Service Layer Type Safety', () => {
               id: 123,
               title: 'Test Task',
               completed: false,
-              metadata: { count: 1, timestamp: new Date().toISOString() }
+              metadata: { count: 1, timestamp: new Date().toISOString() },
             };
           },
           'test-complex-operation',
           {
             timeout: 30000,
-            resetTimeout: 30000
-          }
+            resetTimeout: 30000,
+          },
         );
 
         const result = await testBreaker.fire();

@@ -70,79 +70,81 @@ describe('Bulk operations', () => {
     // Wave-D #71) and the per-user assignee PUT/DELETE (post Wave-D #70) also
     // flow through this same mocked vikunjaRestRequest and resolve success by
     // default; label/assignee-specific tests assert on mockRest directly.
-    mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
-      const labelBulkMatch = /^\/tasks\/(\d+)\/labels\/bulk$/.exec(path);
-      if (method === 'POST' && labelBulkMatch?.[1] !== undefined) {
-        return undefined;
-      }
-      // Additive per-user assign / single-user unassign endpoints.
-      if (method === 'PUT' && /^\/tasks\/\d+\/assignees$/.test(path)) {
-        return undefined;
-      }
-      if (method === 'DELETE' && /^\/tasks\/\d+\/assignees\/\d+$/.test(path)) {
-        return undefined;
-      }
-      const taskIdMatch = /^\/tasks\/(\d+)$/.exec(path);
-      if (method === 'GET' && taskIdMatch?.[1] !== undefined) {
-        return mockClient.tasks.getTask(Number(taskIdMatch[1]));
-      }
-      if (method === 'POST' && taskIdMatch?.[1] !== undefined) {
-        return mockClient.tasks.updateTask(Number(taskIdMatch[1]), body);
-      }
-      if (method === 'DELETE' && taskIdMatch?.[1] !== undefined) {
-        return mockClient.tasks.deleteTask(Number(taskIdMatch[1]));
-      }
-      const projectTasksMatch = /^\/projects\/(\d+)\/tasks$/.exec(path);
-      if (method === 'PUT' && projectTasksMatch?.[1] !== undefined) {
-        return mockClient.tasks.createTask(Number(projectTasksMatch[1]), body);
-      }
-      throw new Error(`mockRest: unhandled ${method} ${path}`);
-    });
+    mockRest.mockImplementation(
+      async (_auth: unknown, method: string, path: string, body?: unknown) => {
+        const labelBulkMatch = /^\/tasks\/(\d+)\/labels\/bulk$/.exec(path);
+        if (method === 'POST' && labelBulkMatch?.[1] !== undefined) {
+          return undefined;
+        }
+        // Additive per-user assign / single-user unassign endpoints.
+        if (method === 'PUT' && /^\/tasks\/\d+\/assignees$/.test(path)) {
+          return undefined;
+        }
+        if (method === 'DELETE' && /^\/tasks\/\d+\/assignees\/\d+$/.test(path)) {
+          return undefined;
+        }
+        const taskIdMatch = /^\/tasks\/(\d+)$/.exec(path);
+        if (method === 'GET' && taskIdMatch?.[1] !== undefined) {
+          return mockClient.tasks.getTask(Number(taskIdMatch[1]));
+        }
+        if (method === 'POST' && taskIdMatch?.[1] !== undefined) {
+          return mockClient.tasks.updateTask(Number(taskIdMatch[1]), body);
+        }
+        if (method === 'DELETE' && taskIdMatch?.[1] !== undefined) {
+          return mockClient.tasks.deleteTask(Number(taskIdMatch[1]));
+        }
+        const projectTasksMatch = /^\/projects\/(\d+)\/tasks$/.exec(path);
+        if (method === 'PUT' && projectTasksMatch?.[1] !== undefined) {
+          return mockClient.tasks.createTask(Number(projectTasksMatch[1]), body);
+        }
+        throw new Error(`mockRest: unhandled ${method} ${path}`);
+      },
+    );
   });
 
   describe('bulkUpdateTasks', () => {
     describe('Input validation', () => {
       it('should throw error when taskIds is missing', async () => {
         await expect(bulkUpdateTasks({ field: 'done', value: true })).rejects.toThrow(
-          'taskIds array is required for bulk update operation'
+          'taskIds array is required for bulk update operation',
         );
       });
 
       it('should throw error when taskIds is empty', async () => {
         await expect(bulkUpdateTasks({ taskIds: [], field: 'done', value: true })).rejects.toThrow(
-          'taskIds array is required for bulk update operation'
+          'taskIds array is required for bulk update operation',
         );
       });
 
       it('should throw error when field is missing', async () => {
         await expect(bulkUpdateTasks({ taskIds: [1, 2], value: true })).rejects.toThrow(
-          'field is required for bulk update operation'
+          'field is required for bulk update operation',
         );
       });
 
       it('should throw error when value is undefined', async () => {
         await expect(bulkUpdateTasks({ taskIds: [1, 2], field: 'done' })).rejects.toThrow(
-          'value is required for bulk update operation'
+          'value is required for bulk update operation',
         );
       });
 
       it('should throw error when too many tasks', async () => {
         const taskIds = Array.from({ length: 101 }, (_, i) => i + 1);
         await expect(bulkUpdateTasks({ taskIds, field: 'done', value: true })).rejects.toThrow(
-          'Too many tasks for bulk operation. Maximum allowed: 100'
+          'Too many tasks for bulk operation. Maximum allowed: 100',
         );
       });
 
       it('should validate task IDs', async () => {
-        await expect(bulkUpdateTasks({ taskIds: [1, -2], field: 'done', value: true })).rejects.toThrow(
-          'task ID must be a positive integer'
-        );
+        await expect(
+          bulkUpdateTasks({ taskIds: [1, -2], field: 'done', value: true }),
+        ).rejects.toThrow('task ID must be a positive integer');
       });
 
       it('should throw error for invalid field', async () => {
-        await expect(bulkUpdateTasks({ taskIds: [1, 2], field: 'invalid_field', value: true })).rejects.toThrow(
-          'Invalid field: invalid_field'
-        );
+        await expect(
+          bulkUpdateTasks({ taskIds: [1, 2], field: 'invalid_field', value: true }),
+        ).rejects.toThrow('Invalid field: invalid_field');
       });
 
       it('should reject a camelCase field name that would silently no-op in the native fields:[] payload', async () => {
@@ -159,57 +161,57 @@ describe('Bulk operations', () => {
       });
 
       it('should validate priority range', async () => {
-        await expect(bulkUpdateTasks({ taskIds: [1, 2], field: 'priority', value: 6 })).rejects.toThrow(
-          'Priority must be between 0 and 5'
-        );
+        await expect(
+          bulkUpdateTasks({ taskIds: [1, 2], field: 'priority', value: 6 }),
+        ).rejects.toThrow('Priority must be between 0 and 5');
       });
 
       it('should validate date format for due_date', async () => {
-        await expect(bulkUpdateTasks({ taskIds: [1, 2], field: 'due_date', value: 'invalid-date' })).rejects.toThrow(
-          'due_date must be a valid ISO 8601 date string'
-        );
+        await expect(
+          bulkUpdateTasks({ taskIds: [1, 2], field: 'due_date', value: 'invalid-date' }),
+        ).rejects.toThrow('due_date must be a valid ISO 8601 date string');
       });
 
       it('should validate project_id', async () => {
-        await expect(bulkUpdateTasks({ taskIds: [1, 2], field: 'project_id', value: -1 })).rejects.toThrow(
-          'project_id must be a positive integer'
-        );
+        await expect(
+          bulkUpdateTasks({ taskIds: [1, 2], field: 'project_id', value: -1 }),
+        ).rejects.toThrow('project_id must be a positive integer');
       });
 
       it('should validate assignees array', async () => {
-        await expect(bulkUpdateTasks({ taskIds: [1, 2], field: 'assignees', value: 'not-array' })).rejects.toThrow(
-          'assignees must be an array of numbers'
-        );
+        await expect(
+          bulkUpdateTasks({ taskIds: [1, 2], field: 'assignees', value: 'not-array' }),
+        ).rejects.toThrow('assignees must be an array of numbers');
       });
 
       it('should validate assignee IDs', async () => {
-        await expect(bulkUpdateTasks({ taskIds: [1, 2], field: 'assignees', value: [1, -2] })).rejects.toThrow(
-          'assignees ID must be a positive integer'
-        );
+        await expect(
+          bulkUpdateTasks({ taskIds: [1, 2], field: 'assignees', value: [1, -2] }),
+        ).rejects.toThrow('assignees ID must be a positive integer');
       });
 
       it('should validate done field type', async () => {
-        await expect(bulkUpdateTasks({ taskIds: [1, 2], field: 'done', value: 'maybe' })).rejects.toThrow(
-          'done field must be a boolean value (true or false)'
-        );
+        await expect(
+          bulkUpdateTasks({ taskIds: [1, 2], field: 'done', value: 'maybe' }),
+        ).rejects.toThrow('done field must be a boolean value (true or false)');
       });
 
       it('should validate repeat_after range', async () => {
-        await expect(bulkUpdateTasks({ taskIds: [1, 2], field: 'repeat_after', value: -1 })).rejects.toThrow(
-          'repeat_after must be a non-negative number'
-        );
+        await expect(
+          bulkUpdateTasks({ taskIds: [1, 2], field: 'repeat_after', value: -1 }),
+        ).rejects.toThrow('repeat_after must be a non-negative number');
       });
 
       it('should validate repeat_mode values', async () => {
-        await expect(bulkUpdateTasks({ taskIds: [1, 2], field: 'repeat_mode', value: 'invalid' })).rejects.toThrow(
-          'Invalid repeat_mode: invalid'
-        );
+        await expect(
+          bulkUpdateTasks({ taskIds: [1, 2], field: 'repeat_mode', value: 'invalid' }),
+        ).rejects.toThrow('Invalid repeat_mode: invalid');
       });
 
       it('should reject legacy interval-style repeat_mode values (day/week/year) that never matched the API enum', async () => {
         for (const legacyValue of ['day', 'week', 'year']) {
           await expect(
-            bulkUpdateTasks({ taskIds: [1, 2], field: 'repeat_mode', value: legacyValue })
+            bulkUpdateTasks({ taskIds: [1, 2], field: 'repeat_mode', value: legacyValue }),
           ).rejects.toThrow(`Invalid repeat_mode: ${legacyValue}`);
         }
       });
@@ -284,31 +286,39 @@ describe('Bulk operations', () => {
       // mockRest only routes GET/POST/DELETE for /tasks/{id} and friends).
       const routeNativeBulk = (
         bulkResponseTasks: Array<Record<string, unknown>>,
-        options: { assigneesByTaskId?: Record<number, Array<{ id: number }>>; assigneeRestoreError?: Error } = {},
+        options: {
+          assigneesByTaskId?: Record<number, Array<{ id: number }>>;
+          assigneeRestoreError?: Error;
+        } = {},
       ) => {
-        mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
-          const taskIdMatch = /^\/tasks\/(\d+)$/.exec(path);
-          if (method === 'GET' && taskIdMatch?.[1] !== undefined) {
-            const id = Number(taskIdMatch[1]);
-            return {
-              id,
-              title: `Task ${id}`,
-              done: false,
-              assignees: options.assigneesByTaskId?.[id] ?? [],
-            };
-          }
-          if (method === 'POST' && path === '/tasks/bulk') {
-            return { task_ids: (body as { task_ids: number[] }).task_ids, tasks: bulkResponseTasks };
-          }
-          // Assignee restore-to-snapshot: ONE POST .../assignees/bulk call
-          // per task (models.BulkAssignees, REPLACE semantics), not a
-          // per-user PUT loop.
-          if (method === 'POST' && /^\/tasks\/\d+\/assignees\/bulk$/.test(path)) {
-            if (options.assigneeRestoreError) throw options.assigneeRestoreError;
-            return undefined;
-          }
-          throw new Error(`mockRest: unhandled ${method} ${path}`);
-        });
+        mockRest.mockImplementation(
+          async (_auth: unknown, method: string, path: string, body?: unknown) => {
+            const taskIdMatch = /^\/tasks\/(\d+)$/.exec(path);
+            if (method === 'GET' && taskIdMatch?.[1] !== undefined) {
+              const id = Number(taskIdMatch[1]);
+              return {
+                id,
+                title: `Task ${id}`,
+                done: false,
+                assignees: options.assigneesByTaskId?.[id] ?? [],
+              };
+            }
+            if (method === 'POST' && path === '/tasks/bulk') {
+              return {
+                task_ids: (body as { task_ids: number[] }).task_ids,
+                tasks: bulkResponseTasks,
+              };
+            }
+            // Assignee restore-to-snapshot: ONE POST .../assignees/bulk call
+            // per task (models.BulkAssignees, REPLACE semantics), not a
+            // per-user PUT loop.
+            if (method === 'POST' && /^\/tasks\/\d+\/assignees\/bulk$/.test(path)) {
+              if (options.assigneeRestoreError) throw options.assigneeRestoreError;
+              return undefined;
+            }
+            throw new Error(`mockRest: unhandled ${method} ${path}`);
+          },
+        );
       };
 
       it('reports partial success when the server returns fewer tasks than requested (2 of 3)', async () => {
@@ -349,10 +359,10 @@ describe('Bulk operations', () => {
 
       it('surfaces assignee-restore failures instead of silently swallowing them', async () => {
         const restoreError = new Error('assignee restore failed: database is locked');
-        routeNativeBulk(
-          [{ id: 1, title: 'Task 1', done: true, assignees: [] }],
-          { assigneesByTaskId: { 1: [{ id: 5 }] }, assigneeRestoreError: restoreError },
-        );
+        routeNativeBulk([{ id: 1, title: 'Task 1', done: true, assignees: [] }], {
+          assigneesByTaskId: { 1: [{ id: 5 }] },
+          assigneeRestoreError: restoreError,
+        });
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'done', value: true });
 
@@ -373,10 +383,9 @@ describe('Bulk operations', () => {
       });
 
       it('restores a task with multiple snapshotted assignees via ONE POST .../assignees/bulk call (not a per-user loop)', async () => {
-        routeNativeBulk(
-          [{ id: 1, title: 'Task 1', done: true, assignees: [] }],
-          { assigneesByTaskId: { 1: [{ id: 5 }, { id: 7 }] } },
-        );
+        routeNativeBulk([{ id: 1, title: 'Task 1', done: true, assignees: [] }], {
+          assigneesByTaskId: { 1: [{ id: 5 }, { id: 7 }] },
+        });
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'done', value: true });
 
@@ -401,10 +410,10 @@ describe('Bulk operations', () => {
 
       it('aggregates every snapshotted user on a task as a restore failure when the single bulk restore call fails', async () => {
         const restoreError = new Error('assignee restore failed: database is locked');
-        routeNativeBulk(
-          [{ id: 1, title: 'Task 1', done: true, assignees: [] }],
-          { assigneesByTaskId: { 1: [{ id: 5 }, { id: 7 }] }, assigneeRestoreError: restoreError },
-        );
+        routeNativeBulk([{ id: 1, title: 'Task 1', done: true, assignees: [] }], {
+          assigneesByTaskId: { 1: [{ id: 5 }, { id: 7 }] },
+          assigneeRestoreError: restoreError,
+        });
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'done', value: true });
 
@@ -426,18 +435,24 @@ describe('Bulk operations', () => {
       describe('Date field normalization (issue #164)', () => {
         it('coerces a date-only due_date to RFC3339 before the native bulk update request', async () => {
           let sentBody: unknown;
-          mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
-            if (method === 'POST' && path === '/tasks/bulk') {
-              sentBody = body;
-              return {
-                task_ids: (body as { task_ids: number[] }).task_ids,
-                tasks: [{ id: 1, title: 'Task 1', due_date: '2026-07-24T00:00:00Z' }],
-              };
-            }
-            throw new Error(`mockRest: unhandled ${method} ${path}`);
-          });
+          mockRest.mockImplementation(
+            async (_auth: unknown, method: string, path: string, body?: unknown) => {
+              if (method === 'POST' && path === '/tasks/bulk') {
+                sentBody = body;
+                return {
+                  task_ids: (body as { task_ids: number[] }).task_ids,
+                  tasks: [{ id: 1, title: 'Task 1', due_date: '2026-07-24T00:00:00Z' }],
+                };
+              }
+              throw new Error(`mockRest: unhandled ${method} ${path}`);
+            },
+          );
 
-          const result = await bulkUpdateTasks({ taskIds: [1], field: 'due_date', value: '2026-07-24' });
+          const result = await bulkUpdateTasks({
+            taskIds: [1],
+            field: 'due_date',
+            value: '2026-07-24',
+          });
 
           expect(sentBody).toEqual({
             task_ids: [1],
@@ -451,16 +466,18 @@ describe('Bulk operations', () => {
 
         it('passes an already-full RFC3339 due_date through unchanged', async () => {
           let sentBody: unknown;
-          mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
-            if (method === 'POST' && path === '/tasks/bulk') {
-              sentBody = body;
-              return {
-                task_ids: (body as { task_ids: number[] }).task_ids,
-                tasks: [{ id: 1, title: 'Task 1', due_date: '2026-07-24T10:30:00Z' }],
-              };
-            }
-            throw new Error(`mockRest: unhandled ${method} ${path}`);
-          });
+          mockRest.mockImplementation(
+            async (_auth: unknown, method: string, path: string, body?: unknown) => {
+              if (method === 'POST' && path === '/tasks/bulk') {
+                sentBody = body;
+                return {
+                  task_ids: (body as { task_ids: number[] }).task_ids,
+                  tasks: [{ id: 1, title: 'Task 1', due_date: '2026-07-24T10:30:00Z' }],
+                };
+              }
+              throw new Error(`mockRest: unhandled ${method} ${path}`);
+            },
+          );
 
           await bulkUpdateTasks({ taskIds: [1], field: 'due_date', value: '2026-07-24T10:30:00Z' });
 
@@ -473,16 +490,18 @@ describe('Bulk operations', () => {
 
         it('coerces a date-only start_date/end_date the same way as due_date', async () => {
           let sentBody: unknown;
-          mockRest.mockImplementation(async (_auth: unknown, method: string, path: string, body?: unknown) => {
-            if (method === 'POST' && path === '/tasks/bulk') {
-              sentBody = body;
-              return {
-                task_ids: (body as { task_ids: number[] }).task_ids,
-                tasks: [{ id: 1, title: 'Task 1', start_date: '2026-07-20T00:00:00Z' }],
-              };
-            }
-            throw new Error(`mockRest: unhandled ${method} ${path}`);
-          });
+          mockRest.mockImplementation(
+            async (_auth: unknown, method: string, path: string, body?: unknown) => {
+              if (method === 'POST' && path === '/tasks/bulk') {
+                sentBody = body;
+                return {
+                  task_ids: (body as { task_ids: number[] }).task_ids,
+                  tasks: [{ id: 1, title: 'Task 1', start_date: '2026-07-20T00:00:00Z' }],
+                };
+              }
+              throw new Error(`mockRest: unhandled ${method} ${path}`);
+            },
+          );
 
           await bulkUpdateTasks({ taskIds: [1], field: 'start_date', value: '2026-07-20' });
 
@@ -554,7 +573,9 @@ describe('Bulk operations', () => {
           if (!task) throw new Error(`missing ${id}`);
           return { ...task };
         });
-        mockClient.tasks.updateTask.mockImplementation(async (_id: number, payload: Record<string, unknown>) => payload);
+        mockClient.tasks.updateTask.mockImplementation(
+          async (_id: number, payload: Record<string, unknown>) => payload,
+        );
 
         await bulkUpdateTasks({ taskIds: [10, 11], field: 'done', value: true });
 
@@ -614,12 +635,9 @@ describe('Bulk operations', () => {
 
         // Additive per-user assign (PUT /tasks/{id}/assignees, body { user_id }),
         // not the destructive bulk endpoint (upstream #15).
-        expect(mockRest).toHaveBeenCalledWith(
-          expect.anything(),
-          'PUT',
-          '/tasks/1/assignees',
-          { user_id: 1 },
-        );
+        expect(mockRest).toHaveBeenCalledWith(expect.anything(), 'PUT', '/tasks/1/assignees', {
+          user_id: 1,
+        });
         expect(mockRest).not.toHaveBeenCalledWith(
           expect.anything(),
           'POST',
@@ -639,9 +657,9 @@ describe('Bulk operations', () => {
         (withRetry as jest.Mock).mockRejectedValue(authError);
         (isAuthenticationError as jest.Mock).mockReturnValue(true);
 
-        await expect(bulkUpdateTasks({ taskIds: [1], field: 'assignees', value: [1] })).rejects.toThrow(
-          'Assignee operations may have authentication issues',
-        );
+        await expect(
+          bulkUpdateTasks({ taskIds: [1], field: 'assignees', value: [1] }),
+        ).rejects.toThrow('Assignee operations may have authentication issues');
       });
     });
 
@@ -656,12 +674,9 @@ describe('Bulk operations', () => {
         expect(mockClient.tasks.bulkUpdateTasks).not.toHaveBeenCalled();
         // setTaskLabels issues the label-bulk POST through vikunjaRestRequest
         // with the correct `{ labels: [{ id }, ...] }` payload shape.
-        expect(mockRest).toHaveBeenCalledWith(
-          expect.anything(),
-          'POST',
-          '/tasks/1/labels/bulk',
-          { labels: [{ id: 3 }, { id: 8 }] },
-        );
+        expect(mockRest).toHaveBeenCalledWith(expect.anything(), 'POST', '/tasks/1/labels/bulk', {
+          labels: [{ id: 3 }, { id: 8 }],
+        });
         expect(result.content[0].text).toContain('## ✅ Success');
       });
 
@@ -671,12 +686,9 @@ describe('Bulk operations', () => {
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'labels', value: '[3, 8]' });
 
-        expect(mockRest).toHaveBeenCalledWith(
-          expect.anything(),
-          'POST',
-          '/tasks/1/labels/bulk',
-          { labels: [{ id: 3 }, { id: 8 }] },
-        );
+        expect(mockRest).toHaveBeenCalledWith(expect.anything(), 'POST', '/tasks/1/labels/bulk', {
+          labels: [{ id: 3 }, { id: 8 }],
+        });
         expect(result.content[0].text).toContain('## ✅ Success');
       });
 
@@ -712,26 +724,26 @@ describe('Bulk operations', () => {
     describe('Input validation', () => {
       it('should throw error when taskIds is missing', async () => {
         await expect(bulkDeleteTasks({})).rejects.toThrow(
-          'taskIds array is required for bulk delete operation'
+          'taskIds array is required for bulk delete operation',
         );
       });
 
       it('should throw error when taskIds is empty', async () => {
         await expect(bulkDeleteTasks({ taskIds: [] })).rejects.toThrow(
-          'taskIds array is required for bulk delete operation'
+          'taskIds array is required for bulk delete operation',
         );
       });
 
       it('should throw error when too many tasks', async () => {
         const taskIds = Array.from({ length: 101 }, (_, i) => i + 1);
         await expect(bulkDeleteTasks({ taskIds })).rejects.toThrow(
-          'Too many tasks for bulk operation'
+          'Too many tasks for bulk operation',
         );
       });
 
       it('should validate task IDs', async () => {
         await expect(bulkDeleteTasks({ taskIds: [1, -2] })).rejects.toThrow(
-          'task ID must be a positive integer'
+          'task ID must be a positive integer',
         );
       });
     });
@@ -743,7 +755,9 @@ describe('Bulk operations', () => {
           { id: 2, title: 'Task 2' },
         ];
 
-        mockClient.tasks.getTask.mockResolvedValueOnce(mockTasks[0]).mockResolvedValueOnce(mockTasks[1]);
+        mockClient.tasks.getTask
+          .mockResolvedValueOnce(mockTasks[0])
+          .mockResolvedValueOnce(mockTasks[1]);
         mockClient.tasks.deleteTask.mockResolvedValue({});
 
         const result = await bulkDeleteTasks({ taskIds: [1, 2] });
@@ -754,20 +768,23 @@ describe('Bulk operations', () => {
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);
-        expect(markdown).toContain("## ✅ Success");
+        expect(markdown).toContain('## ✅ Success');
         expect(markdown).toContain('Successfully deleted 2 tasks');
         expect(markdown).toContain('**Operation:** delete-task');
         expect(markdown).toContain('**count:** 2');
       });
 
       it('should handle partial deletion success', async () => {
-        const mockTasks = [{ id: 1, title: 'Task 1' }, { id: 2, title: 'Task 2' }];
+        const mockTasks = [
+          { id: 1, title: 'Task 1' },
+          { id: 2, title: 'Task 2' },
+        ];
         const deleteError = new Error('Delete failed');
 
-        mockClient.tasks.getTask.mockResolvedValueOnce(mockTasks[0]).mockResolvedValueOnce(mockTasks[1]);
-        mockClient.tasks.deleteTask
-          .mockResolvedValueOnce({})
-          .mockRejectedValueOnce(deleteError);
+        mockClient.tasks.getTask
+          .mockResolvedValueOnce(mockTasks[0])
+          .mockResolvedValueOnce(mockTasks[1]);
+        mockClient.tasks.deleteTask.mockResolvedValueOnce({}).mockRejectedValueOnce(deleteError);
 
         const result = await bulkDeleteTasks({ taskIds: [1, 2] });
 
@@ -782,12 +799,12 @@ describe('Bulk operations', () => {
       it('should handle complete deletion failure', async () => {
         const mockTasks = [{ id: 1, title: 'Task 1' }];
         const deleteError = new Error('Delete failed');
-        
+
         mockClient.tasks.getTask.mockResolvedValue(mockTasks[0]);
         mockClient.tasks.deleteTask.mockRejectedValue(deleteError);
 
         await expect(bulkDeleteTasks({ taskIds: [1] })).rejects.toThrow(
-          'Bulk delete failed. Could not delete any tasks'
+          'Bulk delete failed. Could not delete any tasks',
         );
       });
     });
@@ -797,69 +814,69 @@ describe('Bulk operations', () => {
     describe('Input validation', () => {
       it('should throw error when projectId is missing', async () => {
         await expect(bulkCreateTasks({ tasks: [{ title: 'Test' }] })).rejects.toThrow(
-          'projectId is required for bulk create operation'
+          'projectId is required for bulk create operation',
         );
       });
 
       it('should validate projectId', async () => {
-        await expect(bulkCreateTasks({ projectId: -1, tasks: [{ title: 'Test' }] })).rejects.toThrow(
-          'projectId must be a positive integer'
-        );
+        await expect(
+          bulkCreateTasks({ projectId: -1, tasks: [{ title: 'Test' }] }),
+        ).rejects.toThrow('projectId must be a positive integer');
       });
 
       it('should throw error when tasks array is missing', async () => {
         await expect(bulkCreateTasks({ projectId: 1 })).rejects.toThrow(
-          'tasks array is required and must contain at least one task'
+          'tasks array is required and must contain at least one task',
         );
       });
 
       it('should throw error when tasks array is empty', async () => {
         await expect(bulkCreateTasks({ projectId: 1, tasks: [] })).rejects.toThrow(
-          'tasks array is required and must contain at least one task'
+          'tasks array is required and must contain at least one task',
         );
       });
 
       it('should throw error when too many tasks', async () => {
         const tasks = Array.from({ length: 101 }, (_, i) => ({ title: `Task ${i}` }));
         await expect(bulkCreateTasks({ projectId: 1, tasks })).rejects.toThrow(
-          'Too many tasks for bulk operation'
+          'Too many tasks for bulk operation',
         );
       });
 
       it('should validate task titles', async () => {
-        await expect(bulkCreateTasks({ 
-          projectId: 1, 
-          tasks: [{ title: '' }] 
-        })).rejects.toThrow(
-          'Task at index 0 must have a non-empty title'
-        );
+        await expect(
+          bulkCreateTasks({
+            projectId: 1,
+            tasks: [{ title: '' }],
+          }),
+        ).rejects.toThrow('Task at index 0 must have a non-empty title');
       });
 
       it('should validate due dates', async () => {
-        await expect(bulkCreateTasks({ 
-          projectId: 1, 
-          tasks: [{ title: 'Test', dueDate: 'invalid-date' }] 
-        })).rejects.toThrow(
-          'tasks[0].dueDate must be a valid ISO 8601 date string'
-        );
+        await expect(
+          bulkCreateTasks({
+            projectId: 1,
+            tasks: [{ title: 'Test', dueDate: 'invalid-date' }],
+          }),
+        ).rejects.toThrow('tasks[0].dueDate must be a valid ISO 8601 date string');
       });
 
       it('should validate assignee IDs', async () => {
-        await expect(bulkCreateTasks({ 
-          projectId: 1, 
-          tasks: [{ title: 'Test', assignees: [-1] }] 
-        })).rejects.toThrow(
-          'tasks[0].assignee ID must be a positive integer'
-        );
+        await expect(
+          bulkCreateTasks({
+            projectId: 1,
+            tasks: [{ title: 'Test', assignees: [-1] }],
+          }),
+        ).rejects.toThrow('tasks[0].assignee ID must be a positive integer');
       });
 
       it('should validate label IDs', async () => {
-        await expect(bulkCreateTasks({ 
-          projectId: 1, 
-          tasks: [{ title: 'Test', labels: [-1] }] 
-        })).rejects.toThrow(
-          'tasks[0].label ID must be a positive integer'
-        );
+        await expect(
+          bulkCreateTasks({
+            projectId: 1,
+            tasks: [{ title: 'Test', labels: [-1] }],
+          }),
+        ).rejects.toThrow('tasks[0].label ID must be a positive integer');
       });
     });
 
@@ -872,17 +889,20 @@ describe('Bulk operations', () => {
 
         const result = await bulkCreateTasks({
           projectId: 1,
-          tasks: [{ title: 'Test Task' }]
+          tasks: [{ title: 'Test Task' }],
         });
 
-        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, expect.objectContaining({
-          title: 'Test Task',
-          project_id: 1,
-        }));
+        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            title: 'Test Task',
+            project_id: 1,
+          }),
+        );
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);
-        expect(markdown).toContain("## ✅ Success");
+        expect(markdown).toContain('## ✅ Success');
         expect(markdown).toContain('Successfully created 1 tasks');
         expect(markdown).toContain('**Operation:** create-tasks');
         expect(markdown).toContain('**count:** 1');
@@ -892,7 +912,12 @@ describe('Bulk operations', () => {
       // dueDate straight through as due_date, which Vikunja silently drops
       // (everything else in the payload persists, so nothing errors).
       it('coerces a date-only dueDate to RFC3339 before creating the task', async () => {
-        const mockTask = { id: 1, title: 'Test Task', project_id: 1, due_date: '2026-07-24T00:00:00Z' };
+        const mockTask = {
+          id: 1,
+          title: 'Test Task',
+          project_id: 1,
+          due_date: '2026-07-24T00:00:00Z',
+        };
 
         mockClient.tasks.createTask.mockResolvedValue(mockTask);
         mockClient.tasks.getTask.mockResolvedValue(mockTask);
@@ -902,17 +927,25 @@ describe('Bulk operations', () => {
           tasks: [{ title: 'Test Task', dueDate: '2026-07-24' }],
         });
 
-        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, expect.objectContaining({
-          title: 'Test Task',
-          due_date: '2026-07-24T00:00:00Z',
-        }));
+        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            title: 'Test Task',
+            due_date: '2026-07-24T00:00:00Z',
+          }),
+        );
 
         const markdown = result.content[0].text;
         expect(markdown).toContain('## ✅ Success');
       });
 
       it('passes an already-full RFC3339 dueDate through unchanged', async () => {
-        const mockTask = { id: 1, title: 'Test Task', project_id: 1, due_date: '2026-07-24T10:30:00Z' };
+        const mockTask = {
+          id: 1,
+          title: 'Test Task',
+          project_id: 1,
+          due_date: '2026-07-24T10:30:00Z',
+        };
 
         mockClient.tasks.createTask.mockResolvedValue(mockTask);
         mockClient.tasks.getTask.mockResolvedValue(mockTask);
@@ -922,10 +955,13 @@ describe('Bulk operations', () => {
           tasks: [{ title: 'Test Task', dueDate: '2026-07-24T10:30:00Z' }],
         });
 
-        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, expect.objectContaining({
-          title: 'Test Task',
-          due_date: '2026-07-24T10:30:00Z',
-        }));
+        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            title: 'Test Task',
+            due_date: '2026-07-24T10:30:00Z',
+          }),
+        );
       });
 
       // Regression for issue #168: bulk-create accepted startDate/endDate on
@@ -948,11 +984,14 @@ describe('Bulk operations', () => {
           tasks: [{ title: 'Test Task', startDate: '2026-07-24', endDate: '2026-07-25T10:30:00Z' }],
         });
 
-        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, expect.objectContaining({
-          title: 'Test Task',
-          start_date: '2026-07-24T00:00:00Z',
-          end_date: '2026-07-25T10:30:00Z',
-        }));
+        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            title: 'Test Task',
+            start_date: '2026-07-24T00:00:00Z',
+            end_date: '2026-07-25T10:30:00Z',
+          }),
+        );
 
         const markdown = result.content[0].text;
         expect(markdown).toContain('## ✅ Success');
@@ -986,29 +1025,25 @@ describe('Bulk operations', () => {
 
         const result = await bulkCreateTasks({
           projectId: 1,
-          tasks: [{
-            title: 'Test Task',
-            labels: [1],
-            assignees: [1],
-          }]
+          tasks: [
+            {
+              title: 'Test Task',
+              labels: [1],
+              assignees: [1],
+            },
+          ],
         });
 
         // setTaskLabels issues the label-bulk POST through vikunjaRestRequest
         // with the correct `{ labels: [{ id }, ...] }` payload shape.
-        expect(mockRest).toHaveBeenCalledWith(
-          expect.anything(),
-          'POST',
-          '/tasks/1/labels/bulk',
-          { labels: [{ id: 1 }] },
-        );
+        expect(mockRest).toHaveBeenCalledWith(expect.anything(), 'POST', '/tasks/1/labels/bulk', {
+          labels: [{ id: 1 }],
+        });
         // Additive per-user assign (PUT /tasks/{id}/assignees, body { user_id }),
         // not the destructive bulk endpoint (upstream #15).
-        expect(mockRest).toHaveBeenCalledWith(
-          expect.anything(),
-          'PUT',
-          '/tasks/1/assignees',
-          { user_id: 1 },
-        );
+        expect(mockRest).toHaveBeenCalledWith(expect.anything(), 'PUT', '/tasks/1/assignees', {
+          user_id: 1,
+        });
         expect(mockRest).not.toHaveBeenCalledWith(
           expect.anything(),
           'POST',
@@ -1018,24 +1053,24 @@ describe('Bulk operations', () => {
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);
-        expect(markdown).toContain("## ✅ Success");
+        expect(markdown).toContain('## ✅ Success');
       });
 
       it('should handle authentication errors in assignee operations during create', async () => {
         const mockTask = { id: 1, title: 'Test Task', project_id: 1 };
         const authError = new Error('Authentication failed');
-        
+
         mockClient.tasks.createTask.mockResolvedValue(mockTask);
         (withRetry as jest.Mock).mockRejectedValue(authError);
         (isAuthenticationError as jest.Mock).mockReturnValue(true);
         mockClient.tasks.deleteTask.mockResolvedValue({});
 
-        await expect(bulkCreateTasks({ 
-          projectId: 1, 
-          tasks: [{ title: 'Test Task', assignees: [1] }] 
-        })).rejects.toThrow(
-          'Assignee operations may have authentication issues'
-        );
+        await expect(
+          bulkCreateTasks({
+            projectId: 1,
+            tasks: [{ title: 'Test Task', assignees: [1] }],
+          }),
+        ).rejects.toThrow('Assignee operations may have authentication issues');
 
         // Should have attempted cleanup
         expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
@@ -1052,10 +1087,7 @@ describe('Bulk operations', () => {
 
         const result = await bulkCreateTasks({
           projectId: 1,
-          tasks: [
-            { title: 'Test Task 1' },
-            { title: 'Test Task 2' },
-          ]
+          tasks: [{ title: 'Test Task 1' }, { title: 'Test Task 2' }],
         });
 
         const markdown = result.content[0].text;
@@ -1068,37 +1100,42 @@ describe('Bulk operations', () => {
 
       it('should handle complete create failure', async () => {
         const createError = new Error('Create failed');
-        
+
         mockClient.tasks.createTask.mockRejectedValue(createError);
 
-        await expect(bulkCreateTasks({ 
-          projectId: 1, 
-          tasks: [{ title: 'Test Task' }] 
-        })).rejects.toThrow(
-          'Bulk create failed. Could not create any tasks'
-        );
+        await expect(
+          bulkCreateTasks({
+            projectId: 1,
+            tasks: [{ title: 'Test Task' }],
+          }),
+        ).rejects.toThrow('Bulk create failed. Could not create any tasks');
       });
 
       it('should handle repeat configuration', async () => {
         const mockTask = { id: 1, title: 'Test Task', project_id: 1 };
-        
+
         mockClient.tasks.createTask.mockResolvedValue(mockTask);
         mockClient.tasks.getTask.mockResolvedValue(mockTask);
 
-        await bulkCreateTasks({ 
-          projectId: 1, 
-          tasks: [{ 
-            title: 'Test Task',
-            repeatAfter: 7,
-            repeatMode: 'day',
-          }] 
+        await bulkCreateTasks({
+          projectId: 1,
+          tasks: [
+            {
+              title: 'Test Task',
+              repeatAfter: 7,
+              repeatMode: 'day',
+            },
+          ],
         });
 
-        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(1, expect.objectContaining({
-          title: 'Test Task',
-          project_id: 1,
-          repeat_after: 604800, // 7 days in seconds
-        }));
+        expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
+          1,
+          expect.objectContaining({
+            title: 'Test Task',
+            project_id: 1,
+            repeat_after: 604800, // 7 days in seconds
+          }),
+        );
       });
     });
 
@@ -1107,27 +1144,29 @@ describe('Bulk operations', () => {
         const mcpError = new MCPError(ErrorCode.NOT_FOUND, 'Project not found');
         mockClient.tasks.createTask.mockRejectedValue(mcpError);
 
-        await expect(bulkCreateTasks({ 
-          projectId: 1, 
-          tasks: [{ title: 'Test Task' }] 
-        })).rejects.toThrow(
-          'Bulk create failed. Could not create any tasks'
-        );
+        await expect(
+          bulkCreateTasks({
+            projectId: 1,
+            tasks: [{ title: 'Test Task' }],
+          }),
+        ).rejects.toThrow('Bulk create failed. Could not create any tasks');
       });
 
       it('should handle cleanup failure during partial create', async () => {
         const mockTask = { id: 1, title: 'Test Task', project_id: 1 };
         const labelError = new Error('Label assignment failed');
         const deleteError = new Error('Cleanup failed');
-        
+
         mockClient.tasks.createTask.mockResolvedValue(mockTask);
         (withRetry as jest.Mock).mockRejectedValue(labelError);
         mockClient.tasks.deleteTask.mockRejectedValue(deleteError);
 
-        await expect(bulkCreateTasks({ 
-          projectId: 1, 
-          tasks: [{ title: 'Test Task', labels: [1] }] 
-        })).rejects.toThrow('Label assignment failed');
+        await expect(
+          bulkCreateTasks({
+            projectId: 1,
+            tasks: [{ title: 'Test Task', labels: [1] }],
+          }),
+        ).rejects.toThrow('Label assignment failed');
       });
     });
   });
@@ -1145,7 +1184,9 @@ describe('Bulk operations', () => {
         priority: 2,
         done: false,
       }));
-      mockClient.tasks.updateTask.mockImplementation(async (_id: number, payload: Record<string, unknown>) => payload);
+      mockClient.tasks.updateTask.mockImplementation(
+        async (_id: number, payload: Record<string, unknown>) => payload,
+      );
 
       const result = await bulkUpdateTasks({ taskIds, field: 'done', value: true });
 
