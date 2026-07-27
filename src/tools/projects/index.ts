@@ -256,15 +256,19 @@ export function registerProjectsTool(
       + 'is accepted there too as an alias for `id`. Sharing subcommands (create-share, share-with-user, list-project-users, etc.) use `projectId` only. '
       + '`create-share`\'s share label is the `name` field, NOT `title` (`title` is the project\'s own title field, used by `create`/`update`) — '
       + 'passing `title` to `create-share` is rejected with a validation error naming the correct field. '
-      + 'Setting up a whole Kanban board (a project, its columns, and tasks distributed across them) by hand costs many separate calls — '
-      + 'create the project, create/rename each bucket, bulk-create the tasks, then move each task into its column. Use `setup-kanban` instead: '
-      + 'ONE call given a project title (or an existing `id` to reuse), an ordered `columns` array, and an optional `tasks` array (each task may '
-      + 'carry a `column` name plus the normal task fields) provisions the whole board — creating/reusing the project, ensuring its Kanban view, '
-      + 'creating/renaming/reusing buckets to match `columns` in order, and creating+placing every task. Prefer it over hand-rolling '
-      + 'create -> create-bucket (xN) -> vikunja_task_bulk bulk-create -> vikunja_tasks set-bucket / vikunja_task_bulk bulk-set-bucket (xN). '
-      + 'A task\'s `column` (when given) must match one of the requested `columns` entries (case-insensitive) — an unrecognized column name '
-      + 'is rejected UP FRONT with a validation error naming the bad column, the task, and the valid choices, before anything is created; '
-      + 're-run with a corrected column, no cleanup needed. A task with no `column` is created unplaced, not an error.'
+      + 'Creating a project and its tasks in one call, whether or not it needs a Kanban board, by hand costs many separate calls — '
+      + 'create the project, then bulk-create the tasks (plus create/rename each bucket and move each task into its column, if a board is '
+      + 'wanted). Use `setup-kanban` instead: ONE call given a project title (or an existing `id` to reuse) and an optional `tasks` array '
+      + 'provisions the project and its tasks — this is the one-call "create a project with tasks" path, Kanban or not. `columns` is '
+      + 'OPTIONAL: omit it entirely for a plain project+tasks call (no Kanban view, bucket, or placement step runs, or is even touched) — '
+      + 'supply an ordered `columns` array (each task may then carry a `column` name plus the normal task fields) to also provision a whole '
+      + 'Kanban board: ensuring its Kanban view, creating/renaming/reusing buckets to match `columns` in order, and placing every task with '
+      + 'a `column`. Prefer it over hand-rolling create -> vikunja_task_bulk bulk-create (project+tasks only), or '
+      + 'create -> create-bucket (xN) -> vikunja_task_bulk bulk-create -> vikunja_tasks set-bucket / vikunja_task_bulk bulk-set-bucket (xN) '
+      + '(with a board). A task\'s `column` (when given) must match one of the requested `columns` entries (case-insensitive), and requires '
+      + '`columns` to be present at all — either mismatch is rejected UP FRONT with a validation error naming the bad column, the task, and '
+      + 'the valid choices (or that no columns were given), before anything is created; re-run corrected, no cleanup needed. A task with no '
+      + '`column` is created unplaced, not an error.'
       + (backgroundsEnabled
         ? ' The opt-in backgrounds module adds remove-background/set-unsplash-background/search-unsplash'
         : ''),
@@ -348,9 +352,11 @@ export function registerProjectsTool(
         .min(1)
         .optional()
         .describe(
-          'Required for setup-kanban: an ORDERED, non-empty array of Kanban column/bucket ' +
+          'Optional for setup-kanban: an ORDERED, non-empty array of Kanban column/bucket ' +
             'names, e.g. ["To Do", "Doing", "Done"]. Buckets are created/renamed/reused to ' +
-            'match this exact order.',
+            'match this exact order. Omit entirely for a plain project+tasks call with no ' +
+            'Kanban board — no Kanban view or bucket is created or touched in that case. A ' +
+            'task\'s `column` is only valid when `columns` is supplied.',
         ),
       tasks: z
         .array(

@@ -1850,6 +1850,72 @@ async function testSetupKanban(h: McpHarness): Promise<void> {
   // shared FlowContext.projectId chain, so it cleans itself up here rather
   // than relying on finalCleanup.
   await deleteProjectAndTasks(h, projectId, title);
+
+  // --- SEPARATE call: the columns-less path (issue #185) — `columns` is
+  // now optional; a project+tasks-only call must create the project and
+  // its tasks in one call WITHOUT touching any Kanban view or bucket at
+  // all (verified server-side below via list-buckets returning zero).
+  const noColumnsTitle = `${NAME_PREFIX}kanban-composite-no-columns`;
+  const noColumnsCall = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    title: noColumnsTitle,
+    tasks: [
+      { title: `${NAME_PREFIX}nc-task-1`, priority: 2 },
+      { title: `${NAME_PREFIX}nc-task-2` },
+    ],
+  });
+  if (assertOk('setup-kanban (columns-less: project+tasks only)', noColumnsCall)) {
+    assertStep(
+      'setup-kanban columns-less reports tasks created with no "columns ready" segment fabricated',
+      noColumnsCall.text.includes('2/2 tasks created') && !noColumnsCall.text.includes('columns ready'),
+      noColumnsCall.text.slice(0, 500),
+    );
+  }
+
+  const noColumnsProjectId = extractId(noColumnsCall.text);
+  if (!noColumnsProjectId) {
+    fail('setup-kanban (columns-less) response contains a project id', noColumnsCall.text.slice(0, 300));
+  } else {
+    // Verify server-side: zero buckets — no Kanban structure was created or
+    // touched on this path, only Vikunja's own auto-created default view.
+    const noColumnsBuckets = await h.call('vikunja_projects', {
+      subcommand: 'list-buckets',
+      id: noColumnsProjectId,
+    });
+    if (assertOk('list-buckets after columns-less setup-kanban', noColumnsBuckets)) {
+      const bucketIds = extractAllIds(noColumnsBuckets.text);
+      assertStep(
+        'setup-kanban columns-less path created zero buckets',
+        bucketIds.length === 0,
+        `expected 0 bucket ids, got: ${noColumnsBuckets.text.slice(0, 300)}`,
+      );
+    }
+    await deleteProjectAndTasks(h, noColumnsProjectId, noColumnsTitle);
+  }
+
+  // A task naming a `column` with no `columns` array at all must be
+  // rejected up front — same fail-fast contract as the unknown-column case
+  // above, and nothing (no project) should be created by the rejected call.
+  const missingColumnsTitle = `${NAME_PREFIX}kanban-composite-should-not-exist`;
+  const columnWithoutColumnsCall = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    title: missingColumnsTitle,
+    tasks: [{ title: `${NAME_PREFIX}should-not-exist-task`, column: 'To Do' }],
+  });
+  assertStep(
+    'setup-kanban rejects a task column when columns is omitted entirely (isError, VALIDATION_ERROR-shaped)',
+    columnWithoutColumnsCall.isError && columnWithoutColumnsCall.text.includes('no columns were'),
+    columnWithoutColumnsCall.text.slice(0, 500),
+  );
+
+  const listAfterRejection = await h.call('vikunja_projects', { subcommand: 'list' });
+  if (assertOk('list projects after rejected columns-less setup-kanban call', listAfterRejection)) {
+    assertStep(
+      'setup-kanban column-without-columns rejection created no project',
+      !listAfterRejection.text.includes(missingColumnsTitle),
+      listAfterRejection.text.slice(0, 500),
+    );
+  }
 }
 
 async function testNotifications(h: McpHarness): Promise<void> {
