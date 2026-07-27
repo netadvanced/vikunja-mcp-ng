@@ -105,45 +105,8 @@ export interface ResponseMetadata {
   [key: string]: unknown;
 }
 
-/**
- * Standard error response structure (kept for compatibility with error handling)
- */
-export interface StandardErrorResponse {
-  /** Always false for errors */
-  success: false;
-  /** The operation that failed */
-  operation: string;
-  /** Error message */
-  message: string;
-  /** Error code for programmatic handling */
-  code?: string;
-  /** Additional error details */
-  details?: Record<string, unknown>;
-}
-
-/**
- * Helper function to create a standard error response
- * Kept for error handling compatibility
- */
-export function createErrorResponse(
-  operation: string,
-  message: string,
-  code?: string,
-  details?: Record<string, unknown>,
-): StandardErrorResponse {
-  const response: StandardErrorResponse = {
-    success: false,
-    operation,
-    message,
-  };
-
-  if (code !== undefined) {
-    response.code = code;
-  }
-
-  if (details !== undefined) {
-    response.details = details;
-  }
-
-  return response;
-}
+// `StandardErrorResponse` and its `createErrorResponse` factory used to live
+// here. Nothing imported either — the live error path is
+// `utils/simple-response.ts`'s `createErrorResponse`, re-exported through this
+// barrel — so they were removed rather than retro-fitted with tests (CLAUDE.md:
+// untestable/unreachable code goes).

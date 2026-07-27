@@ -40,7 +40,6 @@ export {
 // Export from responses (Simple responses)
 export {
   type ResponseMetadata,
-  type StandardErrorResponse,
   type TaskResponseData,
   type TaskResponseMetadata,
   type QualityIndicatorData,

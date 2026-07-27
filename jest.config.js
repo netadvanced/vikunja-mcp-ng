@@ -14,10 +14,13 @@ module.exports = {
       // Ratcheted gate — see CLAUDE.md "Coverage Thresholds" for policy.
       // Raise these in lockstep with honest coverage growth; never lower
       // except by explicit owner decision.
-      branches: 80,
-      functions: 78,
-      lines: 89,
-      statements: 89,
+      // Raised 2026-07-27 (was 80/78/89/89) after the filtering coverage
+      // recovery + dead-code removal: honest numbers are
+      // 84.19 branches / 83.09 functions / 93.14 lines / 92.80 statements.
+      branches: 83,
+      functions: 82,
+      lines: 92,
+      statements: 92,
     },
   },
   // --- "A worker process has failed to exit gracefully" (T4 investigation, 2026-07-21) ---
