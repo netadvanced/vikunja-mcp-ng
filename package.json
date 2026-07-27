@@ -17,6 +17,7 @@
   ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "prebuild": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc",
     "test": "NODE_OPTIONS=\"--require ./tests/setup/suppress-webstorage-warning.js\" jest --silent",
     "test:watch": "NODE_OPTIONS=\"--require ./tests/setup/suppress-webstorage-warning.js\" jest --watch --silent",
