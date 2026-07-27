@@ -166,7 +166,7 @@ transcript that revealed it).
 | `bulk-create-subtasks` | 3 | bulk-create-subtasks composite discoverability vs. one `create-subtask` call per subtask |
 | `bulk-priority-bump` | 3 | bulk-edit discoverability vs. one-call-per-task |
 | `bulk-set-bucket` | 1 | bulk-set-bucket composite discoverability vs. moving each task into its Kanban column one at a time. Re-baselined 2026-07-25 from 9 to 1: this scenario's prompt is a verbatim match for `setup-kanban` (PR #175) -- see "Re-baselining `optimalCallCount`" below |
-| `labels-due-date-combo` | 3 | label creation + application + due dates combined in one ask: create-project (1) + create-label (1) + bulk-create with per-task `labels`/`dueDate` (1). PR #179 briefly re-baselined this to 1 via `setup-kanban` with a fabricated placeholder column; reverted 2026-07-25 (netadvanced/vikunja-mcp#28 T1) because that route invents an unrequested Kanban board -- see "Re-baselining `optimalCallCount`" below |
+| `labels-due-date-combo` | 1 | label creation + application + due dates combined in one ask, now solved by `setup-kanban`'s columns-less form (issue #185): `title` + `tasks` (each carrying `labels`/`dueDate`), no `columns` -- one call, zero Kanban structure touched. PR #179 briefly re-baselined this to 1 via a fabricated placeholder column instead; reverted 2026-07-25 (netadvanced/vikunja-mcp#28 T1). Re-baselined to 1 again 2026-07-27 for the unrelated, legitimate reason above -- see "Re-baselining `optimalCallCount`" below |
 | `single-task-smoke` | 2 | deliberately the simplest, most deterministic scenario -- use this one for a first try or a live-smoke proof (see the note on `optimalCallCount` below -- it is no longer necessarily the global minimum by raw call count, but remains the designated smoke-test scenario) |
 | `mixed-priority-batch` | 2 | varying a per-item field within a single batch-creation call |
 | `existing-label-reuse` | 3 | applying an already-existing label (find-then-apply path -- seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open) |
@@ -320,6 +320,20 @@ where an agent took the honest 3-call path (create-project + create-label +
 bulk-create with labels/dueDate) and got flagged as 300%-over-optimal for it
 -- proof the 1-call figure made the metric actively lie about the honest
 route. The rules below are sharpened so this specific mistake can't recur.
+
+**Re-baseline, 2026-07-27 (issue #185)**: `labels-due-date-combo` is back to
+`optimalCallCount: 1`, but NOT via the reverted placeholder-column trick --
+`setup-kanban`'s `columns` argument shipped as genuinely OPTIONAL (issue
+#185), so the columns-less form (`title` + `tasks`, no `columns`) creates
+the project and its tasks in one call while resolving/touching zero Kanban
+views or buckets (`kanban-setup.ts` skips `resolveKanbanView` entirely on
+this path -- see its module doc comment). This satisfies rule 3 below for
+the first time on this scenario: no structure, view, board, or column is
+fabricated, because none is created at all. Rule 3's ban stays in force for
+the *placeholder-column* route specifically (an explicit, non-empty
+`columns` array the prompt never asked for) -- it does not generalize to
+"never credit `setup-kanban`" now that a columns-less call exists that
+invents nothing.
 
 **The policy, so the next re-baseline doesn't have to re-litigate this**:
 

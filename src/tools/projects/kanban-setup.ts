@@ -1,7 +1,10 @@
 /**
- * `setup-kanban` — a single-call composite that provisions a whole Kanban
- * board: project (new or existing), Kanban view, ordered buckets/columns,
- * and tasks placed into their named column.
+ * `setup-kanban` — a single-call composite that provisions a project (new or
+ * existing) and its tasks. `columns` is optional (issue #185): when
+ * supplied, it also provisions a Kanban view with ordered buckets/columns
+ * and places each task into its named column; when omitted, this is purely
+ * a project+tasks composite — no Kanban view, bucket, or placement step
+ * runs at all, and it costs strictly fewer API calls than the columns form.
  *
  * Why this exists (issue #173, battle-campaign transcript analysis
  * 2026-07-23/24): the `q3-offsite-kanban` battle scenario (new project, a
@@ -73,7 +76,10 @@
  * up front is cheap to recover from (re-running setup-kanban reuses the
  * existing project/view/buckets rather than duplicating them), whereas an
  * orphaned created-but-unplaced task is not. A task with no `column` at all
- * is never an error — it is simply created unplaced.
+ * is never an error — it is simply created unplaced. Same fail-fast
+ * treatment applies when `columns` is omitted altogether: a task naming a
+ * `column` with no `columns` array at all rejects the WHOLE call up front,
+ * for the same reason — there is no board to place it on.
  *
  * Error semantics (honest, server-derived, bulk-style): resolving each
  * column and creating+placing each task are independent, try/caught
@@ -335,7 +341,7 @@ async function resolveColumns(
 async function createAndPlaceTasks(
   authManager: AuthManager,
   projectId: number,
-  viewId: number,
+  viewId: number | undefined,
   bucketIdByColumn: Map<string, number>,
   tasks: SetupKanbanTaskInput[],
 ): Promise<KanbanTaskOutcome[]> {
@@ -395,7 +401,9 @@ async function createAndPlaceTasks(
       }
 
       try {
-        await moveTaskToBucket(authManager, { taskId, bucketId, viewId, projectId });
+        // bucketId only resolves on the columns path, where viewId is
+        // always set before resolveColumns runs (setupKanban step 2/3).
+        await moveTaskToBucket(authManager, { taskId, bucketId, viewId: viewId as number, projectId });
         results.push({ index: i, title: t.title, taskId, column: t.column, bucketId, status: 'placed' });
       } catch (moveError) {
         results.push({
@@ -431,20 +439,26 @@ export async function setupKanban(
   args: SetupKanbanArgs,
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  if (!args.columns || args.columns.length === 0) {
+  // `columns` is optional (issue #185): when omitted entirely, this call is
+  // a project+tasks-only composite — no Kanban view, bucket, or placement
+  // step runs at all (see the "columns-less path" branches below). An
+  // EXPLICITLY empty array is still rejected, same as before — it signals a
+  // caller mistake (omit the field instead) rather than "no board".
+  const hasColumns = args.columns !== undefined;
+  if (hasColumns && args.columns?.length === 0) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'columns is required for setup-kanban operation — an ordered, non-empty array of ' +
-        'column/bucket names (e.g. ["To Do", "Doing", "Done"]).',
+      'When columns is provided it must be a non-empty array of column/bucket names (e.g. ' +
+        '["To Do", "Doing", "Done"]) — omit columns entirely for the project+tasks-only path.',
     );
   }
-  if (args.columns.some((c) => typeof c !== 'string' || c.trim() === '')) {
+  if (hasColumns && args.columns?.some((c) => typeof c !== 'string' || c.trim() === '')) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
       'Every entry in columns must be a non-empty string.',
     );
   }
-  const columnNames = args.columns.map((c) => c.trim());
+  const columnNames = hasColumns ? (args.columns as string[]).map((c) => c.trim()) : [];
 
   if (args.id === undefined && (!args.title || args.title.trim() === '')) {
     throw new MCPError(
@@ -480,7 +494,17 @@ export async function setupKanban(
     if (!t.title || t.title.trim() === '') {
       throw new MCPError(ErrorCode.VALIDATION_ERROR, `tasks[${i}].title is required`);
     }
-    if (t.column !== undefined && !columnKeySet.has(columnKey(t.column))) {
+    if (t.column === undefined) return;
+    if (!hasColumns) {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `tasks[${i}] ("${t.title.trim()}") has column "${t.column}" but no columns were ` +
+          'provided to setup-kanban. Either add a `columns` array (e.g. ["To Do", "Doing", ' +
+          '"Done"]) or remove `column` from this task and re-run — no project, view, bucket, ' +
+          'or task has been created by this call.',
+      );
+    }
+    if (!columnKeySet.has(columnKey(t.column))) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
         `tasks[${i}] ("${t.title.trim()}") has column "${t.column}" which is not one of the ` +
@@ -522,26 +546,32 @@ export async function setupKanban(
 
   // 2. Resolve the Kanban view — auto-created by Vikunja for a brand new
   // project; must already exist for a reused project (propagates a clear
-  // NOT_FOUND if it doesn't, same as list-buckets/create-bucket).
-  const kanbanView = await resolveKanbanView(authManager, projectId);
-  const viewId = kanbanView.id;
+  // NOT_FOUND if it doesn't, same as list-buckets/create-bucket). Skipped
+  // entirely on the columns-less path (issue #185) — no Kanban view, bucket,
+  // or placement step runs when the caller didn't ask for a board, so this
+  // path costs strictly fewer API calls than the columns form, not the same.
+  let viewId: number | undefined;
+  let columnResults: KanbanColumnOutcome[] = [];
+  let bucketIdByColumn = new Map<string, number>();
+  let columnFailures: KanbanColumnOutcome[] = [];
+  if (hasColumns) {
+    const kanbanView = await resolveKanbanView(authManager, projectId);
+    viewId = kanbanView.id;
 
-  // 3. Resolve every requested column's bucket, IN ORDER.
-  const { results: columnResults, bucketIdByColumn } = await resolveColumns(
-    authManager,
-    projectId,
-    viewId,
-    columnNames,
-  );
+    // 3. Resolve every requested column's bucket, IN ORDER.
+    const resolved = await resolveColumns(authManager, projectId, viewId, columnNames);
+    columnResults = resolved.results;
+    bucketIdByColumn = resolved.bucketIdByColumn;
 
-  const columnFailures = columnResults.filter((c) => c.status === 'failed');
-  if (columnResults.length > 0 && columnFailures.length === columnResults.length) {
-    throw new MCPError(
-      ErrorCode.API_ERROR,
-      `Kanban setup failed: could not create or resolve any of the ${columnResults.length} ` +
-        `requested columns in project ${projectId}. First error: ` +
-        `${columnFailures[0]?.error ?? 'unknown error'}`,
-    );
+    columnFailures = columnResults.filter((c) => c.status === 'failed');
+    if (columnResults.length > 0 && columnFailures.length === columnResults.length) {
+      throw new MCPError(
+        ErrorCode.API_ERROR,
+        `Kanban setup failed: could not create or resolve any of the ${columnResults.length} ` +
+          `requested columns in project ${projectId}. First error: ` +
+          `${columnFailures[0]?.error ?? 'unknown error'}`,
+      );
+    }
   }
 
   // 4. Bulk-create the requested tasks and place each into its column.
@@ -563,10 +593,10 @@ export async function setupKanban(
   // place a caller can recover the id of a project that really was
   // created — never leave it as bare prose ("project 15 created") that no
   // extractor can parse.
-  const summaryParts = [
-    `project ${projectId} ${projectCreated ? 'created' : 'reused'} (ID: ${projectId})`,
-    `${columnResults.length - columnFailures.length}/${columnResults.length} columns ready`,
-  ];
+  const summaryParts = [`project ${projectId} ${projectCreated ? 'created' : 'reused'} (ID: ${projectId})`];
+  if (hasColumns) {
+    summaryParts.push(`${columnResults.length - columnFailures.length}/${columnResults.length} columns ready`);
+  }
   if (tasks.length > 0) {
     summaryParts.push(`${tasks.length - taskFailures.length}/${tasks.length} tasks created`);
     if (taskNotPlaced.length > 0) {
@@ -628,8 +658,10 @@ export async function setupKanban(
       projectId,
       projectCreated,
       ...(projectTitle !== undefined && { projectTitle }),
-      viewId,
-      columns: columnResults,
+      // `viewId`/`columns` only exist when a board was actually requested —
+      // never fabricated on the columns-less path (issue #185), where no
+      // Kanban view was even resolved.
+      ...(hasColumns && { viewId, columns: columnResults }),
       // Named `taskResults` (not `tasks`) — `ResponseData.tasks` is typed
       // `Task[]` (full Vikunja task objects) for other tools' responses;
       // this composite's per-task outcomes are a different, smaller shape

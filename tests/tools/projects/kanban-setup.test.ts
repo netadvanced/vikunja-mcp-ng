@@ -99,15 +99,9 @@ describe('setupKanban', () => {
   });
 
   describe('validation', () => {
-    it('throws when columns is missing', async () => {
-      await expect(setupKanban({ title: 'Board' }, authManager)).rejects.toThrow(
-        'columns is required for setup-kanban operation',
-      );
-    });
-
-    it('throws when columns is empty', async () => {
+    it('throws when columns is an explicitly empty array (issue #185: omit it entirely instead)', async () => {
       await expect(setupKanban({ title: 'Board', columns: [] }, authManager)).rejects.toThrow(
-        'columns is required for setup-kanban operation',
+        'When columns is provided it must be a non-empty array',
       );
     });
 
@@ -137,6 +131,132 @@ describe('setupKanban', () => {
       await expect(
         setupKanban({ title: 'Board', columns: ['To Do'], tasks }, authManager),
       ).rejects.toThrow('Too many tasks for setup-kanban');
+    });
+  });
+
+  describe('columns-less path (issue #185: project+tasks, no Kanban board)', () => {
+    it('creates the project and its tasks without resolving a Kanban view or any bucket', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      router.on('PUT', '/projects', () => ({ id: 601, title: 'Plain Project' }));
+      const createdTasks = new Map<number, Record<string, unknown>>();
+      let taskCounter = 9000;
+      router.on('PUT', '/projects/601/tasks', (_p, body) => {
+        taskCounter += 1;
+        const task = { id: taskCounter, project_id: 601, ...(body as Record<string, unknown>) };
+        createdTasks.set(taskCounter, task);
+        return task;
+      });
+      router.on('GET', /^\/tasks\/\d+$/, (path) => createdTasks.get(Number(path.split('/')[2])));
+
+      // NOTE: no /views or /buckets routes are registered at all — if
+      // setupKanban called resolveKanbanView or touched any bucket, the
+      // router would throw "Unmocked request in test", failing this test.
+      // This is what proves the columns-less path costs strictly fewer API
+      // calls, not merely that it produces the same observable outcome.
+      const result = await setupKanban(
+        {
+          title: 'Plain Project',
+          tasks: [{ title: 'Task A' }, { title: 'Task B', priority: 2 }],
+        },
+        authManager,
+      );
+
+      const text = result.content[0]?.text ?? '';
+      expect(text).toContain('Kanban setup completed');
+      expect(text).toContain('project 601 created (ID: 601)');
+      expect(text).toContain('2/2 tasks created');
+      // No board was requested, so no "columns ready" segment is fabricated.
+      expect(text).not.toContain('columns ready');
+      expect(text).not.toContain('**viewId:**');
+      expect(text).not.toContain('**columns:**');
+
+      const viewCalls = router.calls.filter((c) => /\/views/.test(c.path));
+      const bucketCalls = router.calls.filter((c) => /\/buckets/.test(c.path));
+      expect(viewCalls).toHaveLength(0);
+      expect(bucketCalls).toHaveLength(0);
+    });
+
+    it('reuses an existing project (via id) and creates its tasks with no view/bucket calls', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      const createdTasks = new Map<number, Record<string, unknown>>();
+      router.on('PUT', '/projects/602/tasks', (_p, body) => {
+        const task = { id: 9500, project_id: 602, ...(body as Record<string, unknown>) };
+        createdTasks.set(9500, task);
+        return task;
+      });
+      router.on('GET', /^\/tasks\/\d+$/, (path) => createdTasks.get(Number(path.split('/')[2])));
+
+      const result = await setupKanban(
+        { id: 602, tasks: [{ title: 'Reused-project task' }] },
+        authManager,
+      );
+
+      const text = result.content[0]?.text ?? '';
+      expect(text).toContain('project 602 reused (ID: 602)');
+      expect(text).toContain('1/1 tasks created');
+      expect(router.calls.some((c) => /\/views|\/buckets/.test(c.path))).toBe(false);
+      // No project was created either — pure reuse.
+      expect(router.calls.some((c) => c.method === 'PUT' && c.path === '/projects')).toBe(false);
+    });
+
+    it('allows a project with no tasks at all (project-only call)', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('PUT', '/projects', () => ({ id: 603, title: 'Empty Project' }));
+
+      const result = await setupKanban({ title: 'Empty Project' }, authManager);
+      const text = result.content[0]?.text ?? '';
+      expect(text).toContain('project 603 created (ID: 603)');
+      expect(router.calls.some((c) => /\/views|\/buckets/.test(c.path))).toBe(false);
+    });
+
+    it('rejects up front when a task carries a column but columns was never provided', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      let caught: unknown;
+      try {
+        await setupKanban(
+          { title: 'Board', tasks: [{ title: 'Misplaced task', column: 'To Do' }] },
+          authManager,
+        );
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(MCPError);
+      expect((caught as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+      const message = (caught as MCPError).message;
+      expect(message).toContain('Misplaced task');
+      expect(message).toContain('"To Do"');
+      expect(message).toContain('no columns were');
+
+      // Zero API calls — nothing created before the rejection.
+      expect(router.calls).toHaveLength(0);
+    });
+
+    it('still rejects up front even when other tasks in the same call have no column', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      await expect(
+        setupKanban(
+          {
+            title: 'Board',
+            tasks: [
+              { title: 'Fine task' },
+              { title: 'Misplaced task', column: 'Doing' },
+            ],
+          },
+          authManager,
+        ),
+      ).rejects.toThrow('no columns were');
+
+      expect(router.calls).toHaveLength(0);
     });
   });
 
