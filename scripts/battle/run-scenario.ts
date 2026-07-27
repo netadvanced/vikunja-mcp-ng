@@ -333,7 +333,7 @@ async function main(): Promise<void> {
   const globalClient = new RestClient(VIKUNJA_URL, vikunjaToken);
   log("Sweeping any leftover 'battle-*' data from prior runs before starting...");
   const sweep = await cleanupByPrefix(globalClient, 'battle-');
-  log(`  swept ${sweep.deletedProjects} project(s), ${sweep.deletedLabels} label(s).`);
+  log(`  swept ${sweep.deletedProjects} project(s), ${sweep.deletedTasks} task(s), ${sweep.deletedLabels} label(s).`);
 
   const results: ScenarioRunResult[] = [];
   for (const scenario of scenariosToRun) {
