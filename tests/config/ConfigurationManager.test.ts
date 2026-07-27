@@ -748,4 +748,38 @@ describe('ConfigurationManager', () => {
       ).rejects.toThrow(ConfigurationError);
     });
   });
+
+  describe('forceV1Api kill switch', () => {
+    afterEach(() => {
+      delete process.env.VIKUNJA_MCP_FORCE_V1_API;
+      ConfigurationManager.reset();
+    });
+
+    it('defaults to false when nothing sets it', () => {
+      ConfigurationManager.reset();
+      expect(ConfigurationManager.getInstance().isV1Forced()).toBe(false);
+    });
+
+    it('is enabled by the VIKUNJA_MCP_FORCE_V1_API env var', () => {
+      process.env.VIKUNJA_MCP_FORCE_V1_API = 'true';
+      ConfigurationManager.reset();
+      expect(ConfigurationManager.getInstance().isV1Forced()).toBe(true);
+    });
+
+    it('is explicitly disabled by the env var set to false', () => {
+      process.env.VIKUNJA_MCP_FORCE_V1_API = 'false';
+      ConfigurationManager.reset();
+      expect(ConfigurationManager.getInstance().isV1Forced()).toBe(false);
+    });
+
+    it('reads the value from a programmatic config source', () => {
+      ConfigurationManager.reset();
+      // ConfigLoadOptions.sources is a Record<string, unknown> merged as the
+      // highest-priority layer — see src/config/types.ts:222-231.
+      const manager = ConfigurationManager.getInstance({
+        sources: { featureFlags: { forceV1Api: true } },
+      });
+      expect(manager.isV1Forced()).toBe(true);
+    });
+  });
 });

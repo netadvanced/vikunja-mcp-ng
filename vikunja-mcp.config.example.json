@@ -15,6 +15,9 @@
     "userDeletion": false,
     "tokenManagement": false
   },
+  "featureFlags": {
+    "forceV1Api": false
+  },
   "logging": {
     "level": "info"
   },
