@@ -58,14 +58,24 @@
 # `depends_on` entry per-profile in a single service — and referencing a
 # profile-excluded service from `depends_on` is a hard error — so this is
 # the cleaner of the two options the item called out (profiles vs. a second
-# overlay file). Both variants publish the same host port (33456); only one
-# is ever active at a time because a caller always selects exactly one
-# profile via `docker/e2e/bootstrap.sh` (`VIKUNJA_DB` env var, defaulting to
-# `postgres` -- unset/default behavior is byte-for-byte what this stack did
-# before this variant existed). `npm run e2e:down` always activates *both*
-# profiles so `-v` reliably removes all three named volumes regardless of
-# which variant was last up -- see package.json.
-name: vikunja-mcp-e2e
+# overlay file). A caller always selects exactly one profile via
+# `docker/e2e/bootstrap.sh` (`VIKUNJA_DB` env var, defaulting to `postgres`).
+#
+# ONE PERSISTENT STACK PER TARGET (issue #205). The project name and every
+# published port are interpolated from the environment, so each
+# `<version>-<db>` target is a wholly separate Compose project with its own
+# volumes and its own ports and they all run at once:
+#
+#   2.4.0-postgres -> project vikunja-e2e-2.4.0-postgres, API on 8240
+#   2.3.0-postgres -> project vikunja-e2e-2.3.0-postgres, API on 8230
+#
+# Ports are DERIVED from the version, never hand-assigned -- the formula and
+# the target ids live in scripts/lib/e2e-target.ts, which bootstrap.sh
+# evaluates to set these variables. Do not hardcode a port here or in a
+# harness; ask the resolver. The defaults below only exist so a bare
+# `docker compose -f docker/e2e/docker-compose.yml ...` (no bootstrap) still
+# resolves to the aligned target rather than failing on unset variables.
+name: ${E2E_PROJECT:-vikunja-e2e-2.4.0-postgres}
 
 services:
   db:
@@ -79,9 +89,9 @@ services:
     volumes:
       - vikunja-mcp-e2e-db:/var/lib/postgresql/data
     # Exposed on an unusual host port purely for ad-hoc debugging
-    # (psql -h localhost -p 33457 -U vikunja). Not required by the stack.
+    # (psql -h localhost -p "$E2E_DB_PORT" -U vikunja). Not required by the stack.
     ports:
-      - '33457:5432'
+      - '${E2E_DB_PORT:-18240}:5432'
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U vikunja -d vikunja']
       interval: 3s
@@ -131,12 +141,12 @@ services:
       # real data or be reachable from anywhere but localhost; do not
       # reuse this value for anything real.
       VIKUNJA_SERVICE_SECRET: 'e2e-local-only-not-for-production-use'
-      VIKUNJA_SERVICE_PUBLICURL: 'http://localhost:33456'
+      VIKUNJA_SERVICE_PUBLICURL: 'http://localhost:${E2E_PORT:-8240}'
       # No self-service signups in this stack — the bootstrap script
       # creates the single test user directly via the container CLI.
       VIKUNJA_SERVICE_ENABLEREGISTRATION: 'false'
     ports:
-      - '33456:3456'
+      - '${E2E_PORT:-8240}:3456'
     volumes:
       - vikunja-mcp-e2e-files:/app/vikunja/files
     healthcheck:
@@ -170,10 +180,10 @@ services:
       # see the comment there. Kept identical so bootstrap.sh/harnesses
       # don't need per-variant secrets.
       VIKUNJA_SERVICE_SECRET: 'e2e-local-only-not-for-production-use'
-      VIKUNJA_SERVICE_PUBLICURL: 'http://localhost:33456'
+      VIKUNJA_SERVICE_PUBLICURL: 'http://localhost:${E2E_PORT:-8240}'
       VIKUNJA_SERVICE_ENABLEREGISTRATION: 'false'
     ports:
-      - '33456:3456'
+      - '${E2E_PORT:-8240}:3456'
     volumes:
       - vikunja-mcp-e2e-files:/app/vikunja/files
       - vikunja-mcp-e2e-sqlite-db:/db
