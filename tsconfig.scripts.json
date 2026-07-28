@@ -1,0 +1,39 @@
+{
+  // The e2e/battle/release harnesses were never typechecked: tsconfig.json
+  // includes only `src/**/*`, so a missing import or a renamed field in
+  // scripts/ failed at RUN time, in the very code that verifies everything
+  // else. Found while wiring per-target stacks (issue #205) — a missing
+  // `resolveTarget` import passed `npm run typecheck` clean.
+  //
+  // Looser than the src config on purpose: these are operator scripts, not
+  // shipped code, and they legitimately use process/console freely.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // tsconfig.json pins rootDir to src/ for the build; these files live
+    // outside it and are never emitted, so the constraint is lifted here.
+    "rootDir": ".",
+    // `Preserve` keeps ESM semantics (these scripts use `import.meta`, run by
+    // tsx) without switching module RESOLUTION away from the base config —
+    // `Bundler` resolution made zod's discriminated-union types stop
+    // narrowing, producing a bogus exhaustiveness error in battle/lib/setup.ts.
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    // Relaxed vs src/: these operator scripts pass `undefined` into optional
+    // fields freely (`model: modelOverride` and friends). Shipped code keeps
+    // the strict setting; forcing it here would mean rewriting the battle
+    // harness's option plumbing for no runtime benefit.
+    "exactOptionalPropertyTypes": false,
+    "types": ["node"]
+  },
+  "include": ["scripts/**/*.ts"],
+  // scripts/battle/** is excluded FOR NOW, not because it is unimportant but
+  // because it types its scenario schema through zod, and the `Bundler`
+  // resolution this config needs (for `import.meta`, which every script uses
+  // under tsx) resolves zod to declarations whose discriminated unions stop
+  // narrowing — producing a bogus "not assignable to never" on the
+  // exhaustiveness guard in battle/lib/setup.ts. The guard is correct; the
+  // resolution mode is the problem. Widening this include is tracked
+  // separately.
+  "exclude": ["node_modules", "dist", "scripts/battle/**"]
+}

@@ -61,11 +61,12 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { resolveTarget, DEFAULT_TARGET } from './lib/e2e-target';
 
 // ============================================================================
 // Configuration
@@ -81,10 +82,36 @@ const PACKAGE_VERSION = (
   JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf-8')) as { version: string }
 ).version;
 
+// Which persistent stack to run against (issue #205). `VIKUNJA_E2E_TARGET`
+// names a `<version>-<db>` target; the resolver owns the port mapping so no
+// port is ever hardcoded here.
+const TARGET = resolveTarget(process.env.VIKUNJA_E2E_TARGET || DEFAULT_TARGET);
+
+/**
+ * Credentials written by docker/e2e/bootstrap.sh for this target. Stable for
+ * the life of the stack — only `npm run e2e:reset` rotates them.
+ */
+function readTargetEnv(): Record<string, string> {
+  const file = path.join(REPO_ROOT, TARGET.envFile);
+  if (!existsSync(file)) return {};
+  return Object.fromEntries(
+    readFileSync(file, 'utf-8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'))
+      .map((line) => {
+        const idx = line.indexOf('=');
+        return [line.slice(0, idx), line.slice(idx + 1)] as const;
+      }),
+  );
+}
+
+const TARGET_ENV = readTargetEnv();
+
 // Deliberately NOT `process.env.VIKUNJA_URL` — see the safety note in the
 // file header. `MCP_E2E_VIKUNJA_URL` is a distinct name a developer would
 // never have already exported for pointing a real MCP client at production.
-const VIKUNJA_URL = process.env.MCP_E2E_VIKUNJA_URL || 'http://localhost:33456/api/v1';
+const VIKUNJA_URL = process.env.MCP_E2E_VIKUNJA_URL || TARGET_ENV.VIKUNJA_URL || TARGET.apiUrl;
 
 // Cached once at startup by `detectServerVersion()` (called early in `main`)
 // so `driftTolerated`-gated checks (currently just the assignees-500 case,
@@ -152,7 +179,30 @@ function assertLocalUrl(url: string): void {
 const TEST_USERNAME = 'e2e-test';
 const TEST_PASSWORD = 'VikunjaMcpE2E-2026!';
 const TOKEN_TITLE = 'vikunja-mcp-e2e-harness';
-const NAME_PREFIX = 'mcp-e2e-';
+
+/**
+ * The user whose identity-scoped state tests are allowed to mutate — API
+ * tokens, user settings, avatar provider (issue #205). `e2e-test` is the
+ * shared identity every harness authenticates as and every stored token
+ * belongs to, so changing ITS settings is visible to any concurrent run.
+ * Provisioned by docker/e2e/bootstrap.sh alongside `e2e-test`.
+ */
+const MUTABLE_USERNAME = 'e2e-mutable';
+
+/**
+ * Per-RUN fixture prefix (issue #205). This used to be the fixed string
+ * `mcp-e2e-`, which every run also swept before and after itself — so two
+ * concurrent runs on one stack deleted each other's fixtures mid-test. The
+ * run id keeps each run's data disjoint AND keeps the sweep scoped to it.
+ * Strays from crashed runs are collected by `--sweep-all`, which is now a
+ * deliberate housekeeping flag rather than something every run does.
+ */
+const RUN_ID = process.env.MCP_E2E_RUN_ID || `${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
+const NAME_PREFIX = `mcp-e2e-${RUN_ID}-`;
+
+/** Root prefix shared by every run — only swept when `--sweep-all` is passed. */
+const ROOT_PREFIX = 'mcp-e2e-';
+const SWEEP_ALL = process.argv.includes('--sweep-all');
 
 // ============================================================================
 // Result tracking (mirrors scripts/test-mcp.ts's simple reporter)
@@ -234,15 +284,15 @@ function driftTolerated(name: string, summary: string, detail: string): void {
 // Credentials: replicate docker/e2e/bootstrap.sh's login + token-mint flow
 // ============================================================================
 
-async function login(): Promise<string> {
+async function login(username: string = TEST_USERNAME): Promise<string> {
   const res = await fetch(`${VIKUNJA_URL}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: TEST_USERNAME, password: TEST_PASSWORD }),
+    body: JSON.stringify({ username, password: TEST_PASSWORD }),
   });
   if (!res.ok) {
     throw new Error(
-      `POST /login failed: ${res.status} ${await res.text()} -- is the e2e stack up? Run 'npm run e2e:up'.`,
+      `POST /login as '${username}' failed: ${res.status} ${await res.text()} -- is the e2e stack up? Run 'npm run e2e:up'.`,
     );
   }
   const body = (await res.json()) as { token: string };
@@ -289,6 +339,14 @@ async function getApiToken(): Promise<string> {
   if (process.env.MCP_E2E_VIKUNJA_API_TOKEN) {
     log('Using MCP_E2E_VIKUNJA_API_TOKEN from the environment.');
     return process.env.MCP_E2E_VIKUNJA_API_TOKEN;
+  }
+  // Prefer the target's stable token (issue #205). Minting a fresh one per
+  // run still works as a fallback, but it accumulates tokens on the shared
+  // `e2e-test` user and pointlessly diverges from what every other harness
+  // is authenticating with.
+  if (TARGET_ENV.VIKUNJA_API_TOKEN) {
+    log(`Using the stable token for target ${TARGET.id} (${TARGET.envFile}).`);
+    return TARGET_ENV.VIKUNJA_API_TOKEN;
   }
   log(`Logging in as '${TEST_USERNAME}'...`);
   const jwt = await login();
@@ -366,7 +424,12 @@ function extractBucketTitlesInOrder(text: string): string[] {
 // ============================================================================
 
 async function cleanupByPrefix(h: McpHarness): Promise<void> {
-  log('\n[Cleanup-by-prefix]');
+  // Scoped to THIS run's prefix unless `--sweep-all` was passed (issue
+  // #205): a run must never delete a concurrent run's fixtures. The root
+  // prefix still exists so someone can deliberately collect strays left by
+  // crashed runs -- that is housekeeping, not per-run behaviour.
+  const prefix = SWEEP_ALL ? ROOT_PREFIX : NAME_PREFIX;
+  log(`\n[Cleanup-by-prefix: ${prefix}${SWEEP_ALL ? ' (--sweep-all: ALL runs)' : ' (this run only)'}]`);
 
   // Saved filters first (they appear as pseudo-projects; deleting the
   // filter also removes the pseudo-project entry).
@@ -375,7 +438,7 @@ async function cleanupByPrefix(h: McpHarness): Promise<void> {
     const idTitlePairs = [...listRes.text.matchAll(/"id":\s*(-?\d+)[^}]*?"title":\s*"([^"]*)"/g)];
     for (const m of idTitlePairs) {
       const [, idStr, title] = m;
-      if (title && title.startsWith(NAME_PREFIX) && idStr) {
+      if (title && title.startsWith(prefix) && idStr) {
         const id = Number(idStr);
         await h.call('vikunja_filters', { action: 'delete', parameters: { id } });
         log(`  deleted stale saved filter "${title}" (id ${id})`);
@@ -391,7 +454,7 @@ async function cleanupByPrefix(h: McpHarness): Promise<void> {
     const projectMatches = [...listRes.text.matchAll(/\*\*([^*]+)\*\* \(ID: (\d+)\)/g)];
     for (const m of projectMatches) {
       const [, title, idStr] = m;
-      if (title && title.startsWith(NAME_PREFIX) && idStr) {
+      if (title && title.startsWith(prefix) && idStr) {
         const projectId = Number(idStr);
         await deleteProjectAndTasks(h, projectId, title);
       }
@@ -406,7 +469,7 @@ async function cleanupByPrefix(h: McpHarness): Promise<void> {
     const labelMatches = [...listRes.text.matchAll(/\*\*([^*]+)\*\* \(ID: (\d+)\)/g)];
     for (const m of labelMatches) {
       const [, title, idStr] = m;
-      if (title && title.startsWith(NAME_PREFIX) && idStr) {
+      if (title && title.startsWith(prefix) && idStr) {
         await h.call('vikunja_labels', { subcommand: 'delete', id: Number(idStr) });
         log(`  deleted stale label "${title}" (id ${idStr})`);
       }
@@ -2176,11 +2239,78 @@ async function finalCleanup(h: McpHarness, ctx: FlowContext): Promise<void> {
 // Main
 // ============================================================================
 
+/** Newest mtime under a directory tree, ignoring anything not a .ts source. */
+function newestSourceMtime(dir: string): number {
+  let newest = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      newest = Math.max(newest, newestSourceMtime(full));
+    } else if (entry.name.endsWith('.ts')) {
+      newest = Math.max(newest, statSync(full).mtimeMs);
+    }
+  }
+  return newest;
+}
+
+/**
+ * Builds `dist/` if it is stale, under an exclusive lock.
+ *
+ * Both guards exist because of a real failure (issue #205): two concurrent
+ * harness runs each called `npm run build`, and since 0.6.2 that starts with
+ * `prebuild: rm -rf dist` — so one run's `dist/` was deleted out from under
+ * the other's server as it spawned, which surfaced as the baffling
+ * `registerAuthTool is not a function` from a half-written module graph.
+ *
+ * Freshness check first: when `dist/` already reflects `src/`, the second run
+ * does not touch it at all, which is the normal case for parallel agents on
+ * an unchanged tree. The lock then serialises the case where a rebuild really
+ * is needed, so only one process is ever writing `dist/`.
+ */
 function buildProject(): void {
-  log('Building project (npm run build)...');
-  const buildResult = spawnSync('npm', ['run', 'build'], { cwd: REPO_ROOT, stdio: 'inherit' });
-  if (buildResult.status !== 0) {
-    throw new Error(`npm run build failed with exit code ${String(buildResult.status)}`);
+  const distEntry = DIST_ENTRY;
+  const lockFile = path.join(REPO_ROOT, 'node_modules', '.mcp-e2e-build.lock');
+
+  const isFresh = (): boolean => {
+    if (!existsSync(distEntry)) return false;
+    return statSync(distEntry).mtimeMs >= newestSourceMtime(path.join(REPO_ROOT, 'src'));
+  };
+
+  if (isFresh()) {
+    log('dist/ is newer than src/ — skipping the build (another run may be using it).');
+    return;
+  }
+
+  // Crude but sufficient advisory lock: exclusive create, stale after 10min.
+  const deadline = Date.now() + 10 * 60_000;
+  for (;;) {
+    try {
+      writeFileSync(lockFile, String(process.pid), { flag: 'wx' });
+      break;
+    } catch {
+      if (existsSync(lockFile) && Date.now() - statSync(lockFile).mtimeMs > 10 * 60_000) {
+        log('Removing a stale build lock (>10min old).');
+        rmSync(lockFile, { force: true });
+        continue;
+      }
+      if (Date.now() > deadline) throw new Error('Timed out waiting for the build lock.');
+      log('Another run is building dist/ — waiting...');
+      spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},2000)']);
+      if (isFresh()) {
+        log('dist/ was rebuilt by the other run — continuing.');
+        return;
+      }
+    }
+  }
+
+  try {
+    log('Building project (npm run build)...');
+    const buildResult = spawnSync('npm', ['run', 'build'], { cwd: REPO_ROOT, stdio: 'inherit' });
+    if (buildResult.status !== 0) {
+      throw new Error(`npm run build failed with exit code ${String(buildResult.status)}`);
+    }
+  } finally {
+    rmSync(lockFile, { force: true });
   }
 }
 
@@ -2424,7 +2554,11 @@ async function main(): Promise<void> {
   // same stack under the same prefix would make the cleanup-by-prefix
   // sweeps race each other.
   try {
-    const jwt = await login();
+    // Deliberately the MUTABLE user (issue #205): this lane changes the
+    // avatar provider, which is identity-scoped state. Doing that to
+    // `e2e-test` -- the identity every harness and every stored token
+    // belongs to -- is visible to any concurrent run on this stack.
+    const jwt = await login(MUTABLE_USERNAME);
     await runJwtLane(jwt, inheritedEnv);
   } catch (e) {
     // A login failure here is a real gap in coverage, not a reason to go

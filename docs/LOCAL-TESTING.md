@@ -17,7 +17,8 @@ see "DB backend variant" below.
 
 - `docker-compose.yml` — a multi-service stack, namespaced under the compose
   project name `vikunja-mcp-e2e` so it can't collide with anything else
-  running on the machine. Uses non-default host ports: **33456** for
+  running on the machine. Uses non-default host ports (see "Targets" below;
+  the default target publishes **8240**) — historically **33456** for
   Vikunja (`VIKUNJA_URL` points here, same for both DB backends) and 33457
   for Postgres (optional, for ad-hoc `psql` debugging only, postgres backend
   only). Two DB-backend variants are defined as Compose *profiles* —
@@ -79,22 +80,70 @@ though the HTTP response body only ever says `"Internal Server Error"`. A
 documented, not a harness bug — see the PR that introduced this check for
 recorded before/after evidence.
 
-## Bringing the stack up
+## Targets: one persistent stack per Vikunja version
+
+Since issue #205 there is no single "the stack". Each **target** —
+`<version>-<db>` — is its own Compose project with its own volumes and its
+own ports, so several versions run **at the same time** and one agent's work
+cannot disturb another's:
+
+| Target | API port | Notes |
+|---|---|---|
+| `2.4.0-postgres` | **8240** | the default; aligned/tested version |
+| `2.3.0-postgres` | **8230** | the v1 floor (minimum supported) |
+| `2.4.0-sqlite` | 9240 | SQLite-only failure classes |
+| `2.3.0-sqlite` | 9230 | |
+
+Ports are **derived, never hand-assigned**: `8000 + (major×100 + minor×10 +
+patch)` for Postgres, `9000 + …` for SQLite, so Vikunja 2.4.1 lands on 8241
+with no edit anywhere. The formula and the target list live in
+`scripts/lib/e2e-target.ts`, which both the shell scripts and the TypeScript
+harnesses consult — never hardcode a port.
 
 ```bash
-npm run e2e:up
+npm run e2e:up                                   # default target (2.4.0-postgres, port 8240)
+VIKUNJA_E2E_TARGET=2.3.0-postgres npm run e2e:up # the floor, port 8230
+npm run e2e:up:all                               # every standard target at once
+npm run e2e:status                               # what's up, on which port, running which version
 ```
 
-This runs `docker/e2e/bootstrap.sh`, which itself brings the compose stack
-up (`docker compose -f docker/e2e/docker-compose.yml up -d --wait`) before
-bootstrapping it. On success it prints:
+Each target writes its own credentials file,
+`docker/e2e/.env.<version>-<db>` (gitignored — these hold live tokens).
 
-```
-export VIKUNJA_URL=http://localhost:33456/api/v1
-export VIKUNJA_API_TOKEN=tk_...
-```
+### Credentials are stable
 
-and writes the same two values to `docker/e2e/.env`.
+`bootstrap.sh` is idempotent about tokens: if the target's env file holds a
+token that still authenticates, it is **reused**. A token therefore survives
+`npm run e2e:down` and only ever changes when someone deliberately runs
+`npm run e2e:reset`.
+
+This matters because it used to be otherwise: `e2e:down` ran `down -v`,
+destroying the volumes, so the next `e2e:up` produced a fresh database, a
+fresh user, and a fresh token — silently invalidating the credential any
+other process was holding.
+
+### Two users, deliberately
+
+| User | Purpose |
+|---|---|
+| `e2e-test` | The shared identity every harness authenticates as, and the owner of the stored token. **Nothing may mutate its user-level state.** |
+| `e2e-mutable` | For tests that change identity-scoped state — API tokens, user settings, avatar provider. Breaking this user cannot break anyone else's run. |
+
+Both are provisioned by `bootstrap.sh`. The JWT lane in
+`scripts/mcp-e2e.ts` authenticates as `e2e-mutable` precisely because it
+changes the avatar provider.
+
+### Running several harnesses at once
+
+Concurrent runs against the **same** target are safe:
+
+- Each `test:e2e:mcp` run uses a unique fixture prefix
+  (`mcp-e2e-<runId>-`) and only ever sweeps its own. The root-prefix sweep,
+  which collects strays from crashed runs, is opt-in via `--sweep-all` —
+  running it while another run is live will delete that run's data.
+- The battle harness behaves the same way (`--sweep-all`).
+- `dist/` is rebuilt only when it is stale, under a lock, so two runs cannot
+  wipe the server binary out from under each other.
 
 ## Running `test:mcp` against it
 
@@ -125,7 +174,7 @@ MCP client config:
       "command": "node",
       "args": ["/path/to/vikunja-mcp/dist/index.js"],
       "env": {
-        "VIKUNJA_URL": "http://localhost:33456/api/v1",
+        "VIKUNJA_URL": "http://localhost:8240/api/v1",
         "VIKUNJA_API_TOKEN": "tk_..."
       }
     }
@@ -141,8 +190,8 @@ The `vikunja/vikunja` image serves the built frontend and the API from the
 same process on the same port, so once `npm run e2e:up` reports the stack
 healthy you can just open it in a browser:
 
-- **Web UI:** http://localhost:33456/
-- **API base:** http://localhost:33456/api/v1
+- **Web UI:** http://localhost:8240/ (default target; 8230 for the 2.3.0 floor)
+- **API base:** http://localhost:8240/api/v1
 - **Login:** the bootstrap-created test user — username `e2e-test`, password
   as set in `TEST_PASSWORD` at the top of `docker/e2e/bootstrap.sh` (a fixed,
   throwaway, local-only credential; it's never randomized, so the value in
@@ -155,16 +204,23 @@ This is a real login against the local instance, independent of the
 `MCP-Test` project, or any other project, while the automated run's output
 is still on screen.
 
-## Tearing the stack down
+## Stopping vs resetting
 
 ```bash
-npm run e2e:down
+npm run e2e:down     # stop containers, KEEP volumes — tokens stay valid
+npm run e2e:reset    # destroy volumes — this ROTATES the target's API token
 ```
 
-This runs `docker compose -f docker/e2e/docker-compose.yml down -v`,
-removing the containers **and** the named volumes (`-v`) — the stack leaves
-nothing behind. Run it whenever you're done; there's no reason to leave a
-Vikunja instance listening on localhost between sessions.
+`down` deliberately does **not** pass `-v`. Destroying volumes recreates the
+database, the user, and therefore the API token, which is exactly how a
+concurrent worktree lost its credential mid-session. Rotation must be a
+deliberate `reset`, never a side effect of stopping a stack.
+
+Both accept explicit targets (`npm run e2e:down 2.3.0-postgres`); with no
+argument they apply to every standard target.
+
+Leaving the stacks up between sessions is now the expected state — that is
+what makes them a stable fixture rather than something every run rebuilds.
 
 ## How the bootstrap works, in detail
 
