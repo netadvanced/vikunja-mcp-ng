@@ -62,7 +62,10 @@
     "productivity",
     "automation"
   ],
-  "author": "Jeremy Green",
+  "author": "Pierre Christen",
+  "contributors": [
+    "Jeremy Green (original author, democratize-technology/vikunja-mcp)"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
