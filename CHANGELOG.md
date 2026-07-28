@@ -18,6 +18,69 @@ Nothing yet.
 
 
 
+
+## [0.6.2] - 2026-07-28
+
+A correctness release, and a good argument for testing the parts of a surface you can only refuse.
+Closing a long-standing coverage hole — the JWT-only tools that no test session had ever been
+authenticated to reach — surfaced a real bug on the first run: **file uploads were being sent as
+JSON**, so attaching a file to a task failed with an opaque server error in any session that had
+already listed attachments. Also here: the version this server reports to its clients is correct
+again after four minors of drift, and `setup-kanban` no longer requires a Kanban board.
+
+Released as a patch by owner discretion despite the additive `columns` capability below, on the
+same pre-1.0 basis as `0.5.2` (see [docs/RELEASING.md](docs/RELEASING.md) §3) — nothing in this
+release requires a caller to change anything.
+
+### Added
+
+- `vikunja_projects setup-kanban` now treats `columns` as **optional** (#185). Omit it and the call
+  is a plain "create a project and its tasks" composite — no Kanban view, bucket, or placement step
+  runs, or is even touched, and it costs strictly fewer API calls than the board form. Supplying
+  `columns` behaves exactly as before. This makes the one-call project+tasks path an honest one:
+  agents were already reaching for `setup-kanban` for non-Kanban work because nothing else offered
+  it. A task naming a `column` when no `columns` were given is rejected up front, before anything
+  is created.
+
+### Fixed
+
+- **Multipart uploads were sent as JSON when a JSON call had already hit the same endpoint group**
+  (#199). Circuit breakers are cached by name, and the cached breaker was returned without checking
+  it wrapped the same operation — so `/tasks/{id}/attachments` (list, JSON) followed by
+  `/tasks/{id}/attachments` (upload, multipart) fired the upload through the JSON helper, sending
+  `Content-Type: application/json` with the form body serialised to `{}`. Vikunja rejected it as an
+  opaque HTTP 500. Affected `vikunja_tasks attach` and `vikunja_users upload-avatar`; both are
+  order-dependent, which is why the failure never reproduced in isolation.
+- A related latent bug in the same mechanism: `withNamedRetry` registered each caller's closure
+  under a shared breaker name, so a second call under that name silently re-ran the **first**
+  caller's operation and returned its result. No shipped code path used those helpers, but the trap
+  is now closed.
+- The MCP `initialize` handshake reported version `0.3.0` (#186) — hardcoded, and stale since
+  `0.4.0`. It is now derived from `package.json`, and a live check fails the build if the two ever
+  drift again. `server.json`'s registry manifest is kept in sync by the release script.
+- `npm run build` never cleaned `dist/` (#187), so a deleted source file left its compiled output
+  behind indefinitely. Published packages were never affected (CI builds from a clean checkout);
+  local installs running from `dist/` were.
+
+### Changed
+
+- In-range dependency refresh (#189), including `@modelcontextprotocol/sdk` 1.29.0 → 1.30.0. No
+  security driver — `npm audit` was already clean. Major upgrades (`zod` 4, `typescript` 7,
+  `eslint` 10, `uuid` 14) are deliberately deferred, each needing its own evaluation.
+
+### Internal
+
+- The MCP e2e harness now runs a **second, JWT-authenticated session** (#198) covering the tools
+  that are gated off under API-token auth. Previously the entire JWT-only surface was verified only
+  by confirming we correctly refuse it — one permanently skipped check and one spec-documented 401
+  mislabelled as tolerated server drift. Both are now real assertions, and the full supported matrix
+  (Vikunja 2.4.0 and 2.3.0 × PostgreSQL and SQLite) runs with **zero skipped checks**; the only
+  remaining tolerance is an upstream server bug that exists solely below 2.4.0.
+- The battle-testing sweeper now removes prefixed tasks that an agent created inside a pre-existing
+  project (#188), which previously survived cleanup forever.
+- Test coverage recovered on the filtering evaluators and orchestrator, and two modules that had
+  been listed as untested were found to be unreachable and deleted instead (#182).
+
 ## [0.6.1] - 2026-07-25
 
 An agent-ergonomics release built from battle-harness evidence. Setting up a Kanban board — the one
