@@ -195,7 +195,7 @@ full v2 equivalents.
 | `vikunja_projects share-with-team` | `GET /teams`; `PUT .../teams`; `GET .../teams` | `GET`; `POST`; `GET` | v1 (later) | |
 | `vikunja_projects create-share` | `GET /projects/{id}`; `PUT .../shares` | `GET`; `POST .../shares` | v1 (later) | |
 | `vikunja_projects list-shares` | `GET /projects/{id}`; `GET .../shares` | same | v1 (later) | |
-| `vikunja_projects get-share` | `GET .../shares` (list; by-id 404s pre-2.4.0) | `GET .../shares/{share}` or list | v1 (later) | Whether v2's by-id route is fixed is **unverified** |
+| `vikunja_projects get-share` | `GET .../shares` (list; by-id 404s on 2.3.0) | `GET .../shares/{share}` | v1 (later) | **Verified: this is a server-version fix, not a v2 fix.** By-id returns 404 on 2.3.0 and 200 on 2.4.0 — on *both* API versions. The list-route workaround stays while the floor is 2.3.0, and drops for both versions when the floor rises |
 | `vikunja_projects delete-share` | `GET .../shares`; `DELETE .../shares/{share}` | same | v1 (later) | |
 | `vikunja_projects auth-share` | `POST /shares/{hash}/auth` | `POST /shares/{share}/auth` | v1 (later) | |
 | `vikunja_projects remove-background` | `DELETE /projects/{id}/background` | same | v1 (later) | Generic removal — unaffected by the Unsplash gap |
@@ -231,9 +231,9 @@ full v2 equivalents.
 | `vikunja_teams members remove` | `DELETE /teams/{id}/members/{username}` | same | v1 (later) | |
 | `vikunja_teams members toggleAdmin` | `POST /teams/{id}/members/{username}/admin` | same | v1 (later) | Pure toggle, no body, both versions |
 | `vikunja_webhooks create (project)` | `PUT /projects/{id}/webhooks` | `POST` | v1 (later) | |
-| `vikunja_webhooks create (user)` | `PUT /user/settings/webhooks` | `POST` | v1 (later) | v1 documented JWT-only |
+| `vikunja_webhooks create (user)` | `PUT /user/settings/webhooks` | `POST` | v1 (later) | **JWT-only on both versions** (verified) |
 | `vikunja_webhooks list (project)` | `GET /projects/{id}/webhooks` | same | v1 (later) | |
-| `vikunja_webhooks list (user)` | `GET /user/settings/webhooks` | same | v1 (later) | |
+| `vikunja_webhooks list (user)` | `GET /user/settings/webhooks` | same | v1 (later) | **JWT-only on both versions** (verified: 401 under `tk_*`) |
 | `vikunja_webhooks get (project)` | `GET /projects/{id}/webhooks` (list+find) | same | v1 (later) | No single-webhook GET in either version |
 | `vikunja_webhooks get (user)` | `GET /user/settings/webhooks` (list+find) | same | v1 (later) | |
 | `vikunja_webhooks update (project)` | `POST .../webhooks/{id}` (events-only) | `PUT .../webhooks/{webhook}` | v1 (later) | v2 uses `PUT`, not `PATCH`, for this partial update |
@@ -298,6 +298,19 @@ full v2 equivalents.
 | `vikunja_templates list` | (local storage only) | — | **local** | |
 | `vikunja_templates update` | (local storage only) | — | **local** | |
 | `vikunja_templates delete` | (local storage only) | — | **local** | |
+
+## Verified behaviours that the specs get wrong
+
+Live-tested against local 2.4.0 and 2.3.0 stacks. Recorded because the vendored specs are
+misleading on each point, and a future reader would otherwise re-derive the wrong conclusion.
+
+| Claim | Reality |
+|---|---|
+| v2 relaxes webhook auth to accept API tokens (v2's spec has no per-path `security` override, v1's restricts to `JWTKeyAuth`) | **False — the specs are wrong in both directions.** Verified under a `tk_*` token on 2.4.0: *project*-scoped webhooks (list, events, create) are **accepted** by both v1 and v2 (200/201) despite v1's spec marking them JWT-only; *user*-scoped webhooks are **rejected** (401) by both. Behaviour is identical across versions — v2's missing override is a spec-generation gap, not a relaxation |
+| v2 fixes the link-share by-id 404 | **Not a v2 fix — a server-version fix.** `GET /projects/{p}/shares/{s}` returns 404 on 2.3.0 and 200 on 2.4.0, on **both** API versions. The list-route workaround is gated on server version, not API version, and stays while the supported floor is 2.3.0 |
+
+(On a 2.3.0 stack every `/api/v2/*` request 404s, since that release has no v2 API at all — expected,
+and the reason `hasV2Api` gates everything.)
 
 ## Cross-cutting v2 differences
 
