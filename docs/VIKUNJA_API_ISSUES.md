@@ -338,4 +338,66 @@ Resulting board order: Col-1, Col-2, &lt;default buckets&gt;, Col-0 — the colu
 
 **Impact:** Any code that programmatically sets `Bucket.position` (not just `setup-kanban`) must avoid a literal `0` for the first item in an ordered sequence. This is easy to reintroduce by "simplifying" a 1-based position helper back to a 0-based `index * step` — see the comment on `bucketPositionForIndex` for why that would silently regress this fix.
 
+## 12. v2 `PATCH /tasks/{id}` returns 422 for any subscribed task (Vikunja 2.4.0)
+
+**Verified live** against a clean Vikunja `2.4.0` e2e stack, 2026-07-27.
+
+`PATCH /api/v2/tasks/{id}` rejects any task that carries a `subscription`:
+
+```
+PATCH /api/v2/tasks/{id}    Content-Type: application/merge-patch+json
+{"priority": 7}
+
+→ 422 Unprocessable Entity
+{"title":"Unprocessable Entity","status":422,"detail":"validation failed",
+ "errors":[{"location":"body.subscription.entity","message":"expected integer","value":"task"}]}
+```
+
+The server round-trips the task's `subscription` object through validation, where
+`subscription.entity` serializes as the string `"task"` while the v2 schema declares it an integer.
+Server-side bug, not a client error.
+
+**Why this bites hard:** assigning a user **auto-subscribes** them. A bare task has no subscription
+and patches fine; the moment it gains an assignee, every later v2 `PATCH` 422s. That is exactly the
+operation v2 adoption was meant to improve — updating a task without clobbering its assignees.
+
+Measured on one task, in order:
+
+| Step | Result |
+|---|---|
+| Fresh task, `PATCH {priority: 3}` | **200**, applied |
+| Assign a user | `subscription` object appears |
+| `PATCH {priority: 7}` | **422**, unchanged |
+| `PATCH {priority: 9, subscription: null}` | **200** — applied, **assignees preserved** |
+| `PATCH [{op:"replace",path:"/priority",...}]` (RFC 6902) | **422** — identical error |
+
+**Workaround:** include `subscription: null` in the merge-patch body. The change applies, assignees
+are preserved with no fetch-merge or snapshot/restore, and the subscription itself survives (the
+server ignores the field). JSON Patch is **not** an alternative — it hits the same 422.
+
+**This workaround has an expiry, and that matters.** The server ignoring `subscription: null` today
+is incidental. A future Vikunja that honours merge-patch null semantics would interpret it as
+"delete this field" and **silently unsubscribe users**. So it must be:
+
+- applied only for affected server versions, never unconditionally, and
+- pinned by a test that fails if a `PATCH` ever removes a subscription — so the semantics changing
+  surfaces in CI rather than as quietly lost notifications.
+
+**Impact:** blocks the v2 fast path for `vikunja_tasks update` until worked around or fixed upstream.
+See [API-VERSION-MATRIX.md](API-VERSION-MATRIX.md) for which functions this affects.
+
+**Related v2 findings from the same session** (not bugs, but behaviour a client must handle):
+
+- v2 list endpoints wrap results in `{$schema, items, total, page, per_page, total_pages}`; v1
+  returns a bare array. Callers expecting an array break unless the envelope is unwrapped.
+- `GET /info` reports the version as `v2.4.0` — **with a leading `v`**, so a naive semver compare
+  against `2.4.0` fails.
+- `If-Match` is **not enforced**: a `PATCH` with a deliberately stale ETag succeeded (HTTP 200)
+  rather than returning 412. v2's ETags are usable for cache validation (`If-None-Match` → 304
+  works) but provide **no** optimistic-locking guarantee — do not build lost-update protection on
+  them.
+- `GET /projects/{project}/tasks` (new in v2) has no `view` parameter, so it cannot reproduce a
+  view's bucket ordering. View-scoped listing must keep using
+  `/projects/{project}/views/{view}/tasks`.
+
 *These issues were discovered during development of the Vikunja MCP Server*
