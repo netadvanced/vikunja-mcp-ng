@@ -47,7 +47,7 @@ npm run build
       "command": "node",
       "args": ["/path/to/vikunja-mcp-ng/dist/index.js"],
       "env": {
-        "VIKUNJA_URL": "https://your-vikunja-instance.com/api/v1",
+        "VIKUNJA_URL": "https://your-vikunja-instance.com",
         "VIKUNJA_API_TOKEN": "your-api-token"
       }
     }

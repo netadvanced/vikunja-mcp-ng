@@ -19,7 +19,7 @@
 set -euo pipefail
 
 IMAGE="${1:-ghcr.io/netadvanced/vikunja-mcp-ng:latest}"
-VIKUNJA_URL="${2:-https://your-vikunja-instance.com/api/v1}"
+VIKUNJA_URL="${2:-https://your-vikunja-instance.com}"
 
 CATALOG_NAME="vikunja-mcp-ng"
 CATALOG_DIR="$HOME/.docker/mcp/catalogs"

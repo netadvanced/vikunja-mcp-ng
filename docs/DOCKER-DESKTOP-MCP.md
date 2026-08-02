@@ -58,8 +58,8 @@ knowledge at all.
    apply it; it does not touch your `~/.docker/mcp` directory on its own:
 
    ```bash
-   scripts/install-docker-desktop-mcp.sh ghcr.io/netadvanced/vikunja-mcp-ng:dev \
-     https://your-vikunja-instance.com/api/v1
+   scripts/install-docker-desktop-mcp.sh ghcr.io/netadvanced/vikunja-mcp-ng:latest \
+     https://your-vikunja-instance.com
    ```
 
    Or write it by hand — this is the exact shape verified working:
@@ -71,7 +71,7 @@ knowledge at all.
        description: MCP server for Vikunja task management (direct-REST, composite-first tools)
        title: Vikunja MCP NG
        type: server
-       image: ghcr.io/netadvanced/vikunja-mcp-ng:dev
+       image: ghcr.io/netadvanced/vikunja-mcp-ng:latest
        secrets:
          - name: vikunja-mcp-ng.api_token
            env: VIKUNJA_API_TOKEN
@@ -79,7 +79,7 @@ knowledge at all.
            description: Vikunja API token (tk_...) or JWT (eyJ...)
        env:
          - name: VIKUNJA_URL
-           value: https://your-vikunja-instance.com/api/v1
+           value: https://your-vikunja-instance.com
    ```
 
    `--catalog` (and `--additional-catalog`) require the file to resolve under
@@ -162,7 +162,7 @@ Docker smoke test and needs nothing beyond Docker itself:
         "ghcr.io/netadvanced/vikunja-mcp-ng:latest"
       ],
       "env": {
-        "VIKUNJA_URL": "https://your-vikunja-instance.com/api/v1",
+        "VIKUNJA_URL": "https://your-vikunja-instance.com",
         "VIKUNJA_API_TOKEN": "tk_your_real_token"
       }
     }

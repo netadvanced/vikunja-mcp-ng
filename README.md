@@ -26,13 +26,15 @@ No install step needed — point your MCP client at `npx`:
       "command": "npx",
       "args": ["-y", "vikunja-mcp-ng"],
       "env": {
-        "VIKUNJA_URL": "https://your-vikunja-instance.com/api/v1",
+        "VIKUNJA_URL": "https://your-vikunja-instance.com",
         "VIKUNJA_API_TOKEN": "your-api-token"
       }
     }
   }
 }
 ```
+
+Use the bare instance URL for `VIKUNJA_URL` — the server resolves the right API path itself (today that's always `/api/v1`; an explicit `/api/v1` suffix still works too). The bare form is also the future-proof choice: it's the same URL the server will use to pick between v1 and v2 automatically once v2 support lands.
 
 Or install globally (`npm install -g vikunja-mcp-ng`) and use `"command": "vikunja-mcp-ng"` with no args.
 
@@ -56,7 +58,7 @@ docker pull ghcr.io/netadvanced/vikunja-mcp-ng:latest
         "ghcr.io/netadvanced/vikunja-mcp-ng:latest"
       ],
       "env": {
-        "VIKUNJA_URL": "https://your-vikunja-instance.com/api/v1",
+        "VIKUNJA_URL": "https://your-vikunja-instance.com",
         "VIKUNJA_API_TOKEN": "your-api-token"
       }
     }

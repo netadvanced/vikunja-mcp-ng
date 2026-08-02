@@ -430,7 +430,7 @@ services:
   vikunja-mcp:
     image: ghcr.io/netadvanced/vikunja-mcp-ng:latest
     environment:
-      VIKUNJA_URL: "https://vikunja.example.com/api/v1"
+      VIKUNJA_URL: "https://vikunja.example.com"
       VIKUNJA_API_TOKEN_FILE: /run/secrets/vikunja_api_token
       VIKUNJA_MCP_TEMPLATES_FILE: /data/templates.json
     volumes:
@@ -518,7 +518,7 @@ services:
   vikunja-mcp:
     image: ghcr.io/netadvanced/vikunja-mcp-ng:latest
     environment:
-      VIKUNJA_URL: "https://vikunja.example.com/api/v1"
+      VIKUNJA_URL: "https://vikunja.example.com"
       VIKUNJA_API_TOKEN_FILE: /run/secrets/vikunja_api_token
       VIKUNJA_MCP_CONFIG: /etc/vikunja-mcp/vikunja-mcp.config.json
     configs:
