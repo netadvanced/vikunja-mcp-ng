@@ -8,7 +8,42 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 ## [Unreleased]
 
-Nothing yet.
+### Added — Vikunja v2 API groundwork (#184, 0.7.0 P1+P2)
+
+Infrastructure for adopting Vikunja's v2 API as a capability-gated fast path. **No behaviour
+change:** no operation routes through v2 yet, and v1 remains the permanent floor (minimum supported
+Vikunja stays 2.3.0). Per-endpoint adoption is P3.
+
+- **v2 REST transport** (`src/utils/vikunja-rest-v2.ts`) — a sibling of the v1 helper rather than a
+  branch inside it, so v1's code path is untouched. Same retry and circuit-breaker discipline under
+  a distinct `vikunja-rest-v2-` breaker namespace (a shared name would let one API surface's
+  failures trip the other's breaker). Sends RFC 7386 merge-patch by default on `PATCH`, with RFC
+  6902 json-patch selectable.
+- **`application/problem+json` → `MCPError` adapter** — preserves Vikunja's numeric error `code`,
+  the per-field `errors[]` list, and the HTTP status (in both `details.statusCode` and a top-level
+  `.status`, which shared classifiers read). Falls back to the v1 message shape for non-problem+json
+  or malformed bodies — a real case, since a proxy can return a plain-text 502.
+- **`resolveApiVersion`** (`src/utils/api-version.ts`) — the single routing decision point.
+  Synchronous, no network call, and returns `v2` only on positive evidence: kill switch off **and**
+  a cached capability snapshot reporting v2 support. Every other path returns `v1`.
+- **`featureFlags.forceV1Api` kill switch** (env: `VIKUNJA_MCP_FORCE_V1_API`) — forces every
+  operation onto v1 regardless of what was detected. See
+  [docs/CONFIGURATION.md](docs/CONFIGURATION.md#forcing-the-v1-api).
+- **`vikunja_auth` reports `activeApiVersion`** on `connect`, `status`, and `info`, so the routing
+  decision — including the kill switch's effect — is observable. `connect` now also reports
+  `hasV2Api`, which it previously omitted despite being the subcommand that triggers detection.
+
+### Documentation
+
+- **`docs/API-VERSION-MATRIX.md`** (new) — one row per MCP function (183 across 27 tools): whether
+  v1 and v2 can serve it, which this server uses, and why when that is not v2. Only three functions
+  have no v2 path at all (`vikunja_admin list-users`, and the two Unsplash background ones).
+- **`docs/VIKUNJA_API_ISSUES.md` #12** — Vikunja 2.4.0 returns 422 on `PATCH /api/v2/tasks/{id}`
+  for any task carrying a subscription, and assigning a user auto-subscribes them. Includes the
+  `subscription: null` workaround, its expiry condition, and four v2 behaviours a client must
+  handle (pagination envelope, leading-`v` version string, unenforced `If-Match`, view-less
+  project-tasks route).
+- Design specs for both phases under `docs/superpowers/specs/`.
 
 
 
