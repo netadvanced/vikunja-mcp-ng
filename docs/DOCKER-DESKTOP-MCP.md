@@ -7,14 +7,14 @@ verified against `docker mcp` CLI **v0.43.1** on macOS with Docker Desktop —
 commands and flags may drift on other versions; re-check `docker mcp --help`
 if something below doesn't match what you see.
 
-## TL;DR feasibility verdict
+## TL;DR Feasibility Verdict
 
 **Full native catalog integration (`docker mcp catalog create --server
 docker://<image>`) does not work for this image**, and won't for any plainly
 Dockerfile-built stdio server: it requires what the CLI calls a
 "self-describing image" — an image built and published through Docker's own
 MCP catalog pipeline that embeds tool/resource metadata Docker can introspect
-without running it. A normal `node:20-alpine` image with an `ENTRYPOINT`
+without running it. A normal `node:22-alpine` image with an `ENTRYPOINT`
 (exactly what this project's `Dockerfile` produces) is rejected:
 
 ```
@@ -45,10 +45,12 @@ knowledge at all.
 
 - Docker Desktop with the MCP Toolkit installed (`docker mcp --help` should
   print a command list, not "unknown command").
-- The image built locally (`docker build -t
-  ghcr.io/netadvanced/vikunja-mcp-ng:dev .` from the repo root — see the
-  [README](../README.md#docker)) or pulled from `ghcr.io` once it's
-  published.
+- The image available locally: either pull the published one (`docker pull
+  ghcr.io/netadvanced/vikunja-mcp-ng:latest` — multi-arch images go to GHCR
+  on every release, see the [README](../README.md#docker)) or build it from
+  the repo root with `docker build -t
+  ghcr.io/netadvanced/vikunja-mcp-ng:latest .` so the tag matches the catalog
+  fragment below.
 - A Vikunja API token or JWT (see [CONFIGURATION.md](CONFIGURATION.md)).
 
 ## Option A (recommended): custom catalog.yaml + `docker mcp gateway run`
@@ -106,12 +108,15 @@ knowledge at all.
      --dry-run
    ```
 
-   Expected tail of output (18 tools for an API-token session — 21 total
-   tools exist, but `vikunja_users`/`vikunja_export` need a JWT session and
-   `vikunja_admin`/`vikunja_tokens` are deny-by-default modules; see
+   Expected tail of output (18 tools for an API-token session — 27 tool names
+   exist in total, but `vikunja_users` and the four export tools
+   (`vikunja_export_project`, `vikunja_request_user_export`,
+   `vikunja_download_user_export`, `vikunja_user_export_status`) need a JWT
+   session, and `vikunja_admin`, `vikunja_tokens`, `vikunja_caldav_tokens`
+   and `vikunja_user_deletion` sit behind deny-by-default modules; see
    [CONFIGURATION.md#module-gating](CONFIGURATION.md#module-gating)):
 
-   ```
+   ```text
    - Listing MCP tools...
      > vikunja-mcp-ng: (18 tools)
    > 18 tools listed in ...
@@ -177,7 +182,7 @@ tradeoff is the token lives in your client's config file in plaintext
 (mitigate with `VIKUNJA_API_TOKEN_FILE` and a mounted secret file instead of
 `VIKUNJA_API_TOKEN`, per [CONFIGURATION.md](CONFIGURATION.md#secrets-management)).
 
-## What we didn't get working (and why)
+## What We Didn't Get Working (and Why)
 
 - **`docker mcp catalog create ... --server docker://<image>`** — rejected
   with "not a self-describing image" (see above). This appears to require

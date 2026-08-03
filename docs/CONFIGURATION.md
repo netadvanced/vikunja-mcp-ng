@@ -1,15 +1,13 @@
 # Configuration Management
 
-## Overview
-
-The Vikunja MCP server uses a centralized configuration system that replaces scattered `process.env` usage with type-safe, validated configuration management. This system addresses TD-002 (Environment Variable Sprawl) by consolidating 33 environment variables into a unified architecture.
+The Vikunja MCP server uses a centralized configuration system that replaces scattered `process.env` usage with type-safe, validated configuration management. Settings arrive from four layers — environment profile, optional JSON config file, environment variables, and programmatic injection — and are validated once, at startup, by a Zod schema (`src/config/types.ts`). This page is the reference for every key, env var, and default; the loader itself lives in `src/config/ConfigurationManager.ts`.
 
 ## Quick Start
 
 ### Basic Usage
 
 ```typescript
-import { getConfiguration, getAuthConfig, getRateLimitConfig } from './config';
+import { getConfiguration, getAuthConfig, getRateLimitConfig, isFeatureEnabled } from './config';
 
 // Get complete configuration
 const config = await getConfiguration();
@@ -39,7 +37,9 @@ const isEnabled = await isFeatureEnabled('enableServerSideFiltering');
 
 ### Configuration Sections
 
-The configuration is organized into four main sections:
+The configuration is organized into the five typed sections below, plus `modules` and the
+top-level `readOnly` flag — documented in [Module Gating](#module-gating) and
+[Global Read-Only Safety Mode](#global-read-only-safety-mode) respectively:
 
 #### 1. Authentication (`AuthConfig`)
 ```typescript
@@ -112,6 +112,13 @@ The system automatically applies environment-specific defaults:
 - **Logging**: Info level for operational visibility
 - **Rate Limiting**: Full protection enabled
 - **Features**: Only stable features enabled
+
+**Caveat on the rate-limiting rows above.** They describe the `rateLimiting` section of
+`ApplicationConfig` as resolved by `ConfigurationManager`. The rate limiting middleware
+that actually runs (`src/middleware/simplified-rate-limit.ts`) reads `RATE_LIMIT_*` from
+`process.env` directly and does **not** consume this section, so setting
+`NODE_ENV=development`/`test` does not by itself switch the middleware off — only
+`RATE_LIMIT_ENABLED=false` does. See [RATE_LIMITING.md](RATE_LIMITING.md).
 
 ## Configuration Priority
 
@@ -347,14 +354,14 @@ VIKUNJA_MCP_READ_ONLY=true
 
 Rejection happens at dispatch, inside each tool's handler, via a single shared guard
 (`assertWriteAllowed` in `src/utils/read-only.ts`) that every tool dispatcher calls once,
-right after its existing auth check — not 24 copy-pasted `if (readOnly)` checks. The guard
+right after its existing auth check — not 27 copy-pasted `if (readOnly)` checks. The guard
 consults one classification table per tool (`subcommand -> read | write | destructive`),
 built from the actual Vikunja API semantics of each subcommand (see the module's doc
 comment for the full rubric and the rationale behind edge cases like the dual-purpose
 `comment` subcommand, `vikunja_batch_import`'s `dryRun`, and the fully-exempt
 `vikunja_auth` tool). A rejected call fails with a consistent, clearly-worded error:
 
-```
+```text
 server is in read-only mode: 'vikunja_tasks' subcommand 'delete' is a destructive
 operation and is rejected. Set 'readOnly' to false in vikunja-mcp.config.json
 (or unset VIKUNJA_MCP_READ_ONLY) to allow writes.
@@ -385,7 +392,9 @@ several subcommands with different semantics, the tool-level hints are derived
 conservatively:
 
 - `readOnlyHint` is `true` only when **every** subcommand on that tool is classified
-  `read` (today: `vikunja_auth` and `vikunja_export_project`).
+  `read` (today: `vikunja_auth`, `vikunja_export_project`,
+  `vikunja_download_user_export` and `vikunja_user_export_status` — see
+  `TOOL_CLASSIFICATIONS` in `src/utils/read-only.ts`).
 - `destructiveHint` is `true` when **any** subcommand is classified `destructive` (true
   for nearly every CRUD-shaped tool, since almost all of them expose a `delete`-shaped
   operation).
@@ -781,19 +790,19 @@ try {
 ### Common Error Scenarios
 
 1. **Invalid URL Format**
-   ```
+   ```text
    Configuration error in validation: Configuration validation failed:
      - auth.vikunjaUrl: Invalid url
    ```
 
 2. **Negative Rate Limits**
-   ```
+   ```text
    Configuration error in validation: Configuration validation failed:
      - rateLimiting.default.requestsPerMinute: Number must be greater than 0
    ```
 
 3. **Invalid Log Level**
-   ```
+   ```text
    Configuration error in validation: Configuration validation failed:
      - logging.level: Invalid enum value. Expected 'error' | 'warn' | 'info' | 'debug', received 'verbose'
    ```
@@ -954,4 +963,4 @@ const config = await ConfigurationManager.getInstance({
 // Configuration loading details will be logged
 ```
 
-This centralized configuration system eliminates the 57 hours of technical debt from environment variable sprawl while providing type safety, better testing capabilities, and improved developer experience.
+Every key documented here is validated once at startup against the Zod schema in `src/config/types.ts`. If this page and that schema ever disagree, trust the schema and file an issue.

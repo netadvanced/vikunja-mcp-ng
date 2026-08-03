@@ -1,25 +1,48 @@
-# Endpoint-tail re-triage (C2, 2026-07-18)
+# Endpoint-Tail Re-Triage (C2, 2026-07-18)
 
-**Scope:** re-examine **all 64 `❌ Not implemented` operations** in [docs/API-COVERAGE.md](API-COVERAGE.md) under *today's* architecture — direct REST (`src/utils/vikunja-rest.ts` / `vikunjaRestMultipartRequest`) against types generated from the vendored OpenAPI spec (`docs/vikunja-openapi.json`, `v2.3.0-1019-g95b7e673`), with `node-vikunja` fully removed. The historical won't-implement verdicts (`docs/ROADMAP.md` §4) predate that migration; several rested on limitations that no longer apply (a broken client-library call, a blanket "binary/blob → nothing to expose" rule that mislabeled JSON endpoints, or "niche" reasoning that direct REST makes cheap). This pass re-justifies every verdict against the spec as ground truth.
+This is the record of why every Vikunja API operation this server does *not*
+implement was either approved to build, parked, or ruled out — the reasoning
+[docs/ROADMAP.md §4](ROADMAP.md) summarizes and that source comments across
+`src/` point back to for individual endpoints.
 
-**Why now:** this is Pierre's explicit C2 scope change. It is a **docs-only** re-triage — no production code changes. Every operation below is **still `❌` in the coverage table**; an `IMPLEMENT` verdict here means *approved-to-build*, not *built*. The `102 ✅ / 1 ⚠️ / 2 🟡 / 64 ❌` accounting is unchanged by this pass; a row only flips to `✅` in the PR that actually lands its code (the coverage doc's standing maintenance rule).
+**Still live, but partly historical.** The 20 `IMPLEMENT` verdicts recorded here
+have all shipped: they landed in wave G-endpoint-tail (2026-07-18) and are `✅`
+in [docs/API-COVERAGE.md](API-COVERAGE.md) today, so the "still `❌` /
+approved-to-build, not built" framing below describes the state at re-triage
+time and is kept as the record of why each was approved. What remains current
+and open is the **36 PARKED** rows (each with its concrete reopening trigger)
+and the **8 NEVER** rows — the reasons cited by live code comments in
+`src/tools/tasks/bulk-operations-simplified.ts`, `src/config/types.ts` and
+`src/tools/projects/backgrounds.ts`. See "Effect on the Coverage Accounting" at
+the end for the current numbers.
+
+**Scope:** re-examine **all 64 `❌ Not implemented` operations** in [docs/API-COVERAGE.md](API-COVERAGE.md) under *today's* architecture — direct REST (`src/utils/vikunja-rest.ts` / `vikunjaRestMultipartRequest`) against types generated from the vendored OpenAPI spec (`docs/vikunja-openapi.json`, `v2.3.0-1019-g95b7e673` at the time of this pass; the vendored spec is `v2.4.0` today — the 2026-07-21 re-audit found **0 added / 0 removed operations** between the two, so every verdict below still maps 1:1 onto the current spec), with `node-vikunja` fully removed. The historical won't-implement verdicts ([docs/ROADMAP.md §4](ROADMAP.md)) predate that migration; several rested on limitations that no longer apply (a broken client-library call, a blanket "binary/blob → nothing to expose" rule that mislabeled JSON endpoints, or "niche" reasoning that direct REST makes cheap). This pass re-justifies every verdict against the spec as ground truth.
+
+**Why now:** this is Pierre's explicit C2 scope change. It was a **docs-only** re-triage — no production code changes in this pass. At the time, every operation below was **still `❌` in the coverage table**; an `IMPLEMENT` verdict meant *approved-to-build*, not *built*, and the then-current `102 ✅ / 1 ⚠️ / 2 🟡 / 64 ❌` accounting was unchanged by the pass, because a row only flips to `✅` in the PR that actually lands its code (the coverage doc's standing maintenance rule). Those PRs have since landed — see the second paragraph above.
 
 **Method:** each verdict was checked against the vendored spec — request/response schemas, `consumes`/`produces` (to tell a genuine binary blob from a JSON endpoint that was mislabeled as one), and path/verb. Where a verdict hinges on reserved infrastructure (e.g. the deny-by-default `userDeletion` module key) that was confirmed in `src/config/types.ts`. No live server was called.
 
-## Verdict summary
+## Verdict Summary
 
 | Verdict | Count | Meaning |
 |---|---|---|
-| **IMPLEMENT** | 20 | Feasible and worth building under direct REST; grouped into candidate wave items below. Still `❌` until code lands. |
+| **IMPLEMENT** | 20 | Feasible and worth building under direct REST; grouped into candidate wave items below. Was `❌` until code landed — **all 20 have since shipped (wave G-endpoint-tail, 2026-07-18) and are `✅` today.** |
 | **PARKED** | 36 | Feasible but deliberately deferred (governance-sensitive, low AI value, or a security ceremony an assistant shouldn't drive). Each carries a concrete reopening trigger. |
 | **NEVER** | 8 | Hard reason it makes no sense over MCP (pre-auth/anonymous credential ceremony, architecturally-unreachable session flow, or a destructive test-only endpoint). |
 | **Total** | **64** | |
 
 The headline change from the 2026-07-17 won't-implement list: **CalDAV tokens, user-deletion, task duplicate/mark-read, user-level webhooks, the server-side user-export status read, and the avatar-*provider* + a few background operations are all JSON endpoints trivially reachable via direct REST** — the old "binary/blob" and "niche, library-broken" rationales no longer hold for them. What stays parked (TOTP/OIDC/login/password/email ceremonies, migration importers, the genuinely-binary avatar/background *image* bytes) is re-justified below with today's reasons, not 2026-07-17's.
 
-## Candidate IMPLEMENT backlog (proposed future wave items)
+## Candidate IMPLEMENT Backlog (All Shipped)
 
-Grouped composite-first (per `docs/ROADMAP.md` §1 pillar 1 and decision 4 — the spec is a coverage checklist, not a tool design). Ranked high-value/low-risk first. Sizing is rough (S ≈ a subcommand or two reusing existing helpers; M ≈ a new sub-family or multipart/gated surface).
+**All seven groups below shipped in wave G-endpoint-tail (2026-07-18)** and now live in
+`src/tools/caldav-tokens.ts` (G1), `src/tools/tasks/duplicate.ts` + `src/tools/tasks/mark-read.ts` (G2),
+`src/tools/export.ts` (G3), `src/tools/webhooks.ts` (`scope: 'user'`, G4), `src/tools/users.ts` (G5),
+`src/tools/user-deletion.ts` (G6) and `src/tools/projects/backgrounds.ts` (G7). The optional legs
+called out as "(+M)" / "optional" below were built too (`upload-avatar`). The table is kept as the
+design rationale each of those modules' doc comments points back to.
+
+Grouped composite-first (per [docs/ROADMAP.md §1](ROADMAP.md) pillar 1 and decision 4 — the spec is a coverage checklist, not a tool design). Ranked high-value/low-risk first. Sizing is rough (S ≈ a subcommand or two reusing existing helpers; M ≈ a new sub-family or multipart/gated surface).
 
 | # | Candidate item | Ops | Size | Home | Rationale |
 |---|---|---|---|---|---|
@@ -33,7 +56,7 @@ Grouped composite-first (per `docs/ROADMAP.md` §1 pillar 1 and decision 4 — t
 
 **Recommended sequencing:** G1–G4 are clean, low-risk quick wins on already-proven patterns and are the natural "endpoint-tail" wave (a batch of ~11 ops). G5's JSON pair is a cheap add; its upload leg is optional. G6 is small in code but governance-sensitive — treat as its own gated deliverable. G7 is optional/cosmetic and can stay parked until asked for.
 
-## Full 64-operation re-triage
+## Full 64-Operation Re-Triage
 
 Legend: **S/M/L** = rough effort. "Was" = the 2026-07-17 won't-implement / not-built rationale being revised.
 
@@ -84,7 +107,7 @@ Feasible under direct REST, but deferred. Each row states today's reason + the t
 | GET | `/backgrounds/unsplash/image/{image}` | Genuinely binary image bytes. | A solved binary/image delivery channel. |
 | GET | `/backgrounds/unsplash/image/{image}/thumb` | Genuinely binary thumbnail bytes. | Same. |
 | GET | `/routes` | API self-listing; no AI task-management use case. | A diagnostic/self-description feature that needs the route table. |
-| POST | `/tasks/{taskID}/assignees/bulk` | Replace-semantics (`models.BulkAssignees`) silently unassigns everyone; the additive `PUT /assignees` loop is used deliberately (upstream issue #15). Unchanged by direct REST — still a footgun. | A genuine "set the exact assignee set" composite that *wants* replace-semantics — this is the correct primitive for that. |
+| POST | `/tasks/{taskID}/assignees/bulk` | Replace-semantics (`models.BulkAssignees`) silently unassigns everyone; the additive `PUT /assignees` loop is used deliberately for the general assign flow (upstream issue #15). Unchanged by direct REST — still a footgun there. **Partially reopened (2026-07-18):** the "set the exact assignee set" trigger fired for one narrow case — `vikunja_tasks bulk-update`'s post-bulk assignee *restore* step now issues one such call per task carrying that task's complete pre-update snapshot (`src/tools/tasks/bulk-operations-simplified.ts`), where replace semantics are exactly what's wanted. The row stays `❌` in `docs/API-COVERAGE.md` because the general-purpose composite it tracks still does not exist. | A general "set the exact assignee set" composite (not just snapshot-restore) that *wants* replace-semantics — this is the correct primitive for that. |
 | PUT | `/migration/csv/detect` | Vikunja's CSV-migration wizard; a one-shot admin import, wrong tool for MCP. `batch-import` already covers task CSV via normal creates. | Explicit demand to drive the native migration wizard through the assistant. |
 | PUT | `/migration/csv/migrate` | Same migration-wizard family. | Same. |
 | PUT | `/migration/csv/preview` | Same. | Same. |
@@ -120,6 +143,8 @@ Hard reason it makes no sense over MCP.
 | DELETE | `/test/all` | Destructive test-only endpoint (wipes the DB); never exposed. |
 | PATCH | `/test/{table}` | Test-only DB-seeding endpoint; never exposed. |
 
-## Effect on the coverage accounting
+## Effect on the Coverage Accounting
 
-None. All 64 rows remain `❌ Not implemented` (`102 ✅ / 1 ⚠️ / 2 🟡 / 64 ❌`). The 20 `IMPLEMENT` verdicts are *approved-to-build*, tracked as candidate wave items G1–G7 above; each flips to `✅` only in the PR that lands its code. `docs/API-COVERAGE.md`'s Notes column is updated for those 20 rows to record the new verdict and point here; the 36 `PARKED` / 8 `NEVER` rows keep their `❌` with reasons re-justified above. `docs/ROADMAP.md` §4's won't-implement list is rewritten to match, and its decision log carries a dated re-triage entry.
+**At re-triage time (2026-07-18, this docs-only pass):** none. All 64 rows stayed `❌ Not implemented` (`102 ✅ / 1 ⚠️ / 2 🟡 / 64 ❌`). The 20 `IMPLEMENT` verdicts were *approved-to-build*, tracked as candidate wave items G1–G7 above; each flipped to `✅` only in the PR that landed its code. [docs/API-COVERAGE.md](API-COVERAGE.md)'s Notes column was updated for those 20 rows to record the new verdict and point here; the 36 `PARKED` / 8 `NEVER` rows kept their `❌` with reasons re-justified above. [docs/ROADMAP.md §4](ROADMAP.md)'s won't-implement list was rewritten to match, and its decision log carries a dated re-triage entry (decision 13).
+
+**Today:** all 20 `IMPLEMENT` rows shipped in wave G-endpoint-tail (2026-07-18), taking the coverage summary to **`123 ✅ / 1 ⚠️ / 1 🟡 / 44 ❌`** of 169 documented operations. The remaining 44 `❌` are exactly the **36 PARKED + 8 NEVER** rows above — re-verified with zero new surface added by the 2.4.0 alignment ([docs/ROADMAP.md](ROADMAP.md) decision 19, 2026-07-21). Those two tables, and each parked row's reopening trigger, are the still-live part of this document; check [docs/API-COVERAGE.md](API-COVERAGE.md) for the authoritative per-row status.

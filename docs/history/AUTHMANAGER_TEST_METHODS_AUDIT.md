@@ -1,5 +1,33 @@
 # Security Audit Report: AuthManager Testing Methods Vulnerability
 
+> **Archived 2026-08-03 — historical record, not current guidance. Its central claim was
+> never true in this repository.** This report is inherited from upstream: it is dated
+> 2025-08-18, four months before this fork's first commit (`5d2c7f7`, 2025-12-18), and it
+> describes a remediation that does not exist here. It claims all five testing methods were
+> removed from `AuthManager` and relocated into `src/auth/TestableAuthManager.ts` and
+> `src/auth/AuthManagerTestUtils.ts`. What is actually true, verified 2026-08-03:
+>
+> - `setTestUserId()` and `setTestTokenExpiry()` **are still on the production `AuthManager`
+>   class** (`src/auth/AuthManager.ts:182,197`) and have been for this repo's entire history —
+>   `git log -S"setTestUserId" -- src/auth/AuthManager.ts` returns only the history root.
+> - `src/auth/TestableAuthManager.ts` never existed. `src/auth/AuthManagerTestUtils.ts` did
+>   briefly, alongside the methods it was supposed to replace, and was deleted as dead code in
+>   `92f1f66` (2025-12-19).
+> - The mitigation that *is* real is different and simpler than what this report describes: a
+>   private `validateTestEnvironment()` guard (`src/auth/AuthManager.ts:212-222`) throws unless
+>   `JEST_WORKER_ID` is set or `NODE_ENV` is `test`/`development`, so the two methods ship in
+>   `dist/` but are inert in production. The other three methods (`getTestUserId`,
+>   `getTestTokenExpiry`, `updateSessionProperty`) and the `TestableAuthManager` interface and
+>   factories live in `tests/utils/test-utils.ts` and are never shipped.
+>
+> The environment-guard code block quoted in §3 below is therefore close to what exists, just
+> inline on `AuthManager` rather than in a separate module. Everything about interface
+> segregation, factory functions, and file layout (§1, §4, §5) is not this codebase.
+>
+> For the accurate, current description of both the guard and the residual cleanup it implies,
+> see [SECURITY_IMPLEMENTATION.md § Test-Only Methods on AuthManager](../SECURITY_IMPLEMENTATION.md#test-only-methods-on-authmanager).
+> Preserved below verbatim as the record of what was claimed.
+
 ## Executive Summary
 
 **Date**: 2025-08-18  

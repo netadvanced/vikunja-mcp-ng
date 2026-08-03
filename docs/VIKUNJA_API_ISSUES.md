@@ -2,13 +2,41 @@
 
 This document tracks issues discovered with the Vikunja API that should be reported to the maintainer.
 
-## 1. ~~SQL-like Filter Syntax Not Supported~~ RESOLVED
+**How to read this file.** Item numbers are **stable anchors** — source comments
+and tests cite them by number (`VIKUNJA_API_ISSUES.md #2`, `#7`, `#8`), so
+numbers are never reused or reshuffled; resolved items keep their number and get
+a status line. Each item carries a **Status** and the Vikunja version the claim
+was last checked against. The supported floor is **Vikunja 2.3.0**, aligned/
+tested default **2.4.0** (`docker/e2e/docker-compose.yml`) — anything only ever
+verified on 0.22.x is flagged as such and should be re-checked before being
+relied on.
 
-**Update (2025-05-26):** This issue has been resolved. The problem was that we were using the wrong parameter name. The API expects `filter` not `filter_by`. Complex filters with parentheses and boolean operators now work correctly.
+| # | Issue | Status |
+|---|---|---|
+| 1 | SQL-like filter syntax "unsupported" | ✅ Resolved (wrong param name) |
+| 2 | User endpoints reject `tk_*` API tokens | ⚠️ Open upstream — JWT workaround shipped |
+| 3 | Team API surface (client-library gap) | ✅ Resolved via direct REST |
+| 4 | Bulk operations | ✅ Mostly resolved — native `POST /tasks/bulk` exists and is used |
+| 5 | Inconsistent error responses | ⚠️ Open upstream (cosmetic) |
+| 6 | "No webhook support" | ✅ Obsolete — Vikunja has webhooks; we implement them |
+| 7 | Task reminder field drift | ✅ Resolved (was client-library drift, not the API) |
+| 8 | `/webhooks/events` can 401 | ⚠️ Open upstream — fallback shipped |
+| 9 | snake_case field naming | ℹ️ Clarification, not a bug |
+| 10 | `filter` param ignored | ❓ Unverified on supported versions (only ever seen on 0.22.1) |
+| 11 | Bucket `position: 0` indistinguishable from omitted | ⚠️ Open upstream — workaround shipped |
+| 12 | Project archive/unarchive validation | ✅ Resolved (endpoint is full-model-replace) |
 
-**Original Issue:** The Vikunja API documentation suggested support for SQL-like filter syntax, but we were getting 500 Internal Server Error when using this format.
+## 1. SQL-Like Filter Syntax Not Supported
 
-**Resolution:** Use the `filter` parameter instead of `filter_by`:
+**Status:** ✅ Resolved (2025-05-26) — never an API bug. The request used the
+wrong parameter name: the API expects `filter`, not `filter_by`. Complex
+filters with parentheses and boolean operators work correctly with the right
+parameter.
+
+**Original issue:** the Vikunja API documentation suggested support for SQL-like filter syntax, but this format returned 500 Internal Server Error.
+
+**Resolution:** use the `filter` parameter instead of `filter_by`:
+
 ```bash
 # This now works correctly
 curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all?filter=(priority%20%3E%3D%204%20%26%26%20done%20%3D%20false)' \
@@ -17,13 +45,18 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all?filter=(priority
 
 **Impact:** Users can now use complex filters with multiple conditions as documented.
 
-## 2. User Endpoint Authentication Error - WORKAROUND AVAILABLE
+## 2. User Endpoints Reject API Tokens
 
-**Status:** Partially resolved with JWT authentication workaround (2025-05-28)
+**Status:** ⚠️ Open upstream; JWT workaround shipped (2025-05-28) and still the
+supported answer. This is the most-cited item in the code base — `src/tools/auth.ts`,
+`src/tools/tokens.ts`, `src/tools/caldav-tokens.ts` and `src/tools/user-deletion.ts`
+all gate or explain themselves by it, and `vikunja_auth connect` verifies API-token
+sessions against `GET /projects?per_page=1` rather than `GET /user` precisely because
+of it.
 
-**Description:** The `/user` endpoint and ALL user-related endpoints fail with authentication errors despite using a valid API token that works for all other endpoints.
+**Description:** the `/user` endpoint and every other user-scoped endpoint fails with an authentication error despite using a valid API token that works for all other endpoints.
 
-**Affected Endpoints (verified 2025-05-28):**
+**Affected endpoints (verified 2025-05-28):**
 - `/user` - Get current user
 - `/users` - List all users
 - `/users/{id}` - Get user by ID
@@ -36,6 +69,7 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all?filter=(priority
 - `/user/export/download` - Download data export
 
 **Reproduction:**
+
 ```bash
 # All of these fail with "missing, malformed, expired or otherwise invalid token provided"
 curl -X GET 'https://your-vikunja-instance.com/api/v1/user' \
@@ -59,64 +93,93 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/projects' \
 
 **Actual:** Returns 401 authentication error despite valid token.
 
-**Root Cause (verified 2025-05-28):** User endpoints require JWT session tokens obtained via username/password login, NOT API tokens. API tokens (prefixed with `tk_`) are only valid for non-user resources. There is no endpoint to exchange an API token for a JWT token, making programmatic access to user data require storing credentials.
+**Root cause (verified 2025-05-28):** user endpoints require JWT session tokens obtained via username/password login, **not** API tokens. API tokens (prefixed with `tk_`) are only valid for non-user resources. There is no endpoint to exchange an API token for a JWT token, making programmatic access to user data require storing credentials.
 
 **Workaround (implemented 2025-05-28):** The Vikunja MCP server now supports JWT authentication:
 
 1. **Extract JWT from browser session:**
+
    ```bash
    # In browser DevTools → Application → Local Storage → Find 'token' key
    # Copy the JWT token (starts with eyJ...)
    ```
 
 2. **Use JWT authentication in MCP:**
+
    ```typescript
    vikunja_auth.connect({
-     apiUrl: "https://your-vikunja-instance.com/api/v1",
-     apiToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-     // Token type is automatically detected!
-   })
+     // Bare instance URL — the server resolves the API path itself
+     apiUrl: 'https://your-vikunja-instance.com',
+     apiToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+     // Token type is auto-detected from the token format
+   });
    ```
 
-3. **Available tools with JWT auth:**
-   - `vikunja_users` - Full user management functionality
-   - `vikunja_export_project` - Project data export
-   - `vikunja_request_user_export` - User data export
+3. **Tools that only register under a JWT session:** `vikunja_users`,
+   `vikunja_export_project`, `vikunja_request_user_export`,
+   `vikunja_download_user_export`, `vikunja_user_export_status`,
+   `vikunja_caldav_tokens`, `vikunja_admin`, `vikunja_user_deletion` — several
+   of which are additionally deny-by-default module keys. See
+   [docs/CONFIGURATION.md](CONFIGURATION.md) for the gating rules and
+   `src/tools/index.ts` for the registration logic.
 
 **Note:** JWT tokens expire (typically after 24 hours), requiring re-extraction.
 
-**Impact:** 
+**Impact:**
 - Cannot retrieve current user information
 - Cannot list or search users for task assignment
 - Cannot manage user settings programmatically
 - Cannot use data export features
 - Batch import cannot assign tasks to users
 
-## 3. Team API — node-vikunja Coverage Gap (worked around via direct REST)
+## 3. Team API Contract Notes
 
-**Description:** node-vikunja's `TeamService` only implements `getTeams`/`createTeam`/`deleteTeam`. `vikunja_teams` covers the rest (`get`, `update`, `members`) by calling the Vikunja REST API directly through `src/utils/vikunja-rest.ts`, per the OpenAPI spec:
+**Status:** ✅ Resolved (checked against the vendored `v2.4.0` spec). The
+original gap was in the `node-vikunja` client library, which has since been
+removed entirely — **all** `vikunja_teams` subcommands now go through
+`vikunjaRestRequest` (`src/utils/vikunja-rest.ts`). The endpoint contract notes
+below are kept because they remain non-obvious and are easy to get wrong:
 
 - `GET /teams/{id}` — get a team by id.
 - `POST /teams/{id}` — update a team (**not** `PUT`; `PUT /teams/{id}` is not a defined route, only `PUT /teams` for create).
 - Team members are **embedded** in the `GET /teams/{id}` response as `.members` — there is no standalone `GET /teams/{id}/members` endpoint.
 - `PUT /teams/{id}/members` — add a member. The body's `username` field must be the member's real username string (the API deliberately rejects numeric user ids here, to prevent automated/enumerated user-id entry).
 - `DELETE /teams/{id}/members/{username}` — remove a member; the path segment is the username, not a numeric id.
-- `POST /teams/{id}/members/{username}/admin` — **toggles** the member's admin flag. It takes no request body and cannot set an explicit true/false value; callers that need to know the resulting state should re-check via `members list`.
+- `POST /teams/{id}/members/{userID}/admin` — **toggles** the member's admin flag. It takes no request body and cannot set an explicit true/false value; callers that need to know the resulting state should re-check via `members list`. **Spec/implementation ambiguity, unresolved:** the vendored spec declares that path segment as `userID` (`type: integer`), but `src/tools/teams.ts` sends the member's *username* string there — consistent with the sibling `DELETE /teams/{id}/members/{username}`, and with the API's stated aversion to numeric-id member addressing. Only a live call can settle which the server actually accepts; do not "fix" either side from spec text alone.
 
-**Impact:** None once routed correctly — noted here because node-vikunja's own types/methods do not reflect this surface, so any future change to `vikunja_teams` should re-verify against the live OpenAPI spec rather than the client library.
+**Impact:** None once routed correctly. The lesson generalizes: verify team-endpoint changes against the vendored OpenAPI spec (`docs/vikunja-openapi.json`) and, where the spec is ambiguous, against a live server — never against a client library's types.
 
-## 4. Bulk Operations Not Implemented
+## 4. Bulk Operations
 
-**Description:** The API lacks native bulk operations for tasks, requiring individual API calls for each operation.
+**Status:** ✅ Mostly resolved (spec-verified against vendored `v2.4.0`). The
+original "the API has no bulk operations at all" claim was incorrect. Vikunja
+exposes three native bulk endpoints:
 
-**Missing Features:**
-- Bulk create tasks
-- Bulk update tasks
-- Bulk delete tasks
+- `POST /tasks/bulk` (`models.BulkTask` — `{task_ids, fields, values}`) — used
+  by `vikunja_tasks bulk-update` for scalar fields since PR #89, one request
+  for the whole batch.
+- `POST /tasks/{taskID}/labels/bulk` — used by task create/update via
+  `setTaskLabels` (`src/utils/label-bulk.ts`).
+- `POST /tasks/{taskID}/assignees/bulk` — **replace** semantics; used only to
+  restore a complete assignee snapshot after a bulk update, never as a general
+  assign flow (see `docs/ENDPOINT-TAIL-RETRIAGE.md`).
 
-**Impact:** Poor performance when working with multiple tasks, leading to rate limiting issues and slow operations.
+**Still genuinely missing:** bulk **create** and bulk **delete**. Those remain
+client-side loops issuing one API call per task
+(`src/tools/tasks/bulk-operations-simplified.ts`), and creates are run
+sequentially on purpose to avoid SQLite "database is locked" 500s at the 2.3.0
+floor.
+
+**Impact:** Bulk create/delete of large batches is still O(n) round trips, so
+rate-limit and batch-size guidance still applies (`MAX_BULK_OPERATION_TASKS =
+100`, `src/tools/tasks/constants.ts`).
 
 ## 5. Inconsistent Error Responses
+
+**Status:** ⚠️ Open upstream, but fully absorbed on our side — `vikunjaRestRequest`
+(`src/utils/vikunja-rest.ts`) normalizes whatever the server returns into an
+`MCPError` carrying `details.statusCode`, so no call site parses raw error
+bodies.
 
 **Description:** Error responses vary in format and detail across different endpoints.
 
@@ -129,24 +192,28 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/projects' \
 
 ## 6. Missing Webhook/Event Support
 
-**Description:** No webhook or event system for real-time updates.
+**Status:** ✅ Obsolete — the premise is false on supported versions. Vikunja
+ships a full webhook surface, and this server implements it: project webhooks
+(`GET`/`PUT /projects/{id}/webhooks`, `POST`/`DELETE
+/projects/{id}/webhooks/{webhookID}`), user webhooks (`/user/settings/webhooks*`,
+shipped as G4) and the event catalogue (`GET /webhooks/events`) — all exposed
+through `vikunja_webhooks` (`src/tools/webhooks.ts`).
 
-**Impact:** Clients must poll for changes, leading to inefficient resource usage and delayed updates.
+The item is kept (rather than deleted) because item numbers are stable anchors.
+The remaining real gap is a *push/streaming* channel **into MCP** — webhooks
+deliver to an HTTP endpoint, which an stdio MCP server cannot receive, so MCP
+clients still poll. See also #8 for the `/webhooks/events` auth quirk.
 
-## Recommendations for Vikunja Maintainers
+## 7. Task Reminder Field Shape
 
-1. **Fix SQL-like filter syntax** or update documentation to reflect actual capabilities
-2. **Standardize authentication** across all endpoints
-3. **Complete team API** implementation
-4. **Add native bulk operations** for better performance
-5. **Standardize error response format** across all endpoints
-6. **Consider adding webhook support** for real-time updates
+**Status:** ✅ Resolved — never an API bug. The drift was in the removed
+`node-vikunja` client's types; current code reads/writes the real
+`models.TaskReminder` shape directly (`src/types/vikunja.ts`, covered by
+`tests/tools/tasks-reminders-type-safety.test.ts`). Kept because the *correct*
+contract below is still non-obvious, and because the "identify a reminder
+without an id" consequence still governs `remove-reminder`'s design.
 
----
-
-## 7. Task Reminder Field Inconsistency (node-vikunja drift, not the real API)
-
-**Description:** node-vikunja's typed model for task reminders (`{ id, reminder_date }`) does not
+**Description:** the removed `node-vikunja` client's typed model for task reminders (`{ id, reminder_date }`) did not
 match Vikunja's actual API contract (`models.TaskReminder`, per the OpenAPI spec), which is
 `{ reminder, relative_period?, relative_to? }` — **both** on write and on read. There is no `id`
 field on either side.
@@ -156,11 +223,13 @@ field on either side.
   date string), with optional `relative_period` / `relative_to` for relative reminders.
 - Retrieving a task: the API returns reminders in the same shape — `reminder` (never
   `reminder_date`), and no `id`.
-- The node-vikunja library's type definitions describe neither correctly: it types reminders as
+- The old client library's type definitions described neither correctly: it typed reminders as
   `{ id: number, reminder_date: string }`, which matches nothing the server actually sends or
-  accepts.
+  accepts. (Verified against the vendored `v2.4.0` spec: `models.TaskReminder` has
+  `reminder`, `relative_period`, `relative_to` — and no `id`.)
 
 **Example (actual API shape, both directions):**
+
 ```javascript
 // Creating/updating a reminder
 {
@@ -177,18 +246,18 @@ field on either side.
 }
 ```
 
-**Impact:** Code written against node-vikunja's types (or against a mistaken assumption that GET
+**Impact:** Code written against the old client's types (or against a mistaken assumption that GET
 responses use `reminder_date`/`id`) will silently write zero-value reminders and can never
 successfully identify a reminder to delete — every removal-by-id attempt returns "not found"
 against a real server.
 
-**Workaround:** The MCP server reads and writes the actual `reminder` field on both directions
-(never `reminder_date`), casting through `unknown` past node-vikunja's drifted `Task` type where
-necessary. Since the API exposes no reminder id, `remove-reminder` identifies the reminder to
+**Current behaviour:** the MCP server reads and writes the actual `reminder` field in both
+directions (never `reminder_date`), now straight off the spec-generated types rather than casting
+past a drifted library type. Since the API exposes no reminder id, `remove-reminder` identifies the reminder to
 delete by its exact `reminder` date string and/or its zero-based position (`reminderIndex`) in
 the array returned by `list-reminders` — never by an id.
 
-## 8. Webhook Events Endpoint Missing or Requires Special Permissions
+## 8. Webhook Events Endpoint Rejects API Tokens
 
 **Description:** The `/api/v1/webhooks/events` endpoint returns 401 Unauthorized errors even with valid API tokens.
 
@@ -199,6 +268,7 @@ the array returned by `list-reminders` — never by an id.
 - Webhook CRUD operations also fail with similar authentication errors
 
 **Example:**
+
 ```bash
 # This fails with 401 Unauthorized
 curl -X GET 'https://your-vikunja-instance.com/api/v1/webhooks/events' \
@@ -211,13 +281,34 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all' \
 
 **Impact:** Webhook functionality may not be available depending on server configuration or API token permissions.
 
+**Workaround:** when `GET /webhooks/events` fails, `vikunja_webhooks` falls back
+to a hardcoded list of known event types rather than erroring
+(`DEFAULT_WEBHOOK_EVENTS`, `src/tools/webhooks.ts` — used for both the project
+and user webhook scopes, with a 5-minute cache); the 401 is treated as
+terminal and not retried, since retrying only adds latency
+(`src/utils/vikunja-rest.ts`).
+
+**Status:** ⚠️ Still assumed open upstream. The fallback and its
+"don't retry a 401 here" behaviour are covered by
+`tests/utils/vikunja-rest.test.ts`; whether a modern server (2.3.0/2.4.0) still
+401s on this endpoint with a `tk_*` token has not been re-verified live.
+
 ## 9. API Response Field Naming Convention
 
-**Description:** The Vikunja API uses snake_case field naming convention in responses (e.g., `due_date`, `start_date`, `percent_done`), which matches the node-vikunja Task interface definition.
+**Status:** ℹ️ Not a bug — a clarification, still accurate against the vendored
+`v2.4.0` spec.
+
+**Description:** The Vikunja API uses snake_case field naming in responses
+(e.g. `due_date`, `start_date`, `percent_done`). MCP tool *arguments* in this
+server are camelCase (`dueDate`, `percentDone`); the translation happens at the
+server boundary (`FILTER_FIELD_TO_API_FIELD` in `src/utils/filters.ts`,
+`SORT_FIELD_ALIASES` in `src/tools/tasks/constants.ts`). Do not expect the API
+to accept or return the camelCase spelling.
 
 **Note:** This is not an issue but a clarification for developers who might expect camelCase fields. The API consistently uses snake_case for all task fields.
 
 **Example Task Response:**
+
 ```json
 {
   "id": 1,
@@ -234,12 +325,21 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all' \
 
 **Impact:** Ensure your code uses snake_case field names when accessing task properties from API responses.
 
-**Workaround:** The MCP server now uses a hardcoded list of common webhook events when the API endpoint is unavailable:
-- task.created, task.updated, task.deleted, task.assigned, task.comment.created
-- project.created, project.updated, project.deleted, project.shared
-- team.created, team.deleted
+## 10. Filter Parameter Ignored
 
-## 9. Filter Parameter Ignored (Issue verified 2025-05-28)
+**Status:** ❓ **Unverified on any supported version.** This was only ever
+observed on Vikunja **v0.22.1**, which is far below this project's supported
+floor (2.3.0) and its aligned/tested default (2.4.0). Nothing in the current
+code base asserts that server-side filtering is broken — `vikunja_tasks list`
+uses `HybridFilteringStrategy`, which *tries the server first* and only falls
+back to client-side evaluation when that call fails, and the e2e suite
+exercises real server-side filter expressions (`scripts/mcp-e2e.ts`, including a
+negative control). Re-verify against a live 2.3.0/2.4.0 server before citing
+this item; it may be entirely historical.
+
+*(Numbering note: this item was previously also labelled "9", colliding with the
+field-naming item above. It is #10 from 2026-08-03 onward; no source comment
+referenced the old number.)*
 
 **Description:** The `filter` parameter is completely ignored by the API, returning all tasks regardless of filter criteria.
 
@@ -248,6 +348,7 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all' \
 - `/projects/{id}/tasks?filter=...` - Returns all project tasks
 
 **Reproduction:**
+
 ```bash
 # These all return the same results (all tasks) despite different filters:
 curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all?filter=done%20%3D%20false' \
@@ -271,11 +372,15 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all?filter=(done%20%
 - Must retrieve all tasks and filter client-side (performance impact)
 - Large task lists cause unnecessary data transfer
 
-**MCP Server Workaround:** The vikunja-mcp server now implements comprehensive client-side filtering:
+**MCP Server Workaround:** the server implements client-side filtering as a
+*fallback*, not as the default path — `HybridFilteringStrategy`
+(`src/utils/filtering/`) attempts server-side filtering first and only falls
+back when that request fails, tagging the response with
+`clientSideFiltering` / `serverSideFilteringAttempted` and an explanatory
+`filteringNote` (`src/tools/tasks/types/filters.ts`):
 - Parses filter strings using the same syntax as Vikunja
 - Evaluates filters against the fetched task list
 - Supports all fields, operators, and complex expressions
-- Adds `clientSideFiltering: true` to response metadata
 - Works transparently - users can use filters normally
 
 **Supported Client-Side Filter Features:**
@@ -290,52 +395,75 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all?filter=(done%20%
 - Medium projects (100-1000 tasks): Minor delay for initial fetch
 - Large projects (1000+ tasks): Noticeable delay, consider pagination
 
-*Last updated: 2025-05-28*
-## 8. Project Archive/Unarchive Validation Error
+## 11. Bucket `position: 0` Is Indistinguishable From Omitted
 
-**Status:** Workaround implemented (2025-05-28)
-
-**Description:** The project archive and unarchive operations fail with "Struct is invalid. Invalid Data" error when only sending the `is_archived` field.
-
-**Affected Endpoints:**
-- `PUT /projects/{id}` - When archiving/unarchiving projects
-
-**Reproduction:**
-```bash
-# This fails with "Struct is invalid" error
-curl -X PUT 'https://your-vikunja-instance.com/api/v1/projects/1' \
-  -H 'Authorization: Bearer YOUR_TOKEN' \
-  -H 'Content-Type: application/json' \
-  -d '{"is_archived": true}'
-```
-
-**Workaround:** Include the project title (and potentially other required fields) in the update request:
-```bash
-# This works
-curl -X PUT 'https://your-vikunja-instance.com/api/v1/projects/1' \
-  -H 'Authorization: Bearer YOUR_TOKEN' \
-  -H 'Content-Type: application/json' \
-  -d '{"title": "Project Title", "is_archived": true}'
-```
-
-**Impact:** The MCP server now includes the project title when archiving/unarchiving to work around this validation requirement.
-
-## 11. Bucket `position: 0` Is Indistinguishable From Omitted (issue #173)
-
-**Status:** Workaround implemented (2026-07-25, `src/tools/projects/kanban-setup.ts`)
+**Status:** ⚠️ Open upstream (issue #173); workaround shipped 2026-07-25 in
+`src/tools/projects/kanban-setup.ts`. Live-verified against Vikunja 2.4.0.
 
 **Description:** `models.Bucket.position` is a plain (non-pointer) `float64` on the wire. A client explicitly sending `"position": 0` is byte-for-byte indistinguishable, server-side, from a client that omitted `position` entirely. When Vikunja cannot tell the two apart, it substitutes its own id-derived default (`bucket.id * 65536`) instead of honoring "first in the ordering".
 
-**Reproduction (live-verified against Vikunja 2.4.0):** `PUT` three buckets with `position: 0`, `position: 1`, `position: 2` respectively, then read them back via `GET /projects/{id}/views/{id}/buckets`:
-```
+**Reproduction:** `PUT` three buckets with `position: 0`, `position: 1`, `position: 2` respectively, then read them back via `GET /projects/{id}/views/{id}/buckets`:
+
+```text
 sent position 0 -> server stored 8585216 (= bucket id 131 * 65536, its own default)
 sent position 1 -> stored 1 (honored)
 sent position 2 -> stored 2 (honored)
 ```
-Resulting board order: Col-1, Col-2, &lt;default buckets&gt;, Col-0 — the column meant to be FIRST landed dead LAST.
+
+Resulting board order: `Col-1`, `Col-2`, `<default buckets>`, `Col-0` — the column meant to be **first** landed dead last.
 
 **Workaround:** Never send a literal `position: 0`. `setupKanban`'s `bucketPositionForIndex` helper pins every bucket position to a **1-based**, 65536-spaced value (`(index + 1) * 65536`) — matching the `id * 65536` lane spacing Vikunja itself uses — so every value this composite sends is guaranteed non-zero and therefore always honored.
 
 **Impact:** Any code that programmatically sets `Bucket.position` (not just `setup-kanban`) must avoid a literal `0` for the first item in an ordered sequence. This is easy to reintroduce by "simplifying" a 1-based position helper back to a 0-based `index * step` — see the comment on `bucketPositionForIndex` for why that would silently regress this fix.
 
-*These issues were discovered during development of the Vikunja MCP Server*
+## 12. Project Archive/Unarchive Validation Error
+
+**Status:** ✅ Resolved — this was not a validation bug but the endpoint's
+documented full-model-replace semantics, since handled properly.
+*(Numbering note: this item was originally mislabelled "8", colliding with the
+webhook-events item. It is #12 from 2026-08-03 onward.)*
+
+**Original symptom (2025-05-28):** archiving/unarchiving failed with
+"Struct is invalid. Invalid Data" when the request body carried only
+`is_archived`. The original write-up also named the wrong verb — there is no
+`PUT /projects/{id}` in the spec at all; the project update endpoint is
+**`POST /projects/{id}`**.
+
+**Actual cause:** `POST /projects/{id}` **replaces the entire project model** —
+any field omitted from the body is cleared server-side, and required fields
+(notably `title`, `minLength: 1`) must be present. Sending a bare
+`{is_archived: true}` was therefore both invalid and destructive.
+
+**Resolution:** `archiveProject`/`unarchiveProject` (like `updateProject` and
+`moveProject`) fetch the current project and merge the change onto it via
+`buildProjectUpdatePayload` (`src/tools/projects/crud.ts`) before POSTing —
+not just "include the title". See
+[docs/API_NOTES.md](API_NOTES.md) "Project Operations" for the full
+full-model-replace convention, which applies equally to project views and
+Kanban buckets.
+
+## Recommendations for Vikunja Maintainers
+
+Trimmed to what is **still open** upstream (the filter-syntax, team-API, bulk
+and webhook asks have all been resolved or were mistaken — see #1, #3, #4, #6):
+
+1. **Standardize authentication** across all endpoints — `tk_*` API tokens
+   being rejected by every `/user/*` endpoint (#2) is the single biggest
+   friction point for programmatic clients, since there is no way to exchange
+   an API token for a JWT.
+2. **Standardize the error response format** across all endpoints (#5).
+3. **Make `/webhooks/events` reachable with an API token** (#8), or document
+   the JWT requirement in the spec.
+4. **Make `Bucket.position` a pointer / nullable field** (#11) so an explicit
+   `0` is distinguishable from an omitted value.
+5. **Correct the spec's `POST /teams/{id}/members/{userID}/admin` path
+   parameter** (#3) if it is in fact a username, not a numeric id.
+
+---
+
+*These issues were discovered during development of the Vikunja MCP Server.*
+
+*Last reviewed: 2026-08-03 — every item re-checked against current `src/`, the
+vendored `v2.4.0` OpenAPI spec and `docs/API-COVERAGE.md`; duplicate item
+numbers resolved, resolved/obsolete items relabelled, and per-item status +
+verified-against version added.*
