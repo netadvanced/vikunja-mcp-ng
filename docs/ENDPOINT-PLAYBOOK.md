@@ -16,8 +16,6 @@ Companion docs:
 - [TOOLS.md](TOOLS.md) — the user-facing reference every new subcommand must
   be added to.
 
-`docs/history/` is archive-only, never current guidance.
-
 ## 1. Composite-first design
 
 The OpenAPI spec is a **coverage checklist**, not a tool design. Don't mirror

@@ -179,10 +179,9 @@ test time, and is never shipped.
 
 A 2025-08-18 audit report inherited from upstream claimed all five methods had
 been relocated out of `AuthManager` into dedicated `src/auth/` modules. That
-never happened in this repository. The report is preserved, with a correction, at
-[docs/history/AUTHMANAGER_TEST_METHODS_AUDIT.md](history/AUTHMANAGER_TEST_METHODS_AUDIT.md).
-Moving the two remaining mutators into `tests/utils/test-utils.ts` alongside the
-others is a small, unclaimed cleanup.
+never happened in this repository; the paragraph above reflects what's actually
+true instead. Moving the two remaining mutators into `tests/utils/test-utils.ts`
+alongside the others is a small, unclaimed cleanup.
 
 ## Testing
 
