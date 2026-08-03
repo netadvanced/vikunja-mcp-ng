@@ -13,7 +13,8 @@ harness also referenced there.
 ## 1. Policy
 
 - **Pre-1.0 SemVer.** This project is `0.x.y`; major stays at `0` until the project is declared
-  stable (§2, Step 7 covers what that eventually requires). We use the common pre-1.0 convention:
+  stable — a milestone this document deliberately does not yet define criteria for. We use the
+  common pre-1.0 convention:
 
   | Bump | When |
   |---|---|
@@ -44,14 +45,14 @@ harness also referenced there.
 
 ## 2. Release flow
 
-```
+```text
 release-prepare.sh <patch|minor> → curate CHANGELOG → open release PR → merge
   → pre-tag checklist → release:tag → tag-triggered workflow publishes
 ```
 
-Steps 1–3 happen on a branch and go through normal PR review. Steps 4–7 happen on `main` after
-that PR merges. Steps 1, 2, 5, and 6 are things an operator (human or agent, once scope is
-decided) does by hand; step 7 is fully automated by `.github/workflows/release.yml` once the tag
+Steps 1–3 happen on a branch and go through normal PR review. Steps 4–6 happen on `main` after
+that PR merges. Steps 1, 2, 4, and 5 are things an operator (human or agent, once scope is
+decided) does by hand; step 6 is fully automated by `.github/workflows/release.yml` once the tag
 lands.
 
 ### Step 1 — Decide scope and run `release:prepare`
@@ -66,12 +67,16 @@ npm run release:prepare -- patch   # or: npm run release:prepare -- minor
 
 `scripts/release-prepare.sh`:
 
-- Refuses to run on a dirty tree or on `main` itself; creates its own branch (`release/vX.Y.Z`)
-  off an up-to-date `main`.
+- **Must be run from a clean, up-to-date `main`** — it refuses a dirty tree, refuses any other
+  branch, and refuses when local `main` differs from `origin/main`. It then creates its own
+  `release/vX.Y.Z` branch for you. (Corrected 2026-08-03: this used to read "refuses to run on
+  `main` itself", which is the opposite of what the script checks.)
 - Runs the full gate suite (lint, typecheck, tests, coverage) before touching anything — a release
   never starts from red.
 - Bumps `package.json`/`package-lock.json` via `npm version <patch|minor> --no-git-tag-version` —
   no git tag yet, that's Step 5.
+- Syncs `server.json`'s two version fields (the MCP registry manifest) to the bumped version and
+  asserts they match, so the published manifest can't drift from `package.json` (#186).
 - Generates a draft changelog section from conventional commits since the last tag and inserts it
   into `CHANGELOG.md` under `[Unreleased]`.
 - Commits everything as `release: vX.Y.Z` and prints the next steps. It never pushes and never
@@ -165,26 +170,45 @@ matching `CHANGELOG.md` section, and pushes it. A tag is a fixed pointer to one 
 `main` — there are no release branches. **Pushing this tag immediately triggers the live release
 workflow** (Step 6) — this is the point of no return; it's why Step 4 comes first.
 
-### Step 6 — the tag-triggered workflow does the rest
+### Step 6 — The tag-triggered workflow does the rest
 
 Pushing the tag is what actually kicks off the release. `.github/workflows/release.yml` triggers
 on any `v*` tag push and, on the tagged commit:
 
-1. Re-runs the full gate suite (lint, typecheck, tests, coverage, build) — the release never
-   publishes from an environment that hasn't re-verified green.
-2. Verifies the tag matches `package.json`'s version.
+1. **`npm` job** — re-runs the full gate suite (lint, typecheck, tests, coverage, build) on the
+   tagged commit; the release never publishes from an environment that hasn't re-verified green.
+2. Verifies the tag matches `package.json`'s version, then derives the compat and min-supported
+   Vikunja versions from `scripts/lib/vikunja-compat-version.sh` (§3).
 3. Publishes to npm via **OIDC Trusted Publishing** — `npm publish --access public`, no npm token
    and no repository secret involved; npmjs.com is configured to trust this exact repo + workflow
    filename, and provenance attestation is generated automatically.
-4. Builds and pushes the Docker image to `ghcr.io/netadvanced/vikunja-mcp-ng`, tagged `:X.Y.Z`,
-   `:latest`, and the compatibility tag `:X.Y.Z-vikunja<A.B.C>` (§3), using the built-in
-   `GITHUB_TOKEN`.
-5. Runs `gh release create vX.Y.Z`, using the `CHANGELOG.md` section as the release notes.
+4. **`image` job (matrix, one runner per architecture)** — builds `linux/amd64` on `ubuntu-latest`
+   and `linux/arm64` on a **native `ubuntu-24.04-arm` runner** (free for public repos), each
+   pushing *by digest only*, with the OCI labels `org.opencontainers.image.version`,
+   `io.vikunja.compat`, and `io.vikunja.min-supported`.
+5. **`manifest` job** — assembles the two digests into one multi-arch manifest list and applies
+   every tag to it: `:X.Y.Z`, `:latest`, `:X.Y.Z-vikunja<aligned>`, and (when the floor differs)
+   `:X.Y.Z-vikunja<floor>` — all aliases on a single digest (§3).
+6. **`release` job** — runs `gh release create vX.Y.Z` with the `CHANGELOG.md` section as the
+   notes, plus an auto-appended **Artifacts** footer (npm link and the tag→digest table), which is
+   why it can only run after the manifest exists.
+
+**Every publishing step is idempotent, and the workflow has a manual re-run entry point.** `npm
+publish` is skipped when the version is already on the registry, image tags are overwritten with
+identical content, and `gh release create` is skipped when the release exists. So a run that dies
+partway can be resumed with `workflow_dispatch` (input: an existing tag, e.g. `v0.6.2`) instead of
+needing a new version. This is not theoretical: emulated (QEMU) arm64 builds hung until the 6-hour
+job limit *after* npm publish had already succeeded, so `0.6.1` and `0.6.2` both reached npm with no
+image and no GitHub release; both were recovered by re-dispatch on 2026-07-28 once the native-runner
+rebuild (#204) landed. If a tag's npm version is live but its GHCR tags or GitHub release are
+missing, re-dispatch first — do not cut a new version.
 
 This is the **only** Actions workflow in this repository — everyday PRs and branch pushes never
 trigger it; general per-PR CI remains off by separate, still-standing owner decision (see
 `docs/ROADMAP.md` §3b). Nothing further to run by hand once the tag lands, other than watching the
-workflow run go green. If Actions is ever unavailable, see the Appendix for the manual fallback.
+workflow run go green — and, given the above, confirming all four artifact classes actually exist
+(npm version, `:X.Y.Z` + compat image tags, GitHub release). If Actions is ever unavailable, see the
+Appendix for the manual fallback.
 
 ## 3. Vikunja alignment workflow
 
@@ -198,10 +222,20 @@ How this project tracks new upstream Vikunja releases, proven end-to-end alignin
    still holds — see
    [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-matrix-testing-npm-run-testmatrix).
 3. Refresh the vendored spec from the pinned container and regenerate types:
-   `VIKUNJA_VERSION=<new> npm run e2e:up && npm run fetch:api-spec:container && npm run
+   `VIKUNJA_E2E_TARGET=<new>-postgres npm run e2e:up && npm run fetch:api-spec:container && npm run
    generate:api-types`. Use the container spec, not `npm run fetch:api-spec` (which hits
    `try.vikunja.io`'s `unstable` build, always ahead of any tag) — see
    [docs/API-SPEC.md](API-SPEC.md#where-the-spec-comes-from).
+   **Two mechanical traps since the per-version e2e stacks landed** (#206, verified 2026-08-03).
+   First, `npm run e2e:up` selects its stack from `VIKUNJA_E2E_TARGET` (`<version>-<db>`), **not**
+   from `VIKUNJA_VERSION` — `docker/e2e/bootstrap.sh` derives and re-exports `VIKUNJA_VERSION` from
+   the resolved target, so setting it yourself is silently ignored and you get the default
+   `2.4.0-postgres` stack. (`npm run test:matrix` is the exception: it still reads
+   `VIKUNJA_VERSION`/`VIKUNJA_DB` and translates them into a target, so Step 4's commands are
+   unaffected.) Second, each target gets its **own port** (`8000 + MMP` for postgres, so `2.4.0` →
+   8240, `2.5.0` → 8250 — `scripts/lib/e2e-target.ts`), while `fetch:api-spec:container` curls a
+   hardcoded `localhost:8240`. Fetching a *new* version's spec therefore needs that script's port
+   updated in the same alignment PR, or you will vendor the old stack's spec and notice nothing.
 4. Audit the coverage delta: diff the refreshed spec against `docs/API-COVERAGE.md` for new,
    removed, or changed endpoints and update that doc's counts accordingly.
 5. Bump the default `e2e` pin in `docker/e2e/docker-compose.yml` (and `docker/e2e/bootstrap.sh`'s
@@ -227,6 +261,16 @@ How this project tracks new upstream Vikunja releases, proven end-to-end alignin
 > only the boundary of what rode along in which release shifted, which is itself the kind of
 > owner-discretion latitude this note exists to describe. Use sparingly and only when nothing a
 > caller relies on changes; the default remains a minor.
+>
+> **Exercised twice more since, both for additive capability rather than alignment groundwork
+> (recorded 2026-08-03).** `0.6.1` (2026-07-25) shipped the new `setup-kanban` composite and the
+> multi-task label subcommands as a **patch**, and `0.6.2` (2026-07-28) shipped `setup-kanban`'s
+> optional `columns` the same way — each release's own CHANGELOG carries the reasoning inline
+> ("nothing a caller relies on changed: every addition is additive"), with `0.7.0` deliberately
+> reserved for the v2 API migration. Three exercises in, the honest summary of the pre-1.0
+> convention is: *new capability defaults to minor, but purely additive capability may ride a patch
+> when the owner is holding the next minor for a named milestone* — and the changelog must say so
+> where users will read it, as all three did.
 
 **Compat tag semantics.** Every release's Docker image carries a `-vikunja<A.B.C>` suffix on its own
 version, never a standalone tag: `X.Y.Z-vikunja<A.B.C>` (e.g. `0.5.2` → `:0.5.2-vikunja2.4.0`), the

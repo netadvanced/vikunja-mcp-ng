@@ -1,21 +1,26 @@
 # Rate Limiting and Request Size Controls
 
-This document describes the rate limiting and request size control system implemented to protect against DoS attacks and resource exhaustion.
-
-## Overview
-
-The rate limiting system provides comprehensive protection against:
-- **Request flooding** - Limits requests per minute and per hour
-- **Large payload attacks** - Validates request and response sizes
-- **Long-running operations** - Enforces timeout limits
-- **Resource exhaustion** - Prevents memory and CPU abuse
+The rate limiting and request-size control system protects the server against DoS
+patterns and resource exhaustion: **request flooding** (per-minute and per-hour request
+caps), **large payload attacks** (request and response size validation),
+**long-running operations** (per-category execution timeouts), and **resource
+exhaustion** generally. Every limit is tunable through environment variables, listed
+below and mirrored in [CONFIGURATION.md § Rate Limiting Variables](CONFIGURATION.md).
 
 ## Architecture
 
 The system consists of three main components:
 
-1. **RateLimitingMiddleware** - Core rate limiting logic with sliding window algorithm
-2. **Tool Wrapper** - Integration layer for MCP tool registration
+1. **`SecureRateLimitMiddleware`** (`src/middleware/simplified-rate-limit.ts`) - Core rate
+   limiting logic, backed by `express-rate-limit`'s `MemoryStore` (fixed-window counters
+   for the 60s and 3600s windows) with an `opossum` circuit breaker in front of the store
+   and a mutex around the check/increment critical section. Exported under the
+   back-compat aliases `RateLimitingMiddleware` / `SimplifiedRateLimitMiddleware` and the
+   singletons `rateLimitingMiddleware` / `simplifiedRateLimitMiddleware` /
+   `secureRateLimitMiddleware`.
+2. **Direct middleware helpers** (`src/middleware/direct-middleware.ts`) - `applyRateLimiting`
+   / `applyPermissions` / `applyBothMiddleware`, the integration layer used at tool
+   registration
 3. **Configuration System** - Environment-based configuration with sensible defaults
 
 ### Design Principles
@@ -96,43 +101,53 @@ Tools are automatically categorized for rate limiting:
 | `bulk` | `vikunja_batch_import` | High-volume data operations |
 | `export` | `vikunja_export`, `vikunja_export_tasks`, `vikunja_export_projects` | Large data exports |
 
+The table mirrors `TOOL_CATEGORIES` in `src/middleware/simplified-rate-limit.ts`
+verbatim. Two caveats worth knowing before relying on it:
+
+- The `expensive` profile has configurable limits (see the env vars above) but **no tool
+  is mapped to it** — nothing in `TOOL_CATEGORIES` uses that category today.
+- The `export` row's tool names are the ones present in `TOOL_CATEGORIES`; the export
+  tools actually registered today are `vikunja_export_project`,
+  `vikunja_request_user_export`, `vikunja_download_user_export` and
+  `vikunja_user_export_status` (see `src/tools/export.ts`), so any unmapped name falls
+  through to `default`.
+
 ## Implementation
 
 ### Integrating Rate Limiting
 
-#### New Tool Registration
-```typescript
-import { registerToolWithRateLimit } from '../middleware/tool-wrapper';
+Rate limiting is applied by wrapping a tool's handler before handing it to
+`server.tool(...)`. `src/tools/auth.ts` is the worked example in-tree — and, as of this
+writing, the **only** tool that wraps its handler, so the limits below currently apply to
+`vikunja_auth` alone rather than to every registered tool.
 
-export function registerMyTool(server: McpServer, authManager: AuthManager): void {
-  registerToolWithRateLimit(
-    server,
-    'my_tool_name',
-    {
-      subcommand: z.enum(['create', 'read', 'update', 'delete']),
-      // ... other schema fields
-    },
-    async (args) => {
-      // Tool implementation
-      return { success: true };
-    }
-  );
-}
+#### Wrapping a Tool Handler
+```typescript
+import { applyRateLimiting } from '../middleware/direct-middleware';
+
+server.tool(
+  'my_tool_name',
+  {
+    subcommand: z.enum(['create', 'read', 'update', 'delete']),
+    // ... other schema fields
+  },
+  applyRateLimiting('my_tool_name', async (args) => {
+    // Tool implementation
+    return { success: true };
+  }),
+);
 ```
 
-#### Existing Tool Migration
+#### Rate Limiting + Permission Checks Together
 ```typescript
-// Before
-server.tool('tool_name', schema, handler);
+import { applyBothMiddleware } from '../middleware/direct-middleware';
 
-// After
-import { registerToolWithRateLimit } from '../middleware/tool-wrapper';
-registerToolWithRateLimit(server, 'tool_name', schema, handler);
+server.tool('my_tool_name', schema, applyBothMiddleware('my_tool_name', authManager, handler));
 ```
 
 #### Direct Handler Wrapping
 ```typescript
-import { withRateLimit } from '../middleware/rate-limiting';
+import { withRateLimit } from '../middleware/simplified-rate-limit';
 
 const handler = async (args) => {
   // Tool logic
@@ -143,7 +158,7 @@ const rateLimitedHandler = withRateLimit('tool_name', handler);
 
 ### Custom Rate Limiting
 ```typescript
-import { RateLimitingMiddleware } from '../middleware/rate-limiting';
+import { RateLimitingMiddleware } from '../middleware/simplified-rate-limit';
 
 const customMiddleware = new RateLimitingMiddleware({
   default: {
@@ -211,9 +226,11 @@ When rate limits are exceeded, the system returns structured error responses:
 
 ### Rate Limit Status
 ```typescript
-import { rateLimitingMiddleware } from '../middleware/rate-limiting';
+import { rateLimitingMiddleware } from '../middleware/simplified-rate-limit';
 
-const status = rateLimitingMiddleware.getRateLimitStatus();
+// Async variant reads the real counts from MemoryStore; the sync
+// getRateLimitStatus() always reports 0 for the two request counters.
+const status = await rateLimitingMiddleware.getRateLimitStatusAsync();
 console.log({
   sessionId: status.sessionId,
   requestsLastMinute: status.requestsLastMinute,
@@ -224,11 +241,12 @@ console.log({
 
 ### Clearing Session Data
 ```typescript
-// Clear rate limit data for current session
-rateLimitingMiddleware.clearSession();
+// Clear rate limit data (async; resets both MemoryStores and the circuit breakers)
+await rateLimitingMiddleware.clearSession();
 
-// Clear specific session
-rateLimitingMiddleware.clearSession('specific-session-id');
+// NOTE: the sessionId argument is accepted but ignored — clearing is global,
+// since sessions are keyed by process ID (see Session Management below).
+await rateLimitingMiddleware.clearSession('specific-session-id');
 ```
 
 ### Configuration Inspection
@@ -282,12 +300,13 @@ describe('Load Testing', () => {
 ## Security Considerations
 
 ### Session Management
-- Sessions are identified by process ID (can be enhanced with proper client identification)
+- Sessions are identified by process ID (`session_${process.pid}` — can be enhanced with
+  proper client identification)
 - In-memory storage (no persistent tracking across restarts)
-- Automatic cleanup of old request timestamps
+- Counter expiry handled by `express-rate-limit`'s `MemoryStore` TTL
 
 ### Attack Mitigation
-- **Burst protection** - Sliding window algorithm prevents quick bursts
+- **Burst protection** - Per-minute window caps quick bursts
 - **Sustained attack protection** - Hourly limits prevent long-term abuse  
 - **Memory protection** - Request/response size limits prevent memory exhaustion
 - **CPU protection** - Execution timeouts prevent resource monopolization
@@ -317,7 +336,8 @@ EXPORT_RATE_LIMIT_PER_MINUTE=1
 ### Scaling Considerations
 - In-memory storage limits horizontal scaling
 - For distributed deployments, consider Redis-based session storage
-- Rate limit data automatically cleaned up every 30 seconds
+- Counter cleanup is delegated to `MemoryStore`'s own TTL handling — there is no
+  additional cleanup timer in this codebase
 
 ## Troubleshooting
 
@@ -325,8 +345,8 @@ EXPORT_RATE_LIMIT_PER_MINUTE=1
 
 #### Rate Limits Too Strict
 ```bash
-# Check current limits
-node -e "console.log(require('./src/middleware/rate-limiting').rateLimitingMiddleware.getConfig())"
+# Check current limits (run `npm run build` first — this reads the compiled output)
+node -e "console.log(require('./dist/middleware/simplified-rate-limit').rateLimitingMiddleware.getConfig())"
 
 # Increase limits temporarily
 RATE_LIMIT_PER_MINUTE=120 npm start
@@ -369,6 +389,6 @@ DEBUG=true npm start
 ### Contributing
 When adding new tools:
 1. Categorize the tool appropriately in `TOOL_CATEGORIES`
-2. Use `registerToolWithRateLimit` for new tools
+2. Wrap the handler with `applyRateLimiting` (or `applyBothMiddleware`) at registration
 3. Add integration tests
 4. Document any special rate limiting needs
