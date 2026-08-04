@@ -43,6 +43,7 @@ import {
   ClientContext,
 } from '../../src/client';
 import { registerTasksTool } from '../../src/tools/tasks';
+import { registerTemplatesTool } from '../../src/tools/templates';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   runWithRequestContext,
@@ -632,6 +633,124 @@ describe('Cross-user leak test matrix (§3d)', () => {
       await capturedHandler({ subcommand: 'get', id: 1 });
 
       expect(capturedAuthHeaders.at(-1)).toBe(`Bearer ${GLOBAL_TOKEN}`);
+    });
+  });
+
+  describe('Session-storage reads that bypass ALS resolution (residual gap, not covered by credential threading above)', () => {
+    // Unlike the "Credential threading" block above, the process-global
+    // closure manager here is deliberately left UNAUTHENTICATED — this is
+    // the real oidc-http deployment shape (VIKUNJA_MCP_TRANSPORT=http mode
+    // never sets VIKUNJA_API_TOKEN; every credential comes from the vault).
+    // `getSessionStorage()` in tasks/index.ts and templates.ts, and
+    // `downloadAttachment()` in tasks/attachments.ts, all call
+    // `authManager.getSession()` directly on whatever manager was passed in
+    // — the tool's closure-captured global, not the ALS-resolved one — so
+    // against this realistic config they throw AUTH_REQUIRED for a fully
+    // provisioned identity, before the request ever reaches
+    // `resolveEffectiveAuthManager` (vikunja-rest.ts), which is what
+    // actually protects the wire-level credential.
+    let globalAuthManager: AuthManager;
+    let capturedTasksHandler: (args: unknown) => Promise<unknown>;
+    let capturedTemplatesHandler: (args: unknown) => Promise<unknown>;
+    let capturedAuthHeaders: string[];
+    let fetchSpy: jest.SpiedFunction<typeof fetch>;
+    let tmpDir: string;
+    let vault: VaultFileStore;
+    let credentialSource: VaultCredentialSource;
+
+    function boundManagerFor(identity: Identity): AuthManager {
+      const credential = credentialSource.getCredential(identity);
+      const am = new AuthManager();
+      if (credential) {
+        am.connect(credential.apiUrl, credential.apiToken, credential.authType);
+      }
+      return am;
+    }
+
+    beforeEach(async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'isolation-session-storage-'));
+      vault = new VaultFileStore(path.join(tmpDir, 'vault.json'), crypto.randomBytes(32));
+      credentialSource = new VaultCredentialSource(vault);
+      await vault.provision(identityA, 'https://vikunja.example/api/v1', 'tk_a-real-1234567890');
+      await vault.provision(identityB, 'https://vikunja.example/api/v1', 'tk_b-real-1234567890');
+
+      // NOT connected — models real oidc-http mode, where no static token
+      // is ever configured on the process-global manager.
+      globalAuthManager = new AuthManager();
+
+      const captureServer = {
+        tool: (...toolArgs: unknown[]) => {
+          const name = toolArgs[0] as string;
+          const handler = toolArgs[toolArgs.length - 1] as (args: unknown) => Promise<unknown>;
+          if (name === 'vikunja_tasks') capturedTasksHandler = handler;
+          if (name === 'vikunja_templates') capturedTemplatesHandler = handler;
+        },
+      } as unknown as McpServer;
+      registerTasksTool(captureServer, globalAuthManager);
+      registerTemplatesTool(captureServer, globalAuthManager);
+
+      capturedAuthHeaders = [];
+      fetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(async (_url: unknown, init?: unknown) => {
+          const headers = ((init as { headers?: Record<string, string> } | undefined)?.headers ??
+            {}) as Record<string, string>;
+          capturedAuthHeaders.push(headers.Authorization ?? headers.authorization ?? '');
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            text: async () => JSON.stringify([]),
+          } as unknown as Response;
+        });
+    });
+
+    afterEach(async () => {
+      fetchSpy.mockRestore();
+      await clearGlobalClientFactory();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('vikunja_tasks list succeeds for a provisioned identity (currently throws AUTH_REQUIRED)', async () => {
+      await expect(
+        runWithRequestContext({ identity: identityA, authManager: boundManagerFor(identityA) }, () =>
+          capturedTasksHandler({ subcommand: 'list' }),
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('vikunja_templates list succeeds for a provisioned identity (currently throws AUTH_REQUIRED)', async () => {
+      await expect(
+        runWithRequestContext({ identity: identityA, authManager: boundManagerFor(identityA) }, () =>
+          capturedTemplatesHandler({ subcommand: 'list' }),
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('download-attachment succeeds and builds its URL from the calling identity\'s own apiUrl (currently throws AUTH_REQUIRED)', async () => {
+      await vault.provision(identityA, 'https://vikunja-a.example/api/v1', 'tk_a-real-1234567890');
+
+      const result = (await runWithRequestContext(
+        { identity: identityA, authManager: boundManagerFor(identityA) },
+        () => capturedTasksHandler({ subcommand: 'download-attachment', id: 1, attachmentId: 1 }),
+      )) as { content: Array<{ text: string }> };
+
+      const text = result.content.map((c) => c.text).join('\n');
+      expect(text).toContain('vikunja-a.example');
+    });
+
+    it('two identities calling list concurrently each succeed independently, neither throws for the other', async () => {
+      const [resultA, resultB] = await Promise.all([
+        runWithRequestContext({ identity: identityA, authManager: boundManagerFor(identityA) }, () =>
+          capturedTasksHandler({ subcommand: 'list' }),
+        ),
+        runWithRequestContext({ identity: identityB, authManager: boundManagerFor(identityB) }, () =>
+          capturedTasksHandler({ subcommand: 'list' }),
+        ),
+      ]);
+
+      expect(resultA).toBeDefined();
+      expect(resultB).toBeDefined();
     });
   });
 });

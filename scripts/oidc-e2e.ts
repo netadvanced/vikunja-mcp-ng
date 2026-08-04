@@ -364,6 +364,90 @@ async function main(): Promise<void> {
       }
     });
 
+    // (d2) A separate residual bug from the same isolation-table rows #3/#4:
+    // `getSessionStorage()` in tasks/index.ts and templates.ts (and
+    // `downloadAttachment()` in tasks/attachments.ts) called
+    // `authManager.getSession()` directly on the closure-captured manager —
+    // never authenticated in oidc-http mode — instead of resolving the
+    // ALS-bound one, so these specific subcommands threw AUTH_REQUIRED for a
+    // fully provisioned identity even though (d) above already worked (list
+    // projects doesn't touch session storage). Fixed by threading the same
+    // `hasRequestContext() ? await getAuthManagerFromContext() : authManager`
+    // resolution into those three functions. Guarded by
+    // tests/oidc/isolation.test.ts's "Session-storage reads that bypass ALS
+    // resolution" class; exercised live here against the real local stack.
+    await step('(d2) vikunja_tasks list — previously broken (session-storage path)', async () => {
+      const result = await callTool(port, 7, 'vikunja_tasks', { subcommand: 'list' }, aliceToken);
+      if (result.statusCode !== 200 || result.isError) {
+        throw new Error(`tasks list failed: HTTP ${result.statusCode}, isError=${result.isError}: ${result.text}`);
+      }
+    });
+
+    await step('(d3) vikunja_templates list — previously broken (session-storage path)', async () => {
+      const result = await callTool(port, 8, 'vikunja_templates', { subcommand: 'list' }, aliceToken);
+      if (result.statusCode !== 200 || result.isError) {
+        throw new Error(`templates list failed: HTTP ${result.statusCode}, isError=${result.isError}: ${result.text}`);
+      }
+    });
+
+    // (d4) A second, concurrently-authenticated identity — proving the fix
+    // holds under genuinely concurrent real HTTP requests through the real
+    // spawned server, not just sequential calls. Bob provisions with the
+    // SAME underlying real Vikunja token as Alice (this local stack only
+    // seeds one test account) — this step is NOT re-proving Vikunja-side
+    // credential distinctness (tests/oidc/isolation.test.ts's "Credential
+    // threading" class already proves that precisely, with two distinct
+    // mocked tokens and Authorization-header assertions); it's proving that
+    // two different OIDC identities hitting the real server at the same time
+    // don't error out or bleed ALS context into each other at the ledger
+    // this script can observe: real HTTP status codes.
+    await step('(d4) a second identity, provisioned concurrently, calls tools at the same time as Alice', async () => {
+      const bobSub = `oidc-e2e-bob-${Date.now()}`;
+      const bobToken = await signTestToken(key.privateKey, {
+        kid: key.kid,
+        issuer: ISSUER,
+        audience: AUDIENCE,
+        sub: bobSub,
+      });
+
+      // Provision must complete before Bob's own tool calls can succeed —
+      // this is a real precondition (a user always links their token before
+      // using it), not an artifact of the test. Only the calls that are
+      // genuinely independent of each other run concurrently below.
+      const bobProvision = await callTool(
+        port,
+        9,
+        'vikunja_auth',
+        { subcommand: 'provision', apiToken: realApiToken },
+        bobToken,
+      );
+      if (bobProvision.statusCode !== 200 || bobProvision.isError) {
+        throw new Error(
+          `bob provision failed: HTTP ${bobProvision.statusCode}, isError=${bobProvision.isError}: ${bobProvision.text}`,
+        );
+      }
+
+      const [aliceList, bobList, aliceTemplates, bobTemplates] = await Promise.all([
+        callTool(port, 10, 'vikunja_tasks', { subcommand: 'list' }, aliceToken),
+        callTool(port, 11, 'vikunja_tasks', { subcommand: 'list' }, bobToken),
+        callTool(port, 12, 'vikunja_templates', { subcommand: 'list' }, aliceToken),
+        callTool(port, 13, 'vikunja_templates', { subcommand: 'list' }, bobToken),
+      ]);
+
+      for (const [label, result] of [
+        ['alice tasks list', aliceList],
+        ['bob tasks list', bobList],
+        ['alice templates list', aliceTemplates],
+        ['bob templates list', bobTemplates],
+      ] as const) {
+        if (result.statusCode !== 200 || result.isError) {
+          throw new Error(
+            `${label} failed under concurrent load: HTTP ${result.statusCode}, isError=${result.isError}: ${result.text}`,
+          );
+        }
+      }
+    });
+
     await step('(e) vikunja_auth deprovision unlinks the identity', async () => {
       const result = await callTool(port, 5, 'vikunja_auth', { subcommand: 'deprovision' }, aliceToken);
       if (result.statusCode !== 200 || result.isError) {

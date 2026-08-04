@@ -25,6 +25,7 @@ import { MCPError, ErrorCode } from '../../types';
 import { validateId } from '../../utils/validation';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
 import { vikunjaRestRequest, resolveBaseUrl } from '../../utils/vikunja-rest';
+import { getRequestContext } from '../../context/requestContext';
 import type { components } from '../../types/generated/vikunja-openapi';
 
 type VikunjaTaskAttachment = components['schemas']['models.TaskAttachment'];
@@ -211,7 +212,13 @@ export function downloadAttachment(
   const taskId = requireTaskId(args, 'download-attachment operation');
   const attachmentId = requireAttachmentId(args, 'download-attachment operation');
 
-  const session = authManager.getSession();
+  // Resolve the ALS-bound per-identity manager first (falling back to the
+  // closure-captured one in `stdio` mode) — the closure manager is never
+  // authenticated in `oidc-http` mode, so `.getSession()` on it directly
+  // throws for every request regardless of provisioning status, and would
+  // build downloadUrl from the wrong apiUrl if it ever were connected.
+  const effectiveAuthManager = getRequestContext()?.authManager ?? authManager;
+  const session = effectiveAuthManager.getSession();
   const baseUrl = resolveBaseUrl(session.apiUrl);
   const query = args.previewSize ? `?preview_size=${encodeURIComponent(args.previewSize)}` : '';
   const downloadUrl = `${baseUrl}/tasks/${taskId}/attachments/${attachmentId}${query}`;

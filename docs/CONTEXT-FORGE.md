@@ -226,17 +226,26 @@ one shared Vikunja instance, not any individual user. This means:
 
 ### Everything passed auth, but the tool call still fails / uses the wrong data
 
-If a tool call gets past the token check and the `AUTH_REQUIRED` prompt
-(i.e., you're authenticated, you've provisioned, and you still don't get
-correct per-user behavior) — check this project's own current known gap: as
-of the H2b wave item, most tool handlers still resolve their Vikunja
-credential from a process-global reference rather than the per-identity one
-`getAuthManagerFromContext()` resolves (see
-`docs/LOCAL-TESTING.md`'s "OIDC `oidc-http` transport e2e lane" section and
-the inline comment in `scripts/oidc-e2e.ts` step (d) for the full
-write-up). Until that's fixed, treat `oidc-http` mode as **validated at the
-authentication/authorization boundary** (threat model, provisioning, vault)
-but **not yet safe for real multi-user tool traffic** in production.
+**This is fixed as of two changes; the paragraph that used to live here was
+stale.** The wire-level credential (every real Vikunja REST call) is resolved
+centrally and correctly regardless of which manager a tool handler happens to
+pass around: `resolveEffectiveAuthManager()` in `src/utils/vikunja-rest.ts`
+prefers the ALS-bound per-identity manager whenever a request context is
+open, falling back to the process-global one only outside any request
+context (i.e. `stdio` mode) — see the inline comment on `vikunja_projects
+list` (step (d)) in `scripts/oidc-e2e.ts` for the full history. A smaller,
+separate residual gap — `getSessionStorage()` in `tasks/index.ts` and
+`templates.ts`, and `downloadAttachment()` in `tasks/attachments.ts`, read
+`authManager.getSession()` directly on the closure-captured manager instead
+of resolving through ALS, so `vikunja_tasks list`, all of
+`vikunja_templates`, and attachment downloads threw `AUTH_REQUIRED` for a
+fully provisioned identity — is fixed the same way. Both are covered by
+`tests/oidc/isolation.test.ts` ("Credential threading" and "Session-storage
+reads that bypass ALS resolution") and exercised live by `scripts/oidc-e2e.ts`
+steps (d) through (d4), including two identities calling tools concurrently
+against a real local Vikunja stack. `oidc-http` mode is now validated for
+real multi-user tool traffic, not just the authentication/authorization
+boundary.
 
 ## Security notes
 
