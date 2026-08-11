@@ -488,7 +488,10 @@ When `transport=http`, additional settings apply under the `http` config section
 | Allowed `Host` headers | `http.allowedHosts` | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` (comma list) | `<host>:<port>` — used for the SDK transport's built-in DNS-rebinding protection, which is always on in `http` mode |
 
 Two endpoints are always served unauthenticated, outside the MCP path and any
-authentication middleware: `GET /healthz` (liveness) and `GET /readyz` (readiness).
+authentication middleware: `GET /healthz` (liveness) and `GET /readyz`. Note that
+`/readyz` is currently a stub: it returns `{"status":"ok"}` unconditionally, checking
+neither JWKS reachability nor the vault file, so today it tells you nothing `/healthz`
+doesn't (see `docs/OIDC-SETUP.md` §11).
 
 **`transport=http` refuses to start without a complete OIDC + vault configuration.** The
 server must never serve unauthenticated HTTP, so `http` mode requires ALL of: the `oidc`
@@ -528,7 +531,7 @@ tokens — there is no token exchange between the two. `oidc-http` mode therefor
 | Setting | Config key | Env var | Notes |
 |---|---|---|---|
 | Vault file path (required) | `vault.path` | `VIKUNJA_MCP_VAULT_PATH` | Where the encrypted vault file lives. Not secret — just a filesystem location — but must be on a persistent volume so provisioned users survive a restart |
-| Vault master key (required, sensitive) | *(never in the config file)* | `VIKUNJA_MCP_VAULT_KEY` / `VIKUNJA_MCP_VAULT_KEY_FILE` | A base64-encoded **32-byte** AES-256-GCM key. Generate one with `openssl rand -base64 32`. Rides the `*_FILE` secrets convention below — never write it to the config file |
+| Vault master key (required, sensitive) | *(never in the config file)* | `VIKUNJA_MCP_VAULT_KEY` / `VIKUNJA_MCP_VAULT_KEY_FILE` | A **32-byte** AES-256-GCM key, encoded as either 64 hex characters (`openssl rand -hex 32`) or base64 (`openssl rand -base64 32`). Rides the `*_FILE` secrets convention below — never write it to the config file |
 
 Each vault record stores an AES-256-GCM-encrypted token (per-record random IV, verified
 authentication tag on every decrypt — a wrong key or a tampered record fails loudly
@@ -547,9 +550,9 @@ Self-service commands (all via the `vikunja_auth` tool, oidc-http mode only):
 - **`deprovision`** — removes your linked token (idempotent). Also the remedy after
   rotating/revoking a Vikunja token: `deprovision` then `provision` the new one.
 
-In `oidc-http` mode, `connect`/`disconnect` are not available (there is no single
-server-wide token to connect) — `connect` points you at `provision`, and `disconnect`
-aliases `deprovision`.
+In `oidc-http` mode there is no single server-wide token to connect: `connect` is refused
+with an error pointing you at `provision`, and `disconnect` is accepted but simply aliases
+`deprovision` (it removes the caller's own vault record).
 
 ### Hosted deployment example
 
