@@ -136,7 +136,8 @@ Every entity is a toggle you can disable in config, `vikunja_admin`/`vikunja_tok
 - [Local test stack](docs/LOCAL-TESTING.md) — disposable Vikunja+Postgres via Docker for trying this out safely
 - [Agent battle-testing harness](docs/BATTLE-TESTING.md) — spawns a real AI agent against the tool surface and grades it on correctness and ergonomics (manual, costs real money — see the doc before running)
 - [Docker Desktop MCP Toolkit how-to](docs/DOCKER-DESKTOP-MCP.md) — registering this server with `docker mcp`
-- [IBM MCP Context Forge deployment guide](docs/CONTEXT-FORGE.md) — hosted, multi-user OIDC resource-server mode behind Context Forge + Keycloak (or any OIDC provider)
+- [OIDC setup manual](docs/OIDC-SETUP.md) — installing and configuring hosted, multi-user mode: every config key, identity-provider setup, a layer-by-layer verification ladder, and operations
+- [IBM MCP Context Forge deployment guide](docs/CONTEXT-FORGE.md) — the Context-Forge-specific layer on top of the OIDC setup manual
 - [Releasing](docs/RELEASING.md) — versioning policy and the release checklist · [CHANGELOG](CHANGELOG.md)
 
 ## License
