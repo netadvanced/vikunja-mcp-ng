@@ -110,6 +110,10 @@ docker run -d --name vikunja-mcp \
   ghcr.io/netadvanced/vikunja-mcp-ng:beta
 ```
 
+With a volume mounted at `/data` as above, point the vault inside it —
+`VIKUNJA_MCP_VAULT_PATH=/data/vault.json` in the env file — or the vault lands on the
+container's ephemeral filesystem and every restart unlinks every user (§10).
+
 > **Know this before you containerise.** The image was built for stdio use and carries no
 > `EXPOSE` and no `HEALTHCHECK` — its Dockerfile still says *"this is a stdio MCP server, not
 > a network listener."* Nothing is broken by that (`EXPOSE` is metadata; `-p` works
@@ -270,7 +274,9 @@ Equivalent config file, for the non-secret half:
 ### 5.4 The `allowedHosts` trap
 
 DNS-rebinding protection is always on in HTTP mode, and it checks the **`Host` header as it
-actually arrives**, not the address you bound to. When `allowedHosts` is unset it defaults to
+actually arrives**, not the address you bound to. The comparison is an exact string match
+on the full `host:port` value — `localhost:8765` and `127.0.0.1:8765` are two different
+entries, and neither implies the other. When `allowedHosts` is unset it defaults to
 your configured `host:port`, which is right for direct loopback calls and wrong for almost
 every real topology.
 
@@ -282,8 +288,13 @@ proxy sends. Every such value must be listed:
 VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=vikunja-mcp.internal:8765,127.0.0.1:8765,host.docker.internal:8765
 ```
 
-Symptom when you get this wrong: requests rejected at the transport layer with a valid token
-and correct OIDC settings, which reads exactly like an auth failure and is not one.
+Symptom when you get this wrong: **HTTP 403** with a JSON-RPC error body saying `Invalid
+Host header`, on requests carrying a valid token and correct OIDC settings. Because the
+token check runs first, this arrives *after* successful authentication — and a 403 also
+being the scope-gate status makes it read exactly like an auth failure. Tell them apart by
+the body and headers: the host rejection has the `Invalid Host header` JSON-RPC body and no
+`WWW-Authenticate` header; the scope rejection carries
+`WWW-Authenticate: Bearer error="insufficient_scope"`.
 
 ---
 
@@ -344,13 +355,19 @@ configuration compensates for a token that lacks them.
 Start the server, then walk these four rungs **in order**. Each isolates one layer, so the
 first one that fails tells you where the problem is.
 
+One thing before you start typing: rungs 3 and 4 pass through the transport's `Host`
+allowlist (§5.4), so curl an address that is **literally listed** in your `allowedHosts` —
+the examples use `127.0.0.1:8765`, which the worked configuration in §5.3 includes.
+`localhost:8765` is a *different* string and would 403 unless you list it too. Rungs 1 and
+2 are answered before that check and don't care.
+
 ```bash
 # Rung 1 — the process is up. Unauthenticated by design; touches nothing.
-curl -s localhost:8765/healthz
+curl -s 127.0.0.1:8765/healthz
 # → {"status":"ok"}
 
 # Rung 2 — auth is actually enforced. A missing token must be refused.
-curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8765/mcp
+curl -s -o /dev/null -w '%{http_code}\n' -X POST 127.0.0.1:8765/mcp
 # → 401
 
 # Rung 3 — your provider's tokens are accepted. Anything but 401 here means
@@ -358,14 +375,14 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8765/mcp
 TOK=$(curl -s -X POST https://idp.example.com/realms/staff/protocol/openid-connect/token \
   -d 'grant_type=password&client_id=<client>&client_secret=<secret>&username=<user>&password=<pass>' \
   | jq -r .access_token)
-curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8765/mcp \
+curl -s -o /dev/null -w '%{http_code}\n' -X POST 127.0.0.1:8765/mcp \
   -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 # → 200
 
 # Rung 4 — the tool surface answers as your identity.
-curl -s -X POST localhost:8765/mcp \
+curl -s -X POST 127.0.0.1:8765/mcp \
   -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
@@ -428,9 +445,10 @@ nobody — including an operator — can provision on someone else's behalf.
 5. **Unlink** with `{ "subcommand": "deprovision" }`. Idempotent; doing it twice is not an
    error. Token rotation is deprovision-then-provision.
 
-`connect` and `disconnect` are not available in this mode — there is no single server-wide
-token to connect. Calling `provision` in stdio mode is likewise refused, with an error that
-says so.
+`connect` is refused in this mode — there is no single server-wide token to connect, and
+the error points at `provision` instead. `disconnect` is accepted but simply aliases
+`deprovision`: it removes the caller's own vault record. Calling `provision` in stdio mode
+is likewise refused, with an error that says so.
 
 **If the server runs in read-only mode, provisioning is blocked too.** `provision` and
 `deprovision` are writes and are gated with every other write.
@@ -474,6 +492,12 @@ Read these before you design around anything.
 - **The container image is not shaped for HTTP mode** — no `EXPOSE`, no `HEALTHCHECK`. See
   [§3](#option-c--container).
 - **Circuit breakers are shared across users.** See [§10](#10-operations).
+- **Rate limits are per identity only — there is no aggregate ceiling.** Nothing caps the
+  *combined* load all users place on the shared Vikunja instance; the shared circuit
+  breakers are the only collective backstop. (The design document mentions an optional
+  global ceiling; it was not built.)
+- **No master-key rotation without re-provisioning.** There is no in-place re-encryption;
+  rotating the key is a user-visible event. See [§10](#10-operations).
 - **Single issuer.** One `issuer` value is trusted per deployment. Federating several
   providers means several deployments.
 - **No admin view of the vault.** By design there is no tool to list who has provisioned, or
@@ -489,8 +513,8 @@ have completely different fixes.
 | Symptom | Layer | Cause and fix |
 |---|---|---|
 | `401 invalid_token`, before any tool runs | JWT validation | Wrong `issuer` (must match `iss` exactly), wrong `audience`, wrong JWKS URI, expired token, or a token with no `sub` claim. See §6.2 — the missing-`sub` case is the one that looks inexplicable |
-| `403` | Scope gate | Token is valid but lacks `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` |
-| Rejected despite a token you just verified by hand | Transport | `allowedHosts` does not list the `Host` header as it actually arrives. See §5.4 |
+| `403` with `WWW-Authenticate: Bearer error="insufficient_scope"` | Scope gate | Token is valid but lacks `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` |
+| `403` with an `Invalid Host header` JSON-RPC body, despite a token you just verified by hand | Transport | `allowedHosts` does not list the `Host` header as it actually arrives (exact `host:port` string match). See §5.4 |
 | `AUTH_REQUIRED` — "haven't linked a Vikunja API token" | Tool level | Expected for a first-time user: run `provision`. If the user insists they already did, check they are signing in as the *same* identity, and check the vault is on persistent storage |
 | *Many* users unprovisioned at once | Storage | The vault file was lost — ephemeral volume, or a failed restore. Not an auth problem |
 | Server exits at startup complaining about configuration | Config | HTTP mode requires all six of transport, issuer, audience, JWKS URI, vault path, vault key. See §5.1 |
