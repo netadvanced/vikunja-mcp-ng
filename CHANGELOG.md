@@ -8,7 +8,17 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 ## [Unreleased]
 
-Nothing yet.
+### Security
+
+- Refreshed the dependency tree to clear five advisories, all reached transitively through
+  `@modelcontextprotocol/sdk`: `fast-uri` 3.1.4 → 3.1.5 (host confusion via backslash authority,
+  high) and `hono` 4.12.32 → 4.13.1 (four advisories, the notable one being `memo()` retaining SSR
+  output across requests). Neither package is called by this server on the stdio path, but both ship
+  in the runtime tree, so they are worth keeping current. Dev-scope `js-yaml` moved to 4.3.1 and
+  `brace-expansion` to its patched lines. `npm audit` is clean at zero, runtime and dev alike.
+  The `fast-uri` and `js-yaml` overrides now name the patched floor rather than the older one they
+  were pinned to, so a fresh install without the lockfile cannot silently land back on a
+  vulnerable version.
 
 
 
