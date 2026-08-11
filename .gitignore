@@ -32,6 +32,12 @@ yarn-error.log*
 .env.local
 .env.*.local
 
+# Per-target e2e stack credentials (docker/e2e/.env.<version>-<db>). The `.env`
+# rule above does NOT cover these — the filenames differ — and they contain a
+# real API token for the local disposable stack. Backported from main so a
+# broad `git add` on this long-lived branch cannot sweep them in.
+docker/e2e/.env.*
+
 # Local module-gating config (see vikunja-mcp.config.example.json)
 vikunja-mcp.config.json
 
