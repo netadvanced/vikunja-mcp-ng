@@ -26,6 +26,21 @@ harness also referenced there.
   argument shapes, removed subcommands, Node version floor), it's at least a minor bump, even
   pre-1.0.** A batch that mixes patch- and minor-level changes takes the higher bump.
 
+- **Prereleases ship on their own channel, never on `latest`.** A version carrying a semver
+  prerelease suffix — `0.7.0-beta.1` — is published under the identifier in that suffix as its
+  dist-tag: `beta` on npm, `:beta` on GHCR, and marked as a pre-release on GitHub. `latest` keeps
+  pointing at the newest *stable* version on both registries, so `npm install vikunja-mcp-ng` and
+  `docker pull …:latest` are unaffected and testers opt in deliberately with
+  `npm install vikunja-mcp-ng@beta`. This matters more than it looks: npm applies `latest` to
+  whatever it is handed unless `--tag` says otherwise — **it does not infer a channel from the
+  version string** — so a prerelease published without care becomes the default install for every
+  user. The workflow derives the channel from the tag itself (§2, Step 6) precisely so that nobody
+  has to remember this at publish time.
+
+  Use a beta line when a feature is complete and tested but wants real-world exposure before it
+  becomes what everyone gets by default. Promote it with an ordinary `minor` bump once it holds:
+  `0.7.0-beta.3 → 0.7.0`.
+
 - **Releases are deliberate, batch-time acts**, never something that happens automatically on a
   merged PR. Someone decides "it's time to cut a release," picks patch or minor, and runs the flow
   in §2. Version numbers in `package.json` change in exactly one kind of PR — a release PR —
@@ -46,8 +61,8 @@ harness also referenced there.
 ## 2. Release flow
 
 ```text
-release-prepare.sh <patch|minor> → curate CHANGELOG → open release PR → merge
-  → pre-tag checklist → release:tag → tag-triggered workflow publishes
+release-prepare.sh <patch|minor|preminor|prerelease> → curate CHANGELOG → open release PR
+  → merge → pre-tag checklist → release:tag → tag-triggered workflow publishes
 ```
 
 Steps 1–3 happen on a branch and go through normal PR review. Steps 4–6 happen on `main` after
@@ -64,6 +79,20 @@ judgment call the script doesn't make for you. Then:
 ```bash
 npm run release:prepare -- patch   # or: npm run release:prepare -- minor
 ```
+
+For a beta line, use the `pre*` scopes (`--preid` defaults to `beta`):
+
+```bash
+npm run release:prepare -- preminor     # 0.6.2        → 0.7.0-beta.0   start the line
+npm run release:prepare -- prerelease   # 0.7.0-beta.0 → 0.7.0-beta.1   advance it
+npm run release:prepare -- minor        # 0.7.0-beta.3 → 0.7.0          promote to stable
+```
+
+That last transition is worth reading twice: **`minor` applied to a prerelease of `0.7.0` yields
+`0.7.0`, not `0.8.0`** — semver treats a prerelease as *before* the version it is a prerelease of,
+so promoting is a `minor` bump, not a further one. (`patch` on a beta does the same thing.) The
+script does not compute any of this itself; it asks `npm version` against a throwaway copy of
+`package.json`, so its prediction and the real bump can never disagree.
 
 `scripts/release-prepare.sh`:
 
@@ -179,19 +208,28 @@ on any `v*` tag push and, on the tagged commit:
    tagged commit; the release never publishes from an environment that hasn't re-verified green.
 2. Verifies the tag matches `package.json`'s version, then derives the compat and min-supported
    Vikunja versions from `scripts/lib/vikunja-compat-version.sh` (§3).
-3. Publishes to npm via **OIDC Trusted Publishing** — `npm publish --access public`, no npm token
-   and no repository secret involved; npmjs.com is configured to trust this exact repo + workflow
-   filename, and provenance attestation is generated automatically.
+3. Publishes to npm via **OIDC Trusted Publishing** — `npm publish --access public --tag <channel>`,
+   no npm token and no repository secret involved; npmjs.com is configured to trust this exact repo +
+   workflow filename, and provenance attestation is generated automatically.
 4. **`image` job (matrix, one runner per architecture)** — builds `linux/amd64` on `ubuntu-latest`
    and `linux/arm64` on a **native `ubuntu-24.04-arm` runner** (free for public repos), each
    pushing *by digest only*, with the OCI labels `org.opencontainers.image.version`,
    `io.vikunja.compat`, and `io.vikunja.min-supported`.
 5. **`manifest` job** — assembles the two digests into one multi-arch manifest list and applies
-   every tag to it: `:X.Y.Z`, `:latest`, `:X.Y.Z-vikunja<aligned>`, and (when the floor differs)
+   every tag to it: `:X.Y.Z`, `:<channel>`, `:X.Y.Z-vikunja<aligned>`, and (when the floor differs)
    `:X.Y.Z-vikunja<floor>` — all aliases on a single digest (§3).
 6. **`release` job** — runs `gh release create vX.Y.Z` with the `CHANGELOG.md` section as the
    notes, plus an auto-appended **Artifacts** footer (npm link and the tag→digest table), which is
-   why it can only run after the manifest exists.
+   why it can only run after the manifest exists. Prereleases additionally get `--prerelease`, so
+   they never claim the repository's "Latest" badge.
+
+**The channel is derived from the tag, in one place.** The `npm` job's first step reads the version
+out of the tag and resolves `<channel>` from it: a bare `0.7.0` gives `latest` (identical to every
+release cut before this existed), while `0.7.0-beta.1` gives `beta` and `0.7.0-rc.2` gives `rc` —
+the first dot-separated field of the semver prerelease suffix. That single value then drives the npm
+dist-tag, the moving GHCR tag, and whether the GitHub release is flagged as a pre-release, so those
+three can never disagree with each other. Tagging is the only decision; there is no separate "is
+this a beta?" switch to forget.
 
 **Every publishing step is idempotent, and the workflow has a manual re-run entry point.** `npm
 publish` is skipped when the version is already on the registry, image tags are overwritten with
