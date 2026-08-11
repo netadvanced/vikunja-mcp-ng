@@ -80,6 +80,7 @@ rules — env always wins over the config file):
 | Bind host | `VIKUNJA_MCP_HTTP_HOST` | `127.0.0.1` if Context Forge is co-located (default, recommended); `0.0.0.0` only with `allowedHosts` + network policy for a cross-host gateway |
 | Bind port | `VIKUNJA_MCP_HTTP_PORT` | `8765` (default) |
 | Request path | `VIKUNJA_MCP_HTTP_PATH` | `/mcp` (default) — this is the path you register as the gateway's upstream URL |
+| Allowed `Host` headers | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` | Comma-separated, exact `host:port` strings; defaults to the bind `host:port` only. Must list the `Host` header **as Context Forge's requests actually carry it** — a gateway running in a container and reaching this server on the host arrives as e.g. `host.docker.internal:8765`, which is not covered by the default. A mismatch is a `403 Invalid Host header` on otherwise-valid requests; see [`OIDC-SETUP.md`](OIDC-SETUP.md) §5.4 |
 | Trusted issuer | `VIKUNJA_MCP_OIDC_ISSUER` | Your realm's issuer, e.g. `https://keycloak.example.com/realms/your-realm` — must match the token's `iss` claim **exactly** (string compare, no prefix matching) |
 | Expected audience | `VIKUNJA_MCP_OIDC_AUDIENCE` | The client-id (or custom audience/scope) Context Forge's own Keycloak client is issued tokens for — comma-separated if more than one is valid |
 | JWKS endpoint | `VIKUNJA_MCP_OIDC_JWKS_URI` | e.g. `https://keycloak.example.com/realms/your-realm/protocol/openid-connect/certs` |
@@ -241,6 +242,12 @@ match your Keycloak realm/client, and that Context Forge's registered
 gateway is actually sending a live, unexpired token. A `401` at this layer
 never reaches this server's tool code at all — the request is rejected
 before `tools/call` is even dispatched.
+
+One near-lookalike that is *not* this layer: a `403` whose body says
+`Invalid Host header`. That is the transport's DNS-rebinding allowlist
+rejecting the `Host` header the gateway sends — the token was actually
+valid. Add the arriving `host:port` to `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS`
+(see the configuration table above).
 
 ### `AUTH_REQUIRED` — "haven't linked a Vikunja API token yet" (tool-level)
 
