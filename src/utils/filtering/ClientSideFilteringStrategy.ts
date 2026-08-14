@@ -138,7 +138,10 @@ export class ClientSideFilteringStrategy implements TaskFilteringStrategy {
       // applyFilter (evaluators.ts) and this strategy both type tasks as the
       // generated `models.Task`; the cast here bridges the two nominally-
       // distinct aliases at this boundary.
-      filteredTasks = applyFilter(safeTasks, filterExpression);
+      filteredTasks = applyFilter(
+        safeTasks,
+        filterExpression,
+      );
       logger.debug('Applied client-side filter', {
         originalCount,
         filteredCount: filteredTasks?.length || 0,

@@ -350,7 +350,7 @@ describe('retry utility', () => {
     // the second caller silently re-ran the FIRST caller's operation and got
     // its result back. The state-sharing test above never caught it because
     // it only counted successes, never checked whose code ran.
-    it("runs the caller's own operation when several share one breaker name", async () => {
+    it('runs the caller\'s own operation when several share one breaker name', async () => {
       const name = `test-named-retry-${Math.random()}`;
       const first = jest.fn(async () => 'first-result');
       const second = jest.fn(async () => 'second-result');

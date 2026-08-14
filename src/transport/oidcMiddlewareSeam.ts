@@ -38,7 +38,7 @@ export type HttpRequestWithAuth = IncomingMessage & { auth?: AuthInfo };
  */
 export type OidcAuthMiddleware = (
   req: HttpRequestWithAuth,
-  res: ServerResponse,
+  res: ServerResponse
 ) => Promise<boolean>;
 
 let registeredMiddleware: OidcAuthMiddleware | undefined;

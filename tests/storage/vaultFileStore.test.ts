@@ -244,11 +244,7 @@ describe('loadVaultFile / writeVaultFileAtomic', () => {
       const newMap = new Map([
         [
           'issuer|user',
-          {
-            ...originalRecord,
-            ciphertext: 'new-ciphertext',
-            updatedAt: '2026-02-01T00:00:00.000Z',
-          },
+          { ...originalRecord, ciphertext: 'new-ciphertext', updatedAt: '2026-02-01T00:00:00.000Z' },
         ],
       ]);
       expect(() => writeVaultFileAtomic(filePath, newMap)).toThrow('simulated disk full');
@@ -278,9 +274,7 @@ describe('loadVaultFile / writeVaultFileAtomic', () => {
       throw new Error('simulated rename failure');
     });
     try {
-      const newMap = new Map([
-        ['issuer|user', { ...originalRecord, ciphertext: 'new-ciphertext' }],
-      ]);
+      const newMap = new Map([['issuer|user', { ...originalRecord, ciphertext: 'new-ciphertext' }]]);
       expect(() => writeVaultFileAtomic(filePath, newMap)).toThrow('simulated rename failure');
     } finally {
       renameSpy.mockRestore();
@@ -419,7 +413,7 @@ describe('VaultFileStore', () => {
       expect(await store.deprovision(IDENTITY_A)).toBe(false);
     });
 
-    it("does not affect another identity's record", async () => {
+    it('does not affect another identity\'s record', async () => {
       const store = new VaultFileStore(filePath, KEY);
       await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_a');
       await store.provision(IDENTITY_B, 'https://vikunja.example.com', 'tk_b');

@@ -12,50 +12,77 @@
  *  1. `vikunja_auth provision` (no token) calls {@link createEnrollmentUrl}:
  *     a single-use, TTL-bound ticket is minted for the caller's validated
  *     identity ({@link EnrollmentTicketStore}) and embedded in
- *     `GET /enroll?ticket=...`.
+ *     `GET <base>/enroll?ticket=...`.
  *  2. `GET /enroll` validates the ticket, discovers the Vikunja OpenID
  *     provider from Vikunja's unauthenticated `GET /info`
  *     (`auth.openid_connect.providers[]`: `key`, `auth_url` — the IdP's
  *     authorization endpoint — `client_id`, `scope`), and 302-redirects the
  *     browser to the IdP with Vikunja's OWN `client_id` (the ID token's
  *     audience is verified against it upstream), `redirect_uri =
- *     <publicOrigin>/enroll/callback`, and `state = <ticket>`.
- *  3. `GET /enroll/callback?code&state` consumes the ticket (single-use,
- *     CSRF-safe — the identity comes ONLY from the server-side ticket
- *     record, never from the browser), POSTs the code to Vikunja's native
+ *     <base>/enroll/callback`, and `state = <ticket>`.
+ *  3. `GET /enroll/callback?code&state` validates the ticket bound to
+ *     `state`, POSTs the code to Vikunja's native
  *     `POST /auth/openid/{key}/callback` with `{code, redirect_url, scope}`
  *     — Vikunja replays that `redirect_url` string verbatim as the OAuth
  *     `redirect_uri` in its own token exchange, so it must be byte-identical
- *     to step 2's — receives the user's (10-minute, 2.x) Vikunja JWT,
+ *     to step 2's — and receives the enrolled user's (10-minute, 2.x)
+ *     Vikunja JWT. Only a SUCCESSFUL exchange consumes the ticket (single
+ *     use); a transient upstream failure leaves the link redeemable
+ *     (finding #4). The service then **pins the enrolled account to the
+ *     initiating identity** (finding #1): `GET /user` with the fresh JWT
+ *     must report the SAME person as the ticket's identity claims
+ *     (email, else preferred_username; fail closed when unverifiable) —
+ *     otherwise a forwarded enrollment link would vault the *browser
+ *     user's* token under the *link creator's* identity. On a match it
  *     enumerates `GET /routes`, mints a `tk_*` token via `PUT /tokens`
- *     (JWT-only upstream), vaults it under the identity, discards the JWT,
- *     and renders a minimal "connected" page.
+ *     (JWT-only upstream; mint is non-retried to avoid double-minting),
+ *     vaults it under the identity, discards the JWT, and renders a minimal
+ *     "connected" page.
  *
  * Both endpoints are unauthenticated at the HTTP layer by necessity (a
  * browser holds no MCP bearer token); the ticket IS the authentication.
  * Failure pages are generic — logged detail stays server-side, and neither
  * the JWT nor the minted token ever appears in a response body.
+ *
+ * All Vikunja traffic goes through {@link vikunjaRestRequest} (finding #8):
+ * the same retry/circuit-breaker path as every tool call, with throwaway
+ * per-flow `AuthManager`s and `ignoreRequestContext` (the out-of-session
+ * pattern `vikunja_auth provision`'s verify probe established).
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { AuthManager } from '../auth/AuthManager';
 import type { Identity } from '../context/requestContext';
 import { EnrollmentTicketStore } from './enrollmentTickets';
-import { resolveResourceUrl } from './resourceMetadata';
 import { getActiveVaultStore } from '../storage/vaultFileStore';
 import { ConfigurationError, type EnrollConfig, type HttpConfig } from '../config/types';
+import { vikunjaRestRequest, type VikunjaRestRequestOptions } from '../utils/vikunja-rest';
 import { logger } from '../utils/logger';
-
-/** Browser-facing paths served by {@link EnrollmentService.handleRequest}. */
-export const ENROLL_PATH = '/enroll';
-export const ENROLL_CALLBACK_PATH = '/enroll/callback';
 
 /** Default OIDC scope when the provider config leaves it empty (Vikunja's own default). */
 const DEFAULT_SCOPE = 'openid profile email';
+
+/**
+ * Placeholder credential for the unauthenticated Vikunja calls (`GET /info`,
+ * the openid callback) — both are public routes that ignore the
+ * Authorization header, but `vikunjaRestRequest` requires a connected
+ * session to run.
+ */
+const ANONYMOUS_TOKEN = 'enrollment-unauthenticated';
 
 /** The vault surface enrollment needs — `VaultFileStore.provision`'s shape. */
 export interface EnrollmentVault {
   provision(identity: Identity, vikunjaUrl: string, apiToken: string): Promise<void>;
 }
+
+/** `vikunjaRestRequest`'s shape — injectable so unit tests script the wire. */
+export type EnrollmentRestRequest = (
+  authManager: AuthManager,
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  path: string,
+  body?: unknown,
+  options?: VikunjaRestRequestOptions,
+) => Promise<unknown>;
 
 export interface EnrollmentServiceDeps {
   tickets: EnrollmentTicketStore;
@@ -63,18 +90,20 @@ export interface EnrollmentServiceDeps {
   /** Vikunja API base URL (`.../api/v1`) the flow talks to. */
   vikunjaUrl: string;
   /**
-   * Canonical public origin of THIS server (e.g. `https://mcp.example.ch`).
-   * Both the enrollment URL and the OAuth `redirect_uri` are built from it —
-   * one fixed value, so the authorize hop and the Vikunja callback replay
-   * are byte-identical by construction.
+   * Canonical public base URL of THIS server (origin + optional path
+   * prefix, no trailing slash — e.g. `https://mcp.example.ch` or
+   * `https://gw.example.ch/vikunja-mcp`), derived from the REQUIRED
+   * `http.publicUrl` (finding #2). Both the enrollment URL and the OAuth
+   * `redirect_uri` are built from this one fixed value, so the authorize
+   * hop and the Vikunja callback replay are byte-identical by construction.
    */
-  publicOrigin: string;
+  publicBaseUrl: string;
   /** Vikunja OpenID provider `key`/`name` to use; optional when the backend has exactly one. */
   providerName?: string | undefined;
   /** Expiry of the auto-minted `tk_*` token, in days. */
   tokenExpiryDays: number;
-  /** Injectable for tests; defaults to global `fetch`. */
-  fetchImpl?: typeof fetch;
+  /** Injectable for tests; defaults to the real {@link vikunjaRestRequest}. */
+  restRequest?: EnrollmentRestRequest;
 }
 
 /** One provider entry from Vikunja `GET /info` (`auth.openid_connect.providers[]`). */
@@ -86,6 +115,13 @@ interface VikunjaOpenIdProvider {
   scope?: string;
 }
 
+/** A provider entry that passed {@link isUsableProvider} — all wire-critical fields present. */
+interface UsableProvider extends VikunjaOpenIdProvider {
+  key: string;
+  auth_url: string;
+  client_id: string;
+}
+
 interface VikunjaInfoAuth {
   auth?: {
     openid_connect?: {
@@ -93,6 +129,12 @@ interface VikunjaInfoAuth {
       providers?: VikunjaOpenIdProvider[] | null;
     };
   };
+}
+
+/** `GET /user` — the identity surface Vikunja's API exposes (issuer/subject stay DB-internal). */
+interface VikunjaUserResponse {
+  username?: string;
+  email?: string;
 }
 
 /**
@@ -135,9 +177,6 @@ function renderPage(title: string, message: string): string {
 }
 
 function sendHtml(res: ServerResponse, statusCode: number, html: string): void {
-  if (res.headersSent) {
-    return;
-  }
   res.writeHead(statusCode, {
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': String(Buffer.byteLength(html)),
@@ -146,29 +185,63 @@ function sendHtml(res: ServerResponse, statusCode: number, html: string): void {
   res.end(html);
 }
 
+function isUsableProvider(p: VikunjaOpenIdProvider): p is UsableProvider {
+  return (
+    typeof p.auth_url === 'string' &&
+    p.auth_url.length > 0 &&
+    typeof p.key === 'string' &&
+    p.key.length > 0 &&
+    typeof p.client_id === 'string' &&
+    p.client_id.length > 0
+  );
+}
+
 export class EnrollmentService {
-  private readonly fetchImpl: typeof fetch;
+  private readonly restRequest: EnrollmentRestRequest;
+  /** Path prefix of {@link EnrollmentServiceDeps.publicBaseUrl} ('' when none). */
+  private readonly basePath: string;
 
   constructor(private readonly deps: EnrollmentServiceDeps) {
-    this.fetchImpl = deps.fetchImpl ?? fetch;
+    this.restRequest = deps.restRequest ?? (vikunjaRestRequest as EnrollmentRestRequest);
+    this.basePath = new URL(deps.publicBaseUrl).pathname.replace(/\/+$/, '');
+  }
+
+  /** The Vikunja API base this flow enrolls against (surfaced by `vikunja_auth provision`, finding #3). */
+  get vikunjaUrl(): string {
+    return this.deps.vikunjaUrl;
   }
 
   /** The URL `vikunja_auth provision` hands an unprovisioned identity. */
   createEnrollmentUrl(identity: Identity): string {
     const ticket = this.deps.tickets.issue(identity);
-    const url = new URL(ENROLL_PATH, this.deps.publicOrigin);
+    const url = new URL(`${this.deps.publicBaseUrl}/enroll`);
     url.searchParams.set('ticket', ticket);
     return url.toString();
   }
 
   /**
-   * Serve `GET /enroll` / `GET /enroll/callback`. Returns `false` (writing
-   * nothing) for any other path so the transport's routing falls through.
+   * Serve `GET <base>/enroll` / `GET <base>/enroll/callback`. Returns `false`
+   * (writing nothing) for any other path — including malformed or
+   * non-origin-form request targets (finding #6: those must fall through to
+   * the transport's plain 404, never become a 500 + error-log line).
    */
   async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-    const rawUrl = req.url ?? '/';
-    const url = new URL(rawUrl, this.deps.publicOrigin);
-    if (url.pathname !== ENROLL_PATH && url.pathname !== ENROLL_CALLBACK_PATH) {
+    const rawUrl = req.url ?? '';
+    // Only origin-form targets ('/path?query') are enrollment candidates;
+    // absolute-form ('http://...'), protocol-relative ('//...') and
+    // asterisk-form targets are not ours to answer.
+    if (!rawUrl.startsWith('/') || rawUrl.startsWith('//')) {
+      return false;
+    }
+    let url: URL;
+    try {
+      url = new URL(rawUrl, this.deps.publicBaseUrl);
+    } catch {
+      return false;
+    }
+    const isEnroll = url.pathname === `${this.basePath}/enroll`;
+    const isCallback = url.pathname === `${this.basePath}/enroll/callback`;
+    if (!isEnroll && !isCallback) {
       return false;
     }
     if (req.method !== 'GET') {
@@ -176,7 +249,7 @@ export class EnrollmentService {
       return true;
     }
     try {
-      if (url.pathname === ENROLL_PATH) {
+      if (isEnroll) {
         await this.handleEnrollStart(url, res);
       } else {
         await this.handleEnrollCallback(url, res);
@@ -212,9 +285,9 @@ export class EnrollmentService {
     }
 
     const provider = await this.discoverProvider();
-    const authorize = new URL(provider.auth_url as string);
+    const authorize = new URL(provider.auth_url);
     authorize.searchParams.set('response_type', 'code');
-    authorize.searchParams.set('client_id', provider.client_id ?? '');
+    authorize.searchParams.set('client_id', provider.client_id);
     authorize.searchParams.set('redirect_uri', this.redirectUri());
     authorize.searchParams.set('scope', this.scopeOf(provider));
     authorize.searchParams.set('state', ticket);
@@ -238,9 +311,11 @@ export class EnrollmentService {
       throw new EnrollmentFlowError(400, 'Missing code or state on the enrollment callback.');
     }
 
-    // Single-use redemption; the identity comes ONLY from the server-side
-    // ticket record (never from the browser request) — D7's identity rule.
-    const identity = this.deps.tickets.consume(state);
+    // Peek — do NOT consume yet (finding #4): a transient failure in the
+    // upstream hops below must leave the link redeemable, not force the user
+    // back to their chat for a fresh one. The identity comes ONLY from the
+    // server-side ticket record (never from the browser request) — D7.
+    const identity = this.deps.tickets.peek(state);
     if (identity === null) {
       throw new EnrollmentFlowError(
         400,
@@ -255,6 +330,24 @@ export class EnrollmentService {
     // itself (its own client credentials, and the redirect_url below replayed
     // verbatim as redirect_uri), auto-creating the account on first login.
     const jwt = await this.exchangeCodeForJwt(provider, code);
+
+    // The exchange succeeded — the code is spent at the IdP, so NOW the
+    // ticket is consumed (single-use; a concurrent redemption of the same
+    // state loses this race and gets the invalid-link error).
+    if (this.deps.tickets.consume(state) === null) {
+      throw new EnrollmentFlowError(
+        400,
+        'This enrollment link was already used. Return to your chat and run ' +
+          'vikunja_auth provision again.',
+      );
+    }
+
+    // Finding #1 — pin the enrolled Vikunja account to the initiating
+    // identity before anything is minted or stored. Without this, a
+    // forwarded enrollment link would vault the BROWSER user's token under
+    // the LINK CREATOR's identity (cross-account capture in either
+    // direction).
+    await this.verifyEnrolledAccount(jwt, identity);
 
     // The 2.x callback JWT lives ~10 minutes — mint immediately, then drop it.
     const apiToken = await this.mintApiToken(jwt);
@@ -285,9 +378,9 @@ export class EnrollmentService {
     );
   }
 
-  /** `<publicOrigin>/enroll/callback` — the one string used on BOTH hops. */
+  /** `<publicBaseUrl>/enroll/callback` — the one string used on BOTH hops. */
   private redirectUri(): string {
-    return new URL(ENROLL_CALLBACK_PATH, this.deps.publicOrigin).toString();
+    return `${this.deps.publicBaseUrl}/enroll/callback`;
   }
 
   private scopeOf(provider: VikunjaOpenIdProvider): string {
@@ -296,19 +389,27 @@ export class EnrollmentService {
       : DEFAULT_SCOPE;
   }
 
+  /** A throwaway per-call session manager (the out-of-session pattern — see module doc). */
+  private manager(token: string): AuthManager {
+    const authManager = new AuthManager();
+    authManager.connect(this.deps.vikunjaUrl, token, 'jwt');
+    return authManager;
+  }
+
   /**
    * Discover the enrollment provider from Vikunja's unauthenticated
    * `GET /info`. Every failure mode maps to a clean, generic 502 — the
    * backend's OpenID configuration is an operator concern, not the user's.
+   * Providers missing any wire-critical field (`auth_url`, `key`,
+   * `client_id`) are treated as unusable rather than silently defaulted
+   * (finding #12).
    */
-  private async discoverProvider(): Promise<VikunjaOpenIdProvider> {
+  private async discoverProvider(): Promise<UsableProvider> {
     let info: VikunjaInfoAuth;
     try {
-      const res = await this.fetchImpl(`${this.deps.vikunjaUrl}/info`);
-      if (!res.ok) {
-        throw new Error(`GET /info responded ${res.status}`);
-      }
-      info = (await res.json()) as VikunjaInfoAuth;
+      info = (await this.restRequest(this.manager(ANONYMOUS_TOKEN), 'GET', '/info', undefined, {
+        ignoreRequestContext: true,
+      })) as VikunjaInfoAuth;
     } catch (error) {
       logger.error('Enrollment: could not reach Vikunja /info', {
         error: error instanceof Error ? error.message : String(error),
@@ -319,26 +420,24 @@ export class EnrollmentService {
       );
     }
 
-    const openid = info.auth?.openid_connect;
-    const providers = (openid?.providers ?? []).filter(
-      (p) => typeof p.auth_url === 'string' && p.auth_url.length > 0,
-    );
+    const openid = info?.auth?.openid_connect;
+    const providers = (openid?.providers ?? []).filter(isUsableProvider);
     if (openid?.enabled !== true || providers.length === 0) {
       throw new EnrollmentFlowError(
         502,
-        'The Vikunja server has no OpenID login provider configured, so one-click ' +
-          'enrollment is unavailable. Link a token manually with vikunja_auth ' +
-          'provision instead (see the setup docs).',
+        'The Vikunja server has no usable OpenID login provider configured, so ' +
+          'one-click enrollment is unavailable. Link a token manually with ' +
+          'vikunja_auth provision instead (see the setup docs).',
       );
     }
 
     const wanted = this.deps.providerName;
     if (wanted !== undefined) {
-      const match = providers.find((p) => p.key === wanted || p.name === wanted);
+      const match = providers.find(p => p.key === wanted || p.name === wanted);
       if (!match) {
         logger.error('Enrollment: configured provider not present on the backend', {
           wanted,
-          available: providers.map((p) => p.key),
+          available: providers.map(p => p.key),
         });
         throw new EnrollmentFlowError(
           502,
@@ -349,7 +448,7 @@ export class EnrollmentService {
     }
     if (providers.length > 1) {
       logger.error('Enrollment: several OpenID providers but none configured', {
-        available: providers.map((p) => p.key),
+        available: providers.map(p => p.key),
       });
       throw new EnrollmentFlowError(
         502,
@@ -357,48 +456,34 @@ export class EnrollmentService {
           'VIKUNJA_MCP_ENROLL_PROVIDER to choose one.',
       );
     }
-    return providers[0] as VikunjaOpenIdProvider;
+    return providers[0] as UsableProvider;
   }
 
-  /** `POST /auth/openid/{key}/callback` -> the user's Vikunja JWT. */
-  private async exchangeCodeForJwt(provider: VikunjaOpenIdProvider, code: string): Promise<string> {
-    const key = provider.key ?? '';
-    let response: Response;
+  /** `POST /auth/openid/{key}/callback` -> the enrolled user's Vikunja JWT. */
+  private async exchangeCodeForJwt(provider: UsableProvider, code: string): Promise<string> {
+    let body: { token?: unknown };
     try {
-      response = await this.fetchImpl(
-        `${this.deps.vikunjaUrl}/auth/openid/${encodeURIComponent(key)}/callback`,
+      body = (await this.restRequest(
+        this.manager(ANONYMOUS_TOKEN),
+        'POST',
+        `/auth/openid/${encodeURIComponent(provider.key)}/callback`,
         {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            code,
-            redirect_url: this.redirectUri(),
-            scope: this.scopeOf(provider),
-          }),
+          code,
+          redirect_url: this.redirectUri(),
+          scope: this.scopeOf(provider),
         },
-      );
+        { ignoreRequestContext: true },
+      )) as { token?: unknown };
     } catch (error) {
-      logger.error('Enrollment: Vikunja openid callback unreachable', {
+      logger.error('Enrollment: Vikunja rejected (or could not complete) the openid callback', {
         error: error instanceof Error ? error.message : String(error),
-      });
-      throw new EnrollmentFlowError(
-        502,
-        'The Vikunja server could not be reached to complete the login.',
-      );
-    }
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      logger.error('Enrollment: Vikunja rejected the openid callback', {
-        status: response.status,
-        detail: detail.slice(0, 500),
       });
       throw new EnrollmentFlowError(
         502,
         'Vikunja did not accept the login. Please return to your chat and try again.',
       );
     }
-    const body = (await response.json().catch(() => ({}))) as { token?: unknown };
-    if (typeof body.token !== 'string' || body.token.length === 0) {
+    if (typeof body?.token !== 'string' || body.token.length === 0) {
       logger.error('Enrollment: Vikunja openid callback returned no token');
       throw new EnrollmentFlowError(502, 'Vikunja did not return a login token.');
     }
@@ -406,69 +491,131 @@ export class EnrollmentService {
   }
 
   /**
+   * Finding #1: require that the account Vikunja just authenticated
+   * (`GET /user` under the fresh JWT) belongs to the identity that initiated
+   * the enrollment. The API's only identity surface is username/email
+   * (Vikunja's `issuer`/`subject` columns are not exposed), and under the
+   * documented same-IdP precondition Vikunja's openid users get
+   * `username = preferred_username` and `email = email` from the SAME
+   * claims the MCP bearer token carries — so the match is: `email` claim
+   * (case-insensitive) first, `preferred_username` vs username as the
+   * fallback, and FAIL CLOSED when the MCP token carries neither.
+   */
+  private async verifyEnrolledAccount(jwt: string, identity: Identity): Promise<void> {
+    let enrolled: VikunjaUserResponse;
+    try {
+      enrolled = (await this.restRequest(this.manager(jwt), 'GET', '/user', undefined, {
+        ignoreRequestContext: true,
+      })) as VikunjaUserResponse;
+    } catch (error) {
+      logger.error('Enrollment: could not fetch the enrolled account for identity pinning', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new EnrollmentFlowError(
+        502,
+        'Vikunja could not confirm which account was logged in. Please try again.',
+      );
+    }
+
+    const wantEmail = identity.email?.trim().toLowerCase();
+    const wantUsername = identity.preferredUsername;
+    if (wantEmail === undefined && wantUsername === undefined) {
+      logger.error(
+        'Enrollment: MCP access token carries neither email nor preferred_username — ' +
+          'cannot pin the enrolled account to the caller; failing closed',
+        { sub: identity.sub },
+      );
+      throw new EnrollmentFlowError(
+        403,
+        'Your login token does not carry the claims needed to verify the enrolled ' +
+          'account belongs to you (email or preferred_username). Ask the operator to ' +
+          'add those claims, or link a token manually with vikunja_auth provision.',
+      );
+    }
+
+    const emailMatches =
+      wantEmail !== undefined &&
+      typeof enrolled?.email === 'string' &&
+      enrolled.email.trim().toLowerCase() === wantEmail;
+    const usernameMatches =
+      wantUsername !== undefined &&
+      typeof enrolled?.username === 'string' &&
+      enrolled.username === wantUsername;
+
+    if (!emailMatches && !usernameMatches) {
+      logger.error(
+        'Enrollment: the account Vikunja authenticated does not match the identity ' +
+          'that requested this enrollment link — refusing to link (forwarded-link protection)',
+        { sub: identity.sub, enrolledUsername: enrolled?.username },
+      );
+      throw new EnrollmentFlowError(
+        403,
+        'The signed-in account does not match the person this enrollment link was ' +
+          'issued to — it looks like the link was opened by another account. Nothing ' +
+          'was linked. Return to your chat and run vikunja_auth provision yourself.',
+      );
+    }
+  }
+
+  /**
    * Enumerate `GET /routes` and mint a full-permission `tk_*` token via
    * `PUT /tokens` (both JWT-authenticated; `PUT /tokens` is JWT-only
    * upstream). Vikunja has no wildcard permission — "everything" is the
    * complete routes map, exactly how the e2e bootstrap mints its token.
+   * Malformed route groups (null/primitive values) are skipped (finding #5),
+   * and an unusable map fails loudly rather than minting a zero-permission
+   * token.
    */
   private async mintApiToken(jwt: string): Promise<string> {
-    const authHeaders = { Authorization: `Bearer ${jwt}` };
+    const jwtManager = this.manager(jwt);
 
-    let routesResponse: Response;
+    let routes: Record<string, unknown>;
     try {
-      routesResponse = await this.fetchImpl(`${this.deps.vikunjaUrl}/routes`, {
-        headers: authHeaders,
-      });
+      routes = (await this.restRequest(jwtManager, 'GET', '/routes', undefined, {
+        ignoreRequestContext: true,
+      })) as Record<string, unknown>;
     } catch (error) {
-      logger.error('Enrollment: GET /routes unreachable', {
+      logger.error('Enrollment: GET /routes failed', {
         error: error instanceof Error ? error.message : String(error),
       });
-      throw new EnrollmentFlowError(502, 'Vikunja could not be reached to create your token.');
-    }
-    if (!routesResponse.ok) {
-      logger.error('Enrollment: GET /routes failed', { status: routesResponse.status });
       throw new EnrollmentFlowError(502, 'Vikunja refused to enumerate token permissions.');
     }
-    const routes = (await routesResponse.json().catch(() => ({}))) as Record<
-      string,
-      Record<string, unknown>
-    >;
     const permissions: Record<string, string[]> = {};
-    for (const [group, verbs] of Object.entries(routes)) {
-      permissions[group] = Object.keys(verbs);
+    for (const [group, verbs] of Object.entries(routes ?? {})) {
+      if (typeof verbs === 'object' && verbs !== null && !Array.isArray(verbs)) {
+        permissions[group] = Object.keys(verbs);
+      }
+    }
+    if (Object.keys(permissions).length === 0) {
+      logger.error('Enrollment: GET /routes yielded no usable permission groups');
+      throw new EnrollmentFlowError(502, 'Vikunja returned no usable token permissions.');
     }
 
     const expiresAt = new Date(
       Date.now() + this.deps.tokenExpiryDays * 24 * 3600 * 1000,
     ).toISOString();
-    let mintResponse: Response;
+    let minted: { token?: unknown };
     try {
-      mintResponse = await this.fetchImpl(`${this.deps.vikunjaUrl}/tokens`, {
-        method: 'PUT',
-        headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      minted = (await this.restRequest(
+        jwtManager,
+        'PUT',
+        '/tokens',
+        {
           title: `vikunja-mcp enrollment ${new Date().toISOString().slice(0, 10)}`,
           permissions,
           expires_at: expiresAt,
-        }),
-      });
+        },
+        // No retries on the mint itself: a retried ambiguous failure could
+        // create a second (orphaned) full-permission token.
+        { ignoreRequestContext: true, retry: { maxRetries: 0 } },
+      )) as { token?: unknown };
     } catch (error) {
-      logger.error('Enrollment: PUT /tokens unreachable', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw new EnrollmentFlowError(502, 'Vikunja could not be reached to create your token.');
-    }
-    // The OpenAPI spec documents 200; the real server responds 201. Accept both.
-    if (mintResponse.status !== 200 && mintResponse.status !== 201) {
-      const detail = await mintResponse.text().catch(() => '');
       logger.error('Enrollment: PUT /tokens failed', {
-        status: mintResponse.status,
-        detail: detail.slice(0, 500),
+        error: error instanceof Error ? error.message : String(error),
       });
       throw new EnrollmentFlowError(502, 'Vikunja refused to create an API token.');
     }
-    const minted = (await mintResponse.json().catch(() => ({}))) as { token?: unknown };
-    if (typeof minted.token !== 'string' || minted.token.length === 0) {
+    if (typeof minted?.token !== 'string' || minted.token.length === 0) {
       logger.error('Enrollment: PUT /tokens returned no token value');
       throw new EnrollmentFlowError(502, 'Vikunja did not return the created token.');
     }
@@ -500,14 +647,15 @@ export function getActiveEnrollmentService(): EnrollmentService | undefined {
  * (which registers the active vault store this feature writes through). A
  * no-op when `enroll.enabled` is false; fails loud (`ConfigurationError`,
  * matching the §2 "any missing → hard startup error" posture) when enabled
- * without a vault or without a resolvable Vikunja URL — a deployment that
- * advertises one-click enrollment but cannot complete it must not start.
+ * without a vault, without a resolvable Vikunja URL, or — finding #2 —
+ * without `http.publicUrl`: enrollment URLs and the OAuth `redirect_uri`
+ * must be the deployment's real public address (an IdP-whitelisted,
+ * browser-reachable URL), never a derived bind address.
  *
- * The public origin for enrollment URLs and the OAuth `redirect_uri` is
- * resolved ONCE here from `http.publicUrl` (recommended behind a gateway)
- * or the bind address — a single fixed value keeps the authorize hop's
- * `redirect_uri` and the Vikunja callback's `redirect_url` byte-identical
- * by construction (Vikunja replays the latter in its IdP token exchange).
+ * The public base preserves any path prefix on `publicUrl`: only the
+ * trailing MCP path segment (`http.path`) is stripped, so
+ * `https://gw.example/vikunja-mcp/mcp` serves enrollment at
+ * `https://gw.example/vikunja-mcp/enroll`.
  */
 export function setupEnrollment(
   enroll: EnrollConfig,
@@ -534,18 +682,34 @@ export function setupEnrollment(
         'or the shared VIKUNJA_URL.',
     );
   }
-  const publicOrigin = new URL(resolveResourceUrl(http)).origin;
+  if (!http.publicUrl) {
+    throw new ConfigurationError(
+      'http.publicUrl',
+      'SSO enrollment requires the canonical public MCP URL. Set ' +
+        'VIKUNJA_MCP_HTTP_PUBLIC_URL (http.publicUrl) — enrollment links and the OAuth ' +
+        'redirect_uri are built from it and must be browser-reachable and ' +
+        'IdP-whitelisted, which a bind address never is.',
+    );
+  }
+  const parsed = new URL(http.publicUrl);
+  let basePath = parsed.pathname;
+  if (basePath.endsWith(http.path)) {
+    basePath = basePath.slice(0, basePath.length - http.path.length);
+  }
+  basePath = basePath.replace(/\/+$/, '');
+  const publicBaseUrl = `${parsed.origin}${basePath}`;
+
   const service = new EnrollmentService({
     tickets: new EnrollmentTicketStore(enroll.ticketTtlSec * 1000),
     vault,
     vikunjaUrl,
-    publicOrigin,
+    publicBaseUrl,
     providerName: enroll.provider,
     tokenExpiryDays: enroll.tokenExpiryDays,
   });
   setActiveEnrollmentService(service);
   logger.info('SSO enrollment enabled (one-click auto-provisioning)', {
-    publicOrigin,
+    publicBaseUrl,
     provider: enroll.provider ?? '(auto)',
   });
 }

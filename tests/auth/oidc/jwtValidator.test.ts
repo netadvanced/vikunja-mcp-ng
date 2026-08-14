@@ -111,6 +111,36 @@ describe('createOidcJwtValidator', () => {
       expect(identity).not.toHaveProperty('preferredUsername');
     });
 
+    it('extracts email when present (used by SSO-enrollment account matching, issue #220)', async () => {
+      const validator = createOidcJwtValidator(baseConfig, deps);
+      const token = await signTestToken(key.privateKey, {
+        kid: key.kid,
+        sub: 'user-abc',
+        extraClaims: { email: 'alice@example.test' },
+      });
+
+      const identity = await validator.validate(`Bearer ${token}`);
+
+      expect(identity).toEqual({ issuer: ISSUER, sub: 'user-abc', email: 'alice@example.test' });
+    });
+
+    it('omits email when absent and ignores a non-string email claim', async () => {
+      const validator = createOidcJwtValidator(baseConfig, deps);
+      const absent = await validator.validate(
+        `Bearer ${await signTestToken(key.privateKey, { kid: key.kid, sub: 'user-abc' })}`,
+      );
+      expect(absent).not.toHaveProperty('email');
+
+      const nonString = await validator.validate(
+        `Bearer ${await signTestToken(key.privateKey, {
+          kid: key.kid,
+          sub: 'user-abc',
+          extraClaims: { email: 42 },
+        })}`,
+      );
+      expect(nonString).not.toHaveProperty('email');
+    });
+
     it('accepts an audience array claim containing the configured audience', async () => {
       const validator = createOidcJwtValidator(baseConfig, deps);
       const token = await signTestToken(key.privateKey, {

@@ -7,10 +7,7 @@
  * returns whatever is registered.
  */
 
-import {
-  getOidcAuthMiddleware,
-  setOidcAuthMiddleware,
-} from '../../src/transport/oidcMiddlewareSeam';
+import { getOidcAuthMiddleware, setOidcAuthMiddleware } from '../../src/transport/oidcMiddlewareSeam';
 
 describe('oidcMiddlewareSeam', () => {
   afterEach(() => {

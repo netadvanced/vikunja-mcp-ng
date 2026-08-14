@@ -125,9 +125,34 @@ describe('createOidcHttpAuthMiddleware', () => {
     expect(ctx?.authManager.getSession().apiToken).toBe('tk_user1-abcdefgh');
   });
 
-  it('narrows the validator identity to (issuer, sub), dropping preferredUsername', async () => {
+  it('carries the enrollment-matching claims (email, preferredUsername) into the context identity when present', async () => {
+    // Issue #220 finding #1: the SSO-enrollment callback pins the enrolled
+    // Vikunja account to the initiating identity via these claims, so the
+    // middleware must thread them through (tenancy keying stays (issuer, sub)).
     const middleware = createOidcHttpAuthMiddleware({
-      validator: validatorReturning({ ...IDENTITY, preferredUsername: 'alice' }),
+      validator: validatorReturning({
+        ...IDENTITY,
+        preferredUsername: 'alice',
+        email: 'alice@example.test',
+      }),
+      credentialSource: new StubCredentialSource(null),
+    });
+    const req = fakeRequest('Bearer good-token');
+    const { res } = fakeResponse();
+
+    await middleware(req, res);
+
+    expect(takeAttachedRequestContext(req)?.identity).toEqual({
+      issuer: IDENTITY.issuer,
+      sub: IDENTITY.sub,
+      preferredUsername: 'alice',
+      email: 'alice@example.test',
+    });
+  });
+
+  it('omits the optional claims from the context identity when the token lacks them', async () => {
+    const middleware = createOidcHttpAuthMiddleware({
+      validator: validatorReturning({ ...IDENTITY }),
       credentialSource: new StubCredentialSource(null),
     });
     const req = fakeRequest('Bearer good-token');
@@ -171,7 +196,7 @@ describe('createOidcHttpAuthMiddleware', () => {
         new MCPError(ErrorCode.AUTH_FAILED, 'Invalid or expired token', {
           statusCode: 401,
           wwwAuthenticateError: 'invalid_token',
-        }),
+        })
       ),
       credentialSource: new StubCredentialSource(null),
     });
@@ -194,7 +219,7 @@ describe('createOidcHttpAuthMiddleware', () => {
         new MCPError(ErrorCode.PERMISSION_DENIED, 'Token lacks required scope', {
           statusCode: 403,
           wwwAuthenticateError: 'insufficient_scope',
-        }),
+        })
       ),
       credentialSource: new StubCredentialSource(null),
     });
@@ -242,7 +267,7 @@ describe('createOidcHttpAuthMiddleware', () => {
         new MCPError(ErrorCode.AUTH_FAILED, 'Invalid or expired token', {
           statusCode: 401,
           wwwAuthenticateError: 'invalid_token',
-        }),
+        })
       ),
       credentialSource: new StubCredentialSource(null),
     });
@@ -259,19 +284,16 @@ describe('createOidcHttpAuthMiddleware', () => {
 
       expect(captured.headers?.['WWW-Authenticate']).toBe(
         'Bearer error="invalid_token", error_description="Invalid or expired token", ' +
-          'resource_metadata="https://mcp-vikunja.example.ch/.well-known/oauth-protected-resource"',
+          'resource_metadata="https://mcp-vikunja.example.ch/.well-known/oauth-protected-resource"'
       );
     });
 
     it('resolves the metadata URL from the failing request itself', async () => {
       const resolver = jest.fn(
         (req: HttpRequestWithAuth) =>
-          `http://${String(req.headers.host)}/.well-known/oauth-protected-resource`,
+          `http://${String(req.headers.host)}/.well-known/oauth-protected-resource`
       );
-      const middleware = createOidcHttpAuthMiddleware({
-        ...failingDeps(),
-        resourceMetadataUrl: resolver,
-      });
+      const middleware = createOidcHttpAuthMiddleware({ ...failingDeps(), resourceMetadataUrl: resolver });
       const req = fakeRequest('Bearer bad');
       (req.headers as Record<string, string>).host = 'gw.example:8765';
       const captured = fakeResponse();
@@ -280,7 +302,7 @@ describe('createOidcHttpAuthMiddleware', () => {
 
       expect(resolver).toHaveBeenCalledWith(req);
       expect(captured.headers?.['WWW-Authenticate']).toContain(
-        'resource_metadata="http://gw.example:8765/.well-known/oauth-protected-resource"',
+        'resource_metadata="http://gw.example:8765/.well-known/oauth-protected-resource"'
       );
     });
 
@@ -291,7 +313,7 @@ describe('createOidcHttpAuthMiddleware', () => {
       await middleware(fakeRequest('Bearer bad'), captured.res);
 
       expect(captured.headers?.['WWW-Authenticate']).toBe(
-        'Bearer error="invalid_token", error_description="Invalid or expired token"',
+        'Bearer error="invalid_token", error_description="Invalid or expired token"'
       );
     });
 
@@ -308,7 +330,7 @@ describe('createOidcHttpAuthMiddleware', () => {
 
       expect(captured.statusCode).toBe(401);
       expect(captured.headers?.['WWW-Authenticate']).toBe(
-        'Bearer error="invalid_token", error_description="Invalid or expired token"',
+        'Bearer error="invalid_token", error_description="Invalid or expired token"'
       );
     });
   });
@@ -336,10 +358,7 @@ describe('setupOidcHttpAuth', () => {
     // without one (the vault half of the "any missing -> hard startup
     // error" selection rule, §2), so every test in this suite needs one.
     process.env.VIKUNJA_MCP_VAULT_KEY = crypto.randomBytes(32).toString('base64');
-    vaultPath = path.join(
-      os.tmpdir(),
-      `oidc-http-auth-test-vault-${Date.now()}-${Math.random()}.json`,
-    );
+    vaultPath = path.join(os.tmpdir(), `oidc-http-auth-test-vault-${Date.now()}-${Math.random()}.json`);
   });
 
   afterEach(() => {
@@ -365,7 +384,7 @@ describe('setupOidcHttpAuth', () => {
       },
       { path: vaultPath },
       undefined,
-      async () => joseDeps,
+      async () => joseDeps
     );
 
     expect(getOidcAuthMiddleware()).toBeInstanceOf(Function);
@@ -383,7 +402,7 @@ describe('setupOidcHttpAuth', () => {
       },
       { path: vaultPath },
       undefined,
-      async () => joseDeps,
+      async () => joseDeps
     );
 
     expect(getOidcAuthMiddleware()).toBeInstanceOf(Function);
@@ -397,13 +416,8 @@ describe('setupOidcHttpAuth', () => {
         jwksUri: 'https://idp.example.test/realms/t/certs',
       },
       { path: vaultPath },
-      {
-        host: '127.0.0.1',
-        port: 8765,
-        path: '/mcp',
-        publicUrl: 'https://mcp-vikunja.example.ch/mcp',
-      },
-      async () => joseDeps,
+      { host: '127.0.0.1', port: 8765, path: '/mcp', publicUrl: 'https://mcp-vikunja.example.ch/mcp' },
+      async () => joseDeps
     );
 
     const middleware = getOidcAuthMiddleware();
@@ -416,7 +430,7 @@ describe('setupOidcHttpAuth', () => {
     expect(ok).toBe(false);
     expect(captured.statusCode).toBe(401);
     expect(captured.headers?.['WWW-Authenticate']).toContain(
-      'resource_metadata="https://mcp-vikunja.example.ch/.well-known/oauth-protected-resource"',
+      'resource_metadata="https://mcp-vikunja.example.ch/.well-known/oauth-protected-resource"'
     );
   });
 
@@ -432,8 +446,8 @@ describe('setupOidcHttpAuth', () => {
         },
         { path: vaultPath },
         undefined,
-        async () => joseDeps,
-      ),
+        async () => joseDeps
+      )
     ).rejects.toThrow(/vault master key/);
   });
 
@@ -447,8 +461,8 @@ describe('setupOidcHttpAuth', () => {
         },
         {},
         undefined,
-        async () => joseDeps,
-      ),
+        async () => joseDeps
+      )
     ).rejects.toThrow(/vault file path/);
   });
 });

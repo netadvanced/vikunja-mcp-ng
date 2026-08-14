@@ -65,14 +65,18 @@ export class EnrollmentTicketStore {
     this.sweep();
     const key = identityKey(identity);
     const previous = this.byIdentity.get(key);
-    if (previous !== undefined) {
-      this.tickets.delete(previous);
-    }
-    if (this.tickets.size >= MAX_PENDING_TICKETS) {
+    // Cap check BEFORE touching the previous ticket (finding #10): a refused
+    // issue must leave the caller's existing pending enrollment fully intact.
+    // A replacement (previous exists) never grows the store, so it is always
+    // allowed even at the cap.
+    if (previous === undefined && this.tickets.size >= MAX_PENDING_TICKETS) {
       throw new Error(
         'Too many pending enrollment tickets — refusing to mint another. ' +
           'Retry after outstanding enrollments complete or expire.',
       );
+    }
+    if (previous !== undefined) {
+      this.tickets.delete(previous);
     }
     const id = crypto.randomBytes(32).toString('base64url');
     this.tickets.set(id, { identity, issuedAt: this.now() });

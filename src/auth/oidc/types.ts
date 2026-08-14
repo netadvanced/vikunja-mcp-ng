@@ -21,6 +21,12 @@ export interface Identity {
   sub: string;
   /** The `preferred_username` claim, when the token carries one. Display-only — never a tenancy key. */
   preferredUsername?: string;
+  /**
+   * The `email` claim, when the token carries one. Never a tenancy key; used
+   * (with `preferredUsername` as fallback) by the SSO-enrollment callback to
+   * pin the enrolled Vikunja account to the initiating identity (issue #220).
+   */
+  email?: string;
 }
 
 /** Tuning knobs for the underlying `jose` remote JWKS cache (`createRemoteJWKSet`). */

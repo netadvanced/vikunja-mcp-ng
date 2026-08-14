@@ -74,6 +74,30 @@ describe('EnrollmentTicketStore', () => {
     expect(store.consume(b)).toEqual(bob);
   });
 
+  it('at the cap, re-issuing for an identity with a live ticket still works (replacement never grows the store)', () => {
+    const store = new EnrollmentTicketStore();
+    const first = store.issue(alice);
+    for (let i = 1; i < MAX_PENDING_TICKETS; i++) {
+      store.issue({ issuer: 'https://idp.example.test', sub: `filler-${i}` });
+    }
+    // Store is exactly at the cap; alice replacing her own ticket is fine.
+    const second = store.issue(alice);
+    expect(store.consume(first)).toBeNull();
+    expect(store.consume(second)).toEqual(alice);
+  });
+
+  it('a capped issue for a NEW identity throws WITHOUT invalidating anyone\'s live ticket (finding #10)', () => {
+    const store = new EnrollmentTicketStore();
+    const aliceTicket = store.issue(alice);
+    for (let i = 1; i < MAX_PENDING_TICKETS; i++) {
+      store.issue({ issuer: 'https://idp.example.test', sub: `filler-${i}` });
+    }
+    expect(() => store.issue(bob)).toThrow(/enrollment/i);
+    // The failed issue must not have torn down alice's pending enrollment.
+    expect(store.peek(aliceTicket)).toEqual(alice);
+    expect(store.consume(aliceTicket)).toEqual(alice);
+  });
+
   it('sweeps expired tickets and enforces a global pending cap', () => {
     let now = 0;
     const store = new EnrollmentTicketStore(1_000, () => now);

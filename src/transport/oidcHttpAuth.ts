@@ -84,7 +84,11 @@ function readAuthorizationHeader(req: HttpRequestWithAuth): string | undefined {
  * bearer token. Never echoes the token; the body/`WWW-Authenticate` header
  * carry only the safe, generic message + error code the validator produced.
  */
-function writeAuthFailure(res: ServerResponse, error: unknown, resourceMetadataUrl?: string): void {
+function writeAuthFailure(
+  res: ServerResponse,
+  error: unknown,
+  resourceMetadataUrl?: string
+): void {
   let statusCode = 401;
   let wwwError: 'invalid_token' | 'insufficient_scope' = 'invalid_token';
   let message = 'Invalid or expired token';
@@ -147,10 +151,18 @@ export function createOidcHttpAuthMiddleware(deps: OidcHttpAuthDeps): OidcAuthMi
     let identity: Identity;
     try {
       const validated = await validator.validate(readAuthorizationHeader(req));
-      // The validator's `Identity` (src/auth/oidc/types.ts) is a superset of
-      // the request-context `Identity` (issuer/sub + optional
-      // preferredUsername); narrow to the tenancy pair the context keys on.
-      identity = { issuer: validated.issuer, sub: validated.sub };
+      // Tenancy keying stays the (issuer, sub) pair; the optional
+      // email/preferred_username claims are threaded through because the
+      // SSO-enrollment callback pins the enrolled Vikunja account to the
+      // initiating identity via them (issue #220, finding #1).
+      identity = {
+        issuer: validated.issuer,
+        sub: validated.sub,
+        ...(validated.email !== undefined ? { email: validated.email } : {}),
+        ...(validated.preferredUsername !== undefined
+          ? { preferredUsername: validated.preferredUsername }
+          : {}),
+      };
     } catch (error) {
       writeAuthFailure(res, error, safeResourceMetadataUrl(resourceMetadataUrl, req));
       return false;
@@ -183,7 +195,7 @@ export function createOidcHttpAuthMiddleware(deps: OidcHttpAuthDeps): OidcAuthMi
  */
 function safeResourceMetadataUrl(
   resolver: OidcHttpAuthDeps['resourceMetadataUrl'],
-  req: HttpRequestWithAuth,
+  req: HttpRequestWithAuth
 ): string | undefined {
   if (!resolver) {
     return undefined;
@@ -237,7 +249,7 @@ export async function setupOidcHttpAuth(
   oidc: OidcConfig,
   vault: VaultConfig,
   http?: HttpConfig,
-  loadDeps: () => Promise<JoseDeps> = loadJose,
+  loadDeps: () => Promise<JoseDeps> = loadJose
 ): Promise<void> {
   const deps = await loadDeps();
   const validator = createOidcJwtValidator(toValidatorConfig(oidc), deps);
@@ -267,6 +279,6 @@ export async function setupOidcHttpAuth(
   setOidcAuthMiddleware(createOidcHttpAuthMiddleware(middlewareDeps));
   logger.info(
     'OIDC HTTP authentication middleware registered (resource-server mode; ' +
-      'vault-backed credential provisioning via vikunja_auth provision)',
+      'vault-backed credential provisioning via vikunja_auth provision)'
   );
 }

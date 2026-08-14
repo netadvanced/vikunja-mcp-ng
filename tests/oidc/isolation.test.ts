@@ -713,23 +713,21 @@ describe('Cross-user leak test matrix (§3d)', () => {
 
     it('vikunja_tasks list succeeds for a provisioned identity (currently throws AUTH_REQUIRED)', async () => {
       await expect(
-        runWithRequestContext(
-          { identity: identityA, authManager: boundManagerFor(identityA) },
-          () => capturedTasksHandler({ subcommand: 'list' }),
+        runWithRequestContext({ identity: identityA, authManager: boundManagerFor(identityA) }, () =>
+          capturedTasksHandler({ subcommand: 'list' }),
         ),
       ).resolves.toBeDefined();
     });
 
     it('vikunja_templates list succeeds for a provisioned identity (currently throws AUTH_REQUIRED)', async () => {
       await expect(
-        runWithRequestContext(
-          { identity: identityA, authManager: boundManagerFor(identityA) },
-          () => capturedTemplatesHandler({ subcommand: 'list' }),
+        runWithRequestContext({ identity: identityA, authManager: boundManagerFor(identityA) }, () =>
+          capturedTemplatesHandler({ subcommand: 'list' }),
         ),
       ).resolves.toBeDefined();
     });
 
-    it("download-attachment succeeds and builds its URL from the calling identity's own apiUrl (currently throws AUTH_REQUIRED)", async () => {
+    it('download-attachment succeeds and builds its URL from the calling identity\'s own apiUrl (currently throws AUTH_REQUIRED)', async () => {
       await vault.provision(identityA, 'https://vikunja-a.example/api/v1', 'tk_a-real-1234567890');
 
       const result = (await runWithRequestContext(
@@ -743,13 +741,11 @@ describe('Cross-user leak test matrix (§3d)', () => {
 
     it('two identities calling list concurrently each succeed independently, neither throws for the other', async () => {
       const [resultA, resultB] = await Promise.all([
-        runWithRequestContext(
-          { identity: identityA, authManager: boundManagerFor(identityA) },
-          () => capturedTasksHandler({ subcommand: 'list' }),
+        runWithRequestContext({ identity: identityA, authManager: boundManagerFor(identityA) }, () =>
+          capturedTasksHandler({ subcommand: 'list' }),
         ),
-        runWithRequestContext(
-          { identity: identityB, authManager: boundManagerFor(identityB) },
-          () => capturedTasksHandler({ subcommand: 'list' }),
+        runWithRequestContext({ identity: identityB, authManager: boundManagerFor(identityB) }, () =>
+          capturedTasksHandler({ subcommand: 'list' }),
         ),
       ]);
 
