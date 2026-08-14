@@ -211,6 +211,17 @@ export class EnrollmentService {
     return this.deps.vikunjaUrl;
   }
 
+  /**
+   * Whether `pathname` addresses one of this service's endpoints — used by
+   * the transport to scope its Host-allowlist check (finding #11) to exactly
+   * the paths this service will serve.
+   */
+  servesPath(pathname: string): boolean {
+    return (
+      pathname === `${this.basePath}/enroll` || pathname === `${this.basePath}/enroll/callback`
+    );
+  }
+
   /** The URL `vikunja_auth provision` hands an unprovisioned identity. */
   createEnrollmentUrl(identity: Identity): string {
     const ticket = this.deps.tickets.issue(identity);
@@ -239,11 +250,10 @@ export class EnrollmentService {
     } catch {
       return false;
     }
-    const isEnroll = url.pathname === `${this.basePath}/enroll`;
-    const isCallback = url.pathname === `${this.basePath}/enroll/callback`;
-    if (!isEnroll && !isCallback) {
+    if (!this.servesPath(url.pathname)) {
       return false;
     }
+    const isEnroll = url.pathname === `${this.basePath}/enroll`;
     if (req.method !== 'GET') {
       sendHtml(res, 405, renderPage('Method not allowed', 'Enrollment endpoints are GET-only.'));
       return true;

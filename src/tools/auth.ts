@@ -447,14 +447,50 @@ export function registerAuthTool(
               // URL mints and vaults the token; nothing is stored here.
               const enrollment = getActiveEnrollmentService();
               if (enrollment) {
-                const enrollmentUrl = enrollment.createEnrollmentUrl(requireCurrentIdentity());
+                const enrollIdentity = requireCurrentIdentity();
+
+                // Finding #9: an already-provisioned identity re-running a
+                // token-less provision should not silently mint ANOTHER
+                // full-permission Vikunja token (the old one would be
+                // orphaned server-side). Point at deprovision-then-re-enroll
+                // for deliberate rotation instead.
+                const vaultStatus = getActiveVaultStore()?.getStatus(enrollIdentity);
+                if (vaultStatus?.provisioned) {
+                  const response = createStandardResponse(
+                    'auth-provision',
+                    'Your Vikunja account is already linked — nothing to enroll. To rotate ' +
+                      'the credential, run vikunja_auth deprovision first, then provision again.',
+                    { linked: true, alreadyProvisioned: true },
+                    { apiUrl: vaultStatus.vikunjaUrl },
+                  );
+                  return {
+                    content: formatMcpResponse(response),
+                  };
+                }
+
+                // Finding #3: enrollment always targets the server-configured
+                // Vikunja instance. An explicit, DIFFERENT vikunjaUrl must be
+                // an error, never silently substituted.
+                if (args.vikunjaUrl !== undefined && args.vikunjaUrl !== enrollment.vikunjaUrl) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    `SSO enrollment on this server always targets ${enrollment.vikunjaUrl}; it ` +
+                      `cannot enroll against ${args.vikunjaUrl}. Omit vikunjaUrl to enroll, or ` +
+                      'provision a token for that other instance manually (provision with apiToken).',
+                  );
+                }
+
+                const enrollmentUrl = enrollment.createEnrollmentUrl(enrollIdentity);
                 const response = createStandardResponse(
                   'auth-provision',
                   'Open this link to connect your Vikunja account — you will be signed in ' +
                     'through your organization login and linked automatically, no token ' +
                     `needed: ${enrollmentUrl}`,
                   { linked: false, enrollmentUrl },
-                  { expiresNote: 'The link is single-use and expires after a few minutes.' },
+                  {
+                    apiUrl: enrollment.vikunjaUrl,
+                    expiresNote: 'The link is single-use and expires after a few minutes.',
+                  },
                 );
                 return {
                   content: formatMcpResponse(response),

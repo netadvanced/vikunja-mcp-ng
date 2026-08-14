@@ -339,7 +339,46 @@ export const ApplicationConfigSchema = z.object({
   vault: VaultConfigSchema.default({}),
   // One-click SSO enrollment (issue #220). Opt-in, oidc-http mode only.
   enroll: EnrollConfigSchema.default({}),
-});
+})
+  // Cross-field contract for SSO enrollment (issue #220, review finding #7):
+  // `enroll.enabled` is only meaningful in oidc-http mode with a public URL —
+  // anywhere else it MUST be a hard config error, never a silent no-op. An
+  // operator who set VIKUNJA_MCP_ENROLL_ENABLED=true and got no /enroll
+  // endpoints would otherwise debug a ghost.
+  .superRefine((config, ctx) => {
+    if (!config.enroll.enabled) {
+      return;
+    }
+    if (config.transport !== 'http') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['enroll', 'enabled'],
+        message:
+          'SSO enrollment (VIKUNJA_MCP_ENROLL_ENABLED) requires transport=http — it is ' +
+          'meaningless under stdio, which has no per-identity vault or browser endpoints. ' +
+          'Set VIKUNJA_MCP_TRANSPORT=http or disable enrollment.',
+      });
+    }
+    if (config.oidc === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['enroll', 'enabled'],
+        message:
+          'SSO enrollment requires the OIDC resource-server config (VIKUNJA_MCP_OIDC_*) — ' +
+          'enrollment tickets are minted for OIDC-validated identities only.',
+      });
+    }
+    if (config.http.publicUrl === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['http', 'publicUrl'],
+        message:
+          'SSO enrollment requires the canonical public MCP URL ' +
+          '(VIKUNJA_MCP_HTTP_PUBLIC_URL) — enrollment links and the OAuth redirect_uri are ' +
+          'built from it and must be browser-reachable and IdP-whitelisted.',
+      });
+    }
+  });
 
 export type ApplicationConfig = z.infer<typeof ApplicationConfigSchema>;
 

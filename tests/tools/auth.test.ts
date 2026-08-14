@@ -1317,12 +1317,14 @@ describe('Auth Tool', () => {
       });
 
       describe('SSO enrollment (issue #220): provision without a token', () => {
+        const ENROLL_TARGET = 'https://vikunja.example.com/api/v1';
         const createEnrollmentUrl = jest.fn(() => 'https://mcp.example.test/enroll?ticket=abc123');
 
         beforeEach(() => {
           createEnrollmentUrl.mockClear();
           setActiveEnrollmentService({
             createEnrollmentUrl,
+            vikunjaUrl: ENROLL_TARGET,
           } as unknown as EnrollmentService);
         });
 
@@ -1337,8 +1339,39 @@ describe('Auth Tool', () => {
           const markdown = result.content[0].text;
           expect(markdown).toContain('https://mcp.example.test/enroll?ticket=abc123');
           expect(markdown).toContain('auth-provision');
+          // The response names the Vikunja instance the flow enrolls against
+          // (finding #3 — no silent target substitution).
+          expect(markdown).toContain(ENROLL_TARGET);
           // Nothing was stored — the vault write happens in the browser flow.
           expect(mockVault.provision).not.toHaveBeenCalled();
+        });
+
+        it('rejects an explicit vikunjaUrl that differs from the enrollment target (finding #3)', async () => {
+          await expect(
+            callTool('provision', { vikunjaUrl: 'https://other-vikunja.example.com/api/v1' }),
+          ).rejects.toThrow(/https:\/\/vikunja\.example\.com\/api\/v1/);
+          expect(createEnrollmentUrl).not.toHaveBeenCalled();
+        });
+
+        it('accepts an explicit vikunjaUrl that matches the enrollment target', async () => {
+          const result = await callTool('provision', { vikunjaUrl: ENROLL_TARGET });
+          expect(createEnrollmentUrl).toHaveBeenCalledWith(identity);
+          expect(result.content[0].text).toContain('/enroll?ticket=');
+        });
+
+        it('short-circuits to "already linked" when the identity is provisioned (finding #9)', async () => {
+          mockVault.getStatus.mockReturnValue({
+            provisioned: true,
+            vikunjaUrl: ENROLL_TARGET,
+          });
+
+          const result = await callTool('provision', {});
+
+          // No fresh ticket, no re-mint of another full-permission token.
+          expect(createEnrollmentUrl).not.toHaveBeenCalled();
+          const markdown = result.content[0].text;
+          expect(markdown).toMatch(/already linked/i);
+          expect(markdown).toContain('deprovision');
         });
 
         it('still performs a normal manual provision when a token IS passed', async () => {

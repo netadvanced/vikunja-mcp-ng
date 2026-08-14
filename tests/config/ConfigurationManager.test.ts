@@ -885,7 +885,17 @@ describe('ConfigurationManager', () => {
       });
     });
 
+    /** The oidc-http env an enabled enrollment block additionally requires (finding #7). */
+    function setOidcHttpEnv(): void {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'https://mcp.example.test/mcp';
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+    }
+
     it('reads the full enrollment block from env vars', async () => {
+      setOidcHttpEnv();
       process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
       process.env.VIKUNJA_MCP_ENROLL_PROVIDER = 'keycloak';
       process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL = 'http://localhost:8240/api/v1';
@@ -903,8 +913,39 @@ describe('ConfigurationManager', () => {
     });
 
     it('rejects a non-URL enrollment vikunjaUrl', () => {
+      setOidcHttpEnv();
       process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
       process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('fails loud when enrollment is enabled under stdio transport (finding #7 — no silent no-op)', () => {
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        /enroll.*(http|stdio)|transport/i,
+      );
+    });
+
+    it('fails loud when enrollment is enabled in http mode without an oidc block', () => {
+      setOidcHttpEnv();
+      delete process.env.VIKUNJA_MCP_OIDC_ISSUER;
+      delete process.env.VIKUNJA_MCP_OIDC_AUDIENCE;
+      delete process.env.VIKUNJA_MCP_OIDC_JWKS_URI;
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('fails loud when enrollment is enabled without http.publicUrl (finding #2)', () => {
+      setOidcHttpEnv();
+      delete process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL;
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
 
       expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
         ConfigurationError,

@@ -591,6 +591,7 @@ describe('Main Server Entry Point (index.ts)', () => {
       process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
       process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
       process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'https://mcp.example.test/mcp';
       process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
       process.env.VIKUNJA_URL = 'https://vikunja.example.test/api/v1';
       mockSetupOidcHttpAuth.mockResolvedValueOnce(undefined);
@@ -613,15 +614,20 @@ describe('Main Server Entry Point (index.ts)', () => {
       );
     });
 
-    it('enrollment wiring: no oidc block means setupEnrollment is never called', async () => {
+    it('enrollment wiring: enrollment enabled without an oidc block is a hard startup error (finding #7)', async () => {
+      // Pre-review this silently no-opped; the cross-field config refine now
+      // fails the whole configuration load instead — never a ghost feature.
       process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'https://mcp.example.test/mcp';
       process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
-      mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+      // NOTE: no mockStartHttpTransport queuing here — the listener must never
+      // be reached, and a leftover once-value would leak into later tests
+      // (jest.clearAllMocks does not drop queued once-implementations).
       const indexModule = require('../src/index');
 
-      await indexModule.main();
-
+      await expect(indexModule.main()).rejects.toThrow(/enroll/i);
       expect(mockSetupEnrollment).not.toHaveBeenCalled();
+      expect(mockStartHttpTransport).not.toHaveBeenCalled();
     });
 
     it('refuse-to-start: transport=http propagates a startHttpTransport rejection and never starts stdio', async () => {

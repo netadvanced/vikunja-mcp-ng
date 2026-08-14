@@ -246,8 +246,19 @@ async function handleIncomingRequest(
   // these paths fall through to the 404 below, indistinguishable from any
   // other unknown path.
   const enrollmentService = getActiveEnrollmentService();
-  if (enrollmentService && (await enrollmentService.handleRequest(req, res))) {
-    return;
+  if (enrollmentService && enrollmentService.servesPath(pathname)) {
+    // Defense-in-depth Host allowlisting (finding #11): the SDK transport
+    // enforces `allowedHosts` on the MCP path; the enrollment endpoints get
+    // the same check so a DNS-rebinding page against a non-loopback bind
+    // cannot drive them either.
+    const hostHeader = req.headers.host;
+    if (typeof hostHeader !== 'string' || !ctx.allowedHosts.includes(hostHeader)) {
+      sendJson(res, 403, { error: 'forbidden_host' });
+      return;
+    }
+    if (await enrollmentService.handleRequest(req, res)) {
+      return;
+    }
   }
 
   if (pathname !== ctx.requestPath) {

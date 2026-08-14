@@ -303,7 +303,7 @@ describe('httpTransport', () => {
           tickets,
           vault: { provision: async () => undefined },
           vikunjaUrl: 'http://127.0.0.1:1/api/v1',
-          publicOrigin: 'http://127.0.0.1:9',
+          publicBaseUrl: 'http://127.0.0.1:9',
           tokenExpiryDays: 1,
         });
         setActiveEnrollmentService(service);
@@ -320,6 +320,31 @@ describe('httpTransport', () => {
         expect(callback.statusCode).toBe(400);
 
         expect(middlewareCalls).toBe(0);
+      });
+
+      it('rejects enrollment requests with a Host outside allowedHosts (finding #11, DNS-rebinding parity)', async () => {
+        setOidcAuthMiddleware(async () => false);
+        const service = new EnrollmentService({
+          tickets: new EnrollmentTicketStore(),
+          vault: { provision: async () => undefined },
+          vikunjaUrl: 'http://127.0.0.1:1/api/v1',
+          publicBaseUrl: 'http://127.0.0.1:9',
+          tokenExpiryDays: 1,
+        });
+        setActiveEnrollmentService(service);
+
+        handle = await startHttpTransport(newServer, baseHttpConfig());
+        const port = getPort(handle);
+
+        const forged = await request(port, {
+          path: '/enroll?ticket=bogus',
+          headers: { Host: 'evil.example' },
+        });
+        expect(forged.statusCode).toBe(403);
+
+        // The legitimate Host (the default allowedHosts derivation) still works.
+        const legit = await request(port, { path: '/enroll?ticket=bogus' });
+        expect(legit.statusCode).toBe(400);
       });
     });
 
