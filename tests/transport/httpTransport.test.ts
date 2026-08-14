@@ -19,6 +19,8 @@ import {
   type HttpTransportHandle,
 } from '../../src/transport/httpTransport';
 import { setOidcAuthMiddleware, type HttpRequestWithAuth } from '../../src/transport/oidcMiddlewareSeam';
+import { EnrollmentService, setActiveEnrollmentService } from '../../src/transport/enrollment';
+import { EnrollmentTicketStore } from '../../src/transport/enrollmentTickets';
 import { ConfigurationError } from '../../src/config/types';
 import type { HttpConfig } from '../../src/config/types';
 
@@ -264,6 +266,56 @@ describe('httpTransport', () => {
       });
 
       expect(res.statusCode).toBe(403);
+    });
+
+    describe('SSO enrollment endpoint routing (issue #220)', () => {
+      afterEach(() => {
+        setActiveEnrollmentService(undefined);
+      });
+
+      it('404s on /enroll paths when no enrollment service is registered (feature off)', async () => {
+        setOidcAuthMiddleware(async () => false);
+        handle = await startHttpTransport(newServer, baseHttpConfig());
+        const port = getPort(handle);
+
+        for (const path of ['/enroll?ticket=x', '/enroll/callback?code=c&state=s']) {
+          const res = await request(port, { path });
+          expect(res.statusCode).toBe(404);
+        }
+      });
+
+      it('serves /enroll and /enroll/callback WITHOUT invoking the bearer-auth middleware', async () => {
+        // Middleware would reject everything — the browser hitting /enroll
+        // holds no MCP bearer token, so these paths must be routed before it.
+        let middlewareCalls = 0;
+        setOidcAuthMiddleware(async () => {
+          middlewareCalls += 1;
+          return false;
+        });
+
+        const tickets = new EnrollmentTicketStore();
+        const service = new EnrollmentService({
+          tickets,
+          vault: { provision: async () => undefined },
+          vikunjaUrl: 'http://127.0.0.1:1/api/v1',
+          publicOrigin: 'http://127.0.0.1:9',
+          tokenExpiryDays: 1,
+        });
+        setActiveEnrollmentService(service);
+
+        handle = await startHttpTransport(newServer, baseHttpConfig());
+        const port = getPort(handle);
+
+        // Invalid ticket -> the service's own 400 page, not the middleware's 401.
+        const res = await request(port, { path: '/enroll?ticket=bogus' });
+        expect(res.statusCode).toBe(400);
+        expect(res.headers['content-type']).toContain('text/html');
+
+        const callback = await request(port, { path: '/enroll/callback?code=c&state=bogus' });
+        expect(callback.statusCode).toBe(400);
+
+        expect(middlewareCalls).toBe(0);
+      });
     });
 
     describe('RFC 9728 protected resource metadata discovery', () => {

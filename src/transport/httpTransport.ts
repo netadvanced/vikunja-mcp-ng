@@ -60,6 +60,7 @@ import {
   isProtectedResourceMetadataPath,
 } from './resourceMetadata';
 import { getOidcAuthMiddleware, type HttpRequestWithAuth } from './oidcMiddlewareSeam';
+import { getActiveEnrollmentService } from './enrollment';
 import { runWithRequestContext, takeAttachedRequestContext } from '../context/requestContext';
 import { logger } from '../utils/logger';
 
@@ -231,6 +232,21 @@ async function handleIncomingRequest(
       return;
     }
     sendJson(res, 200, buildProtectedResourceMetadata(ctx.httpConfig, ctx.oidcIssuer, req));
+    return;
+  }
+
+  // One-click SSO enrollment endpoints (issue #220, docs/OIDC-SETUP.md §9a):
+  // `GET /enroll` + `GET /enroll/callback`. Like the metadata endpoints
+  // above, they sit BEFORE the bearer-token middleware by necessity — the
+  // user's browser holds no MCP bearer token; the short-lived, single-use,
+  // identity-bound enrollment ticket (minted by an *authenticated*
+  // `vikunja_auth provision` call) is the authentication on this path. Only
+  // routed when production wiring registered an enrollment service
+  // (`setActiveEnrollmentService`, src/transport/enrollment.ts) — otherwise
+  // these paths fall through to the 404 below, indistinguishable from any
+  // other unknown path.
+  const enrollmentService = getActiveEnrollmentService();
+  if (enrollmentService && (await enrollmentService.handleRequest(req, res))) {
     return;
   }
 
