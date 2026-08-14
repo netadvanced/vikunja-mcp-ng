@@ -56,6 +56,40 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 
 
+
+## [0.7.0-beta.1] - 2026-08-14
+
+_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._
+
+### Added
+
+- enrollment lane — mock OIDC IdP, opt-in docker overlay, oidc-e2e steps f0-f5
+- wire SSO enrollment into oidc-http startup (index.ts)
+- vikunja_auth provision without a token returns the SSO enrollment URL (TDD)
+- route /enroll endpoints on the HTTP transport ahead of bearer auth (TDD)
+- EnrollmentService — validated Vikunja openid callback -> token mint -> vault chain (TDD)
+- enroll config block (schema + env mapping, TDD)
+- enrollment ticket store for SSO auto-provisioning (TDD)
+
+### Fixed
+
+- e2e forged-link step, docs corrections, lint
+- findings 3,7,9,11 — vikunjaUrl guard, already-linked short-circuit, config cross-field refine, Host allowlist on /enroll
+- findings 1,2,4,5,6,8,10,12 — identity pinning, publicUrl base, deferred consume, rest-layer parity
+- async bootstrap spawn — spawnSync starved the in-process mock IdP
+- robust enrollment-lane teardown, longer overlay health wait
+
+### Documentation
+
+- TOOLS.md provision/enrollment note
+- CONFIGURATION.md enroll section
+- OIDC-SETUP §9a — validated one-click SSO enrollment design (issue #220)
+
+### Chores
+
+- prettier pass + changelog entry for SSO enrollment (#220)
+- index wiring coverage for setupEnrollment ordering
+
 ## [0.7.0-beta.0] - 2026-08-14
 
 **Public beta of the multi-user OIDC resource-server mode.** Published on the npm `beta` dist-tag and GHCR `:beta`; `latest` stays on 0.6.2. Everything below is inert unless `VIKUNJA_MCP_TRANSPORT=http` — stdio deployments are unaffected.
