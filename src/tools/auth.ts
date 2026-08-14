@@ -12,6 +12,7 @@ import { MCPError, ErrorCode } from '../types/errors';
 import { clearGlobalClientFactory, getAuthManagerFromContext, hasRequestContext } from '../client';
 import { getCurrentIdentity, type Identity } from '../context/requestContext';
 import { getActiveVaultStore } from '../storage/vaultFileStore';
+import { getActiveEnrollmentService } from '../transport/enrollment';
 import { logger } from '../utils/logger';
 import { applyRateLimiting } from '../middleware/direct-middleware';
 import { createSecureConnectionMessage, maskCredential } from '../utils/security';
@@ -179,7 +180,9 @@ export function registerAuthTool(
         'In oidc-http mode, self-service credential provisioning (provision, status, ' +
         'deprovision) additionally links your validated OIDC identity to a Vikunja API ' +
         "token in the server's encrypted credential vault — connect is not available in " +
-        'that mode (provision replaces it), and disconnect acts as an alias of deprovision.',
+        'that mode (provision replaces it), and disconnect acts as an alias of deprovision. ' +
+        'When SSO enrollment is enabled, calling provision WITHOUT a token returns a ' +
+        'one-click enrollment link instead.',
     ),
     {
       subcommand: z.enum([
@@ -429,6 +432,27 @@ export function registerAuthTool(
               throw createStdioModeProvisioningError('provision');
             }
             if (!args.apiToken) {
+              // One-click SSO enrollment (issue #220, docs/OIDC-SETUP.md
+              // §9a): when the operator enabled enrollment, a token-less
+              // provision call is the intended entry point — hand back a
+              // short-lived enrollment URL bound to the caller's validated
+              // identity instead of an error. The browser flow behind that
+              // URL mints and vaults the token; nothing is stored here.
+              const enrollment = getActiveEnrollmentService();
+              if (enrollment) {
+                const enrollmentUrl = enrollment.createEnrollmentUrl(requireCurrentIdentity());
+                const response = createStandardResponse(
+                  'auth-provision',
+                  'Open this link to connect your Vikunja account — you will be signed in ' +
+                    'through your organization login and linked automatically, no token ' +
+                    `needed: ${enrollmentUrl}`,
+                  { linked: false, enrollmentUrl },
+                  { expiresNote: 'The link is single-use and expires after a few minutes.' },
+                );
+                return {
+                  content: formatMcpResponse(response),
+                };
+              }
               throw new MCPError(
                 ErrorCode.VALIDATION_ERROR,
                 'apiToken is required for provision — create one in Vikunja → Settings → API Tokens.',
