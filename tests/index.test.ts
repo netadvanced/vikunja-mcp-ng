@@ -59,6 +59,12 @@ const mockStartHttpTransport = jest.fn();
 // in tests/oidc/http-e2e.test.ts.
 const mockSetupOidcHttpAuth = jest.fn();
 
+// Issue #220: SSO enrollment wiring. Mocked so these tests exercise only the
+// orchestration (called with the loaded enroll/http config, strictly after
+// setupOidcHttpAuth, only when an oidc block exists) — the real
+// implementation is unit-tested in tests/transport/enrollment.test.ts.
+const mockSetupEnrollment = jest.fn();
+
 const mockResolvePackageVersion = jest.fn().mockReturnValue('9.9.9-test');
 
 // Set up all mocks before imports
@@ -111,6 +117,10 @@ jest.mock('../src/transport/httpTransport', () => ({
 
 jest.mock('../src/transport/oidcHttpAuth', () => ({
   setupOidcHttpAuth: mockSetupOidcHttpAuth,
+}));
+
+jest.mock('../src/transport/enrollment', () => ({
+  setupEnrollment: mockSetupEnrollment,
 }));
 
 describe('Main Server Entry Point (index.ts)', () => {
@@ -573,6 +583,44 @@ describe('Main Server Entry Point (index.ts)', () => {
       expect(mockSetupOidcHttpAuth.mock.invocationCallOrder[0]).toBeLessThan(
         mockStartHttpTransport.mock.invocationCallOrder[0]
       );
+    });
+
+    it('enrollment wiring (issue #220): oidc-http mode calls setupEnrollment after setupOidcHttpAuth, before the listener', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      process.env.VIKUNJA_URL = 'https://vikunja.example.test/api/v1';
+      mockSetupOidcHttpAuth.mockResolvedValueOnce(undefined);
+      mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+      const indexModule = require('../src/index');
+
+      await indexModule.main();
+
+      expect(mockSetupEnrollment).toHaveBeenCalledTimes(1);
+      expect(mockSetupEnrollment).toHaveBeenCalledWith(
+        expect.objectContaining({ enabled: true }),
+        expect.objectContaining({ path: '/mcp' }),
+        'https://vikunja.example.test/api/v1'
+      );
+      expect(mockSetupEnrollment.mock.invocationCallOrder[0]).toBeGreaterThan(
+        mockSetupOidcHttpAuth.mock.invocationCallOrder[0]
+      );
+      expect(mockSetupEnrollment.mock.invocationCallOrder[0]).toBeLessThan(
+        mockStartHttpTransport.mock.invocationCallOrder[0]
+      );
+    });
+
+    it('enrollment wiring: no oidc block means setupEnrollment is never called', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+      const indexModule = require('../src/index');
+
+      await indexModule.main();
+
+      expect(mockSetupEnrollment).not.toHaveBeenCalled();
     });
 
     it('refuse-to-start: transport=http propagates a startHttpTransport rejection and never starts stdio', async () => {
