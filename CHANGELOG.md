@@ -32,47 +32,32 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 ## [0.7.0-beta.0] - 2026-08-14
 
-_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._
+**Public beta of the multi-user OIDC resource-server mode.** Published on the npm `beta` dist-tag and GHCR `:beta`; `latest` stays on 0.6.2. Everything below is inert unless `VIKUNJA_MCP_TRANSPORT=http` — stdio deployments are unaffected.
 
 ### Added
 
-- RFC 9728 protected-resource metadata discovery for the OIDC HTTP transport
-- one persistent stack per Vikunja version, stable tokens, safe concurrency
-- add encrypted credential vault, vikunja_auth provisioning, and fix closure-gate precedence
-- mock-issuer e2e lane, threat-model tests, http caching profiling, Context Forge doc (H2b)
-- wire H1 transport + JWT middleware + identity isolation end-to-end
-- add resource-server JWT validation middleware (H1b)
-- add opt-in Streamable HTTP transport mode (H1a)
-- per-identity request context (ALS) + re-key global state (H1c)
+- **OIDC resource-server mode over Streamable HTTP**: opt-in HTTP transport (`VIKUNJA_MCP_TRANSPORT=http`) that validates per-user OIDC access tokens (issuer/JWKS/audience/algorithms, configurable clock skew and required scope) and gives every identity its own isolated request context and session storage
+- **Encrypted per-user credential vault** with `vikunja_auth` provision/deprovision: each user's Vikunja API token is stored encrypted at rest (`VIKUNJA_MCP_VAULT_PATH` / `VIKUNJA_MCP_VAULT_KEY`) and resolved per request — no shared service credential
+- **MCP authorization-spec discovery (RFC 9728)**: `GET /.well-known/oauth-protected-resource` (and `/mcp` path variant), `resource_metadata` hint on 401 challenges, and optional `VIKUNJA_MCP_HTTP_PUBLIC_URL` for the canonical resource URL behind a reverse proxy — lets browser MCP clients (e.g. claude.ai custom connectors) auto-discover the IdP
+- Mock-issuer OIDC e2e lane (`npm run test:e2e:oidc`) plus threat-model tests
+- Local e2e harness: one persistent stack per Vikunja version with stable tokens and safe concurrent runs
 
 ### Fixed
 
-- thread ALS-resolved identity into session-storage reads
-- thread the per-identity vaulted credential to the wire (D6 row-1 risk)
+- Per-identity credential and session-storage resolution threaded end to end (two identity-bleed risks caught by review closed before release)
+- `vikunja_auth` tool description no longer claims `disconnect` is unavailable in oidc-http mode (it acts as an alias of `deprovision`)
 
 ### Documentation
 
-- add the allowedHosts row the containerized-gateway topology needs
-- record where the shipped code diverges from the locked design
-- the oidc e2e lane's 'known current failure' is fixed — record it as history
-- fix disconnect claim, make the verification ladder actually pass, complete §11
-- align OIDC/vault section with the code — disconnect, key encodings, /readyz
-- add the OIDC install and configuration manual
-- remove docs/history/ archive
-- full accuracy + style audit of docs/, correct a false security report
-- drop the redundant /api/v1 suffix from VIKUNJA_URL examples
-- aim the README at npm, add a GitHub-facing one, fix the Node badge
-- add Pierre Christen to the copyright notice; set package author
-- mark H1+H2 waves DONE; record §3d row-1 credential-leak fix closed
+- New `docs/OIDC-SETUP.md`: full install and configuration manual (any OIDC provider; Keycloak as reference), with a verification ladder and troubleshooting by symptom
+- `docs/CONTEXT-FORGE.md` + `docs/OIDC-RESOURCE-SERVER.md`: deployment behind IBM MCP Context Forge and the as-shipped design reference, corrected against a live production-cluster PoC (real Keycloak + gateway, per-user isolation verified)
+- README split: npm-facing README at the root, GitHub-facing one under `.github/`
 
 ### Chores
 
-- mock hasRequestContext in task-labels client mock post-merge
-- make the release pipeline prerelease-aware (#214)
-- ignore docker/e2e/.env.* on this branch
-- clear five advisories in the transitive tree (#213)
-- build arm64 on native runners, not QEMU; make republishing possible
-- align e2e lane to canonical status message + record step (d) fixed
+- Release pipeline is prerelease-aware (#214): `-beta.x` tags publish to the npm `beta` dist-tag, GHCR `:beta`, and a GitHub prerelease — `latest` is untouched
+- Release images build arm64 on native runners (no QEMU) with idempotent, re-dispatchable publishing
+- Cleared five Dependabot advisories in the transitive tree (#213); `npm audit` clean
 
 ## [0.6.2] - 2026-07-28
 
