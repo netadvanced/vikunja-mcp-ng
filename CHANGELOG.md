@@ -29,6 +29,51 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 
 
+
+## [0.7.0-beta.0] - 2026-08-14
+
+_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._
+
+### Added
+
+- RFC 9728 protected-resource metadata discovery for the OIDC HTTP transport
+- one persistent stack per Vikunja version, stable tokens, safe concurrency
+- add encrypted credential vault, vikunja_auth provisioning, and fix closure-gate precedence
+- mock-issuer e2e lane, threat-model tests, http caching profiling, Context Forge doc (H2b)
+- wire H1 transport + JWT middleware + identity isolation end-to-end
+- add resource-server JWT validation middleware (H1b)
+- add opt-in Streamable HTTP transport mode (H1a)
+- per-identity request context (ALS) + re-key global state (H1c)
+
+### Fixed
+
+- thread ALS-resolved identity into session-storage reads
+- thread the per-identity vaulted credential to the wire (D6 row-1 risk)
+
+### Documentation
+
+- add the allowedHosts row the containerized-gateway topology needs
+- record where the shipped code diverges from the locked design
+- the oidc e2e lane's 'known current failure' is fixed — record it as history
+- fix disconnect claim, make the verification ladder actually pass, complete §11
+- align OIDC/vault section with the code — disconnect, key encodings, /readyz
+- add the OIDC install and configuration manual
+- remove docs/history/ archive
+- full accuracy + style audit of docs/, correct a false security report
+- drop the redundant /api/v1 suffix from VIKUNJA_URL examples
+- aim the README at npm, add a GitHub-facing one, fix the Node badge
+- add Pierre Christen to the copyright notice; set package author
+- mark H1+H2 waves DONE; record §3d row-1 credential-leak fix closed
+
+### Chores
+
+- mock hasRequestContext in task-labels client mock post-merge
+- make the release pipeline prerelease-aware (#214)
+- ignore docker/e2e/.env.* on this branch
+- clear five advisories in the transitive tree (#213)
+- build arm64 on native runners, not QEMU; make republishing possible
+- align e2e lane to canonical status message + record step (d) fixed
+
 ## [0.6.2] - 2026-07-28
 
 A correctness release, and a good argument for testing the parts of a surface you can only refuse.
