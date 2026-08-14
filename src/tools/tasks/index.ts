@@ -49,11 +49,18 @@ import { markTaskRead } from './mark-read';
  * The session id is `(issuer,sub)`-keyed in `oidc-http` mode and falls back
  * to the original apiUrl+token-prefix derivation in `stdio` mode — see
  * `getEffectiveSessionId` (docs/OIDC-RESOURCE-SERVER.md §3d, isolation-table
- * row #3).
+ * row #3). Resolves the ALS-bound per-identity manager first (falling back
+ * to the closure-captured one in `stdio` mode, where no request context is
+ * ever bound) — the closure manager is never authenticated in `oidc-http`
+ * mode, so calling `.getSession()` on it directly throws for every request
+ * regardless of provisioning status.
  */
 async function getSessionStorage(authManager: AuthManager): ReturnType<typeof storageManager.getStorage> {
-  const session = authManager.getSession();
-  const sessionId = getEffectiveSessionId(authManager);
+  const effectiveAuthManager = hasRequestContext()
+    ? await getAuthManagerFromContext()
+    : authManager;
+  const session = effectiveAuthManager.getSession();
+  const sessionId = getEffectiveSessionId(effectiveAuthManager);
   return storageManager.getStorage(sessionId, session.userId, session.apiUrl);
 }
 
