@@ -84,7 +84,17 @@ wait_for_health() {
     wait_timeout=420
   fi
   log "Waiting for $E2E_TARGET_ID (project $E2E_PROJECT, service $E2E_SERVICE) to report healthy..."
-  compose up -d --wait --wait-timeout "$wait_timeout"
+  if [ "${VIKUNJA_E2E_OIDC:-0}" = "1" ]; then
+    # Force a fresh Vikunja boot even when the compose config is unchanged:
+    # v2.4.0 caches an EMPTY openid provider list in its (in-memory) keyvalue
+    # forever if the issuer was unreachable at first discovery
+    # (GetAllProviders keyvalue.Put's the list even when every provider
+    # errored), so the enrollment lane must guarantee the container starts
+    # only while the mock IdP is already answering.
+    compose up -d --wait --wait-timeout "$wait_timeout" --force-recreate "$E2E_SERVICE"
+  else
+    compose up -d --wait --wait-timeout "$wait_timeout"
+  fi
   log "Stack is healthy on $VIKUNJA_URL"
 }
 

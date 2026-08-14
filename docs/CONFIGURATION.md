@@ -559,6 +559,24 @@ Self-service commands (all via the `vikunja_auth` tool, oidc-http mode only):
 - **`deprovision`** — removes your linked token (idempotent). Also the remedy after
   rotating/revoking a Vikunja token: `deprovision` then `provision` the new one.
 
+### One-click SSO enrollment (optional, `enroll` section)
+
+When the Vikunja backend is configured with the **same IdP** as a native OpenID login
+provider, the token paste in `provision` can be eliminated entirely: `provision` called
+*without* a token returns a short-lived enrollment URL, and the browser flow behind it
+(`GET /enroll` → IdP → `GET /enroll/callback`) logs the user into Vikunja via its native
+OpenID callback, mints their `tk_*` token, and vaults it automatically. See
+`docs/OIDC-SETUP.md` §9a for the full validated design and IdP prerequisites (the MCP
+callback URL must be whitelisted on **Vikunja's** OAuth client).
+
+| Setting | Config key | Env var | Notes |
+|---|---|---|---|
+| Enable enrollment | `enroll.enabled` | `VIKUNJA_MCP_ENROLL_ENABLED` | Default `false`. Manual token provisioning keeps working either way |
+| Provider | `enroll.provider` | `VIKUNJA_MCP_ENROLL_PROVIDER` | Vikunja OpenID provider `key`/`name` (from `GET /info`). Optional when the backend has exactly one |
+| Vikunja URL | `enroll.vikunjaUrl` | `VIKUNJA_MCP_ENROLL_VIKUNJA_URL` | Vikunja API base for the flow; defaults to the shared `VIKUNJA_URL` |
+| Token expiry (days) | `enroll.tokenExpiryDays` | `VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS` | Default `365`. Re-running `provision` after expiry mints a fresh token |
+| Ticket TTL (seconds) | `enroll.ticketTtlSec` | `VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC` | Default `600`. How long an issued enrollment link stays clickable (single-use) |
+
 In `oidc-http` mode there is no single server-wide token to connect: `connect` is refused
 with an error pointing you at `provision`, and `disconnect` is accepted but simply aliases
 `deprovision` (it removes the caller's own vault record).
