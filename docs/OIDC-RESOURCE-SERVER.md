@@ -1,6 +1,6 @@
 # Design: OIDC resource-server mode (behind IBM MCP Context Forge + Keycloak)
 
-**Status:** IMPLEMENTED (2026-07-21) — waves H1 + H2 landed on `feat/oidc-mode` and are feature-complete (see the Wave plan, §7, for the per-item DONE marks); field-tested in a production-cluster PoC (real Keycloak + IBM Context Forge, per-user isolation verified, 2026-08). Design was locked 2026-07-20 (owner review complete). Target release **0.7.0-beta.1** (originally slated 0.6.0).
+**Status:** IMPLEMENTED (2026-07-21) — waves H1 + H2 landed on `feat/oidc-mode` and are feature-complete (see the Wave plan, §7, for the per-item DONE marks); field-tested in a production-cluster PoC (real Keycloak + IBM Context Forge, per-user isolation verified, 2026-08); merged to main 2026-08-14. Design was locked 2026-07-20 (owner review complete). Target release **0.7.0-beta.1** (originally slated 0.6.0). Where this document's design prose and the shipped code diverge, see the as-shipped amendment in §2.1 — the operator-facing truth lives in [`docs/OIDC-SETUP.md`](OIDC-SETUP.md).
 **Author:** coordinator (design pass, 2026-07-19); decisions locked by the owner, 2026-07-20.
 **Companion docs:** [docs/ROADMAP.md](ROADMAP.md) (decision-log tone this doc follows; see its §3 for the append-only entry recording this epic's approval), [docs/CONFIGURATION.md](CONFIGURATION.md), [docs/ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -119,13 +119,38 @@ The existing config engine (`src/config/ConfigurationManager.ts`) already does l
 | Public URL (opt) | `VIKUNJA_MCP_HTTP_PUBLIC_URL` | `http.publicUrl` | canonical public MCP URL, e.g. `https://mcp-vikunja.example.ch/mcp` — the RFC 9728 `resource` value (§3e); recommended behind a reverse proxy, derived from the request `Host` header when unset |
 | OIDC issuer | `VIKUNJA_MCP_OIDC_ISSUER` | `oidc.issuer` | e.g. `https://iam.example.org/realms/foo` — **generic**; single-issuer scalar (D11) |
 | OIDC audience | `VIKUNJA_MCP_OIDC_AUDIENCE` | `oidc.audience` | required `aud` value(s); comma list allowed |
-| JWKS URI (override) | `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | optional; default discovered from issuer `/.well-known/openid-configuration` |
+| JWKS URI | `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | **required as shipped** — issuer-discovery was designed but not implemented; see the as-shipped amendment below |
 | Allowed algs | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | `oidc.allowedAlgs` | default `RS256` (allowlist; see §3b) |
-| Clock skew (s) | `VIKUNJA_MCP_OIDC_CLOCK_SKEW` | `oidc.clockSkewSec` | default `60` |
+| Clock skew (s) | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | `oidc.clockSkewSec` | default `60`. (An earlier draft of this table named the env var without the `_SEC` suffix — that name was never implemented and is silently ignored) |
 | Required scope (opt) | `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` | `oidc.requiredScope` | optional coarse gate |
 | Vault file path | `VIKUNJA_MCP_VAULT_PATH` | `vault.path` | path to the encrypted JSON vault file (D1); path is **not** secret, the key is |
 | **Vault master key** | `VIKUNJA_MCP_VAULT_KEY` **/ `VIKUNJA_MCP_VAULT_KEY_FILE`** | *(never in file)* | **add to `SENSITIVE_ENV_VARS`**; 32-byte key, base64 (D4) |
 | Shared Vikunja URL | `VIKUNJA_URL` (existing) | `auth.vikunjaUrl` | one shared Vikunja base URL for all users |
+
+> **Amendment (2026-08-11, beta documentation audit) — design intent vs. what shipped.**
+> Four details in this document describe the *design* and diverge from the implementation;
+> the code is authoritative, and the operator docs (`docs/OIDC-SETUP.md`,
+> `docs/CONFIGURATION.md`) describe shipped behavior. Recorded here so this document
+> doesn't over-promise:
+>
+> 1. **`oidc.jwksUri` is required.** No issuer-discovery
+>    (`/.well-known/openid-configuration`) was implemented — `OidcConfigSchema`
+>    (`src/config/types.ts`) requires an explicit JWKS URL. The §2 selection rule's short
+>    list should therefore be read as: **all** of `transport=http`, `oidc.issuer`,
+>    `oidc.audience`, `oidc.jwksUri`, `vault.path`, and a vault master key, any one
+>    missing being a hard startup error.
+> 2. **`/readyz` shipped as a stub.** §3a describes it checking JWKS reachability and
+>    vault-file openability, and §3c describes a malformed vault surfacing there as
+>    not-ready; none of that is implemented. It returns `{"status":"ok"}` unconditionally
+>    (`TODO(H2)` in `src/transport/httpTransport.ts`) — today it is `/healthz` under
+>    another name.
+> 3. **D8's optional global rate ceiling was not built.** Per-identity buckets shipped
+>    (`src/middleware/simplified-rate-limit.ts`); there is no aggregate cross-user
+>    ceiling protecting the shared Vikunja instance beyond the shared circuit breakers.
+> 4. **No startup warning for `VIKUNJA_API_TOKEN` in `http` mode.** The "should be a
+>    startup warning" below was not implemented; the variable is silently unused on the
+>    wire in `oidc-http` mode (every request resolves its credential through the ALS
+>    context instead).
 
 **Interaction with existing config:**
 - Module gating (`ModulesConfigSchema`, `DANGEROUS_MODULE_KEYS`) is **unchanged** and still applies — it gates *tool registration*, which is process-wide, in both modes. `oidc-http` layers per-user *credential* isolation *underneath* the same module gates. Config can still only narrow, never widen.

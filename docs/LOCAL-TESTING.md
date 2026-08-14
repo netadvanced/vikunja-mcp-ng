@@ -608,8 +608,11 @@ instead of the default `stdio` transport. It:
 4. Drives the spawned server with real HTTP requests exercising the full
    provisioning lifecycle: unauthenticated request (401) → authenticated but
    unprovisioned identity (provision prompt) → `vikunja_auth provision` with
-   the stack's real token → a real tool call as the provisioned identity →
-   `vikunja_auth deprovision`.
+   the stack's real token → real tool calls as the provisioned identity
+   (steps (d)–(d3): `vikunja_projects list`, plus `vikunja_tasks list` and
+   `vikunja_templates list`, which exercise the session-storage read path) →
+   a second identity provisioned and calling tools concurrently (step (d4))
+   → `vikunja_auth deprovision`.
 
 Run it against the local stack:
 
@@ -623,20 +626,23 @@ Like `test:e2e:mcp`, it never reads the ambient `VIKUNJA_URL` /
 `MCP_E2E_VIKUNJA_API_TOKEN` overrides, and only after verifying the target
 resolves to localhost.
 
-**Known current failure (step "(d) real end-to-end tool call"):** this lane
-currently fails at the "list projects as the provisioned identity" step, and
-this is a genuine finding, not a harness bug — see the inline comment above
-that step in `scripts/oidc-e2e.ts` for the full root-cause writeup. Short
-version: most tool handlers (`vikunja_projects` among them) gate on, and
-make their real REST calls through, the process-global `AuthManager`
-captured at `registerTools()` time — never the ALS-resolved, per-identity
-`AuthManager` that `getAuthManagerFromContext()` (`src/client.ts`) correctly
-returns per docs/OIDC-RESOURCE-SERVER.md §3d (D6). `tests/oidc/isolation.test.ts`
-doesn't catch this because it tests `getAuthManagerFromContext()` directly,
-not through a real tool handler. This needs a dedicated fix across the tool
-surface before `oidc-http` mode is safe for real multi-user traffic beyond
-the authentication boundary itself (which the threat-model suite,
-`tests/oidc/threat-model.test.ts`, does verify holds).
+**Historical note (step "(d) real end-to-end tool call") — found broken by
+this lane, since fixed.** When this lane first ran, it failed at the "list
+projects as the provisioned identity" step, and that was a genuine finding,
+not a harness bug: tool handlers made their real REST calls through the
+process-global `AuthManager` captured at `registerTools()` time, never the
+ALS-resolved per-identity one — so a provisioned user's calls went out under
+the wrong credential. `tests/oidc/isolation.test.ts` hadn't caught it
+because it tested `getAuthManagerFromContext()` directly rather than through
+a real tool handler. The fix is central (`resolveEffectiveAuthManager` in
+`src/utils/vikunja-rest.ts` substitutes the ALS-bound manager at request
+time), with a follow-up for the session-storage reads that bypassed ALS the
+same way (`vikunja_tasks list`, `vikunja_templates`, attachment downloads).
+Both are guarded by the "Credential threading" and "Session-storage reads
+that bypass ALS resolution" suites in `tests/oidc/isolation.test.ts`, and
+this lane's steps (d)–(d4) exercise them live — including two identities
+calling tools concurrently. All steps (a)–(e) pass; see the §3d row #1
+amendment in `docs/OIDC-RESOURCE-SERVER.md` for the full history.
 
 ## Sample-page screenshot capture (`npm run capture:samples`)
 

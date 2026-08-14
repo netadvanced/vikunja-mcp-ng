@@ -9,17 +9,21 @@ replace with your own realm; nothing Keycloak-specific lands in this
 project's code, per `docs/OIDC-RESOURCE-SERVER.md`'s design (any standards-
 compliant OIDC provider works identically from this server's point of view).
 
-**Status note:** this doc describes the deployment shape against Context
-Forge's documented gateway-registration model (`auth_type: oauth`,
-authorization-code flow, per-user token injection). It has not been verified
-against a live Context Forge + Keycloak pair in this repository's own test
-stack (`docker/e2e/` only runs Vikunja itself, not a gateway or IdP) — treat
-the Context-Forge-side instructions as "this is the documented, intended
-integration path," and this project's own side (transport/OIDC
-config, provisioning tool, threat-model tests) as the part that is verified
-here, in `tests/oidc/` and `scripts/oidc-e2e.ts`. If you hit a discrepancy
-against your Context Forge version, please file it — this doc should track
-reality.
+**Status note (updated 2026-08-11):** this guide has now been walked
+end-to-end against a real Context Forge + Keycloak + Vikunja deployment with
+three distinct users, confirming per-identity isolation through the gateway.
+That exercise **overturned this document's original advice**, which had been
+written from Context Forge's documented `auth_type: oauth` model without a
+live test: that path makes Context Forge call the upstream with *its own*
+service token, so every request reaches this server as the same identity.
+The corrected registration is `authType: bearer` with header passthrough —
+see [Registering this server](#registering-this-server-in-context-forge)
+below, which is the section to trust.
+
+For installation, configuration, and provider-agnostic setup, read
+[`OIDC-SETUP.md`](OIDC-SETUP.md) first; this guide covers only the Context
+Forge specifics layered on top. If you hit a discrepancy against your
+Context Forge version, please file it — this doc should track reality.
 
 If you haven't already, read
 [`docs/OIDC-RESOURCE-SERVER.md`](OIDC-RESOURCE-SERVER.md) first — it's the
@@ -76,6 +80,7 @@ rules — env always wins over the config file):
 | Bind host | `VIKUNJA_MCP_HTTP_HOST` | `127.0.0.1` if Context Forge is co-located (default, recommended); `0.0.0.0` only with `allowedHosts` + network policy for a cross-host gateway |
 | Bind port | `VIKUNJA_MCP_HTTP_PORT` | `8765` (default) |
 | Request path | `VIKUNJA_MCP_HTTP_PATH` | `/mcp` (default) — this is the path you register as the gateway's upstream URL |
+| Allowed `Host` headers | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` | Comma-separated, exact `host:port` strings; defaults to the bind `host:port` only. Must list the `Host` header **as Context Forge's requests actually carry it** — a gateway running in a container and reaching this server on the host arrives as e.g. `host.docker.internal:8765`, which is not covered by the default. A mismatch is a `403 Invalid Host header` on otherwise-valid requests; see [`OIDC-SETUP.md`](OIDC-SETUP.md) §5.4 |
 | Trusted issuer | `VIKUNJA_MCP_OIDC_ISSUER` | Your realm's issuer, e.g. `https://keycloak.example.com/realms/your-realm` — must match the token's `iss` claim **exactly** (string compare, no prefix matching) |
 | Expected audience | `VIKUNJA_MCP_OIDC_AUDIENCE` | The client-id (or custom audience/scope) Context Forge's own Keycloak client is issued tokens for — comma-separated if more than one is valid |
 | JWKS endpoint | `VIKUNJA_MCP_OIDC_JWKS_URI` | e.g. `https://keycloak.example.com/realms/your-realm/protocol/openid-connect/certs` |
@@ -97,22 +102,77 @@ Context Forge registers upstream MCP servers as "gateways" (via its Admin UI
 or the `POST /gateways` registration API — consult your Context Forge
 version's docs for the exact form). The fields that matter for this server:
 
+> **Do not register this gateway with `authType: oauth` /
+> `grant_type: authorization_code`.** It reads like the right choice and it
+> is not. That mode makes Context Forge mint and use its **own**
+> service-level token to call the upstream, so every request arrives at this
+> server as the same identity — one shared vault record, no per-user
+> anything — while superficially appearing to work. Context Forge's default
+> identity propagation forwards synthetic `X-Forwarded-User-*` headers
+> derived from its own authenticated caller, not the caller's raw JWT.
+
+The working registration passes the **caller's own** token through:
+
 | Context Forge field | Value |
 |---|---|
 | Gateway / upstream URL | `https://<this-server-host>:<port><path>`, e.g. `https://vikunja-mcp.internal:8765/mcp` |
-| Transport | Streamable HTTP |
-| `auth_type` | `oauth` (authorization_code) — Context Forge performs the user-facing login; **not** `basic` or `bearer` (those model a single shared credential, which is exactly what this server's per-user vault replaces) |
-| OAuth provider / issuer | Your Keycloak realm's issuer URL (the same value as this server's `VIKUNJA_MCP_OIDC_ISSUER`) |
-| OAuth client id / secret | Context Forge's own confidential client registered in Keycloak — **not** anything this server needs to know |
-| Redirect URI | Context Forge's own callback URL, registered on the Keycloak client — again, not something this server is involved in |
-| Scopes requested | Whatever your Keycloak client is configured to request; must result in tokens whose audience matches this server's `VIKUNJA_MCP_OIDC_AUDIENCE` |
-| Health check path | `/healthz` (unauthenticated liveness — never touches the vault or Vikunja) |
+| `transport` | `STREAMABLEHTTP` |
+| `authType` | `bearer` |
+| `authToken` | Any currently-valid user token. This exists only to satisfy Context Forge's registration health probe — this server correctly 401s an unauthenticated request, so registration fails outright without it |
+| `oneTimeAuth` | `true` — the probe token is not retained for real traffic |
+| `passthroughHeaders` | `["Authorization"]` |
 
-Once registered, Context Forge handles the Authorization Code dance with
-Keycloak per user and forwards `Authorization: Bearer <access-token>` on
-every proxied MCP call — this server never sees a Keycloak login form, a
-client secret, or a refresh token; it only ever validates the bearer it's
-handed (`docs/OIDC-RESOURCE-SERVER.md` §3b).
+```bash
+curl -s -X POST https://context-forge.example.com/v1/gateways \
+  -H "Authorization: Bearer $CF_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d "{
+    \"name\": \"vikunja-mcp-ng\",
+    \"url\": \"https://vikunja-mcp.internal:8765/mcp\",
+    \"transport\": \"STREAMABLEHTTP\",
+    \"authType\": \"bearer\",
+    \"authToken\": \"$A_VALID_USER_TOKEN\",
+    \"oneTimeAuth\": true,
+    \"passthroughHeaders\": [\"Authorization\"]
+  }"
+```
+
+Header passthrough is **off by default** in Context Forge and needs two
+flags, both required, in its `.env`:
+
+```bash
+ENABLE_HEADER_PASSTHROUGH=true
+ENABLE_SENSITIVE_HEADER_PASSTHROUGH=true
+DEFAULT_PASSTHROUGH_HEADERS=["Authorization"]
+```
+
+Callers then authenticate to Context Forge's own front door normally, and
+carry the end user's OIDC token in a **separate** `X-Upstream-Authorization`
+header, which Context Forge renames to `Authorization` as it proxies:
+
+```bash
+curl -s -X POST https://context-forge.example.com/rpc \
+  -H "Authorization: Bearer $CF_TOKEN" \
+  -H "X-Upstream-Authorization: Bearer $USER_OIDC_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+       "params":{"name":"vikunja-mcp-ng-vikunja-auth","arguments":{"subcommand":"status"}}}'
+```
+
+Note the tool-name prefix: Context Forge exposes tools as
+`<gateway-name>-<tool-name>`, not the bare name.
+
+Set the gateway's health check path to `/healthz` (unauthenticated liveness,
+never touches the vault or Vikunja). **Do not** point it at `/readyz` — that
+endpoint is a stub that returns `ok` unconditionally
+([`OIDC-SETUP.md`](OIDC-SETUP.md) §11).
+
+**Verify the registration actually worked**: the response should report
+`"reachable": true` and an **empty** `skippedTools` array. A non-empty
+`skippedTools` means Context Forge's content filter rejected some tool
+descriptions — several of this server's descriptions contain `>` or `;` as
+ordinary punctuation, which the strict filter refuses, silently dropping
+those tools from the catalog. The knob is
+`TOOL_DESCRIPTION_FORBIDDEN_PATTERNS_ENABLED=false`.
 
 ## Provisioning walkthrough (end users)
 
@@ -183,6 +243,12 @@ gateway is actually sending a live, unexpired token. A `401` at this layer
 never reaches this server's tool code at all — the request is rejected
 before `tools/call` is even dispatched.
 
+One near-lookalike that is *not* this layer: a `403` whose body says
+`Invalid Host header`. That is the transport's DNS-rebinding allowlist
+rejecting the `Host` header the gateway sends — the token was actually
+valid. Add the arriving `host:port` to `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS`
+(see the configuration table above).
+
 ### `AUTH_REQUIRED` — "haven't linked a Vikunja API token yet" (tool-level)
 
 The **bearer token was valid** (HTTP succeeded, `200`) — this is a
@@ -198,10 +264,12 @@ they already provisioned:
 - Confirm the vault file (`VIKUNJA_MCP_VAULT_PATH`) is on a **persistent**
   volume that survives container restarts — an ephemeral filesystem means
   every restart wipes every user's provisioning.
-- Check `GET /readyz` — it reports not-ready if the vault file failed to
-  load (e.g. corrupted), which would explain mass "unprovisioned" reports
-  across many users simultaneously (a single-file failure, not a per-user
-  issue).
+- If *many* users report this at once, suspect the vault file rather than
+  authentication — an ephemeral volume, or a restore that didn't happen.
+  **`GET /readyz` will not tell you this**: it is a stub that answers `ok`
+  unconditionally without checking the vault or anything else
+  ([`OIDC-SETUP.md`](OIDC-SETUP.md) §11). Check the file itself and the
+  server's startup log.
 
 ### Circuit breaker open (`opossum` breaker tripped)
 
@@ -247,6 +315,15 @@ against a real local Vikunja stack. `oidc-http` mode is now validated for
 real multi-user tool traffic, not just the authentication/authorization
 boundary.
 
+So if you still see every user's calls behaving as the same person, suspect
+**the gateway registration** rather than this server: an `authType: oauth`
+registration makes Context Forge call the upstream with its own service
+credential, collapsing every caller onto one identity. See the warning under
+[Registering this server](#registering-this-server-in-context-forge). A quick
+discriminator: have two different users call
+`vikunja_auth status` — if both report the *same* linked account, the
+identity never reached this server.
+
 ## Security notes
 
 - **The gateway is the trust anchor.** If Context Forge is compromised, an
@@ -264,6 +341,7 @@ boundary.
 
 ## See also
 
+- [`docs/OIDC-SETUP.md`](OIDC-SETUP.md) — **start here**: installing and configuring this mode, provider-agnostic, with the full configuration reference and a verification ladder.
 - [`docs/OIDC-RESOURCE-SERVER.md`](OIDC-RESOURCE-SERVER.md) — the full design this guide implements.
 - [`docs/CONFIGURATION.md`](CONFIGURATION.md) — general config-loading rules, the `_FILE` secrets convention, module gating.
 - [`docs/LOCAL-TESTING.md`](LOCAL-TESTING.md) — the local e2e stack, including the `oidc-http` e2e lane (`npm run test:e2e:oidc`) that exercises the flow this guide describes end to end against a mock issuer.
