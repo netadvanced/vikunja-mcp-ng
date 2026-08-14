@@ -272,8 +272,14 @@ async function waitForHealthz(port: number, timeoutMs: number): Promise<void> {
  * Vikunja container with one provider pointing at the harness's mock IdP;
  * running WITHOUT the flag afterwards restores the plain container so other
  * lanes never depend on an issuer that no longer exists.
+ *
+ * MUST be async (`spawn`, not `spawnSync`): the mock IdP runs in THIS
+ * process, and the recreated Vikunja dials its discovery endpoint while it
+ * boots — a spawnSync here would block the event loop, the IdP could never
+ * answer, and the container would hang unhealthy until the compose wait
+ * gives up (exactly the failure mode this comment is preventing again).
  */
-function runBootstrap(withOidcOverlay: boolean): void {
+function runBootstrap(withOidcOverlay: boolean): Promise<void> {
   log(
     withOidcOverlay
       ? 'Reconfiguring the e2e stack WITH the OpenID overlay (mock IdP provider)...'
@@ -289,12 +295,19 @@ function runBootstrap(withOidcOverlay: boolean): void {
   } else {
     delete env.VIKUNJA_E2E_OIDC;
   }
-  const result = spawnSync(BOOTSTRAP, [], { cwd: REPO_ROOT, env, stdio: 'inherit' });
-  if (result.status !== 0) {
-    throw new Error(
-      `docker/e2e/bootstrap.sh exited ${result.status} (oidc overlay: ${withOidcOverlay})`,
-    );
-  }
+  return new Promise<void>((resolve, reject) => {
+    const proc = spawn(BOOTSTRAP, [], { cwd: REPO_ROOT, env, stdio: 'inherit' });
+    proc.on('error', reject);
+    proc.on('exit', code => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(
+          new Error(`docker/e2e/bootstrap.sh exited ${code} (oidc overlay: ${withOidcOverlay})`),
+        );
+      }
+    });
+  });
 }
 
 /** Fetch helper that follows exactly one manual redirect hop and returns it. */
@@ -362,7 +375,7 @@ async function main(): Promise<void> {
           preferredUsername: carolSub,
         },
       });
-      runBootstrap(true);
+      await runBootstrap(true);
     }
 
     const realApiToken = await getRealVikunjaApiToken();
@@ -728,7 +741,7 @@ async function main(): Promise<void> {
       // OpenID provider), then stop the issuer it pointed at — other lanes
       // must never see a provider whose IdP is gone.
       try {
-        runBootstrap(false);
+        await runBootstrap(false);
       } catch (error) {
         log(`WARNING: failed to restore the plain e2e stack: ${String(error)}`);
         failures += 1;
