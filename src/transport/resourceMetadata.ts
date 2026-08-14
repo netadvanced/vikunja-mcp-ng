@@ -46,7 +46,7 @@ export interface ProtectedResourceMetadata {
  */
 export function resolveResourceUrl(
   httpConfig: HttpConfig,
-  req?: Pick<IncomingMessage, 'headers'>
+  req?: Pick<IncomingMessage, 'headers'>,
 ): string {
   if (httpConfig.publicUrl) {
     return httpConfig.publicUrl;
@@ -71,7 +71,7 @@ export function resolveResourceUrl(
  */
 export function resolveResourceMetadataUrl(
   httpConfig: HttpConfig,
-  req?: Pick<IncomingMessage, 'headers'>
+  req?: Pick<IncomingMessage, 'headers'>,
 ): string {
   const origin = new URL(resolveResourceUrl(httpConfig, req)).origin;
   return `${origin}${WELL_KNOWN_PROTECTED_RESOURCE_PATH}`;
@@ -81,7 +81,7 @@ export function resolveResourceMetadataUrl(
 export function buildProtectedResourceMetadata(
   httpConfig: HttpConfig,
   issuer: string,
-  req?: Pick<IncomingMessage, 'headers'>
+  req?: Pick<IncomingMessage, 'headers'>,
 ): ProtectedResourceMetadata {
   return {
     resource: resolveResourceUrl(httpConfig, req),

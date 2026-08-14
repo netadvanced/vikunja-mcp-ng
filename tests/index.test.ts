@@ -532,7 +532,7 @@ describe('Main Server Entry Point (index.ts)', () => {
         expect.objectContaining({ host: '0.0.0.0', port: 9999, path: '/mcp' }),
         // Third arg: the oidc config (RFC 9728 discovery) — undefined here
         // since no OIDC env vars are set in this test.
-        undefined
+        undefined,
       );
       expect(MockStdioServerTransport).not.toHaveBeenCalled();
       expect(mockMcpServer.connect).not.toHaveBeenCalledWith(mockStdioServerTransport);
@@ -555,7 +555,8 @@ describe('Main Server Entry Point (index.ts)', () => {
       process.env.VIKUNJA_MCP_TRANSPORT = 'http';
       process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
       process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
-      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/realms/h1/protocol/openid-connect/certs';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI =
+        'https://idp.example.test/realms/h1/protocol/openid-connect/certs';
       mockSetupOidcHttpAuth.mockResolvedValueOnce(undefined);
       mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
       const indexModule = require('../src/index');
@@ -576,12 +577,12 @@ describe('Main Server Entry Point (index.ts)', () => {
         expect.anything(),
         // Third arg: the http config section, so the middleware can build the
         // RFC 9728 resource_metadata URL for 401 challenges.
-        expect.objectContaining({ path: '/mcp' })
+        expect.objectContaining({ path: '/mcp' }),
       );
       expect(mockStartHttpTransport).toHaveBeenCalledTimes(1);
       // Ordering: middleware registered before the listener starts.
       expect(mockSetupOidcHttpAuth.mock.invocationCallOrder[0]).toBeLessThan(
-        mockStartHttpTransport.mock.invocationCallOrder[0]
+        mockStartHttpTransport.mock.invocationCallOrder[0],
       );
     });
 
@@ -602,13 +603,13 @@ describe('Main Server Entry Point (index.ts)', () => {
       expect(mockSetupEnrollment).toHaveBeenCalledWith(
         expect.objectContaining({ enabled: true }),
         expect.objectContaining({ path: '/mcp' }),
-        'https://vikunja.example.test/api/v1'
+        'https://vikunja.example.test/api/v1',
       );
       expect(mockSetupEnrollment.mock.invocationCallOrder[0]).toBeGreaterThan(
-        mockSetupOidcHttpAuth.mock.invocationCallOrder[0]
+        mockSetupOidcHttpAuth.mock.invocationCallOrder[0],
       );
       expect(mockSetupEnrollment.mock.invocationCallOrder[0]).toBeLessThan(
-        mockStartHttpTransport.mock.invocationCallOrder[0]
+        mockStartHttpTransport.mock.invocationCallOrder[0],
       );
     });
 
@@ -626,9 +627,7 @@ describe('Main Server Entry Point (index.ts)', () => {
     it('refuse-to-start: transport=http propagates a startHttpTransport rejection and never starts stdio', async () => {
       process.env.VIKUNJA_MCP_TRANSPORT = 'http';
       mockStartHttpTransport.mockRejectedValueOnce(
-        new Error(
-          'transport=http requires the OIDC authentication middleware to be registered'
-        )
+        new Error('transport=http requires the OIDC authentication middleware to be registered'),
       );
       const indexModule = require('../src/index');
 
@@ -637,7 +636,9 @@ describe('Main Server Entry Point (index.ts)', () => {
       expect(MockStdioServerTransport).not.toHaveBeenCalled();
       expect(mockMcpServer.connect).not.toHaveBeenCalled();
       expect(mockLogger.info).not.toHaveBeenCalledWith('Vikunja MCP server started');
-      expect(mockLogger.info).not.toHaveBeenCalledWith('Vikunja MCP server started (http transport)');
+      expect(mockLogger.info).not.toHaveBeenCalledWith(
+        'Vikunja MCP server started (http transport)',
+      );
     });
 
     it('config parsing: an invalid transport value fails configuration validation before any transport is chosen', async () => {

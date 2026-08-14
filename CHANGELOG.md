@@ -8,6 +8,25 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 ## [Unreleased]
 
+### Added
+
+- **One-click SSO enrollment for oidc-http mode** (#220): when the Vikunja backend uses the same
+  IdP as a native OpenID login provider, `vikunja_auth provision` called **without** a token now
+  returns a short-lived, single-use enrollment URL instead of an error. The new browser endpoints
+  on the HTTP transport (`GET /enroll`, `GET /enroll/callback` — CSRF-protected via a
+  server-side ticket bound to the initiating `iss|sub`) drive one IdP authorization hop, forward
+  the code to Vikunja's native `POST /auth/openid/{provider}/callback`, mint a scoped `tk_*`
+  token via `GET /routes` + `PUT /tokens` with the user's own (10-minute) Vikunja JWT, vault it
+  under the identity, and discard the JWT — zero credential pasting, full per-user isolation.
+  Opt-in via `VIKUNJA_MCP_ENROLL_ENABLED` (plus `VIKUNJA_MCP_ENROLL_PROVIDER`,
+  `VIKUNJA_MCP_ENROLL_VIKUNJA_URL`, `VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS`,
+  `VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC`); manual token provisioning keeps working unchanged, and a
+  backend without an OpenID provider gets a clean error pointing at the manual path. Design
+  validated against the go-vikunja v2.4.0 source and proven end-to-end in the extended
+  `test:e2e:oidc` lane (opt-in `docker/e2e/docker-compose.oidc.yml` overlay + a full mock OIDC
+  IdP; the Vikunja-callback → JWT → token-mint → vault chain runs against the real local 2.4.0
+  stack, including first-login account auto-creation). See `docs/OIDC-SETUP.md` §9a.
+
 ### Security
 
 - Refreshed the dependency tree to clear five advisories, all reached transitively through

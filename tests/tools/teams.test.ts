@@ -161,16 +161,14 @@ describe('Teams Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValue(
-          mockFetchResponse({
-            ok: false,
-            status: 500,
-            statusText: 'Server Error',
-            text: 'API Error',
-          }),
-        ) as any;
+      global.fetch = jest.fn().mockResolvedValue(
+        mockFetchResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API Error',
+        }),
+      ) as any;
 
       await expect(callTool('list')).rejects.toThrow('HTTP 500');
     });
@@ -206,16 +204,14 @@ describe('Teams Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValue(
-          mockFetchResponse({
-            ok: false,
-            status: 500,
-            statusText: 'Server Error',
-            text: 'Creation failed',
-          }),
-        ) as any;
+      global.fetch = jest.fn().mockResolvedValue(
+        mockFetchResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'Creation failed',
+        }),
+      ) as any;
 
       await expect(callTool('create', { name: 'New Team' })).rejects.toThrow('HTTP 500');
     });
@@ -255,16 +251,14 @@ describe('Teams Tool', () => {
     });
 
     it('should handle API errors when getting team', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValue(
-          mockFetchResponse({
-            ok: false,
-            status: 404,
-            statusText: 'Not Found',
-            text: 'Team not found',
-          }),
-        ) as any;
+      global.fetch = jest.fn().mockResolvedValue(
+        mockFetchResponse({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: 'Team not found',
+        }),
+      ) as any;
 
       await expect(callTool('get', { id: 999 })).rejects.toThrow(
         'Vikunja REST request failed (GET /teams/999): HTTP 404 Not Found — Team not found',
@@ -347,16 +341,14 @@ describe('Teams Tool', () => {
     });
 
     it('should handle API errors when updating team', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValue(
-          mockFetchResponse({
-            ok: false,
-            status: 404,
-            statusText: 'Not Found',
-            text: 'Team not found',
-          }),
-        ) as any;
+      global.fetch = jest.fn().mockResolvedValue(
+        mockFetchResponse({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: 'Team not found',
+        }),
+      ) as any;
 
       await expect(callTool('update', { id: 999, name: 'New Name' })).rejects.toThrow(
         'Vikunja REST request failed (POST /teams/999): HTTP 404 Not Found — Team not found',
@@ -410,16 +402,14 @@ describe('Teams Tool', () => {
     });
 
     it('should handle team not found error', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValue(
-          mockFetchResponse({
-            ok: false,
-            status: 404,
-            statusText: 'Not Found',
-            text: 'Team not found',
-          }),
-        ) as any;
+      global.fetch = jest.fn().mockResolvedValue(
+        mockFetchResponse({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: 'Team not found',
+        }),
+      ) as any;
 
       await expect(callTool('delete', { id: 999 })).rejects.toThrow('HTTP 404');
     });
@@ -515,16 +505,14 @@ describe('Teams Tool', () => {
       });
 
       it('should handle API errors when listing members', async () => {
-        global.fetch = jest
-          .fn()
-          .mockResolvedValue(
-            mockFetchResponse({
-              ok: false,
-              status: 404,
-              statusText: 'Not Found',
-              text: 'Team not found',
-            }),
-          ) as any;
+        global.fetch = jest.fn().mockResolvedValue(
+          mockFetchResponse({
+            ok: false,
+            status: 404,
+            statusText: 'Not Found',
+            text: 'Team not found',
+          }),
+        ) as any;
 
         await expect(callTool('members', { id: 999, memberSubcommand: 'list' })).rejects.toThrow(
           'Vikunja REST request failed (GET /teams/999): HTTP 404 Not Found — Team not found',
@@ -605,16 +593,14 @@ describe('Teams Tool', () => {
       });
 
       it('should handle API errors when adding member', async () => {
-        global.fetch = jest
-          .fn()
-          .mockResolvedValue(
-            mockFetchResponse({
-              ok: false,
-              status: 404,
-              statusText: 'Not Found',
-              text: 'User not found',
-            }),
-          ) as any;
+        global.fetch = jest.fn().mockResolvedValue(
+          mockFetchResponse({
+            ok: false,
+            status: 404,
+            statusText: 'Not Found',
+            text: 'User not found',
+          }),
+        ) as any;
 
         await expect(
           callTool('members', { id: 1, memberSubcommand: 'add', username: 'ghost' }),
@@ -661,16 +647,14 @@ describe('Teams Tool', () => {
       });
 
       it('should handle API errors when removing member', async () => {
-        global.fetch = jest
-          .fn()
-          .mockResolvedValue(
-            mockFetchResponse({
-              ok: false,
-              status: 404,
-              statusText: 'Not Found',
-              text: 'Member not found',
-            }),
-          ) as any;
+        global.fetch = jest.fn().mockResolvedValue(
+          mockFetchResponse({
+            ok: false,
+            status: 404,
+            statusText: 'Not Found',
+            text: 'Member not found',
+          }),
+        ) as any;
 
         await expect(
           callTool('members', { id: 1, memberSubcommand: 'remove', username: 'ghost' }),
@@ -746,16 +730,14 @@ describe('Teams Tool', () => {
       });
 
       it('should handle API errors when toggling admin status', async () => {
-        global.fetch = jest
-          .fn()
-          .mockResolvedValue(
-            mockFetchResponse({
-              ok: false,
-              status: 404,
-              statusText: 'Not Found',
-              text: 'Member not found',
-            }),
-          ) as any;
+        global.fetch = jest.fn().mockResolvedValue(
+          mockFetchResponse({
+            ok: false,
+            status: 404,
+            statusText: 'Not Found',
+            text: 'Member not found',
+          }),
+        ) as any;
 
         await expect(
           callTool('members', { id: 1, memberSubcommand: 'toggleAdmin', username: 'ghost' }),

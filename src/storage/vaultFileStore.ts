@@ -241,9 +241,12 @@ export function loadVaultFile(filePath: string): Map<string, VaultRecord> {
   }
 
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    logger.warn('Credential vault file did not contain a JSON object, starting with an empty vault', {
-      filePath,
-    });
+    logger.warn(
+      'Credential vault file did not contain a JSON object, starting with an empty vault',
+      {
+        filePath,
+      },
+    );
     return new Map();
   }
 

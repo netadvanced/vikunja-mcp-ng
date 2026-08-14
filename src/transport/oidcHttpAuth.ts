@@ -84,11 +84,7 @@ function readAuthorizationHeader(req: HttpRequestWithAuth): string | undefined {
  * bearer token. Never echoes the token; the body/`WWW-Authenticate` header
  * carry only the safe, generic message + error code the validator produced.
  */
-function writeAuthFailure(
-  res: ServerResponse,
-  error: unknown,
-  resourceMetadataUrl?: string
-): void {
+function writeAuthFailure(res: ServerResponse, error: unknown, resourceMetadataUrl?: string): void {
   let statusCode = 401;
   let wwwError: 'invalid_token' | 'insufficient_scope' = 'invalid_token';
   let message = 'Invalid or expired token';
@@ -187,7 +183,7 @@ export function createOidcHttpAuthMiddleware(deps: OidcHttpAuthDeps): OidcAuthMi
  */
 function safeResourceMetadataUrl(
   resolver: OidcHttpAuthDeps['resourceMetadataUrl'],
-  req: HttpRequestWithAuth
+  req: HttpRequestWithAuth,
 ): string | undefined {
   if (!resolver) {
     return undefined;
@@ -241,7 +237,7 @@ export async function setupOidcHttpAuth(
   oidc: OidcConfig,
   vault: VaultConfig,
   http?: HttpConfig,
-  loadDeps: () => Promise<JoseDeps> = loadJose
+  loadDeps: () => Promise<JoseDeps> = loadJose,
 ): Promise<void> {
   const deps = await loadDeps();
   const validator = createOidcJwtValidator(toValidatorConfig(oidc), deps);
@@ -271,6 +267,6 @@ export async function setupOidcHttpAuth(
   setOidcAuthMiddleware(createOidcHttpAuthMiddleware(middlewareDeps));
   logger.info(
     'OIDC HTTP authentication middleware registered (resource-server mode; ' +
-      'vault-backed credential provisioning via vikunja_auth provision)'
+      'vault-backed credential provisioning via vikunja_auth provision)',
   );
 }

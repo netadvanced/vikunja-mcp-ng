@@ -683,28 +683,27 @@ describe('vikunja-rest helper', () => {
       it.each([
         ['avatar upload', '/user/settings/avatar', '/user/settings/avatar/upload'],
         ['task attachments', '/tasks/42/attachments', '/tasks/42/attachments'],
-      ])('sends %s as multipart even after a JSON call on the same path group', async (
-        _label,
-        jsonPath,
-        multipartPath,
-      ) => {
-        // 1. JSON call first — this is what registers the breaker under the
-        //    shared derived name.
-        mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ ok: true }) }));
-        await vikunjaRestRequest(authManager, 'GET', jsonPath);
+      ])(
+        'sends %s as multipart even after a JSON call on the same path group',
+        async (_label, jsonPath, multipartPath) => {
+          // 1. JSON call first — this is what registers the breaker under the
+          //    shared derived name.
+          mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ ok: true }) }));
+          await vikunjaRestRequest(authManager, 'GET', jsonPath);
 
-        // 2. Multipart call second, same derived group.
-        mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ success: [] }) }));
-        const form = makeForm();
-        await vikunjaRestMultipartRequest(authManager, 'PUT', multipartPath, form);
+          // 2. Multipart call second, same derived group.
+          mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ success: [] }) }));
+          const form = makeForm();
+          await vikunjaRestMultipartRequest(authManager, 'PUT', multipartPath, form);
 
-        const [, init] = mockFetch.mock.calls[1] as [string, RequestInit];
-        // The body must still BE the FormData — not a JSON string of it.
-        expect(init.body).toBe(form);
-        expect(typeof init.body).not.toBe('string');
-        // And fetch must be left to set the multipart boundary itself.
-        expect((init.headers as Record<string, string>)['Content-Type']).toBeUndefined();
-      });
+          const [, init] = mockFetch.mock.calls[1] as [string, RequestInit];
+          // The body must still BE the FormData — not a JSON string of it.
+          expect(init.body).toBe(form);
+          expect(typeof init.body).not.toBe('string');
+          // And fetch must be left to set the multipart boundary itself.
+          expect((init.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+        },
+      );
 
       it('registers the multipart breaker under a distinct name', () => {
         expect(deriveRestBreakerName('/user/settings/avatar')).toBe('vikunja-rest-user-settings');

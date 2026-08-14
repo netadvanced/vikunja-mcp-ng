@@ -87,9 +87,9 @@ function rawRequest(
         path: options.path ?? '/mcp',
         headers: options.headers,
       },
-      res => {
+      (res) => {
         const chunks: Buffer[] = [];
-        res.on('data', chunk => chunks.push(chunk));
+        res.on('data', (chunk) => chunks.push(chunk));
         res.on('end', () =>
           resolve({
             statusCode: res.statusCode ?? 0,
@@ -112,8 +112,8 @@ function parseMcpMessages(res: RawResponse): unknown[] {
   if (contentType.includes('text/event-stream')) {
     return res.body
       .split('\n')
-      .filter(line => line.startsWith('data:'))
-      .map(line => JSON.parse(line.slice('data:'.length).trim()));
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => JSON.parse(line.slice('data:'.length).trim()));
   }
   if (res.body.trim().length === 0) {
     return [];
@@ -148,7 +148,7 @@ function extractToolResult(res: RawResponse): {
   const messages = parseMcpMessages(res) as Array<{
     result?: { isError?: boolean; content?: Array<{ type: string; text?: string }> };
   }>;
-  const withResult = messages.find(m => m.result !== undefined);
+  const withResult = messages.find((m) => m.result !== undefined);
   if (!withResult?.result) {
     throw new Error(`No tool result in response: ${res.body}`);
   }
@@ -175,12 +175,12 @@ function startFakeVikunja(): Promise<{ url: string; close: () => Promise<void> }
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({}));
   });
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const address = server.address() as AddressInfo;
       resolve({
         url: `http://127.0.0.1:${address.port}/api/v1`,
-        close: () => new Promise<void>(r => server.close(() => r())),
+        close: () => new Promise<void>((r) => server.close(() => r())),
       });
     });
   });
@@ -457,9 +457,11 @@ describe('OIDC threat model (docs/OIDC-RESOURCE-SERVER.md §4)', () => {
       const originalDebug = process.env.DEBUG;
       process.env.DEBUG = 'true';
       const captured: string[] = [];
-      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
-        captured.push(args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
-      });
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation((...args: unknown[]) => {
+          captured.push(args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+        });
 
       try {
         // Re-require the logger fresh under DEBUG=true — the singleton

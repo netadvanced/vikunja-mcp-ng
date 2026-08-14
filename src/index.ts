@@ -131,14 +131,18 @@ async function main(): Promise<void> {
     // requests; a shared server cannot back concurrent per-request
     // transports — see src/transport/httpTransport.ts). The module-level
     // `server` above stays the stdio-mode server and is left unconnected here.
-    await startHttpTransport(() => {
-      const requestServer = new McpServer({
-        name: 'vikunja-mcp-ng',
-        version: resolvePackageVersion(__dirname),
-      });
-      registerTools(requestServer, authManager, clientFactory ?? undefined);
-      return requestServer;
-    }, appConfig.http, appConfig.oidc);
+    await startHttpTransport(
+      () => {
+        const requestServer = new McpServer({
+          name: 'vikunja-mcp-ng',
+          version: resolvePackageVersion(__dirname),
+        });
+        registerTools(requestServer, authManager, clientFactory ?? undefined);
+        return requestServer;
+      },
+      appConfig.http,
+      appConfig.oidc,
+    );
     logger.info('Vikunja MCP server started (http transport)');
     return;
   }

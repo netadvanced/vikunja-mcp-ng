@@ -12,10 +12,7 @@ import { ConfigurationManager } from '../../src/config';
 import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 import { getCurrentIdentity } from '../../src/context/requestContext';
 import { getActiveVaultStore } from '../../src/storage/vaultFileStore';
-import {
-  setActiveEnrollmentService,
-  type EnrollmentService,
-} from '../../src/transport/enrollment';
+import { setActiveEnrollmentService, type EnrollmentService } from '../../src/transport/enrollment';
 
 // Mock context/requestContext: only getCurrentIdentity is used by auth.ts,
 // and only the oidc-http-mode provisioning describe block below sets it —
@@ -200,9 +197,15 @@ describe('Auth Tool', () => {
       // verifyConnection probes with ignoreRequestContext so the central
       // credential-threading resolver (src/utils/vikunja-rest.ts) never
       // substitutes a request-context manager for the connect/throwaway one.
-      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/info', undefined, {
-        ignoreRequestContext: true,
-      });
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/info',
+        undefined,
+        {
+          ignoreRequestContext: true,
+        },
+      );
       expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
         mockAuthManager,
         'GET',
@@ -222,12 +225,24 @@ describe('Auth Tool', () => {
         apiToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.signature',
       });
 
-      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/info', undefined, {
-        ignoreRequestContext: true,
-      });
-      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/user', undefined, {
-        ignoreRequestContext: true,
-      });
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/info',
+        undefined,
+        {
+          ignoreRequestContext: true,
+        },
+      );
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/user',
+        undefined,
+        {
+          ignoreRequestContext: true,
+        },
+      );
       expect(mockVikunjaRestRequest).not.toHaveBeenCalledWith(
         mockAuthManager,
         'GET',
@@ -1148,10 +1163,16 @@ describe('Auth Tool', () => {
 
       expect(
         isReadOnlyRejection(
-          await callAndCatch(toolHandler, { subcommand: 'provision', apiToken: 'tk_x', vikunjaUrl: 'https://vikunja.example.com' }),
+          await callAndCatch(toolHandler, {
+            subcommand: 'provision',
+            apiToken: 'tk_x',
+            vikunjaUrl: 'https://vikunja.example.com',
+          }),
         ),
       ).toBe(true);
-      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'deprovision' }))).toBe(true);
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'deprovision' })),
+      ).toBe(true);
     });
   });
 
@@ -1216,12 +1237,14 @@ describe('Auth Tool', () => {
       };
       (getActiveVaultStore as jest.Mock).mockReturnValue(mockVault);
       mockVikunjaRestRequest.mockReset();
-      mockVikunjaRestRequest.mockImplementation(async (_authManager: unknown, _method: string, path: string) => {
-        if (path === '/info') {
-          return { version: '1.2.3' };
-        }
-        return [];
-      });
+      mockVikunjaRestRequest.mockImplementation(
+        async (_authManager: unknown, _method: string, path: string) => {
+          if (path === '/info') {
+            return { version: '1.2.3' };
+          }
+          return [];
+        },
+      );
     });
 
     afterEach(() => {
@@ -1237,9 +1260,15 @@ describe('Auth Tool', () => {
           vikunjaUrl: 'https://vikunja.example.com',
         });
 
-        expect(mockVikunjaRestRequest).toHaveBeenCalledWith(expect.anything(), 'GET', '/info', undefined, {
-          ignoreRequestContext: true,
-        });
+        expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
+          expect.anything(),
+          'GET',
+          '/info',
+          undefined,
+          {
+            ignoreRequestContext: true,
+          },
+        );
         expect(mockVault.provision).toHaveBeenCalledWith(
           identity,
           'https://vikunja.example.com',
@@ -1288,9 +1317,7 @@ describe('Auth Tool', () => {
       });
 
       describe('SSO enrollment (issue #220): provision without a token', () => {
-        const createEnrollmentUrl = jest.fn(
-          () => 'https://mcp.example.test/enroll?ticket=abc123',
-        );
+        const createEnrollmentUrl = jest.fn(() => 'https://mcp.example.test/enroll?ticket=abc123');
 
         beforeEach(() => {
           createEnrollmentUrl.mockClear();
@@ -1391,7 +1418,7 @@ describe('Auth Tool', () => {
     });
 
     describe('deprovision', () => {
-      it('deletes the calling identity\'s vault record', async () => {
+      it("deletes the calling identity's vault record", async () => {
         const result = await callTool('deprovision');
 
         expect(mockVault.deprovision).toHaveBeenCalledWith(identity);

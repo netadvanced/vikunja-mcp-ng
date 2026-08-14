@@ -719,7 +719,9 @@ describe('ConfigurationManager', () => {
     it('rejects an invalid transport value (fail loud, never silently downgrade)', async () => {
       process.env.VIKUNJA_MCP_TRANSPORT = 'websocket';
 
-      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
     });
 
     it('reads host/port/path/allowedHosts from env vars', async () => {
@@ -742,7 +744,7 @@ describe('ConfigurationManager', () => {
       const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
       fs.writeFileSync(
         configPath,
-        JSON.stringify({ transport: 'http', http: { host: '0.0.0.0', port: 9001 } })
+        JSON.stringify({ transport: 'http', http: { host: '0.0.0.0', port: 9001 } }),
       );
       process.env.VIKUNJA_MCP_CONFIG = configPath;
 
@@ -767,7 +769,7 @@ describe('ConfigurationManager', () => {
       const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
       fs.writeFileSync(
         configPath,
-        JSON.stringify({ http: { publicUrl: 'https://mcp.example.org/mcp' } })
+        JSON.stringify({ http: { publicUrl: 'https://mcp.example.org/mcp' } }),
       );
       process.env.VIKUNJA_MCP_CONFIG = configPath;
 
@@ -778,7 +780,9 @@ describe('ConfigurationManager', () => {
     it('rejects a publicUrl that is not a valid URL', async () => {
       process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'not-a-url';
 
-      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
     });
 
     it('rejects a non-numeric port', async () => {
@@ -786,13 +790,17 @@ describe('ConfigurationManager', () => {
 
       // A non-numeric string fails the env-value numeric parse regex, so it
       // is passed through as a string and fails HttpConfigSchema's z.number().
-      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
     });
 
     it('rejects an out-of-range port', async () => {
       process.env.VIKUNJA_MCP_HTTP_PORT = '99999';
 
-      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
     });
 
     it('exposes the http config section via getHttpConfig', async () => {
@@ -851,7 +859,9 @@ describe('ConfigurationManager', () => {
     it('fails loud on an incomplete OIDC block (issuer without audience/jwksUri)', () => {
       process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
 
-      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
     });
 
     it('rejects a non-URL jwksUri', () => {
@@ -859,7 +869,9 @@ describe('ConfigurationManager', () => {
       process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
       process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'not-a-url';
 
-      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
     });
   });
 
@@ -894,13 +906,17 @@ describe('ConfigurationManager', () => {
       process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
       process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL = 'not-a-url';
 
-      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
     });
 
     it('rejects non-positive tokenExpiryDays', () => {
       process.env.VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS = '0';
 
-      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
     });
   });
 

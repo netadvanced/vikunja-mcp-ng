@@ -8,10 +8,7 @@
  * `GET /enroll/callback`.
  */
 
-import {
-  EnrollmentTicketStore,
-  MAX_PENDING_TICKETS,
-} from '../../src/transport/enrollmentTickets';
+import { EnrollmentTicketStore, MAX_PENDING_TICKETS } from '../../src/transport/enrollmentTickets';
 import type { Identity } from '../../src/context/requestContext';
 
 const alice: Identity = { issuer: 'https://idp.example.test/realms/e', sub: 'alice' };

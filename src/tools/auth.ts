@@ -25,7 +25,8 @@ import { getOrDetectCapabilities } from '../utils/capabilities';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 interface AuthArgs {
-  subcommand: 'connect' | 'status' | 'refresh' | 'disconnect' | 'info' | 'provision' | 'deprovision';
+  subcommand:
+    'connect' | 'status' | 'refresh' | 'disconnect' | 'info' | 'provision' | 'deprovision';
   apiUrl?: string | undefined;
   apiToken?: string | undefined;
   vikunjaUrl?: string | undefined;
@@ -152,7 +153,13 @@ async function verifyConnection(
     if (authType === 'jwt') {
       await vikunjaRestRequest(authManager, 'GET', '/user', undefined, verifyOptions);
     } else {
-      await vikunjaRestRequest(authManager, 'GET', '/projects?per_page=1', undefined, verifyOptions);
+      await vikunjaRestRequest(
+        authManager,
+        'GET',
+        '/projects?per_page=1',
+        undefined,
+        verifyOptions,
+      );
     }
   } catch (error) {
     authManager.disconnect();
@@ -460,7 +467,8 @@ export function registerAuthTool(
             }
             const identity = requireCurrentIdentity();
             const vikunjaUrl =
-              args.vikunjaUrl ?? ConfigurationManager.getInstance().loadConfiguration().auth.vikunjaUrl;
+              args.vikunjaUrl ??
+              ConfigurationManager.getInstance().loadConfiguration().auth.vikunjaUrl;
             if (!vikunjaUrl) {
               throw new MCPError(
                 ErrorCode.VALIDATION_ERROR,

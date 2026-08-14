@@ -18,7 +18,10 @@ import {
   resolveAllowedHosts,
   type HttpTransportHandle,
 } from '../../src/transport/httpTransport';
-import { setOidcAuthMiddleware, type HttpRequestWithAuth } from '../../src/transport/oidcMiddlewareSeam';
+import {
+  setOidcAuthMiddleware,
+  type HttpRequestWithAuth,
+} from '../../src/transport/oidcMiddlewareSeam';
 import { EnrollmentService, setActiveEnrollmentService } from '../../src/transport/enrollment';
 import { EnrollmentTicketStore } from '../../src/transport/enrollmentTickets';
 import { ConfigurationError } from '../../src/config/types';
@@ -63,7 +66,7 @@ interface RawResponse {
 
 function request(
   port: number,
-  options: { method?: string; path?: string; headers?: Record<string, string>; body?: string } = {}
+  options: { method?: string; path?: string; headers?: Record<string, string>; body?: string } = {},
 ): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     const req = http.request(
@@ -74,9 +77,9 @@ function request(
         path: options.path ?? '/mcp',
         headers: options.headers,
       },
-      res => {
+      (res) => {
         const chunks: Buffer[] = [];
-        res.on('data', chunk => chunks.push(chunk));
+        res.on('data', (chunk) => chunks.push(chunk));
         res.on('end', () => {
           resolve({
             statusCode: res.statusCode ?? 0,
@@ -84,7 +87,7 @@ function request(
             body: Buffer.concat(chunks).toString('utf-8'),
           });
         });
-      }
+      },
     );
     req.on('error', reject);
     if (options.body !== undefined) {
@@ -108,14 +111,14 @@ describe('httpTransport', () => {
 
     it('uses the explicitly configured allowedHosts list', () => {
       expect(
-        resolveAllowedHosts(baseHttpConfig({ allowedHosts: ['gateway.example.org:8765'] }))
+        resolveAllowedHosts(baseHttpConfig({ allowedHosts: ['gateway.example.org:8765'] })),
       ).toEqual(['gateway.example.org:8765']);
     });
 
     it('falls back to the default when allowedHosts is an empty array', () => {
-      expect(resolveAllowedHosts(baseHttpConfig({ host: '0.0.0.0', port: 9000, allowedHosts: [] }))).toEqual([
-        '0.0.0.0:9000',
-      ]);
+      expect(
+        resolveAllowedHosts(baseHttpConfig({ host: '0.0.0.0', port: 9000, allowedHosts: [] })),
+      ).toEqual(['0.0.0.0:9000']);
     });
   });
 
@@ -123,14 +126,16 @@ describe('httpTransport', () => {
     it('refuses to start when no OIDC middleware is registered', async () => {
       const mcpServer = newServer();
 
-      await expect(startHttpTransport(() => mcpServer, baseHttpConfig())).rejects.toThrow(ConfigurationError);
+      await expect(startHttpTransport(() => mcpServer, baseHttpConfig())).rejects.toThrow(
+        ConfigurationError,
+      );
     });
 
     it('the refusal error references the OIDC middleware requirement and H1b', async () => {
       const mcpServer = newServer();
 
       await expect(startHttpTransport(() => mcpServer, baseHttpConfig())).rejects.toThrow(
-        /OIDC authentication middleware/i
+        /OIDC authentication middleware/i,
       );
     });
 
@@ -200,7 +205,7 @@ describe('httpTransport', () => {
 
     it('routes an authorized request through to the real SDK transport', async () => {
       let sawAuth: HttpRequestWithAuth['auth'];
-      setOidcAuthMiddleware(async req => {
+      setOidcAuthMiddleware(async (req) => {
         req.auth = { token: 'x', clientId: 'test-client', scopes: [] };
         sawAuth = req.auth;
         return true;
@@ -256,7 +261,7 @@ describe('httpTransport', () => {
       setOidcAuthMiddleware(async () => true);
       handle = await startHttpTransport(
         newServer,
-        baseHttpConfig({ allowedHosts: ['127.0.0.1:1'] }) // intentionally wrong port
+        baseHttpConfig({ allowedHosts: ['127.0.0.1:1'] }), // intentionally wrong port
       );
       const port = getPort(handle);
 
@@ -359,7 +364,7 @@ describe('httpTransport', () => {
         handle = await startHttpTransport(
           newServer,
           baseHttpConfig({ publicUrl: 'https://mcp-vikunja.example.ch/mcp' }),
-          { issuer: ISSUER }
+          { issuer: ISSUER },
         );
         const port = getPort(handle);
 

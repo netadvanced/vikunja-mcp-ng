@@ -95,7 +95,7 @@ function scriptedFetch(
   const impl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = String(input);
     const method = init?.method ?? 'GET';
-    const entry = script.find(s => s.match(method, url));
+    const entry = script.find((s) => s.match(method, url));
     if (!entry) {
       unmatched.push(`${method} ${url}`);
       return new Response('{}', { status: 599 });
@@ -109,9 +109,11 @@ function scriptedFetch(
   return { impl, unmatched };
 }
 
-function makeService(
-  overrides: Partial<EnrollmentServiceDeps> = {},
-): { service: EnrollmentService; tickets: EnrollmentTicketStore; provisioned: unknown[] } {
+function makeService(overrides: Partial<EnrollmentServiceDeps> = {}): {
+  service: EnrollmentService;
+  tickets: EnrollmentTicketStore;
+  provisioned: unknown[];
+} {
   const tickets = new EnrollmentTicketStore();
   const provisioned: unknown[] = [];
   const deps: EnrollmentServiceDeps = {
@@ -167,9 +169,7 @@ describe('GET /enroll', () => {
     const ticket = enrollUrl.searchParams.get('ticket') as string;
 
     const res = fakeRes();
-    expect(
-      await service.handleRequest(fakeReq('GET', `/enroll?ticket=${ticket}`), res),
-    ).toBe(true);
+    expect(await service.handleRequest(fakeReq('GET', `/enroll?ticket=${ticket}`), res)).toBe(true);
 
     expect(res.statusCode).toBe(302);
     const location = new URL(res.headers['Location']);
@@ -186,9 +186,7 @@ describe('GET /enroll', () => {
 
   it('does not consume the ticket on /enroll (the IdP hop may be retried)', async () => {
     const { service, tickets } = makeService();
-    const ticket = new URL(service.createEnrollmentUrl(alice)).searchParams.get(
-      'ticket',
-    ) as string;
+    const ticket = new URL(service.createEnrollmentUrl(alice)).searchParams.get('ticket') as string;
     await service.handleRequest(fakeReq('GET', `/enroll?ticket=${ticket}`), fakeRes());
     expect(tickets.peek(ticket)).toEqual(alice);
   });
@@ -212,9 +210,7 @@ describe('GET /enroll', () => {
         },
       ]).impl,
     });
-    const ticket = new URL(service.createEnrollmentUrl(alice)).searchParams.get(
-      'ticket',
-    ) as string;
+    const ticket = new URL(service.createEnrollmentUrl(alice)).searchParams.get('ticket') as string;
     const res = fakeRes();
     await service.handleRequest(fakeReq('GET', `/enroll?ticket=${ticket}`), res);
     expect(res.statusCode).toBe(502);
@@ -226,9 +222,7 @@ describe('GET /enroll', () => {
       throw new Error('ECONNREFUSED');
     }) as unknown as typeof fetch;
     const { service } = makeService({ fetchImpl: failingFetch });
-    const ticket = new URL(service.createEnrollmentUrl(alice)).searchParams.get(
-      'ticket',
-    ) as string;
+    const ticket = new URL(service.createEnrollmentUrl(alice)).searchParams.get('ticket') as string;
     const res = fakeRes();
     await service.handleRequest(fakeReq('GET', `/enroll?ticket=${ticket}`), res);
     expect(res.statusCode).toBe(502);
@@ -297,14 +291,14 @@ describe('GET /enroll/callback', () => {
       {
         match: (m, u) => m === 'POST' && u.endsWith('/auth/openid/keycloak/callback'),
         json: { token: 'vikunja-user-jwt' },
-        capture: init => {
+        capture: (init) => {
           captures.callbackBody = JSON.parse(String(init?.body));
         },
       },
       {
         match: (m, u) => m === 'GET' && u.endsWith('/routes'),
         json: { tasks: { read_all: {}, update: {} }, projects: { read_all: {} } },
-        capture: init => {
+        capture: (init) => {
           captures.routesAuth = new Headers(init?.headers).get('Authorization');
         },
       },
@@ -312,7 +306,7 @@ describe('GET /enroll/callback', () => {
         match: (m, u) => m === 'PUT' && u.endsWith('/tokens'),
         status: 201,
         json: { id: 7, token: 'tk_minted_secret' },
-        capture: init => {
+        capture: (init) => {
           captures.tokenBody = JSON.parse(String(init?.body));
           captures.tokensAuth = new Headers(init?.headers).get('Authorization');
         },
@@ -496,7 +490,11 @@ describe('GET /enroll/callback', () => {
       { match: (m, u) => m === 'GET' && u.endsWith('/info'), json: providerInfo },
       { match: (m, u) => m === 'POST' && u.endsWith('/callback'), json: { token: 'jwt' } },
       { match: (m, u) => m === 'GET' && u.endsWith('/routes'), json: { tasks: { read_all: {} } } },
-      { match: (m, u) => m === 'PUT' && u.endsWith('/tokens'), status: 200, json: { token: 'tk_ok' } },
+      {
+        match: (m, u) => m === 'PUT' && u.endsWith('/tokens'),
+        status: 200,
+        json: { token: 'tk_ok' },
+      },
     ]).impl;
     const { res, provisioned } = await runCallback({ fetchImpl });
     expect(res.statusCode).toBe(200);

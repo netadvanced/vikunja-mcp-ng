@@ -552,8 +552,8 @@ export class ConfigurationManager {
     if (allowedHostsRaw !== undefined) {
       http.allowedHosts = allowedHostsRaw
         .split(',')
-        .map(host => host.trim())
-        .filter(host => host.length > 0);
+        .map((host) => host.trim())
+        .filter((host) => host.length > 0);
     }
     if (Object.keys(http).length > 0) {
       result.http = http;
@@ -570,8 +570,8 @@ export class ConfigurationManager {
     if (audienceRaw !== undefined) {
       const audiences = audienceRaw
         .split(',')
-        .map(value => value.trim())
-        .filter(value => value.length > 0);
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
       oidc.audience = audiences.length === 1 ? audiences[0] : audiences;
     }
     this.assignEnvValue(oidc, 'jwksUri', process.env.VIKUNJA_MCP_OIDC_JWKS_URI, false);
@@ -579,8 +579,8 @@ export class ConfigurationManager {
     if (allowedAlgsRaw !== undefined) {
       oidc.allowedAlgs = allowedAlgsRaw
         .split(',')
-        .map(value => value.trim())
-        .filter(value => value.length > 0);
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
     }
     this.assignEnvValue(oidc, 'clockSkewSec', process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC, true);
     this.assignEnvValue(oidc, 'requiredScope', process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE, false);

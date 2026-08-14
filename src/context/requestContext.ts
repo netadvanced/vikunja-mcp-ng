@@ -100,7 +100,9 @@ export function attachRequestContext(carrier: object, context: RequestContext): 
 }
 
 /** Read back a `RequestContext` stashed by {@link attachRequestContext}, if any. */
-export function takeAttachedRequestContext(carrier: object | undefined): RequestContext | undefined {
+export function takeAttachedRequestContext(
+  carrier: object | undefined,
+): RequestContext | undefined {
   if (!carrier) {
     return undefined;
   }

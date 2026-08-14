@@ -74,9 +74,9 @@ function rawRequest(
         path: options.path ?? '/mcp',
         headers: options.headers,
       },
-      res => {
+      (res) => {
         const chunks: Buffer[] = [];
-        res.on('data', chunk => chunks.push(chunk));
+        res.on('data', (chunk) => chunks.push(chunk));
         res.on('end', () =>
           resolve({
             statusCode: res.statusCode ?? 0,
@@ -100,8 +100,8 @@ function parseMcpMessages(res: RawResponse): unknown[] {
   if (contentType.includes('text/event-stream')) {
     return res.body
       .split('\n')
-      .filter(line => line.startsWith('data:'))
-      .map(line => JSON.parse(line.slice('data:'.length).trim()));
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => JSON.parse(line.slice('data:'.length).trim()));
   }
   if (res.body.trim().length === 0) {
     return [];
@@ -149,7 +149,7 @@ function extractToolResult(res: RawResponse): {
     result?: { isError?: boolean; content?: Array<{ type: string; text?: string }> };
     error?: unknown;
   }>;
-  const withResult = messages.find(m => m.result !== undefined);
+  const withResult = messages.find((m) => m.result !== undefined);
   if (!withResult?.result) {
     throw new Error(`No tool result in response: ${res.body}`);
   }
@@ -207,11 +207,14 @@ describe('OIDC HTTP transport — wave-H1 end-to-end acceptance', () => {
     const closureAuth = new AuthManager();
     const clientFactory = await createVikunjaClientFactory(closureAuth);
 
-    handle = await startHttpTransport(() => {
-      const server = new McpServer({ name: 'h1-e2e-server', version: '0.0.0' });
-      registerTools(server, closureAuth, clientFactory);
-      return server;
-    }, { host: '127.0.0.1', port, path: '/mcp' });
+    handle = await startHttpTransport(
+      () => {
+        const server = new McpServer({ name: 'h1-e2e-server', version: '0.0.0' });
+        registerTools(server, closureAuth, clientFactory);
+        return server;
+      },
+      { host: '127.0.0.1', port, path: '/mcp' },
+    );
   });
 
   afterEach(async () => {
@@ -263,7 +266,7 @@ describe('OIDC HTTP transport — wave-H1 end-to-end acceptance', () => {
     const messages = parseMcpMessages(res) as Array<{
       result?: { serverInfo?: { name?: string } };
     }>;
-    const init = messages.find(m => m.result?.serverInfo);
+    const init = messages.find((m) => m.result?.serverInfo);
     expect(init?.result?.serverInfo?.name).toBe('h1-e2e-server');
   });
 
@@ -279,7 +282,7 @@ describe('OIDC HTTP transport — wave-H1 end-to-end acceptance', () => {
     expect(res.statusCode).toBe(200);
     const result = extractToolResult(res);
     expect(result.isError).toBe(true);
-    const text = result.content?.map(c => c.text ?? '').join('\n') ?? '';
+    const text = result.content?.map((c) => c.text ?? '').join('\n') ?? '';
     // Proves the credential source (OidcStubCredentialSource -> null ->
     // createOidcAuthRequiredError) is in the chain: the generic "not
     // connected" message would say "vikunja_auth.connect", the provisioning
@@ -304,8 +307,14 @@ describe('OIDC HTTP transport — wave-H1 end-to-end acceptance', () => {
       }),
     ]);
 
-    const textA = extractToolResult(resA).content?.map(c => c.text ?? '').join('\n') ?? '';
-    const textB = extractToolResult(resB).content?.map(c => c.text ?? '').join('\n') ?? '';
+    const textA =
+      extractToolResult(resA)
+        .content?.map((c) => c.text ?? '')
+        .join('\n') ?? '';
+    const textB =
+      extractToolResult(resB)
+        .content?.map((c) => c.text ?? '')
+        .join('\n') ?? '';
 
     // Each response carries ITS OWN masked sub, never the other's — no ALS
     // bleed across the two interleaved requests.

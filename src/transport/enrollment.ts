@@ -321,7 +321,7 @@ export class EnrollmentService {
 
     const openid = info.auth?.openid_connect;
     const providers = (openid?.providers ?? []).filter(
-      p => typeof p.auth_url === 'string' && p.auth_url.length > 0,
+      (p) => typeof p.auth_url === 'string' && p.auth_url.length > 0,
     );
     if (openid?.enabled !== true || providers.length === 0) {
       throw new EnrollmentFlowError(
@@ -334,11 +334,11 @@ export class EnrollmentService {
 
     const wanted = this.deps.providerName;
     if (wanted !== undefined) {
-      const match = providers.find(p => p.key === wanted || p.name === wanted);
+      const match = providers.find((p) => p.key === wanted || p.name === wanted);
       if (!match) {
         logger.error('Enrollment: configured provider not present on the backend', {
           wanted,
-          available: providers.map(p => p.key),
+          available: providers.map((p) => p.key),
         });
         throw new EnrollmentFlowError(
           502,
@@ -349,7 +349,7 @@ export class EnrollmentService {
     }
     if (providers.length > 1) {
       logger.error('Enrollment: several OpenID providers but none configured', {
-        available: providers.map(p => p.key),
+        available: providers.map((p) => p.key),
       });
       throw new EnrollmentFlowError(
         502,
@@ -361,10 +361,7 @@ export class EnrollmentService {
   }
 
   /** `POST /auth/openid/{key}/callback` -> the user's Vikunja JWT. */
-  private async exchangeCodeForJwt(
-    provider: VikunjaOpenIdProvider,
-    code: string,
-  ): Promise<string> {
+  private async exchangeCodeForJwt(provider: VikunjaOpenIdProvider, code: string): Promise<string> {
     const key = provider.key ?? '';
     let response: Response;
     try {
