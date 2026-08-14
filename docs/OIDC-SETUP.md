@@ -455,6 +455,87 @@ is likewise refused, with an error that says so.
 
 ---
 
+## 9a. One-click SSO enrollment (auto-provisioning)
+
+> **Status: opt-in** (`VIKUNJA_MCP_ENROLL_ENABLED=true`). Manual provisioning (§9) keeps
+> working unchanged and remains the fallback for Vikunja backends without OpenID login.
+
+When the Vikunja backend is configured with the **same IdP** as an OpenID login provider
+(Vikunja's native `auth.openid.providers`), the token-pasting step in §9 can be removed
+entirely: an unprovisioned user calls `vikunja_auth provision` **with no token** and gets
+back a short-lived **enrollment URL**. One click later their own Vikunja API token has been
+minted and vaulted for them, and they return to their chat already connected.
+
+### The flow, validated against the Vikunja v2.4.0 source
+
+Facts below were verified against the upstream `go-vikunja/vikunja` tag `v2.4.0`
+(`pkg/modules/auth/openid/{openid,providers}.go`, `pkg/routes/routes.go`,
+`pkg/models/{api_tokens,api_routes}.go`) and the pinned local 2.4.0 e2e stack:
+
+1. `vikunja_auth provision` (no token, oidc-http mode, enrollment enabled) mints a
+   **ticket** — 32 random bytes, stored server-side, bound to the caller's validated
+   `(issuer, sub)`, single-use, TTL `enroll.ticketTtlSec` (default 10 min) — and returns
+   `https://<mcp-host>/enroll?ticket=...`.
+2. `GET /enroll` validates the ticket, discovers the Vikunja OpenID provider from
+   Vikunja's unauthenticated `GET /info` (`auth.openid_connect.providers[]` exposes `key`,
+   `auth_url` — the IdP's authorization endpoint from OIDC discovery — `client_id` and
+   `scope`), and 302-redirects the browser to the IdP authorization endpoint with
+   **Vikunja's own `client_id`**, `redirect_uri = https://<mcp-host>/enroll/callback`, and
+   `state = <ticket>`. Because the user already holds an IdP SSO session from their
+   connector login, this hop is typically zero-interaction.
+3. The IdP redirects back to `GET /enroll/callback?code=...&state=...`. The state is
+   consumed as the ticket (single-use, CSRF-safe, and the identity is taken **only** from
+   the server-side ticket record — never from anything the browser sent).
+4. The server forwards the code to Vikunja's native
+   `POST /api/v1/auth/openid/{providerKey}/callback` with body
+   `{"code": ..., "redirect_url": "https://<mcp-host>/enroll/callback", "scope": ...}`.
+   Vikunja performs the token exchange with the IdP itself, using **its own client
+   credentials** and — verified in `exchangeOidcTokens` — **exactly the `redirect_url`
+   string from that body** as the OAuth `redirect_uri`. On first login Vikunja
+   auto-creates the user account keyed by `(issuer, sub)` (`getOrCreateUser`; the `email`
+   claim is mandatory). The response is `{"token": "<jwt>"}` — a full user JWT.
+5. That JWT is short-lived in the 2.x line (`service.jwtttlshort`, **10 minutes**), which
+   is ample: the server immediately calls `GET /routes` (JWT-authenticated) to enumerate
+   every permission group/verb, then `PUT /tokens` with
+   `{title, permissions: <full map>, expires_at}` — `PUT /tokens` is JWT-only upstream
+   (API tokens can never mint API tokens), and OpenID-created users are not restricted
+   from it. The returned `tk_*` token is encrypted into the vault under the initiating
+   identity, the JWT is discarded, and the browser gets a minimal
+   "Connected — return to your chat" page.
+
+Two IdP-side consequences fall out of the verified facts:
+
+- **The authorization code must be minted for Vikunja's own OAuth client** — Vikunja
+  verifies the ID token's audience against its configured `client_id`, so a dedicated
+  "enroller" client cannot work without token exchange, which this design deliberately
+  avoids.
+- **`https://<mcp-host>/enroll/callback` must be added to the valid redirect URIs of
+  Vikunja's client at the IdP** (in Keycloak: the Vikunja client's "Valid redirect URIs").
+  This is the only IdP change enrollment needs.
+
+### Configuration
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `VIKUNJA_MCP_ENROLL_ENABLED` | `false` | Master switch for the enrollment endpoints + URL issuing. |
+| `VIKUNJA_MCP_ENROLL_PROVIDER` | *(auto)* | Vikunja OpenID provider `key` (or `name`) to enroll through. Optional when the backend has exactly one provider. |
+| `VIKUNJA_MCP_ENROLL_VIKUNJA_URL` | `VIKUNJA_URL` | Vikunja API base the enrollment flow talks to (`.../api/v1`). |
+| `VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS` | `365` | Expiry of the auto-minted per-user `tk_*` token. On expiry the user re-runs `provision` and clicks the fresh link. |
+| `VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC` | `600` | How long an issued enrollment URL stays clickable. |
+
+Set `VIKUNJA_MCP_HTTP_PUBLIC_URL` when running behind a gateway — enrollment URLs and the
+OAuth `redirect_uri` are derived from its origin (falling back to the request `Host`
+header, then the bind address).
+
+**Failure behaviour:** if the Vikunja backend has OpenID disabled, no providers, or the
+named provider is missing, `vikunja_auth provision` (without a token) fails with a clear
+error pointing at the manual path — and the manual path always keeps working. The
+auto-minted token grants the full `GET /routes` permission map (everything an API token
+*can* do upstream — `/tokens`, `user_*` and `subscriptions` routes are excluded by Vikunja
+itself for all API tokens).
+
+---
+
 ## 10. Operations
 
 **Persistence.** The vault file is the only durable state. If it lives on ephemeral storage,
