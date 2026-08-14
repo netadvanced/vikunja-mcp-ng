@@ -171,7 +171,10 @@ export function registerCaldavTokensTool(
         }
 
         if (error instanceof Error) {
-          throw new MCPError(ErrorCode.API_ERROR, `CalDAV token operation failed: ${error.message}`);
+          throw new MCPError(
+            ErrorCode.API_ERROR,
+            `CalDAV token operation failed: ${error.message}`,
+          );
         }
 
         throw new MCPError(

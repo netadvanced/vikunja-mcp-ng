@@ -19,7 +19,7 @@ export {
   evaluateStringComparison,
   evaluateArrayComparison,
   evaluateGroup,
-  applyFilter
+  applyFilter,
 } from './evaluators';
 
 // Types
@@ -30,12 +30,8 @@ export type {
   TaskFilterValidationConfig,
   TaskFilteringContext,
   TaskFilterExecutionResult,
-  TaskFilterStorage
+  TaskFilterStorage,
 } from '../types/filters';
 
 // Re-export commonly used types from base filter types
-export type {
-  FilterExpression,
-  FilterValidationResult,
-  SavedFilter
-} from '../../../types/filters';
+export type { FilterExpression, FilterValidationResult, SavedFilter } from '../../../types/filters';

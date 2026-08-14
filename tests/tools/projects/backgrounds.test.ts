@@ -52,7 +52,10 @@ describe('project backgrounds (G7)', () => {
   describe('removeProjectBackground', () => {
     it('throws a VALIDATION_ERROR when the project id is missing', async () => {
       await expect(removeProjectBackground({}, authManager)).rejects.toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'Project id is required for remove-background operation'),
+        new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          'Project id is required for remove-background operation',
+        ),
       );
       expect(mockFetch).not.toHaveBeenCalled();
     });
@@ -94,9 +97,9 @@ describe('project backgrounds (G7)', () => {
 
   describe('setUnsplashBackground', () => {
     it('throws a VALIDATION_ERROR when the project id is missing', async () => {
-      await expect(
-        setUnsplashBackground({ unsplashImageId: 'abc' }, authManager),
-      ).rejects.toThrow('Project id is required for set-unsplash-background operation');
+      await expect(setUnsplashBackground({ unsplashImageId: 'abc' }, authManager)).rejects.toThrow(
+        'Project id is required for set-unsplash-background operation',
+      );
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
@@ -124,7 +127,10 @@ describe('project backgrounds (G7)', () => {
         mockResponse({ text: JSON.stringify({ id: 5, title: 'My Project' }) }),
       );
 
-      const result = await setUnsplashBackground({ id: 5, unsplashImageId: 'photo-123' }, authManager);
+      const result = await setUnsplashBackground(
+        { id: 5, unsplashImageId: 'photo-123' },
+        authManager,
+      );
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
@@ -153,7 +159,12 @@ describe('project backgrounds (G7)', () => {
 
     it('passes through an unrelated HTTP error unchanged', async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse({ ok: false, status: 403, statusText: 'Forbidden', text: 'no access to this project' }),
+        mockResponse({
+          ok: false,
+          status: 403,
+          statusText: 'Forbidden',
+          text: 'no access to this project',
+        }),
       );
 
       await expect(

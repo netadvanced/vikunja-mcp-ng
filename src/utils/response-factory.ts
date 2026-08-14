@@ -45,7 +45,7 @@ export function createSimpleResponse(
     success?: boolean;
     metadata?: ResponseMetadata;
     processingTimeMs?: number;
-  }
+  },
 ): SimpleResponse {
   const { success = true, metadata } = options || {};
 
@@ -82,7 +82,7 @@ export function createTaskResponse(
   message: string,
   data: { tasks?: ResponseData[] } | ResponseData,
   metadata?: ResponseMetadata,
-  sessionId?: string
+  sessionId?: string,
 ): SimpleResponse {
   // Handle both task data structure and arbitrary data objects
   const responseData = data && typeof data === 'object' && 'tasks' in data ? data.tasks : data;
@@ -103,7 +103,12 @@ export function createTaskResponse(
 
   // Use createErrorResponse for failed operations, createSuccessResponse for successful ones
   if (successFlag) {
-    return createSuccessResponse(operation, message, responseData as ResponseData, responseMetadata);
+    return createSuccessResponse(
+      operation,
+      message,
+      responseData as ResponseData,
+      responseMetadata,
+    );
   } else {
     return createErrorResponse(operation, message, 'OPERATION_FAILED', responseMetadata);
   }
@@ -116,7 +121,7 @@ export function createSimpleErrorResponse(
   operation: string,
   message: string,
   errorCode: string = 'UNKNOWN_ERROR',
-  metadata?: ResponseMetadata
+  metadata?: ResponseMetadata,
 ): SimpleResponse {
   return createErrorResponse(operation, message, errorCode, metadata);
 }
@@ -141,7 +146,7 @@ export function createAorpFromData(
   operation: string,
   message: string,
   success: boolean = true,
-  details?: string
+  details?: string,
 ): SimpleResponse {
   return createSimpleResponse(operation, details || message, undefined, { success });
 }

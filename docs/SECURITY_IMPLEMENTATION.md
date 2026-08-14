@@ -1,260 +1,242 @@
-# Comprehensive Input Sanitization Implementation
+# Input Sanitization
 
-## Overview
+User-supplied strings that reach Vikunja — task titles and descriptions above
+all — pass through a rejection-based sanitization layer in
+[`src/utils/validation.ts`](../src/utils/validation.ts). This page documents what
+that layer actually blocks, what it deliberately lets through, and which code
+paths call it. It is the input-validation half of the security architecture; the
+credential-masking half lives in [`src/utils/security.ts`](../src/utils/security.ts)
+and is summarized under [Log masking](#log-masking) below.
 
-This implementation adds enterprise-grade input sanitization to protect against injection attacks, XSS, and other security vulnerabilities. The comprehensive security layer works seamlessly with the existing credential masking system in `security.ts`.
+Every claim here was re-checked against `src/` on 2026-08-03. Where an earlier
+version of this document described protections that were never implemented, or
+were removed from the code since, the claim has been deleted rather than left
+standing — see [What is deliberately not blocked](#what-is-deliberately-not-blocked).
 
-## Security Features Implemented
+**The model is rejection, not escaping.** `sanitizeString()` throws
+`MCPError(VALIDATION_ERROR, 'String contains potentially dangerous content')` when
+input matches any dangerous pattern. Input that passes is returned *normalized*
+(Unicode NFC, invisible characters stripped, residual traversal sequences
+defanged) but **not** HTML-escaped: this boundary is a JSON REST call to Vikunja,
+not an HTML render, so there is nothing to escape for.
 
-### 🛡️ Attack Vector Protection
+## Attack Vector Coverage
 
-#### XSS (Cross-Site Scripting) Protection
-- **Script Tag Detection**: Blocks `<script>`, `</script>`, `javascript:`, `vbscript:`
-- **Event Handler Blocking**: Prevents `onclick`, `onload`, `onerror`, and 40+ other event handlers
-- **HTML5 Protection**: Blocks dangerous attributes like `formaction`, `poster`, `autofocus`
-- **CSS Injection Prevention**: Blocks `expression()`, `@import`, `url()` and CSS-based attacks
-- **SVG Injection**: Blocks `<svg>`, `<object>`, `<embed>` and other vectors
-- **Data URL Protection**: Prevents `data:text/html`, `data:application/javascript`
-- **HTML-encoded XSS**: Blocks `&lt;script&gt;` and other encoded attacks
+Roughly 130 regex patterns, compiled fresh on each call to avoid `lastIndex`
+state bugs with the `g` flag.
 
-#### SQL Injection Protection
-- **SQL Keyword Detection**: Blocks `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `DROP`, `UNION`
-- **Boolean-based Detection**: Identifies `' OR '1'='1` patterns
-- **Time-based Attacks**: Blocks `WAITFOR DELAY`, `SLEEP()`, `BENCHMARK()`
-- **SQL Comment Detection**: Blocks `--`, `#`, `/* */` comment patterns
-- **Database Object Protection**: Blocks `INFORMATION_SCHEMA`, `SYS`, `MASTER` access
-- **Extended Procedures**: Blocks `XP_*`, `SP_*` dangerous procedures
+### Cross-Site Scripting
 
-#### Command Injection Protection
-- **Shell Metacharacters**: Blocks `;|&`$(){}[]`*?<>~` characters
-- **Command Detection**: Blocks `wget`, `curl`, `nc`, `netcat`, `ssh`, `ftp`
-- **File System Attacks**: Blocks `rm -rf`, `del /s`, `format`, `fdisk`
-- **Command Substitution**: Blocks `$(command)` and `` `command` `` patterns
-- **Redirection Protection**: Blocks `>/dev/null`, `2>&1`, `||` operators
+| Vector | Blocked |
+|---|---|
+| Script and frame tags | `<script>`, `</script>`, `<iframe>`, `<object>`, `<embed>`, `<link>`, `<meta>`, `<style>` |
+| SVG | `<svg>`, `</svg>` |
+| Event handlers | ~39 named handlers (`onclick`, `onload`, `onerror`, `onmouseover` … `onwaiting`) plus a generic `on\w+ = "…"` attribute pattern |
+| Tags carrying handlers | `<img … on…>`, `<div … on…>`, `<a … on…>`, `<body … on…>`, `<form … on…>`, `<input … on…>`, `<button … on…>`, `<select … on…>`, `<textarea … on…>` |
+| Dangerous protocols | `javascript:`, `vbscript:` |
+| Data URLs | `data:text/html`, `data:application/javascript`, `data:text/javascript`, `data:text/vbscript`, `data:application/x-javascript` |
+| CSS injection | `expression(`, `@import`, `url(`, `binding:`, `behavior:`, `-moz-binding:`, `-o-link:`, `-webkit-binding:` |
+| HTML5 attributes | `formaction=`, `poster=`, `autofocus=`, `controls=`, `autoplay=`, `loop=`, `muted=` |
+| HTML comments | `<!--` |
+| HTML-encoded equivalents | `&lt;script&gt;`, `&lt;iframe…&gt;`, `&lt;svg…&gt;`, `&lt;img … on…&gt;`, encoded comments |
 
-#### Path Traversal Protection
-- **Directory Traversal**: Blocks `../`, `..\`, directory navigation
-- **URL-encoded Traversal**: Blocks `%2e%2e%2f`, `%2e%2e%5c` encoded patterns
-- **System File Protection**: Blocks `/etc/passwd`, `/etc/shadow`, `/proc/` access
-- **Windows Path Protection**: Blocks `c:\windows\system32`, Windows-specific paths
+### SQL Injection
 
-#### LDAP Injection Protection
-- **LDAP Filter Injection**: Blocks `*)(&`, `*)(&*)` patterns
-- **Logical Operators**: Blocks `(|()`, `(!()` LDAP constructs
-- **Attribute Manipulation**: Prevents LDAP filter manipulation attacks
+Narrow by design (see [What is deliberately not blocked](#what-is-deliberately-not-blocked)):
 
-#### NoSQL Injection Protection
-- **MongoDB Operators**: Blocks `$gt`, `$lt`, `$where`, `$ne`, `$regex`
-- **JSON Injection**: Prevents MongoDB operator injection in JSON
-- **Query Manipulation**: Blocks NoSQL query manipulation patterns
+- **Time-based and blind attacks** — `WAITFOR DELAY`, `SLEEP(`, `BENCHMARK(`, `DBMS_PIPE.RECEIVE_MESSAGE`
+- **Boolean-based blind injection** — `' OR '1'='1`-shaped input. The pattern
+  requires a quote immediately after `OR`/`AND` plus an `=` comparison, so
+  ordinary prose like "Fix bug or issue" and "Cost or budget = 500" passes.
+- **Extended stored procedures** — `XP_*`, `SP_*`
 
-#### Unicode and Encoding Bypass Protection
-- **Zero-width Characters**: Removes `\u200b-\u200f`, `\u2060`, `\u180e`
-- **Variation Selectors**: Blocks `\uFE00-\uFE0F` character sequences
-- **Unicode Escapes**: Detects `\uXXXX`, `\xXX` escape sequences
-- **Normalization**: Applies Unicode NFC normalization to prevent bypasses
+### Command Injection
 
-#### Prototype Pollution Protection
-- **Dangerous Properties**: Blocks `__proto__`, `constructor`, `prototype`
-- **Object Methods**: Blocks `__defineGetter__`, `__lookupGetter__` etc.
-- **JSON Pollution**: Prevents prototype pollution via JSON parsing
-- **Safe Object Copying**: Creates safe copies without prototype chain
+- **Network and shell commands** — `wget`, `curl`, `nc`, `netcat`, `telnet`, `ssh`, `ftp`, `sftp`
+- **Destructive filesystem commands** — `rm -rf`, `del /s`, `format`, `fdisk`, `mkfs`
+- **Command substitution** — `$(command)` and `` `command` ``
+- **Redirection** — `>/dev/null`, `2>&1`, `||`
 
-## Implementation Architecture
+### Path Traversal
 
-### Core Components
+- `../` and `..\`
+- URL-encoded forms `%2e%2e/`, `%2e%2e%2f`, `%2e%2e%5c`
+- System paths `/etc/passwd`, `/etc/shadow`, `/proc/`
+- Windows paths `c:\windows\system32`, `\..\`
 
-#### 1. Enhanced `validation.ts` (770+ lines)
-**Location**: `src/utils/validation.ts`
+Sequences that survive rejection are additionally defanged on the accepted path:
+`../` becomes `...`, `/etc/passwd` becomes `etc/passwd`, and backslashes in
+`c:\windows\system32` are normalized to forward slashes.
 
-**Key Functions**:
-- `sanitizeString(value: string): string` - Main sanitization function
-- `validateValue(value: unknown)` - Array and value sanitization
-- `safeJsonStringify(obj: unknown): string` - Secure JSON serialization
-- `safeJsonParse(jsonString: string): FilterExpression` - Secure JSON parsing
+### LDAP Injection
 
-**Security Patterns**:
-- 180+ comprehensive regex patterns for attack detection
-- Unicode normalization and character cleaning
-- HTML entity escaping for safe content
-- Path traversal sanitization
-- Prototype pollution prevention
+Filter-manipulation constructs: `*)(&`, `*)(…*)`, `(|(…)|)`, `(!(…))`.
 
-#### 2. Enhanced `security.ts` Integration
-**Location**: `src/utils/security.ts`
+### NoSQL Injection
 
-**Enhancements**:
-- Integrated input sanitization for all log data
-- Seamless credential masking + input sanitization
-- Fallback protection for sanitization failures
-- Comprehensive protection for logging and monitoring
+MongoDB operator patterns `$gt`, `$lt`, `$ne`, `$where`, `$regex` — matched both
+raw (`$gt:`) and as quoted JSON keys (`"$gt":`), so `JSON.stringify` output does
+not slip past.
 
-#### 3. Task Creation Service Enhancement
-**Location**: `src/tools/tasks/crud/TaskCreationService.ts`
+### Unicode and Encoding Bypasses
 
-**Security Updates**:
-- Sanitizes task titles and descriptions before API calls
-- Comprehensive XSS protection for user-generated content
-- Maintains backward compatibility with existing functionality
+- Zero-width and invisible characters `\u200b`–`\u200f`, `\u2060`, `\u180e`, `\ufeff`
+- Variation selectors `\uFE00`–`\uFE0F`
+- Escape sequences `\uXXXX`, `\xXX`
+- NFC normalization applied before the value is returned
 
-### Security Strategy
+### Prototype Pollution
 
-#### Defense in Depth
-1. **Pattern Matching**: 180+ regex patterns detect known attack vectors
-2. **Content Rejection**: Dangerous content is rejected rather than sanitized
-3. **Unicode Normalization**: Prevents encoding-based bypass attempts
-4. **Safe Escaping**: HTML entity encoding for allowed content
-5. **Prototype Protection**: Safe object copying prevents pollution
-6. **Integration**: Works seamlessly with existing credential masking
+- `__proto__`, `constructor`, `prototype` rejected as string content and as field names
+- `__defineGetter__`, `__defineSetter__`, `__lookupGetter__`, `__lookupSetter__` rejected as field names and skipped during object copying
+- `safeJsonParse()` pre-scans the raw JSON string for pollution patterns before `JSON.parse` runs
+- `createSafeObjectCopy()` rebuilds objects without a prototype chain
 
-#### Performance Optimizations
-- **Sub-100ms Processing**: Typical inputs sanitized in <100ms
-- **Regex Caching**: Patterns compiled fresh each call to avoid state issues
-- **Early Rejection**: Fast failure on dangerous content detection
-- **Memory Efficient**: Minimal memory overhead for sanitization operations
+### Content Security Policy Vectors
 
-#### Zero False Negatives
-- **Comprehensive Coverage**: 40 test cases covering all attack vectors
-- **Real-world Scenarios**: Tests based on actual attack patterns
-- **Edge Case Handling**: Unicode, encoding, and bypass attempt protection
-- **Enterprise Standards**: Meets corporate security requirements
+`eval(`, `Function(`, `setTimeout(`, `setInterval(`, `atob(`, `btoa(`,
+`document.write`/`writeln`/`open`/`close`, `window.open`/`location`/`navigate`.
 
-## Testing Coverage
+## What Is Deliberately Not Blocked
 
-### Comprehensive Test Suite
-**Location**: `tests/utils/input-sanitization.test.ts` (40 tests)
+Earlier versions of this document claimed protections that do not exist in the
+code. They are absent on purpose, and re-adding them would break ordinary user
+content.
 
-**Test Categories**:
-1. **XSS Protection** (10 tests) - Script tags, event handlers, CSS injection
-2. **SQL Injection** (4 tests) - UNION, boolean, time-based attacks
-3. **Command Injection** (4 tests) - Shell commands, file operations
-4. **Path Traversal** (2 tests) - Directory traversal, encoded attacks
-5. **LDAP Injection** (2 tests) - Filter manipulation attacks
-6. **NoSQL Injection** (2 tests) - MongoDB operator injection
-7. **HTML Sanitization** (3 tests) - Safe HTML handling, escaping
-8. **Unicode Protection** (3 tests) - Bypass attempts, normalization
-9. **JSON Security** (3 tests) - Prototype pollution, safe parsing
-10. **Array Protection** (3 tests) - Bulk operation security
-11. **Integration Tests** (2 tests) - Security layer integration
+**Bare SQL keywords are allowed.** There is no pattern matching `SELECT`,
+`INSERT`, `UPDATE`, `DELETE`, `DROP` or `UNION` on its own, no `--` / `#` /
+`/* */` comment detection, and no `INFORMATION_SCHEMA` / `SYS` / `MASTER` object
+blocking. Task titles are prose; "Update the deploy docs" is not an attack.
 
-**Coverage Metrics**:
-- **Function Coverage**: 90.36%
-- **Branch Coverage**: 77.24%
-- **Line Coverage**: 100%
-- **Statement Coverage**: 90%
+**The broad shell-metacharacter blocklist was removed.** The old character list
+(`;` `&` `|` backtick `$` `(){}[]` quotes `*?<>~`) rejected any string containing
+a bare quote or angle bracket. Generic non-scripting HTML-like text
+(`<div class="x">`) now passes through unmodified; only constructs with an actual
+scripting or DOM-execution vector are rejected. See the explanatory comment at
+`src/utils/validation.ts:203-210`.
 
-### Security Validation
-- **All 40 Tests Passing**: 100% test success rate
-- **No Regressions**: Existing functionality preserved
-- **Performance Maintained**: Sub-100ms processing times
-- **Memory Efficient**: No memory leaks or bloat
+**No HTML entity encoding is applied.** Removed in `f2b0b93` for the same
+reason — the destination is a JSON API, not a rendered page.
 
-## Integration Points
+The residual accepted here is that input which merely *mentions* SQL keywords or
+shell metacharacters reaches Vikunja as data. That is safe at a JSON REST
+boundary and is not a gap to be closed by re-broadening the patterns.
 
-### 1. Task Management
-```typescript
-// Sanitization applied to user inputs
-const sanitizedTitle = sanitizeString(args.title);
-const sanitizedDescription = sanitizeString(args.description);
+## Implementation
+
+### Exported Surface
+
+`src/utils/validation.ts` (~980 lines):
+
+| Function | Purpose |
+|---|---|
+| `sanitizeString(value)` | Main entry point. Rejects dangerous content, normalizes the rest. Enforces `MAX_STRING_LENGTH` of 1000. |
+| `validateId(id, fieldName)` / `validateAndConvertId(id, fieldName)` | Positive-integer ID validation and coercion |
+| `validateValue(value)` | Array/scalar validation; max 100 elements, type-consistent, each string element run through `sanitizeString` |
+| `safeJsonStringify(obj)` / `safeJsonParse(str)` | Filter-expression serialization with pollution guards; 50 000-character parse cap |
+| `validateField` / `validateOperator` / `validateLogicalOperator` / `validateCondition` / `validateFilterExpression` | Zod-backed filter-expression validation with DoS bounds (`MAX_NESTING_DEPTH` 10, `MAX_CONDITIONS` 50) |
+
+**Only three of these are wired into production code paths.** Grepping `src/`
+for imports from `utils/validation` returns `sanitizeString`, `validateId` and
+`validateAndConvertId` and nothing else. `validateValue`, `safeJsonStringify`,
+`safeJsonParse` and the filter-expression validators are exported and covered by
+tests, but have **no caller anywhere in `src/`** — production filter parsing and
+validation goes through [`src/utils/filters.ts`](../src/utils/filters.ts)
+(`parseFilterString`, `SecurityValidator`, its own Zod schemas) instead. Treat
+them as available primitives, not as active defenses.
+
+### Call Sites
+
+| Location | What is sanitized |
+|---|---|
+| [`src/tools/tasks/crud/TaskCreationService.ts:72-75`](../src/tools/tasks/crud/TaskCreationService.ts) | Task `title` and `description` on create |
+| [`src/tools/tasks/subtasks.ts:310-312,503-504`](../src/tools/tasks/subtasks.ts) | Subtask `title` and `description`, including the bulk-create path |
+| [`src/utils/security.ts:295`](../src/utils/security.ts) | Every non-credential string passing through `sanitizeLogData` |
+
+### Log Masking
+
+`sanitizeLogData()` in `src/utils/security.ts` composes the two layers. String
+values that look like credentials — JWT shape, `tk_*`, `ghp_*`, AWS key IDs,
+database URIs, `Bearer`/`Basic` headers, PEM blocks — are replaced by
+`maskCredential()` output; everything else is passed through `sanitizeString()`.
+If sanitization throws, the value becomes `[SANITIZATION_FAILED]` so a hostile
+string can never break logging. Object keys are matched against a sensitive-key
+pattern list with Unicode-bypass normalization and a memoization cache.
+
+### Test-Only Methods on AuthManager
+
+`AuthManager` carries two test-only mutators in production code,
+`setTestUserId()` and `setTestTokenExpiry()`
+([`src/auth/AuthManager.ts:182,197`](../src/auth/AuthManager.ts)). Both call a
+private `validateTestEnvironment()` guard first, which throws unless
+`JEST_WORKER_ID` is set or `NODE_ENV` is `test` or `development`. The methods
+therefore ship in `dist/` but are inert in a production process.
+
+The richer testing surface — `getTestUserId`, `getTestTokenExpiry`,
+`updateSessionProperty`, and the `TestableAuthManager` interface and factories —
+lives entirely in `tests/utils/test-utils.ts`, monkey-patched onto instances at
+test time, and is never shipped.
+
+A 2025-08-18 audit report inherited from upstream claimed all five methods had
+been relocated out of `AuthManager` into dedicated `src/auth/` modules. That
+never happened in this repository; the paragraph above reflects what's actually
+true instead. Moving the two remaining mutators into `tests/utils/test-utils.ts`
+alongside the others is a small, unclaimed cleanup.
+
+## Testing
+
+[`tests/utils/input-sanitization.test.ts`](../tests/utils/input-sanitization.test.ts)
+holds 40 tests across 12 groups:
+
+| Group | Tests |
+|---|---|
+| XSS Protection in Task Content | 10 |
+| SQL Injection Protection in Filter Values | 4 |
+| Command Injection Protection | 4 |
+| Path Traversal Protection | 2 |
+| LDAP Injection Protection | 2 |
+| NoSQL Injection Protection | 2 |
+| HTML Attribute Sanitization | 3 |
+| Unicode and Encoding Attack Protection | 3 |
+| Content Security Policy Integration | 2 |
+| JSON Security | 3 |
+| Array and Bulk Operation Security | 3 |
+| Integration with Existing Security | 2 |
+
+Related suites: `security.test.ts`, `security-integration.test.ts`,
+`security-vulnerability.test.ts`, `security-performance.test.ts`,
+`filters-security.test.ts`, `filters-redos-security.test.ts`.
+
+Coverage of `src/utils/validation.ts` measured across the full suite on
+2026-08-03 — the file is exercised well beyond the sanitization suite alone:
+
+```text
+File            | % Stmts | % Branch | % Funcs | % Lines
+validation.ts   |    90.8 |    78.91 |     100 |   90.49
 ```
 
-### 2. Filter Operations
-```typescript
-// Array elements sanitized in bulk operations
-const sanitizedArray = validateValue(maliciousArray); // Throws on dangerous content
-```
+Repo-wide thresholds and the ratcheting policy live in [CLAUDE.md](../CLAUDE.md).
 
-### 3. JSON Processing
-```typescript
-// Safe JSON handling with sanitization
-const safeJson = safeJsonStringify(userInput);
-const parsedJson = safeJsonParse(jsonString);
-```
+## Performance
 
-### 4. Logging Integration
-```typescript
-// All log data passes through input sanitization
-const sanitizedLog = sanitizeLogData(userData);
-```
+Patterns are recompiled per call rather than cached, trading a little throughput
+for freedom from `lastIndex` state bugs. Rejection is early — the first matching
+pattern throws — so hostile input costs less than clean input.
+`security-performance.test.ts` asserts sub-100ms processing for typical inputs.
+The sensitive-key normalization cache in `security.ts` is unbounded by design and
+exposes `clearSecurityCache()` and `getSecurityCacheStats()` for long-running
+processes.
 
-## Security Impact
+## Standards Mapping
 
-### Before Implementation
-- ❌ No XSS protection in task titles/descriptions
-- ❌ Limited SQL injection protection
-- ❌ No command injection protection
-- ❌ Vulnerable to path traversal attacks
-- ❌ No Unicode bypass protection
-- ❌ Prototype pollution vulnerabilities
+- **OWASP Top 10** — A03 Injection, A05 Security Misconfiguration
+- **CWE** — CWE-79 (XSS), CWE-78 (OS command injection), CWE-22 (path traversal),
+  CWE-94 (code injection), CWE-1321 (prototype pollution). CWE-89 (SQL injection)
+  is addressed **partially and intentionally**: blind and time-based patterns
+  only, per [What is deliberately not blocked](#what-is-deliberately-not-blocked).
 
-### After Implementation
-- ✅ Comprehensive XSS protection (40+ patterns)
-- ✅ Complete SQL injection blocking
-- ✅ Full command injection prevention
-- ✅ Path traversal attack protection
-- ✅ Unicode and encoding bypass protection
-- ✅ Prototype pollution prevention
-- ✅ Enterprise-grade security standards
-- ✅ 40 comprehensive security tests
-- ✅ 90%+ test coverage
-- ✅ Sub-100ms performance
-- ✅ Zero breaking changes
+## See Also
 
-## Compliance and Standards
-
-### Security Frameworks Compliance
-- **OWASP Top 10**: Addresses injection, XSS, security misconfiguration
-- **CWE Mitigation**: Covers CWE-79, CWE-89, CWE-78, CWE-22, CWE-94
-- **NIST Guidelines**: Meets input validation and output encoding requirements
-- **Enterprise Security**: Suitable for corporate environments
-
-### Performance Requirements
-- **Latency**: <100ms for typical sanitization operations
-- **Throughput**: Handles high-volume input processing
-- **Memory**: Minimal memory footprint
-- **Scalability**: Linear performance scaling with input size
-
-## Maintenance and Updates
-
-### Pattern Updates
-- **Comprehensive Library**: 180+ patterns covering all major attack vectors
-- **Easy Updates**: Patterns organized by attack category for simple maintenance
-- **Test Coverage**: Each pattern has corresponding test validation
-- **Documentation**: Clear pattern documentation and examples
-
-### Security Monitoring
-- **Test Validation**: Automated tests prevent regressions
-- **Coverage Tracking**: 90%+ coverage ensures comprehensive protection
-- **Performance Monitoring**: Sub-100ms processing targets maintained
-- **Integration Testing**: Full stack security validation
-
-## Files Modified
-
-### Core Security Files
-1. `src/utils/validation.ts` - Enhanced with comprehensive sanitization
-2. `src/utils/security.ts` - Integrated input sanitization
-3. `src/tools/tasks/crud/TaskCreationService.ts` - User input sanitization
-4. `tests/utils/input-sanitization.test.ts` - 40 comprehensive security tests
-
-### New Security Capabilities
-- **XSS Protection**: Complete HTML/JavaScript injection prevention
-- **SQL Injection**: Comprehensive database attack protection
-- **Command Injection**: Shell command execution prevention
-- **Path Traversal**: File system attack protection
-- **Unicode Protection**: Encoding bypass prevention
-- **JSON Security**: Prototype pollution prevention
-- **Array Security**: Bulk operation protection
-- **Integration**: Seamless security layer integration
-
-## Conclusion
-
-This comprehensive input sanitization implementation provides enterprise-grade security protection against all major injection attack vectors. The implementation:
-
-1. **Prevents Security Vulnerabilities**: Blocks XSS, SQL injection, command injection
-2. **Maintains Performance**: Sub-100ms processing with minimal overhead
-3. **Provides Comprehensive Coverage**: 40+ test cases with 90%+ coverage
-4. **Ensures Zero Regressions**: All existing functionality preserved
-5. **Meets Enterprise Standards**: Suitable for corporate security requirements
-6. **Future-Proof Design**: Easy maintenance and pattern updates
-
-The comprehensive input sanitization layer completes the security foundation when combined with the existing credential masking system, providing full-spectrum protection for the Vikunja MCP server.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — where this layer sits in the request path
+- [RATE_LIMITING.md](RATE_LIMITING.md) — the DoS-protection half of the middleware story
+- [CONFIGURATION.md](CONFIGURATION.md) — secrets handling and the `_FILE` convention

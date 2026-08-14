@@ -32,13 +32,17 @@ export function getMaxTasksLimit(): number {
 
   if (envValue) {
     if (!/^\d+$/.test(envValue.trim())) {
-      logger.warn(`Invalid ${MAX_TASKS_ENV_VAR} value format: ${envValue}. Must be a positive integer. Using default: ${DEFAULT_MAX_TASKS}`);
+      logger.warn(
+        `Invalid ${MAX_TASKS_ENV_VAR} value format: ${envValue}. Must be a positive integer. Using default: ${DEFAULT_MAX_TASKS}`,
+      );
       return DEFAULT_MAX_TASKS;
     }
 
     const parsed = parseInt(envValue, 10);
     if (isNaN(parsed) || parsed <= 0) {
-      logger.warn(`Invalid ${MAX_TASKS_ENV_VAR} value: ${envValue}. Using default: ${DEFAULT_MAX_TASKS}`);
+      logger.warn(
+        `Invalid ${MAX_TASKS_ENV_VAR} value: ${envValue}. Using default: ${DEFAULT_MAX_TASKS}`,
+      );
       return DEFAULT_MAX_TASKS;
     }
     if (parsed > 50000) {
@@ -81,7 +85,10 @@ export function estimateTasksMemoryUsage(tasks?: Task[]): number {
 /**
  * Estimate memory usage for filter expressions and query parameters
  */
-export function estimateFilterMemoryUsage(filterExpression?: string, queryParams?: QueryParams): number {
+export function estimateFilterMemoryUsage(
+  filterExpression?: string,
+  queryParams?: QueryParams,
+): number {
   let memoryUsage = 0;
 
   if (filterExpression) {
@@ -136,7 +143,7 @@ export function validateTaskCountLimit(
   _options?: {
     filterExpression?: string;
     operationType?: string;
-  }
+  },
 ): {
   allowed: boolean;
   maxAllowed: number;
@@ -159,7 +166,7 @@ export function validateTaskCountLimit(
       estimatedMemoryMB,
       riskLevel: 'high',
       warnings,
-      error: `Task count ${taskCount} exceeds maximum allowed limit of ${maxTasks}. Estimated memory usage: ${estimatedMemoryMB}MB`
+      error: `Task count ${taskCount} exceeds maximum allowed limit of ${maxTasks}. Estimated memory usage: ${estimatedMemoryMB}MB`,
     };
   }
 
@@ -169,7 +176,9 @@ export function validateTaskCountLimit(
   }
 
   if (taskCount > maxTasks * 0.8) {
-    warnings.push(`Approaching task count limit: ${Math.round((taskCount / maxTasks) * 100)}% utilized`);
+    warnings.push(
+      `Approaching task count limit: ${Math.round((taskCount / maxTasks) * 100)}% utilized`,
+    );
   }
 
   return {
@@ -177,7 +186,7 @@ export function validateTaskCountLimit(
     maxAllowed: maxTasks,
     estimatedMemoryMB,
     riskLevel,
-    warnings
+    warnings,
   };
 }
 
@@ -186,7 +195,7 @@ export function validateTaskCountLimit(
  */
 export function validateTaskCountLimitLegacy(
   taskCount: number,
-  sampleTask?: Task
+  sampleTask?: Task,
 ): {
   allowed: boolean;
   maxAllowed: number;
@@ -199,7 +208,7 @@ export function validateTaskCountLimitLegacy(
     allowed: result.allowed,
     maxAllowed: result.maxAllowed,
     estimatedMemoryMB: result.estimatedMemoryMB,
-    ...(result.error && { error: result.error })
+    ...(result.error && { error: result.error }),
   };
 }
 
@@ -209,7 +218,7 @@ export function validateTaskCountLimitLegacy(
 export function logMemoryUsage(
   operation: string,
   taskCount: number,
-  estimatedMemory?: number
+  estimatedMemory?: number,
 ): void {
   const maxTasks = getMaxTasksLimit();
   const memoryEstimate = estimatedMemory || taskCount * 4096;
@@ -220,21 +229,18 @@ export function logMemoryUsage(
     taskCount,
     estimatedMemoryMB: memoryMB,
     maxTasksLimit: maxTasks,
-    utilizationPercent
+    utilizationPercent,
   });
 
   if (utilizationPercent > 80) {
-    logger.warn(
-      `Approaching task limit: ${utilizationPercent}% (${taskCount}/${maxTasks})`,
-      { operation, memoryMB }
-    );
+    logger.warn(`Approaching task limit: ${utilizationPercent}% (${taskCount}/${maxTasks})`, {
+      operation,
+      memoryMB,
+    });
   }
 
   if (memoryMB > 100) {
-    logger.warn(
-      `High memory usage: ${memoryMB}MB estimated for ${taskCount} tasks`,
-      { operation }
-    );
+    logger.warn(`High memory usage: ${memoryMB}MB estimated for ${taskCount} tasks`, { operation });
   }
 }
 
@@ -243,7 +249,7 @@ export function logMemoryUsage(
  */
 export function createTaskLimitExceededMessage(operation: string, requestedCount: number): string {
   const maxAllowed = getMaxTasksLimit();
-  const estimatedMemory = Math.ceil(requestedCount * 4096 / 1024 / 1024);
+  const estimatedMemory = Math.ceil((requestedCount * 4096) / 1024 / 1024);
 
   return `Cannot ${operation}: Requested ${requestedCount} tasks exceeds maximum limit of ${maxAllowed}.
 Estimated memory usage: ${estimatedMemory}MB.

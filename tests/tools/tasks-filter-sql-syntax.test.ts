@@ -38,7 +38,12 @@ const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
 /** Minimal Response-like object for the REST helper. */
-function mockRestResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+function mockRestResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
   return {
     ok,
@@ -144,13 +149,15 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       apiUrl: 'https://api.vikunja.test',
       apiToken: 'test-token',
       authType: 'api-token' as const,
-      userId: 'test-user-123'
+      userId: 'test-user-123',
     });
     mockAuthManager.getAuthType.mockReturnValue('api-token');
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     // Set up the session guard (returns the AuthManager now; the actual task
@@ -165,7 +172,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
     // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). create-subtask/bulk-create-subtasks identify the parent via `parentTaskId` — `id` is accepted as an alias for it on these two subcommands (supplying both and disagreeing is rejected). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
       expect.any(Object),
       expect.any(Object), // ToolAnnotations
       expect.any(Function),
@@ -179,9 +186,18 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
   });
 
   describe('Filter string with special characters', () => {
-    it('should pass simple filter with parentheses directly to API', async () => {
-      // Simple filter with parentheses
+    it('should re-serialize a redundantly-parenthesized single-condition filter before sending it to the API', async () => {
+      // Simple filter with parentheses the user didn't need to write - a
+      // single-condition group never needs wrapping parens.
       const filter = '(priority >= 4)';
+      // FilterValidator now always re-serializes the parsed expression
+      // through expressionToString (the server-boundary, snake_case-field
+      // translation) instead of passing the caller's raw string verbatim -
+      // see FilterValidator.validateAndParseFilter. groupToString only adds
+      // parens around a group with more than one condition, so the
+      // redundant parens the caller wrote are dropped; the semantics
+      // (a single `priority >= 4` condition) are unchanged.
+      const expectedFilter = 'priority >= 4';
 
       // Mock successful response - the API should handle the filter correctly
       mockRestTasksSuccess([mockHighPriorityTask]);
@@ -189,21 +205,21 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       const result = await callTool('list', { filter });
 
       // Cross-project listing goes straight to the direct-REST GET /tasks
-      // endpoint, with the raw filter string passed through as a query param.
+      // endpoint, with the re-serialized filter string passed as a query param.
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const [url] = mockFetch.mock.calls[0] as [string];
       expect(url).toBe(
         expectedTasksUrl([
           ['page', '1'],
           ['per_page', '1000'],
-          ['filter', filter],
+          ['filter', expectedFilter],
         ]),
       );
       expect(mockClient.tasks.getAllTasks).not.toHaveBeenCalled();
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('list-tasks');
       expect(markdown).toContain('1 task');
     });
@@ -247,7 +263,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
     });
 
     it('should handle complex filter with multiple conditions', async () => {
@@ -274,11 +290,13 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       query.set('per_page', '1000');
       query.set('filter', filter);
       const [url] = mockFetch.mock.calls[0] as [string];
-      expect(url).toBe(`https://api.vikunja.test/api/v1/projects/${projectId}/tasks?${query.toString()}`);
+      expect(url).toBe(
+        `https://api.vikunja.test/api/v1/projects/${projectId}/tasks?${query.toString()}`,
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
     });
 
     it('should combine filter with other query parameters', async () => {
@@ -307,7 +325,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
     });
 
     it('should handle API errors gracefully', async () => {
@@ -324,6 +342,65 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
         code: 'API_ERROR',
         message: expect.stringContaining('Vikunja REST request failed'),
       });
+    });
+  });
+
+  describe('camelCase field-name translation (filter-verbatim-passthrough fix)', () => {
+    // Regression test for the fix itself: a raw filter string using the
+    // filter DSL's canonical camelCase field name (`dueDate`) must reach
+    // Vikunja translated to the API's snake_case Task field (`due_date`) -
+    // previously (when `args.done` was undefined) the raw string reached
+    // the server untranslated, either erroring server-side (silently
+    // tripping the hybrid client-side fallback) or being ignored outright.
+    it('translates a camelCase field to snake_case in the outgoing filter, with no client-side fallback', async () => {
+      const filter = 'dueDate < now+7d';
+
+      mockRestTasksSuccess([mockHighPriorityTask]);
+
+      const result = await callTool('list', { filter });
+
+      // Exactly one call: server-side filtering succeeds outright, no
+      // fallback to per-project aggregation / client-side filtering.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe(
+        expectedTasksUrl([
+          ['page', '1'],
+          ['per_page', '1000'],
+          ['filter', 'due_date < now+7d'],
+        ]),
+      );
+
+      // The filtering-accounting metadata reports this honestly as
+      // server-side-used, not a client-side fallback - see
+      // RestCrossProjectFilteringStrategy.execute's metadata and
+      // src/tools/tasks/index.ts's filteringMessage derivation.
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('(filtered server-side)');
+      expect(markdown).not.toContain('server-side fallback');
+    });
+
+    it('translates a camelCase field combined with other conditions, still with no fallback', async () => {
+      const filter = 'priority >= 4 && dueDate < now+7d';
+
+      mockRestTasksSuccess([mockHighPriorityTask]);
+
+      const result = await callTool('list', { filter });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url] = mockFetch.mock.calls[0] as [string];
+      expect(url).toBe(
+        expectedTasksUrl([
+          ['page', '1'],
+          ['per_page', '1000'],
+          ['filter', '(priority >= 4 && due_date < now+7d)'],
+        ]),
+      );
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('(filtered server-side)');
     });
   });
 
@@ -356,70 +433,111 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       },
       {
         filter: "title like 'urgent'",
+        // FilterValidator re-serializes through expressionToString, which
+        // always double-quotes `like` values regardless of the caller's own
+        // quote style (single quotes here) - this is the server-boundary
+        // quoting Vikunja's filter grammar actually expects; the value
+        // itself (`urgent`) is unchanged. (parseQuotedString now accepts
+        // `'` as a quote character too, so the single-quoted value round-
+        // trips as the string `urgent`, not the literal 4 characters
+        // `'urgent'` - see parseQuotedString's doc comment.)
+        expectedFilter: 'title like "urgent"',
         description: 'like operator',
         expected: { page: 1, per_page: 1000 },
       },
       {
         filter: 'priority in 3,4,5',
+        // expressionToString normalizes `in`/`not in` array spacing to
+        // `value, value, ...` - the values themselves are unchanged.
+        expectedFilter: 'priority in 3, 4, 5',
         description: 'in operator',
         expected: { page: 1, per_page: 1000 },
       },
     ];
 
-    testCases.forEach(({ filter, description, expected }) => {
+    testCases.forEach(({ filter, expectedFilter, description, expected }) => {
       it(`should handle ${description}`, async () => {
         mockRestTasksSuccess([mockHighPriorityTask]);
 
         const result = await callTool('list', { filter });
 
         // Cross-project listing goes straight to the direct-REST GET /tasks
-        // endpoint, with the raw filter string passed through as a query param.
+        // endpoint. FilterValidator re-serializes the parsed filter through
+        // expressionToString before it reaches the API (see
+        // FilterValidator.validateAndParseFilter) rather than passing the
+        // caller's raw string verbatim, so the query param may differ
+        // syntactically (though never semantically) from `filter`.
         const [url] = mockFetch.mock.calls[0] as [string];
         expect(url).toBe(
           expectedTasksUrl([
             ['page', String(expected.page)],
             ['per_page', String(expected.per_page)],
-            ['filter', filter],
+            ['filter', expectedFilter ?? filter],
           ]),
         );
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);
-        expect(markdown).toContain("## ✅ Success");
+        expect(markdown).toContain('## ✅ Success');
       });
     });
   });
 
   describe('Filter logical operators', () => {
     const testCases = [
-      { filter: 'priority >= 4 && done = false', description: 'AND operator' },
-      { filter: 'priority >= 5 || done = true', description: 'OR operator' },
       {
+        filter: 'priority >= 4 && done = false',
+        // expressionToString's groupToString parenthesizes any group with
+        // more than one condition (here, both conditions share a single
+        // implicit group joined by `&&`) - matching the parenthesized form
+        // Vikunja's own filter grammar examples use for multi-condition
+        // groups (see docs/API_NOTES.md), and identical in meaning to the
+        // caller's unparenthesized original.
+        expectedFilter: '(priority >= 4 && done = false)',
+        description: 'AND operator',
+      },
+      {
+        filter: 'priority >= 5 || done = true',
+        expectedFilter: '(priority >= 5 || done = true)',
+        description: 'OR operator',
+      },
+      {
+        // Already fully parenthesized by the caller in a way that survives
+        // re-serialization unchanged: two separate groups (`(priority >= 4
+        // && done = false)` and `assignees in 1`) joined by the top-level
+        // `||` - the first group has 2 conditions so groupToString adds
+        // parens (already present); the second has exactly 1 condition so
+        // groupToString adds none (none were present).
         filter: '(priority >= 4 && done = false) || assignees in 1',
         description: 'combined operators with parentheses',
       },
     ];
 
-    testCases.forEach(({ filter, description }) => {
+    testCases.forEach(({ filter, description, ...rest }) => {
+      const expectedFilter = 'expectedFilter' in rest ? rest.expectedFilter : filter;
       it(`should handle ${description}`, async () => {
         mockRestTasksSuccess([mockHighPriorityTask]);
 
         const result = await callTool('list', { filter });
 
         // Cross-project listing goes straight to the direct-REST GET /tasks
-        // endpoint, with the raw filter string passed through as a query param.
+        // endpoint. FilterValidator re-serializes the parsed filter through
+        // expressionToString before it reaches the API (see
+        // FilterValidator.validateAndParseFilter) rather than passing the
+        // caller's raw string verbatim, so the query param may differ
+        // syntactically (though never semantically) from `filter`.
         const [url] = mockFetch.mock.calls[0] as [string];
         expect(url).toBe(
           expectedTasksUrl([
             ['page', '1'],
             ['per_page', '1000'],
-            ['filter', filter],
+            ['filter', expectedFilter],
           ]),
         );
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);
-        expect(markdown).toContain("## ✅ Success");
+        expect(markdown).toContain('## ✅ Success');
       });
     });
   });

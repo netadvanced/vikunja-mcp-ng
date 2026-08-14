@@ -10,7 +10,7 @@ import type { AuthSession } from '../types';
  */
 export enum Permission {
   // Basic permissions available with both auth types
-  BASIC_AUTH = 'basic_auth',          // Basic authentication required
+  BASIC_AUTH = 'basic_auth', // Basic authentication required
   TASK_MANAGEMENT = 'task_management', // Task CRUD operations
   PROJECT_MANAGEMENT = 'project_management', // Project CRUD operations
   LABEL_MANAGEMENT = 'label_management', // Label CRUD operations
@@ -18,11 +18,11 @@ export enum Permission {
   FILTER_MANAGEMENT = 'filter_management', // Filter operations
   TEMPLATE_MANAGEMENT = 'template_management', // Template operations
   WEBHOOK_MANAGEMENT = 'webhook_management', // Webhook operations
-  BATCH_IMPORT = 'batch_import',      // Batch import operations
-  
+  BATCH_IMPORT = 'batch_import', // Batch import operations
+
   // Advanced permissions requiring JWT authentication
   USER_MANAGEMENT = 'user_management', // User operations and settings
-  DATA_EXPORT = 'data_export',        // Export operations
+  DATA_EXPORT = 'data_export', // Export operations
 }
 
 /**
@@ -40,7 +40,7 @@ const AUTH_TYPE_PERMISSIONS: Record<'api-token' | 'jwt', Permission[]> = {
     Permission.WEBHOOK_MANAGEMENT,
     Permission.BATCH_IMPORT,
   ],
-  'jwt': [
+  jwt: [
     // JWT includes all API token permissions plus advanced ones
     Permission.BASIC_AUTH,
     Permission.TASK_MANAGEMENT,
@@ -61,21 +61,21 @@ const AUTH_TYPE_PERMISSIONS: Record<'api-token' | 'jwt', Permission[]> = {
  */
 export const TOOL_PERMISSIONS: Record<string, Permission[]> = {
   // Always available (only requires basic auth)
-  'vikunja_auth': [Permission.BASIC_AUTH],
-  'vikunja_tasks': [Permission.BASIC_AUTH, Permission.TASK_MANAGEMENT],
-  'vikunja_projects': [Permission.BASIC_AUTH, Permission.PROJECT_MANAGEMENT],
-  'vikunja_labels': [Permission.BASIC_AUTH, Permission.LABEL_MANAGEMENT],
-  'vikunja_teams': [Permission.BASIC_AUTH, Permission.TEAM_MANAGEMENT],
-  'vikunja_filters': [Permission.BASIC_AUTH, Permission.FILTER_MANAGEMENT],
-  'vikunja_templates': [Permission.BASIC_AUTH, Permission.TEMPLATE_MANAGEMENT],
-  'vikunja_webhooks': [Permission.BASIC_AUTH, Permission.WEBHOOK_MANAGEMENT],
-  'vikunja_batch_import': [Permission.BASIC_AUTH, Permission.BATCH_IMPORT],
-  
+  vikunja_auth: [Permission.BASIC_AUTH],
+  vikunja_tasks: [Permission.BASIC_AUTH, Permission.TASK_MANAGEMENT],
+  vikunja_projects: [Permission.BASIC_AUTH, Permission.PROJECT_MANAGEMENT],
+  vikunja_labels: [Permission.BASIC_AUTH, Permission.LABEL_MANAGEMENT],
+  vikunja_teams: [Permission.BASIC_AUTH, Permission.TEAM_MANAGEMENT],
+  vikunja_filters: [Permission.BASIC_AUTH, Permission.FILTER_MANAGEMENT],
+  vikunja_templates: [Permission.BASIC_AUTH, Permission.TEMPLATE_MANAGEMENT],
+  vikunja_webhooks: [Permission.BASIC_AUTH, Permission.WEBHOOK_MANAGEMENT],
+  vikunja_batch_import: [Permission.BASIC_AUTH, Permission.BATCH_IMPORT],
+
   // JWT-only tools
-  'vikunja_users': [Permission.BASIC_AUTH, Permission.USER_MANAGEMENT],
-  'vikunja_export_project': [Permission.BASIC_AUTH, Permission.DATA_EXPORT],
-  'vikunja_request_user_export': [Permission.BASIC_AUTH, Permission.DATA_EXPORT],
-  'vikunja_download_user_export': [Permission.BASIC_AUTH, Permission.DATA_EXPORT],
+  vikunja_users: [Permission.BASIC_AUTH, Permission.USER_MANAGEMENT],
+  vikunja_export_project: [Permission.BASIC_AUTH, Permission.DATA_EXPORT],
+  vikunja_request_user_export: [Permission.BASIC_AUTH, Permission.DATA_EXPORT],
+  vikunja_download_user_export: [Permission.BASIC_AUTH, Permission.DATA_EXPORT],
 };
 
 /**
@@ -95,10 +95,7 @@ export class PermissionManager {
   /**
    * Check if current session has required permissions for a tool
    */
-  static checkToolPermission(
-    session: AuthSession | null,
-    toolName: string
-  ): PermissionCheckResult {
+  static checkToolPermission(session: AuthSession | null, toolName: string): PermissionCheckResult {
     // Handle no authentication
     if (!session) {
       const requiredPermissions = TOOL_PERMISSIONS[toolName] || [Permission.BASIC_AUTH];
@@ -124,7 +121,7 @@ export class PermissionManager {
    */
   static checkPermissions(
     session: AuthSession,
-    requiredPermissions: Permission[]
+    requiredPermissions: Permission[],
   ): PermissionCheckResult {
     const availablePermissions = AUTH_TYPE_PERMISSIONS[session.authType];
     const missingPermissions: Permission[] = [];
@@ -175,7 +172,7 @@ export class PermissionManager {
    */
   private static shouldSuggestJWT(missingPermissions: Permission[]): boolean {
     const jwtOnlyPermissions = [Permission.USER_MANAGEMENT, Permission.DATA_EXPORT];
-    return missingPermissions.some(permission => jwtOnlyPermissions.includes(permission));
+    return missingPermissions.some((permission) => jwtOnlyPermissions.includes(permission));
   }
 
   /**
@@ -183,19 +180,24 @@ export class PermissionManager {
    */
   private static generatePermissionErrorMessage(
     currentAuthType: 'api-token' | 'jwt',
-    missingPermissions: Permission[]
+    missingPermissions: Permission[],
   ): string {
     const jwtOnlyPermissions = [Permission.USER_MANAGEMENT, Permission.DATA_EXPORT];
-    const needsJWT = missingPermissions.some(permission => jwtOnlyPermissions.includes(permission));
+    const needsJWT = missingPermissions.some((permission) =>
+      jwtOnlyPermissions.includes(permission),
+    );
 
     if (needsJWT && currentAuthType === 'api-token') {
       const operationNames = missingPermissions
-        .filter(p => jwtOnlyPermissions.includes(p))
-        .map(p => {
+        .filter((p) => jwtOnlyPermissions.includes(p))
+        .map((p) => {
           switch (p) {
-            case Permission.USER_MANAGEMENT: return 'user operations';
-            case Permission.DATA_EXPORT: return 'export operations';
-            default: return p.replace('_', ' ');
+            case Permission.USER_MANAGEMENT:
+              return 'user operations';
+            case Permission.DATA_EXPORT:
+              return 'export operations';
+            default:
+              return p.replace('_', ' ');
           }
         })
         .join(' and ');

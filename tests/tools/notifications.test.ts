@@ -33,7 +33,12 @@ jest.mock('../../src/auth/AuthManager');
 const mockFetch = jest.fn();
 global.fetch = mockFetch as any;
 
-function mockResponse(opts: { ok?: boolean; status?: number; statusText?: string; body?: unknown }): Response {
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  body?: unknown;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', body } = opts;
   const text = body === undefined ? '' : JSON.stringify(body);
   return {
@@ -115,22 +120,25 @@ describe('Notifications Tool', () => {
 
     it('should list notifications with no query params', async () => {
       const notifications = [
-        { id: 1, name: 'task.assigned', created: '2026-01-01T00:00:00Z', notification: {}, read_at: null },
+        {
+          id: 1,
+          name: 'task.assigned',
+          created: '2026-01-01T00:00:00Z',
+          notification: {},
+          read_at: null,
+        },
       ];
       mockFetch.mockResolvedValueOnce(mockResponse({ body: notifications }));
 
       const result = await mockHandler({ subcommand: 'list' });
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.vikunja.test/api/v1/notifications',
-        {
-          method: 'GET',
-          headers: {
-            Authorization: 'Bearer test-token',
-            'Content-Type': 'application/json',
-          },
+      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/api/v1/notifications', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
         },
-      );
+      });
       expect(result.content[0].text).toContain('**success:** true');
       expect(result.content[0].text).toContain('**count:** 1');
     });
@@ -148,7 +156,13 @@ describe('Notifications Tool', () => {
 
     it('should filter to unread notifications client-side when unreadOnly is set', async () => {
       const notifications = [
-        { id: 1, name: 'a', created: '2026-01-01T00:00:00Z', notification: {}, read_at: '2026-01-02T00:00:00Z' },
+        {
+          id: 1,
+          name: 'a',
+          created: '2026-01-01T00:00:00Z',
+          notification: {},
+          read_at: '2026-01-02T00:00:00Z',
+        },
         { id: 2, name: 'b', created: '2026-01-01T00:00:00Z', notification: {}, read_at: null },
       ];
       mockFetch.mockResolvedValueOnce(mockResponse({ body: notifications }));
@@ -188,7 +202,13 @@ describe('Notifications Tool', () => {
 
     it('should omit relatedTask when the notification payload does not embed a recognizable task', async () => {
       const notifications = [
-        { id: 1, name: 'team.added', created: '2026-01-01T00:00:00Z', notification: { team: { id: 1 } }, read_at: null },
+        {
+          id: 1,
+          name: 'team.added',
+          created: '2026-01-01T00:00:00Z',
+          notification: { team: { id: 1 } },
+          read_at: null,
+        },
       ];
       mockFetch.mockResolvedValueOnce(mockResponse({ body: notifications }));
 
@@ -217,7 +237,13 @@ describe('Notifications Tool', () => {
     it('should treat a null/non-object notification payload as having no relatedTask', async () => {
       const notifications = [
         { id: 1, name: 'x', created: '2026-01-01T00:00:00Z', notification: null, read_at: null },
-        { id: 2, name: 'y', created: '2026-01-01T00:00:00Z', notification: 'a string', read_at: null },
+        {
+          id: 2,
+          name: 'y',
+          created: '2026-01-01T00:00:00Z',
+          notification: 'a string',
+          read_at: null,
+        },
       ];
       mockFetch.mockResolvedValueOnce(mockResponse({ body: notifications }));
 
@@ -250,29 +276,35 @@ describe('Notifications Tool', () => {
 
   describe('mark-read', () => {
     it('should throw error for invalid notification id', async () => {
-      await expect(mockHandler({ subcommand: 'mark-read', notificationId: 'invalid' })).rejects.toThrow(
+      await expect(
+        mockHandler({ subcommand: 'mark-read', notificationId: 'invalid' }),
+      ).rejects.toThrow(
         new MCPError(ErrorCode.VALIDATION_ERROR, 'notificationId must be a positive integer'),
       );
     });
 
     it('should call POST once when the toggle already lands on read', async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse({ body: { id: 5, name: 'x', created: '2026-01-01T00:00:00Z', read_at: '2026-01-02T00:00:00Z' } }),
+        mockResponse({
+          body: {
+            id: 5,
+            name: 'x',
+            created: '2026-01-01T00:00:00Z',
+            read_at: '2026-01-02T00:00:00Z',
+          },
+        }),
       );
 
       const result = await mockHandler({ subcommand: 'mark-read', notificationId: 5 });
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.vikunja.test/api/v1/notifications/5',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: 'Bearer test-token',
-            'Content-Type': 'application/json',
-          },
+      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/api/v1/notifications/5', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
         },
-      );
+      });
       expect(result.content[0].text).toContain('marked as read');
     });
 
@@ -282,10 +314,19 @@ describe('Notifications Tool', () => {
       // stays idempotent no matter the notification's starting state.
       mockFetch
         .mockResolvedValueOnce(
-          mockResponse({ body: { id: 5, name: 'x', created: '2026-01-01T00:00:00Z', read_at: null } }),
+          mockResponse({
+            body: { id: 5, name: 'x', created: '2026-01-01T00:00:00Z', read_at: null },
+          }),
         )
         .mockResolvedValueOnce(
-          mockResponse({ body: { id: 5, name: 'x', created: '2026-01-01T00:00:00Z', read_at: '2026-01-02T00:00:00Z' } }),
+          mockResponse({
+            body: {
+              id: 5,
+              name: 'x',
+              created: '2026-01-01T00:00:00Z',
+              read_at: '2026-01-02T00:00:00Z',
+            },
+          }),
         );
 
       const result = await mockHandler({ subcommand: 'mark-read', notificationId: 5 });
@@ -313,16 +354,13 @@ describe('Notifications Tool', () => {
 
       const result = await mockHandler({ subcommand: 'mark-all-read' });
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.vikunja.test/api/v1/notifications',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: 'Bearer test-token',
-            'Content-Type': 'application/json',
-          },
+      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/api/v1/notifications', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
         },
-      );
+      });
       expect(result.content[0].text).toContain('All notifications marked as read.');
     });
 

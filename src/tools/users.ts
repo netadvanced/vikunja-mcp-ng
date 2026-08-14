@@ -26,7 +26,6 @@ import type { components } from '../types/generated/vikunja-openapi';
 // returns plain user.User with no `settings` key at all.
 type VikunjaUserWithSettings = components['schemas']['v1.UserWithSettings'];
 type VikunjaUser = components['schemas']['user.User'];
-type VikunjaUserGeneralSettings = components['schemas']['models.UserGeneralSettings'];
 type VikunjaMessage = components['schemas']['models.Message'];
 // GET/POST /user/settings/avatar exchange this JSON shape — NOT image bytes.
 // See docs/ENDPOINT-TAIL-RETRIAGE.md G5: the old "binary/blob" label for
@@ -86,8 +85,14 @@ function transformUser(rawUser: unknown): User {
         return '[object Object]';
       }
     }
-    return value !== null && value !== undefined && typeof value !== 'object' && typeof value !== 'boolean' ?
-      (typeof value === 'string' || typeof value === 'number' ? value.toString() : '') : '';
+    return value !== null &&
+      value !== undefined &&
+      typeof value !== 'object' &&
+      typeof value !== 'boolean'
+      ? typeof value === 'string' || typeof value === 'number'
+        ? value.toString()
+        : ''
+      : '';
   };
 
   // GET /user returns v1.UserWithSettings: language, timezone, week_start,
@@ -97,13 +102,15 @@ function transformUser(rawUser: unknown): User {
   // object. (id, username, email, created, updated remain top-level.)
   // Search results (GET /users) return plain user.User with no `settings` key,
   // so this safely falls back to an empty object for those.
-  const settings: Record<string, unknown> =
-    isUserObject(user.settings) ? user.settings : {};
+  const settings: Record<string, unknown> = isUserObject(user.settings) ? user.settings : {};
 
   const result = {
     id: Number(user.id) || 0,
     username: safeString(user.username),
-    frontend_settings: (settings.frontend_settings && typeof settings.frontend_settings === 'object') ? settings.frontend_settings : {},
+    frontend_settings:
+      settings.frontend_settings && typeof settings.frontend_settings === 'object'
+        ? settings.frontend_settings
+        : {},
   };
 
   const userResult: User = {
@@ -117,15 +124,25 @@ function transformUser(rawUser: unknown): User {
     ...(settings.language ? { language: safeString(settings.language) } : {}),
     ...(settings.timezone ? { timezone: safeString(settings.timezone) } : {}),
     ...(settings.week_start !== undefined ? { week_start: Number(settings.week_start) } : {}),
-    ...(settings.email_reminders_enabled !== undefined ? { email_reminders_enabled: Boolean(settings.email_reminders_enabled) } : {}),
-    ...(settings.overdue_tasks_reminders_enabled !== undefined ? { overdue_tasks_reminders_enabled: Boolean(settings.overdue_tasks_reminders_enabled) } : {}),
-    ...(settings.overdue_tasks_reminders_time ? { overdue_tasks_reminders_time: safeString(settings.overdue_tasks_reminders_time) } : {}),
+    ...(settings.email_reminders_enabled !== undefined
+      ? { email_reminders_enabled: Boolean(settings.email_reminders_enabled) }
+      : {}),
+    ...(settings.overdue_tasks_reminders_enabled !== undefined
+      ? { overdue_tasks_reminders_enabled: Boolean(settings.overdue_tasks_reminders_enabled) }
+      : {}),
+    ...(settings.overdue_tasks_reminders_time
+      ? { overdue_tasks_reminders_time: safeString(settings.overdue_tasks_reminders_time) }
+      : {}),
   };
 
   return userResult;
 }
 
-export function registerUsersTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerUsersTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_users',
     withReadOnlyNote(
@@ -199,7 +216,11 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
 
         switch (subcommand) {
           case 'current': {
-            const rawUser = await vikunjaRestRequest<VikunjaUserWithSettings>(authManager, 'GET', '/user');
+            const rawUser = await vikunjaRestRequest<VikunjaUserWithSettings>(
+              authManager,
+              'GET',
+              '/user',
+            );
 
             // Safely transform the raw REST user response to our extended User
             // interface. Extended properties may not be available from all Vikunja API versions
@@ -268,7 +289,11 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
 
           case 'settings': {
             // Get current user first to get their settings
-            const rawUser = await vikunjaRestRequest<VikunjaUserWithSettings>(authManager, 'GET', '/user');
+            const rawUser = await vikunjaRestRequest<VikunjaUserWithSettings>(
+              authManager,
+              'GET',
+              '/user',
+            );
 
             // Safely transform the raw REST user response to our extended User interface
             const user: User = transformUser(rawUser);
@@ -283,9 +308,15 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
               ...(user.timezone && { timezone: user.timezone }),
               ...(user.week_start !== undefined && { weekStart: user.week_start }),
               frontendSettings: user.frontend_settings || {},
-              ...(user.email_reminders_enabled !== undefined && { emailRemindersEnabled: user.email_reminders_enabled }),
-              ...(user.overdue_tasks_reminders_enabled !== undefined && { overdueTasksRemindersEnabled: user.overdue_tasks_reminders_enabled }),
-              ...(user.overdue_tasks_reminders_time && { overdueTasksRemindersTime: user.overdue_tasks_reminders_time }),
+              ...(user.email_reminders_enabled !== undefined && {
+                emailRemindersEnabled: user.email_reminders_enabled,
+              }),
+              ...(user.overdue_tasks_reminders_enabled !== undefined && {
+                overdueTasksRemindersEnabled: user.overdue_tasks_reminders_enabled,
+              }),
+              ...(user.overdue_tasks_reminders_time && {
+                overdueTasksRemindersTime: user.overdue_tasks_reminders_time,
+              }),
             };
 
             const response = createStandardResponse(
@@ -361,11 +392,15 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
               authManager,
               'POST',
               '/user/settings/general',
-              settings as unknown as VikunjaUserGeneralSettings,
+              settings,
             );
 
             // Get updated user info
-            const rawUpdatedUser = await vikunjaRestRequest<VikunjaUserWithSettings>(authManager, 'GET', '/user');
+            const rawUpdatedUser = await vikunjaRestRequest<VikunjaUserWithSettings>(
+              authManager,
+              'GET',
+              '/user',
+            );
 
             // Safely transform the raw REST user response to our extended User interface
             const updatedUser: User = transformUser(rawUpdatedUser);
@@ -395,11 +430,8 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
             // 'update-settings'' timezone argument needs to be validated
             // against before being sent to POST /user/settings/general —
             // Vikunja rejects unrecognized zone names there.
-            const timezones = (await vikunjaRestRequest<string[]>(
-              authManager,
-              'GET',
-              '/user/timezones',
-            )) ?? [];
+            const timezones =
+              (await vikunjaRestRequest<string[]>(authManager, 'GET', '/user/timezones')) ?? [];
 
             const response = createStandardResponse(
               'get-user-timezones',
@@ -456,12 +488,9 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
             // POST /user/settings/avatar, body v1.UserAvatarProvider. Zod's
             // enum check above already rejects anything outside
             // AVATAR_PROVIDERS before the handler runs.
-            await vikunjaRestRequest<VikunjaMessage>(
-              authManager,
-              'POST',
-              '/user/settings/avatar',
-              { avatar_provider: args.avatarProvider } as VikunjaUserAvatarProvider,
-            );
+            await vikunjaRestRequest<VikunjaMessage>(authManager, 'POST', '/user/settings/avatar', {
+              avatar_provider: args.avatarProvider,
+            });
 
             const response = createStandardResponse(
               'set-avatar-provider',

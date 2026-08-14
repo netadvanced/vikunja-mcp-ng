@@ -106,9 +106,10 @@ export class ClientSideFilteringStrategy implements TaskFilteringStrategy {
 
     logger.info('Using client-side filtering', {
       filter: filterString,
-      endpoint: args.projectId && !args.allProjects
-        ? 'getProjectTasks'
-        : 'getProjectTasks (aggregated across all projects)'
+      endpoint:
+        args.projectId && !args.allProjects
+          ? 'getProjectTasks'
+          : 'getProjectTasks (aggregated across all projects)',
     });
 
     // Load tasks without server-side filtering
@@ -125,7 +126,7 @@ export class ClientSideFilteringStrategy implements TaskFilteringStrategy {
 
     logger.info('Tasks loaded for client-side filtering', {
       totalTasksLoaded: tasks?.length || 0,
-      filter: filterString
+      filter: filterString,
     });
 
     // Apply client-side filtering if we have a filter expression
@@ -138,9 +139,9 @@ export class ClientSideFilteringStrategy implements TaskFilteringStrategy {
       // generated `models.Task`; the cast here bridges the two nominally-
       // distinct aliases at this boundary.
       filteredTasks = applyFilter(
-        safeTasks as unknown as Parameters<typeof applyFilter>[0],
+        safeTasks,
         filterExpression,
-      ) as unknown as VikunjaTask[];
+      );
       logger.debug('Applied client-side filter', {
         originalCount,
         filteredCount: filteredTasks?.length || 0,
@@ -156,8 +157,8 @@ export class ClientSideFilteringStrategy implements TaskFilteringStrategy {
         clientSideFiltering: Boolean(filterExpression),
         filteringNote: filterExpression
           ? 'Client-side filtering applied'
-          : 'No filter applied; tasks returned as loaded'
-      }
+          : 'No filter applied; tasks returned as loaded',
+      },
     };
   }
 }

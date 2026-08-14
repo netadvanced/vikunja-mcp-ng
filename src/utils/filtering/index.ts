@@ -1,6 +1,6 @@
 /**
  * Filtering strategy pattern exports
- * 
+ *
  * This module provides a clean interface for the filtering strategy pattern
  * implementation, allowing easy import of all necessary components.
  */
@@ -20,8 +20,8 @@ export { FilteringContext } from './FilteringContext';
 // Type definitions
 export type {
   FilteringArgs,
-  FilteringParams, 
+  FilteringParams,
   FilteringMetadata,
   FilteringResult,
-  StrategyConfig
+  StrategyConfig,
 } from './types';

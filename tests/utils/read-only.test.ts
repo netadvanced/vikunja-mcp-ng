@@ -279,9 +279,7 @@ describe('read-only.ts', () => {
 
     it('rejects an unrecognized subcommand (fail-closed default) when read-only', () => {
       setReadOnly(true);
-      expect(() => assertWriteAllowed('vikunja_tasks', 'not-a-real-subcommand')).toThrow(
-        MCPError,
-      );
+      expect(() => assertWriteAllowed('vikunja_tasks', 'not-a-real-subcommand')).toThrow(MCPError);
     });
   });
 

@@ -327,13 +327,20 @@ async function main(): Promise<void> {
 
   const vikunjaToken = await getCredentials();
 
-  // Sweep any leftover battle-* data from a previous crashed run under a
-  // different run id -- belt-and-suspenders on top of each scenario's own
-  // before/after cleanup (see docs/BATTLE-TESTING.md).
+  // Sweeping the bare `battle-` root collects strays from previously crashed
+  // runs -- but it also deletes a CONCURRENT run's live data, since every
+  // run's prefix starts with it. That makes it housekeeping, not startup
+  // behaviour, so it is opt-in via `--sweep-all` (issue #205). Each
+  // scenario still cleans its own unique `battle-<runid>-<scenario>-` prefix
+  // before and after itself, which is what actually guarantees a clean slate.
   const globalClient = new RestClient(VIKUNJA_URL, vikunjaToken);
-  log("Sweeping any leftover 'battle-*' data from prior runs before starting...");
-  const sweep = await cleanupByPrefix(globalClient, 'battle-');
-  log(`  swept ${sweep.deletedProjects} project(s), ${sweep.deletedLabels} label(s).`);
+  if (process.argv.includes('--sweep-all')) {
+    log("--sweep-all: sweeping ALL 'battle-*' data, including any concurrent run's...");
+    const sweep = await cleanupByPrefix(globalClient, 'battle-');
+    log(`  swept ${sweep.deletedProjects} project(s), ${sweep.deletedTasks} task(s), ${sweep.deletedLabels} label(s).`);
+  } else {
+    log("Skipping the global 'battle-*' sweep (pass --sweep-all to collect strays from crashed runs).");
+  }
 
   const results: ScenarioRunResult[] = [];
   for (const scenario of scenariosToRun) {

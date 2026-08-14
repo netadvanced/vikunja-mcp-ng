@@ -17,6 +17,20 @@
 
 set -euo pipefail
 
+# Minimum supported Vikunja version (the v1-floor). Policy value, not derivable from the spec —
+# this is the single machine-readable source of truth for it (docs/RELEASING.md §3, the e2e
+# floor-regression matrix run, and the `-vikunja<min>` Docker compat alias all reference it).
+# Every release's pre-tag matrix validates the image against BOTH this floor and the aligned
+# version above, so both get a `-vikunja<ver>` alias on the same image digest.
+MIN_SUPPORTED_VIKUNJA="2.3.0"
+
+# `--min-supported` prints the floor and exits (no spec/jq needed) — used by the release workflow
+# to emit the floor compat tag alongside the aligned one.
+if [[ "${1:-}" == "--min-supported" ]]; then
+  echo "$MIN_SUPPORTED_VIKUNJA"
+  exit 0
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SPEC_FILE="${REPO_ROOT}/docs/vikunja-openapi.json"
 COMPOSE_FILE="${REPO_ROOT}/docker/e2e/docker-compose.yml"

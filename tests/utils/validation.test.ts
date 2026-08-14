@@ -16,7 +16,7 @@ import {
   safeJsonStringify,
   safeJsonParse,
   validateId,
-  validateAndConvertId
+  validateAndConvertId,
 } from '../../src/utils/validation';
 import { StorageDataError } from '../../src/utils/storage-errors';
 import { MCPError, ErrorCode } from '../../src/types/errors';
@@ -34,7 +34,7 @@ describe('Security Validation Utilities', () => {
         { input: 'Hello <world>', expected: 'Hello <world>' },
         { input: 'Test "quoted" string', expected: 'Test "quoted" string' },
         { input: "Test 'single' quotes", expected: "Test 'single' quotes" },
-        { input: 'path/to/file', expected: 'path/to/file' }
+        { input: 'path/to/file', expected: 'path/to/file' },
       ];
 
       testCases.forEach(({ input, expected }) => {
@@ -53,7 +53,7 @@ describe('Security Validation Utilities', () => {
     it('should throw error for strings exceeding maximum length', () => {
       const longString = 'a'.repeat(1001);
       expect(() => sanitizeString(longString)).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'String value exceeds maximum length of 1000')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'String value exceeds maximum length of 1000'),
       );
     });
 
@@ -79,7 +79,7 @@ describe('Security Validation Utilities', () => {
         '<div onmouseover="alert(1)">',
         '<a href="javascript:alert(1)">',
         'data:text/html,<script>alert(1)</script>',
-        'data:application/javascript,alert(1)'
+        'data:application/javascript,alert(1)',
       ];
 
       // Test that all patterns throw errors
@@ -93,12 +93,14 @@ describe('Security Validation Utilities', () => {
         '&lt;script&gt;alert(1)&lt;&#x2F;script&gt;',
         '&lt;img src=x onerror=alert(1)&gt;',
         '&lt;iframe&gt;',
-        '&lt;svg&gt;'
+        '&lt;svg&gt;',
       ];
 
-      encodedXss.forEach(pattern => {
+      encodedXss.forEach((pattern) => {
         expect(() => sanitizeString(pattern)).toThrow(MCPError);
-        expect(() => sanitizeString(pattern)).toThrow('String contains potentially dangerous content');
+        expect(() => sanitizeString(pattern)).toThrow(
+          'String contains potentially dangerous content',
+        );
       });
     });
 
@@ -114,9 +116,20 @@ describe('Security Validation Utilities', () => {
 
   describe('validateField', () => {
     it('should accept valid field names', () => {
-      const validFields = ['done', 'priority', 'percentDone', 'dueDate', 'assignees', 'labels', 'created', 'updated', 'title', 'description'];
+      const validFields = [
+        'done',
+        'priority',
+        'percentDone',
+        'dueDate',
+        'assignees',
+        'labels',
+        'created',
+        'updated',
+        'title',
+        'description',
+      ];
 
-      validFields.forEach(field => {
+      validFields.forEach((field) => {
         expect(validateField(field)).toBe(field);
       });
     });
@@ -129,11 +142,22 @@ describe('Security Validation Utilities', () => {
     });
 
     it('should block prototype pollution attempts', () => {
-      const pollutionPatterns = ['__proto__', 'constructor', 'prototype', '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__'];
+      const pollutionPatterns = [
+        '__proto__',
+        'constructor',
+        'prototype',
+        '__defineGetter__',
+        '__defineSetter__',
+        '__lookupGetter__',
+        '__lookupSetter__',
+      ];
 
-      pollutionPatterns.forEach(pattern => {
+      pollutionPatterns.forEach((pattern) => {
         expect(() => validateField(pattern)).toThrow(
-          new MCPError(ErrorCode.VALIDATION_ERROR, 'Invalid field name: potential prototype pollution')
+          new MCPError(
+            ErrorCode.VALIDATION_ERROR,
+            'Invalid field name: potential prototype pollution',
+          ),
         );
       });
     });
@@ -141,7 +165,7 @@ describe('Security Validation Utilities', () => {
     it('should reject invalid field names', () => {
       const invalidFields = ['invalidField', 'createdAt', 'updatedAt', 'custom', 'hack'];
 
-      invalidFields.forEach(field => {
+      invalidFields.forEach((field) => {
         expect(() => validateField(field)).toThrow(MCPError);
       });
     });
@@ -151,7 +175,7 @@ describe('Security Validation Utilities', () => {
     it('should accept valid operators', () => {
       const validOperators = ['=', '!=', '>', '>=', '<', '<=', 'like', 'in', 'not in'];
 
-      validOperators.forEach(operator => {
+      validOperators.forEach((operator) => {
         expect(validateOperator(operator)).toBe(operator);
       });
     });
@@ -165,7 +189,7 @@ describe('Security Validation Utilities', () => {
     it('should reject invalid operators', () => {
       const invalidOperators = ['===', '!==', 'like%', '%like', 'regex', 'matches'];
 
-      invalidOperators.forEach(operator => {
+      invalidOperators.forEach((operator) => {
         expect(() => validateOperator(operator)).toThrow(MCPError);
       });
     });
@@ -186,7 +210,7 @@ describe('Security Validation Utilities', () => {
     it('should reject invalid logical operators', () => {
       const invalidOperators = ['AND', 'OR', 'and', 'or', '&', '|'];
 
-      invalidOperators.forEach(operator => {
+      invalidOperators.forEach((operator) => {
         expect(() => validateLogicalOperator(operator)).toThrow(MCPError);
       });
     });
@@ -218,7 +242,7 @@ describe('Security Validation Utilities', () => {
 
     it('should accept arrays of strings', () => {
       const stringArray = ['item1', 'item2', 'item3'];
-      expect(validateValue(stringArray)).toEqual(stringArray.map(item => item)); // Will be sanitized
+      expect(validateValue(stringArray)).toEqual(stringArray.map((item) => item)); // Will be sanitized
     });
 
     it('should accept arrays of finite numbers', () => {
@@ -229,7 +253,7 @@ describe('Security Validation Utilities', () => {
     it('should reject arrays exceeding size limit', () => {
       const largeArray = Array.from({ length: 101 }, (_, i) => `item${i}`);
       expect(() => validateValue(largeArray)).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'Array values cannot exceed 100 elements')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'Array values cannot exceed 100 elements'),
       );
     });
 
@@ -239,7 +263,10 @@ describe('Security Validation Utilities', () => {
 
     it('should reject arrays with mixed types', () => {
       expect(() => validateValue([1, 'string', true])).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'Array elements must be all strings or all finite numbers, not mixed')
+        new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          'Array elements must be all strings or all finite numbers, not mixed',
+        ),
       );
     });
 
@@ -267,10 +294,10 @@ describe('Security Validation Utilities', () => {
         { field: 'title', operator: '=', value: 'test' },
         { field: 'priority', operator: '>', value: 5 },
         { field: 'done', operator: '=', value: true },
-        { field: 'assignees', operator: 'in', value: ['user1', 'user2'] }
+        { field: 'assignees', operator: 'in', value: ['user1', 'user2'] },
       ];
 
-      validConditions.forEach(condition => {
+      validConditions.forEach((condition) => {
         expect(() => validateCondition(condition)).not.toThrow();
       });
     });
@@ -289,10 +316,10 @@ describe('Security Validation Utilities', () => {
         { operator: '=', value: 'test' }, // missing field
         { field: '', operator: '=', value: 'test' }, // empty field
         {}, // completely empty
-        { extra: 'property' } // no valid properties
+        { extra: 'property' }, // no valid properties
       ];
 
-      incompleteConditions.forEach(condition => {
+      incompleteConditions.forEach((condition) => {
         expect(() => validateCondition(condition)).toThrow(MCPError);
       });
     });
@@ -303,9 +330,15 @@ describe('Security Validation Utilities', () => {
     });
 
     it('should cascade validation errors from field, operator, and value validation', () => {
-      expect(() => validateCondition({ field: '__proto__', operator: '=', value: 'test' })).toThrow(MCPError);
-      expect(() => validateCondition({ field: 'title', operator: 'invalid', value: 'test' })).toThrow(MCPError);
-      expect(() => validateCondition({ field: 'title', operator: '=', value: { invalid: 'object' } })).toThrow(MCPError);
+      expect(() => validateCondition({ field: '__proto__', operator: '=', value: 'test' })).toThrow(
+        MCPError,
+      );
+      expect(() =>
+        validateCondition({ field: 'title', operator: 'invalid', value: 'test' }),
+      ).toThrow(MCPError);
+      expect(() =>
+        validateCondition({ field: 'title', operator: '=', value: { invalid: 'object' } }),
+      ).toThrow(MCPError);
     });
 
     it('should provide detailed error messages with index information', () => {
@@ -321,25 +354,25 @@ describe('Security Validation Utilities', () => {
           groups: [
             {
               conditions: [{ field: 'title', operator: '=', value: 'test' }],
-              operator: '&&'
-            }
-          ]
+              operator: '&&',
+            },
+          ],
         },
         {
           groups: [
             {
               conditions: [
                 { field: 'title', operator: '=', value: 'test' },
-                { field: 'priority', operator: '>', value: 5 }
+                { field: 'priority', operator: '>', value: 5 },
               ],
-              operator: '&&'
-            }
+              operator: '&&',
+            },
           ],
-          operator: '||'
-        }
+          operator: '||',
+        },
       ];
 
-      validExpressions.forEach(expression => {
+      validExpressions.forEach((expression) => {
         expect(() => validateFilterExpression(expression)).not.toThrow();
       });
     });
@@ -358,7 +391,7 @@ describe('Security Validation Utilities', () => {
 
     it('should throw error for empty groups array', () => {
       expect(() => validateFilterExpression({ groups: [] })).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'Filter expression must have at least one group')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'Filter expression must have at least one group'),
       );
     });
 
@@ -369,18 +402,23 @@ describe('Security Validation Utilities', () => {
 
       for (let i = 0; i < 15; i++) {
         const newGroup = {
-          groups: [{
-            conditions: [{ field: 'title', operator: '=', value: 'test' }],
-            operator: '&&'
-          }],
-          operator: '&&'
+          groups: [
+            {
+              conditions: [{ field: 'title', operator: '=', value: 'test' }],
+              operator: '&&',
+            },
+          ],
+          operator: '&&',
         };
         current.groups.push(newGroup);
         current = newGroup;
       }
 
       expect(() => validateFilterExpression(deepExpression)).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'Filter expression exceeds maximum nesting depth of 10')
+        new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          'Filter expression exceeds maximum nesting depth of 10',
+        ),
       );
     });
 
@@ -389,14 +427,16 @@ describe('Security Validation Utilities', () => {
       const manyConditions = Array.from({ length: 60 }, (_, i) => ({
         field: 'title',
         operator: '=',
-        value: `test${i}`
+        value: `test${i}`,
       }));
 
       const largeExpression = {
-        groups: [{
-          conditions: manyConditions,
-          operator: '&&'
-        }]
+        groups: [
+          {
+            conditions: manyConditions,
+            operator: '&&',
+          },
+        ],
       };
 
       expect(() => validateFilterExpression(largeExpression)).toThrow(MCPError);
@@ -409,15 +449,18 @@ describe('Security Validation Utilities', () => {
           conditions: Array.from({ length: 6 }, (_, j) => ({
             field: 'title',
             operator: '=',
-            value: `test${i}_${j}`
+            value: `test${i}_${j}`,
           })),
-          operator: '&&'
-        }))
+          operator: '&&',
+        })),
       };
 
       // 10 groups * 6 conditions = 60 total conditions, exceeds MAX_CONDITIONS (50)
       expect(() => validateFilterExpression(largeNestedExpression)).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'Filter expression cannot exceed 50 total conditions')
+        new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          'Filter expression cannot exceed 50 total conditions',
+        ),
       );
     });
 
@@ -426,13 +469,13 @@ describe('Security Validation Utilities', () => {
         groups: [
           {
             conditions: [{ field: 'invalidField', operator: '=', value: 'test' }],
-            operator: '&&'
+            operator: '&&',
           },
           {
             conditions: [{ field: 'title', operator: 'invalid', value: 'test' }],
-            operator: '&&'
-          }
-        ]
+            operator: '&&',
+          },
+        ],
       };
 
       expect(() => validateFilterExpression(invalidExpression)).toThrow(MCPError);
@@ -443,9 +486,9 @@ describe('Security Validation Utilities', () => {
         groups: [
           {
             conditions: [{ field: 'title', operator: '=', value: 'test' }],
-            operator: '&&'
-          }
-        ]
+            operator: '&&',
+          },
+        ],
         // No operator at expression level
       };
 
@@ -459,9 +502,9 @@ describe('Security Validation Utilities', () => {
         groups: [
           {
             conditions: [{ field: 'title', operator: '=', value: 'test' }],
-            operator: '&&'
-          }
-        ]
+            operator: '&&',
+          },
+        ],
       };
 
       const result = safeJsonStringify(expression);
@@ -472,10 +515,12 @@ describe('Security Validation Utilities', () => {
 
     it('should detect and prevent circular references', () => {
       const circular: any = {
-        groups: [{
-          conditions: [{ field: 'title', operator: '=', value: 'test' }],
-          operator: '&&'
-        }]
+        groups: [
+          {
+            conditions: [{ field: 'title', operator: '=', value: 'test' }],
+            operator: '&&',
+          },
+        ],
       };
       circular.groups.push(circular); // Add circular reference in groups array
 
@@ -489,10 +534,10 @@ describe('Security Validation Utilities', () => {
         'not an object',
         { groups: 'not an array' },
         { groups: [] }, // empty groups should fail validation
-        { groups: [{ conditions: 'not an array', operator: '&&' }] }
+        { groups: [{ conditions: 'not an array', operator: '&&' }] },
       ];
 
-      invalidExpressions.forEach(expression => {
+      invalidExpressions.forEach((expression) => {
         expect(() => safeJsonStringify(expression)).toThrow(MCPError);
       });
     });
@@ -511,12 +556,12 @@ describe('Security Validation Utilities', () => {
           {
             conditions: [
               { field: 'title', operator: '=', value: 'Test Title' },
-              { field: 'priority', operator: '>', value: 5 }
+              { field: 'priority', operator: '>', value: 5 },
             ],
-            operator: '&&'
-          }
+            operator: '&&',
+          },
         ],
-        operator: '||'
+        operator: '||',
       };
 
       const result = safeJsonStringify(expression);
@@ -528,7 +573,8 @@ describe('Security Validation Utilities', () => {
 
   describe('safeJsonParse', () => {
     it('should parse valid JSON strings', () => {
-      const jsonString = '{"groups":[{"conditions":[{"field":"title","operator":"=","value":"test"}],"operator":"&&"}]}';
+      const jsonString =
+        '{"groups":[{"conditions":[{"field":"title","operator":"=","value":"test"}],"operator":"&&"}]}';
       const result = safeJsonParse(jsonString);
 
       expect(result.groups).toHaveLength(1);
@@ -545,7 +591,7 @@ describe('Security Validation Utilities', () => {
     it('should throw error for strings exceeding maximum length', () => {
       const longString = '{"test":"' + 'a'.repeat(50001) + '"}';
       expect(() => safeJsonParse(longString)).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'JSON string exceeds maximum length')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'JSON string exceeds maximum length'),
       );
     });
 
@@ -555,16 +601,17 @@ describe('Security Validation Utilities', () => {
         '{invalid json}',
         '{"unclosed": "object"',
         '{"groups": [incomplete array}',
-        '{"groups": [{"conditions": [{"field": "title"}]}]}' // missing required properties
+        '{"groups": [{"conditions": [{"field": "title"}]}]}', // missing required properties
       ];
 
-      invalidJsonStrings.forEach(jsonString => {
+      invalidJsonStrings.forEach((jsonString) => {
         expect(() => safeJsonParse(jsonString)).toThrow(MCPError);
       });
     });
 
     it('should validate parsed data structure', () => {
-      const jsonStringWithInvalidData = '{"groups": [{"conditions": [{"field": "__proto__", "operator": "=", "value": "test"}], "operator": "&&"}]}';
+      const jsonStringWithInvalidData =
+        '{"groups": [{"conditions": [{"field": "__proto__", "operator": "=", "value": "test"}], "operator": "&&"}]}';
 
       expect(() => safeJsonParse(jsonStringWithInvalidData)).toThrow(MCPError);
     });
@@ -581,11 +628,11 @@ describe('Security Validation Utilities', () => {
           {
             conditions: [
               { field: 'title', operator: '=', value: 'Test Title' },
-              { field: 'priority', operator: '>', value: 5 }
+              { field: 'priority', operator: '>', value: 5 },
             ],
-            operator: '&&'
-          }
-        ]
+            operator: '&&',
+          },
+        ],
       };
 
       const jsonString = safeJsonStringify(originalExpression);
@@ -604,40 +651,40 @@ describe('Security Validation Utilities', () => {
 
     it('should throw error for zero', () => {
       expect(() => validateId(0, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
 
     it('should throw error for negative numbers', () => {
       expect(() => validateId(-1, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
 
     it('should throw error for non-integers', () => {
       expect(() => validateId(1.5, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
 
     it('should throw error for NaN', () => {
       expect(() => validateId(NaN, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
 
     it('should throw error for Infinity', () => {
       expect(() => validateId(Infinity, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
 
     it('should include field name in error message', () => {
       expect(() => validateId(0, 'projectId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'projectId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'projectId must be a positive integer'),
       );
       expect(() => validateId(-5, 'taskId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'taskId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'taskId must be a positive integer'),
       );
     });
   });
@@ -651,26 +698,26 @@ describe('Security Validation Utilities', () => {
 
     it('should throw error for zero values', () => {
       expect(() => validateAndConvertId(0, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
       expect(() => validateAndConvertId('0', 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
 
     it('should throw error for negative values', () => {
       expect(() => validateAndConvertId(-5, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
       expect(() => validateAndConvertId('-10', 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
 
     it('should throw error for non-numeric values', () => {
       const invalidValues = ['abc', '12.34', '12abc', null, undefined, {}, [], false];
 
-      invalidValues.forEach(value => {
+      invalidValues.forEach((value) => {
         expect(() => validateAndConvertId(value, 'testId')).toThrow(MCPError);
       });
 
@@ -680,25 +727,25 @@ describe('Security Validation Utilities', () => {
 
     it('should throw error for decimal numbers', () => {
       expect(() => validateAndConvertId(12.34, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
       expect(() => validateAndConvertId('12.34', 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
 
     it('should throw error for special numeric values', () => {
       expect(() => validateAndConvertId(NaN, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
       expect(() => validateAndConvertId(Infinity, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
 
     it('should include field name in error messages', () => {
       expect(() => validateAndConvertId('invalid', 'projectId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'projectId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'projectId must be a positive integer'),
       );
     });
 
@@ -721,10 +768,10 @@ describe('Security Validation Utilities', () => {
         '<img src=x onerror=alert("xss")>',
         '<svg onload=alert("xss")>',
         '<iframe src="evil.com"></iframe>',
-        'onload="alert(1)"'
+        'onload="alert(1)"',
       ];
 
-      dangerousInputs.forEach(input => {
+      dangerousInputs.forEach((input) => {
         expect(() => sanitizeString(input)).toThrow(MCPError);
       });
     });

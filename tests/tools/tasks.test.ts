@@ -9,7 +9,7 @@ import {
   registerTaskCommentsTool,
   registerTaskRemindersTool,
   registerTaskLabelsTool,
-  registerTaskRelationsTool
+  registerTaskRelationsTool,
 } from '../../src/tools/index';
 import { MCPError, ErrorCode } from '../../src/types';
 import { ConfigurationManager } from '../../src/config';
@@ -23,10 +23,16 @@ type User = components['schemas']['user.User'];
 import { getClientFromContext, getAuthManagerFromContext } from '../../src/client';
 
 // Import AORP test helpers
-import { extractTasksData, extractTaskData, expectAorpSuccess, expectAorpError, getAorpData, getAorpMetadata } from '../utils/aorp-test-helpers';
+import {
+  extractTasksData,
+  extractTaskData,
+  expectAorpSuccess,
+  expectAorpError,
+  getAorpData,
+  getAorpMetadata,
+} from '../utils/aorp-test-helpers';
 import { parseMarkdown } from '../utils/markdown';
-import * as retryUtils from '../../src/utils/retry';
-import { circuitBreakerRegistry } from '../../src/utils/retry';
+import { withRetry, circuitBreakerRegistry } from '../../src/utils/retry';
 
 // Mock the modules. getAuthManagerFromContext is used by setTaskLabels
 // (src/utils/label-bulk.ts, migrated to direct REST) — any test that
@@ -55,7 +61,12 @@ const mockFetch = jest.fn();
 globalThis.fetch = mockFetch as unknown as typeof fetch;
 
 /** Minimal Response-like object for the REST helper. */
-function mockRestResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+function mockRestResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
   return {
     ok,
@@ -118,7 +129,9 @@ describe('Tasks Tool', () => {
       // asserts on.
       const assigneesMatch = /^\/tasks\/(\d+)\/assignees$/.exec(pathname);
       if (method === 'PUT' && assigneesMatch?.[1] !== undefined) {
-        return jsonResponse(await mockClient.tasks.assignUserToTask(Number(assigneesMatch[1]), body?.user_id));
+        return jsonResponse(
+          await mockClient.tasks.assignUserToTask(Number(assigneesMatch[1]), body?.user_id),
+        );
       }
       // Assignee restore-to-snapshot (SIMPLIFY item): ONE POST
       // .../assignees/bulk call per task (models.BulkAssignees, REPLACE
@@ -126,13 +139,19 @@ describe('Tasks Tool', () => {
       const assigneesBulkMatch = /^\/tasks\/(\d+)\/assignees\/bulk$/.exec(pathname);
       if (method === 'POST' && assigneesBulkMatch?.[1] !== undefined) {
         return jsonResponse(
-          await mockClient.tasks.bulkAssignUsersToTask(Number(assigneesBulkMatch[1]), body?.assignees),
+          await mockClient.tasks.bulkAssignUsersToTask(
+            Number(assigneesBulkMatch[1]),
+            body?.assignees,
+          ),
         );
       }
       const assigneeDeleteMatch = /^\/tasks\/(\d+)\/assignees\/(\d+)$/.exec(pathname);
       if (method === 'DELETE' && assigneeDeleteMatch?.[1] !== undefined) {
         return jsonResponse(
-          await mockClient.tasks.removeUserFromTask(Number(assigneeDeleteMatch[1]), Number(assigneeDeleteMatch[2])),
+          await mockClient.tasks.removeUserFromTask(
+            Number(assigneeDeleteMatch[1]),
+            Number(assigneeDeleteMatch[2]),
+          ),
         );
       }
       const taskIdMatch = /^\/tasks\/(\d+)$/.exec(pathname);
@@ -314,7 +333,9 @@ describe('Tasks Tool', () => {
       const projectTasksMatch = /^\/projects\/(-?\d+)\/tasks$/.exec(pathname);
       if (projectTasksMatch?.[1] !== undefined) {
         if (method === 'PUT') {
-          return jsonResponse(await mockClient.tasks.createTask(Number(projectTasksMatch[1]), body));
+          return jsonResponse(
+            await mockClient.tasks.createTask(Number(projectTasksMatch[1]), body),
+          );
         }
         return jsonResponse(
           await mockClient.tasks.getProjectTasks(Number(projectTasksMatch[1]), parseParams()),
@@ -331,30 +352,40 @@ describe('Tasks Tool', () => {
       // prefix, same as a real network failure).
       const labelBulkMatch = /^\/tasks\/(\d+)\/labels\/bulk$/.exec(pathname);
       if (labelBulkMatch?.[1] !== undefined && method === 'POST') {
-        return jsonResponse(await mockClient.tasks.updateTaskLabels(Number(labelBulkMatch[1]), body));
+        return jsonResponse(
+          await mockClient.tasks.updateTaskLabels(Number(labelBulkMatch[1]), body),
+        );
       }
       const labelsMatch = /^\/tasks\/(\d+)\/labels$/.exec(pathname);
       if (labelsMatch?.[1] !== undefined) {
         const taskId = Number(labelsMatch[1]);
-        if (method === 'PUT') return jsonResponse(await mockClient.tasks.addLabelToTask(taskId, body));
+        if (method === 'PUT')
+          return jsonResponse(await mockClient.tasks.addLabelToTask(taskId, body));
         if (method === 'GET') return jsonResponse([]);
       }
       const labelDeleteMatch = /^\/tasks\/(\d+)\/labels\/(\d+)$/.exec(pathname);
       if (labelDeleteMatch?.[1] !== undefined && method === 'DELETE') {
         return jsonResponse(
-          await mockClient.tasks.removeLabelFromTask(Number(labelDeleteMatch[1]), Number(labelDeleteMatch[2])),
+          await mockClient.tasks.removeLabelFromTask(
+            Number(labelDeleteMatch[1]),
+            Number(labelDeleteMatch[2]),
+          ),
         );
       }
       const assigneesMatch = /^\/tasks\/(\d+)\/assignees$/.exec(pathname);
       if (assigneesMatch?.[1] !== undefined) {
         const taskId = Number(assigneesMatch[1]);
-        if (method === 'PUT') return jsonResponse(await mockClient.tasks.assignUserToTask(taskId, body?.user_id));
+        if (method === 'PUT')
+          return jsonResponse(await mockClient.tasks.assignUserToTask(taskId, body?.user_id));
         if (method === 'GET') return jsonResponse([]);
       }
       const assigneeDeleteMatch = /^\/tasks\/(\d+)\/assignees\/(\d+)$/.exec(pathname);
       if (assigneeDeleteMatch?.[1] !== undefined && method === 'DELETE') {
         return jsonResponse(
-          await mockClient.tasks.removeUserFromTask(Number(assigneeDeleteMatch[1]), Number(assigneeDeleteMatch[2])),
+          await mockClient.tasks.removeUserFromTask(
+            Number(assigneeDeleteMatch[1]),
+            Number(assigneeDeleteMatch[2]),
+          ),
         );
       }
 
@@ -376,7 +407,7 @@ describe('Tasks Tool', () => {
       apiUrl: 'https://api.vikunja.test',
       apiToken: 'test-token',
       authType: 'api-token' as const,
-      userId: 'test-user-123'
+      userId: 'test-user-123',
     });
     mockAuthManager.getAuthType.mockReturnValue('api-token');
 
@@ -396,7 +427,9 @@ describe('Tasks Tool', () => {
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     // Register the comprehensive tasks tool
@@ -405,7 +438,7 @@ describe('Tasks Tool', () => {
     // Get the tasks tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). create-subtask/bulk-create-subtasks identify the parent via `parentTaskId` — `id` is accepted as an alias for it on these two subcommands (supplying both and disagreeing is rejected). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
       expect.any(Object),
       expect.any(Object), // ToolAnnotations
       expect.any(Function),
@@ -438,7 +471,7 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-            const aorpStatus = parsed.getAorpStatus();
+      const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('list-tasks');
       expect(markdown).toContain('**count:**');
@@ -484,7 +517,7 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-            const aorpStatus = parsed.getAorpStatus();
+      const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('list-tasks');
       expect(markdown).toContain('**count:**');
@@ -519,7 +552,7 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-            const aorpStatus = parsed.getAorpStatus();
+      const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('list-tasks');
       expect(markdown).toContain('**count:**');
@@ -565,11 +598,11 @@ describe('Tasks Tool', () => {
 
       await expect(callTool('list')).rejects.toThrow(
         'Authentication required to access task management features. Please connect first:\n' +
-        'vikunja_auth.connect({\n' +
-        '  apiUrl: \'https://your-vikunja.com/api/v1\',\n' +
-        '  apiToken: \'your-api-token\'\n' +
-        '})\n\n' +
-        'Get your API token from Vikunja Settings > API Access.'
+          'vikunja_auth.connect({\n' +
+          "  apiUrl: 'https://your-vikunja.com/api/v1',\n" +
+          "  apiToken: 'your-api-token'\n" +
+          '})\n\n' +
+          'Get your API token from Vikunja Settings > API Access.',
       );
     });
 
@@ -582,7 +615,9 @@ describe('Tasks Tool', () => {
       // listTasks) rather than a bare "Failed to list tasks" wrapper.
       mockClient.projects.getProjects.mockRejectedValue(new Error('API Error'));
 
-      await expect(callTool('list')).rejects.toThrow('Vikunja REST request failed (GET /projects?per_page=1000): API Error');
+      await expect(callTool('list')).rejects.toThrow(
+        'Vikunja REST request failed (GET /projects?per_page=1000): API Error',
+      );
     });
 
     it('should handle non-Error API errors', async () => {
@@ -622,8 +657,9 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-            const aorpStatus = parsed.getAorpStatus();
-      expect(aorpStatus.type).toBe('success');    });
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+    });
 
     it('should create a task with all optional fields', async () => {
       const fullTask = {
@@ -783,9 +819,7 @@ describe('Tasks Tool', () => {
 
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 1 });
       mockClient.tasks.addLabelToTask.mockResolvedValue(undefined);
-      mockClient.tasks.assignUserToTask.mockRejectedValue(
-        new Error('Assignee assignment failed'),
-      );
+      mockClient.tasks.assignUserToTask.mockRejectedValue(new Error('Assignee assignment failed'));
       mockClient.tasks.deleteTask.mockRejectedValue(new Error('Delete failed'));
 
       // The assignee add now flows through vikunjaRestRequest, so its failure
@@ -831,7 +865,8 @@ describe('Tasks Tool', () => {
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
-      expect(aorpStatus.type).toBe('success');    });
+      expect(aorpStatus.type).toBe('success');
+    });
 
     it('should handle non-Error failures during label assignment', async () => {
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 1 });
@@ -991,8 +1026,9 @@ describe('Tasks Tool', () => {
         done: false,
       });
 
-      expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(1, 
-        expect.objectContaining({ done: false })
+      expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ done: false }),
       );
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -1065,7 +1101,8 @@ describe('Tasks Tool', () => {
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
-      expect(aorpStatus.type).toBe('success');    });
+      expect(aorpStatus.type).toBe('success');
+    });
 
     it('should handle assignee updates with diff logic', async () => {
       const taskWithAssignees = {
@@ -1277,14 +1314,17 @@ describe('Tasks Tool', () => {
       const taskWithAssignees = {
         ...mockTask,
         id: 1,
-        assignees: [{ id: 1, username: 'user1' }, { id: 2, username: 'user2' }],
+        assignees: [
+          { id: 1, username: 'user1' },
+          { id: 2, username: 'user2' },
+        ],
       };
 
       mockClient.tasks.getTask
         .mockResolvedValueOnce(taskWithAssignees) // For initial fetch
         .mockResolvedValueOnce(taskWithAssignees); // For assignee diff calculation
       mockClient.tasks.updateTask.mockResolvedValue(taskWithAssignees);
-      
+
       // Mock removeUserFromTask to fail
       mockClient.tasks.removeUserFromTask.mockRejectedValue(new Error('Failed to remove user'));
 
@@ -1346,7 +1386,9 @@ describe('Tasks Tool', () => {
           id: 1,
           title: 'Test',
         }),
-      ).rejects.toThrow('Failed to update task: Vikunja REST request failed (POST /tasks/1): Update failed');
+      ).rejects.toThrow(
+        'Failed to update task: Vikunja REST request failed (POST /tasks/1): Update failed',
+      );
     });
 
     it('should update recurring task settings', async () => {
@@ -1418,7 +1460,8 @@ describe('Tasks Tool', () => {
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('delete-task');
-      expect(markdown).toContain('Task "Test Task" deleted successfully');    });
+      expect(markdown).toContain('Task "Test Task" deleted successfully');
+    });
 
     it('should handle deletion errors', async () => {
       mockClient.tasks.deleteTask.mockRejectedValue(new Error('Cannot delete task'));
@@ -1444,7 +1487,8 @@ describe('Tasks Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
-      expect(markdown).toContain('delete-task');    });
+      expect(markdown).toContain('delete-task');
+    });
 
     it('should handle non-Error API errors in delete', async () => {
       mockClient.tasks.deleteTask.mockRejectedValue(500);
@@ -1847,9 +1891,7 @@ describe('Tasks Tool', () => {
         callTool('list-assignees', {
           id: 1,
         }),
-      ).rejects.toThrow(
-        'Vikunja REST request failed (GET /tasks/1/assignees): Network failure',
-      );
+      ).rejects.toThrow('Vikunja REST request failed (GET /tasks/1/assignees): Network failure');
     });
 
     it('returns id/username/name/email per assignee and nothing else', async () => {
@@ -2016,7 +2058,9 @@ describe('Tasks Tool', () => {
       // The tool's session guard is getAuthManagerFromContext() now (the old
       // getClientFromContext is gone from the handler path), so a session
       // failure surfaces through it.
-      (getAuthManagerFromContext as jest.Mock).mockRejectedValue(new Error('Failed to initialize client'));
+      (getAuthManagerFromContext as jest.Mock).mockRejectedValue(
+        new Error('Failed to initialize client'),
+      );
 
       await expect(callTool('list')).rejects.toThrow('Failed to initialize client');
     });
@@ -2144,7 +2188,12 @@ describe('Tasks Tool', () => {
           // fields/values payload never mentions them.
           return jsonResponse({
             ...body,
-            tasks: (body.task_ids as number[]).map((id) => ({ ...mockTask, id, done: true, assignees: null })),
+            tasks: (body.task_ids as number[]).map((id) => ({
+              ...mockTask,
+              id,
+              done: true,
+              assignees: null,
+            })),
           });
         }
         return await baseRouter(url, init);
@@ -2778,9 +2827,7 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain(
-        'Bulk delete partially completed. Successfully deleted 2 tasks',
-      );
+      expect(markdown).toContain('Bulk delete partially completed. Successfully deleted 2 tasks');
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledTimes(3);
     });
@@ -2837,7 +2884,20 @@ describe('Tasks Tool', () => {
     // implementation here would make these tests order-dependent on unrelated global
     // breaker state. Bypass it the same way tests/tools/tasks/bulk-operations.test.ts
     // does, so each test only exercises the mocked client call it configured.
-    let withRetrySpy: ReturnType<typeof jest.spyOn>;
+    //
+    // IMPORTANT: `withRetry` here is already a jest.fn() (see the top-level
+    // `jest.mock('../../src/utils/retry', ...)` factory above), not a real
+    // implementation. `jest.spyOn` on a property that is already a mock
+    // function does not wrap it — it hands back the same mock and never
+    // records an "original" to restore to. Calling `.mockRestore()` on it
+    // later therefore silently degrades to `.mockReset()`, which wipes the
+    // module-level bypass implementation and breaks unrelated sibling
+    // describes (see removed workaround previously in the 'duplicate'/
+    // 'mark-read' describes below). Reassigning the implementation directly
+    // — the same idiom bulk-operations.test.ts uses — avoids the spy
+    // entirely, so there's nothing to (mis-)restore. `jest.clearAllMocks()`
+    // (top-level beforeEach) only clears calls/results, never the
+    // implementation, so setting this here is enough for the whole file.
     // Bulk core ops (PUT /projects/{id}/tasks create, DELETE /tasks/{id}
     // cleanup) go through vikunjaRestRequest -> fetch after the #70
     // migration, routed back to the node-vikunja `mockClient.tasks` methods.
@@ -2848,9 +2908,9 @@ describe('Tasks Tool', () => {
     let originalFetch: typeof fetch;
 
     beforeEach(() => {
-      withRetrySpy = jest
-        .spyOn(retryUtils, 'withRetry')
-        .mockImplementation((operation: () => Promise<unknown>) => operation());
+      (withRetry as jest.Mock).mockImplementation((operation: () => Promise<unknown>) =>
+        operation(),
+      );
 
       originalFetch = globalThis.fetch;
       labelWrite = jest.fn().mockResolvedValue(undefined);
@@ -2860,7 +2920,6 @@ describe('Tasks Tool', () => {
     });
 
     afterEach(() => {
-      withRetrySpy.mockRestore();
       globalThis.fetch = originalFetch;
     });
 
@@ -2908,15 +2967,21 @@ describe('Tasks Tool', () => {
       // circuit breaker. Creates must therefore run one at a time.
       let inFlight = 0;
       let peakInFlight = 0;
-      mockClient.tasks.createTask.mockImplementation(async (projectId: number, task: Record<string, unknown>) => {
-        inFlight += 1;
-        peakInFlight = Math.max(peakInFlight, inFlight);
-        // Yield twice so overlapping calls would be observable
-        await new Promise((resolve) => setImmediate(resolve));
-        await new Promise((resolve) => setImmediate(resolve));
-        inFlight -= 1;
-        return { ...task, id: mockClient.tasks.createTask.mock.calls.length, project_id: projectId };
-      });
+      mockClient.tasks.createTask.mockImplementation(
+        async (projectId: number, task: Record<string, unknown>) => {
+          inFlight += 1;
+          peakInFlight = Math.max(peakInFlight, inFlight);
+          // Yield twice so overlapping calls would be observable
+          await new Promise((resolve) => setImmediate(resolve));
+          await new Promise((resolve) => setImmediate(resolve));
+          inFlight -= 1;
+          return {
+            ...task,
+            id: mockClient.tasks.createTask.mock.calls.length,
+            project_id: projectId,
+          };
+        },
+      );
       mockClient.tasks.getTask.mockImplementation(async (id: number) =>
         Promise.resolve({ ...mockTask, id }),
       );
@@ -3216,20 +3281,6 @@ describe('Tasks Tool', () => {
   });
 
   describe('duplicate subcommand', () => {
-    // Defensive: a sibling describe block ('bulk-create subcommand') spies
-    // on retryUtils.withRetry via jest.spyOn(...).mockImplementation(...)
-    // and later calls .mockRestore(). Restoring a spy that was layered over
-    // an already-mocked module export (this file's top-level jest.mock on
-    // '../../src/utils/retry') does not reliably reinstate the file-level
-    // mock's own bypass implementation — it can leave withRetry a no-op
-    // that resolves to undefined without invoking its argument. Since
-    // duplicate/mark-read go through vikunjaRestRequest -> withRetry, that
-    // silently short-circuits fetch entirely. Reassert the intended bypass
-    // behavior here rather than relying on hook ordering across describes.
-    beforeEach(() => {
-      (retryUtils.withRetry as jest.Mock).mockImplementation((fn: () => Promise<unknown>) => fn());
-    });
-
     it('duplicates a task via PUT /tasks/{id}/duplicate (no body)', async () => {
       mockFetch.mockResolvedValueOnce(
         jsonResponse({ duplicated_task: { id: 42, title: 'Copy of Task 1' } }),
@@ -3256,11 +3307,6 @@ describe('Tasks Tool', () => {
   });
 
   describe('mark-read subcommand', () => {
-    // See the matching comment in 'duplicate subcommand' above.
-    beforeEach(() => {
-      (retryUtils.withRetry as jest.Mock).mockImplementation((fn: () => Promise<unknown>) => fn());
-    });
-
     it('marks a task as read via POST /tasks/{id}/read', async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ taskID: 1, userID: 3 }));
 
@@ -3298,7 +3344,9 @@ describe('Tasks Tool', () => {
     it('should handle non-Error exceptions in main handler', async () => {
       // The session guard (getAuthManagerFromContext) rejecting with a non-Error
       // value exercises the handler's String(error) fallback branch.
-      (getAuthManagerFromContext as jest.Mock).mockRejectedValue('String error from client initialization');
+      (getAuthManagerFromContext as jest.Mock).mockRejectedValue(
+        'String error from client initialization',
+      );
 
       await expect(callTool('list')).rejects.toThrow(
         'Task operation error: String error from client initialization',
@@ -3310,7 +3358,7 @@ describe('Tasks Tool', () => {
     it('should register the vikunja_tasks tool', () => {
       expect(mockServer.tool).toHaveBeenCalledWith(
         'vikunja_tasks',
-        'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
+        'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). create-subtask/bulk-create-subtasks identify the parent via `parentTaskId` — `id` is accepted as an alias for it on these two subcommands (supplying both and disagreeing is rejected). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
         expect.any(Object),
         expect.any(Object), // ToolAnnotations
         expect.any(Function),
@@ -3371,9 +3419,7 @@ describe('Tasks Tool', () => {
       ConfigurationManager.getInstance({ sources: { readOnly: true } });
 
       (getAuthManagerFromContext as jest.Mock).mockResolvedValue(mockAuthManager);
-      mockFetch.mockResolvedValueOnce(
-        jsonResponse([{ id: 1, comment: 'existing', task_id: 1 }]),
-      );
+      mockFetch.mockResolvedValueOnce(jsonResponse([{ id: 1, comment: 'existing', task_id: 1 }]));
 
       await expect(callTool('comment', { id: 1 })).resolves.toBeDefined();
     });
@@ -3400,9 +3446,95 @@ describe('Tasks Tool', () => {
       } catch (error) {
         caught = error;
       }
-      expect(caught instanceof MCPError && caught.message.includes('read-only mode')).toBe(
-        false,
-      );
+      expect(caught instanceof MCPError && caught.message.includes('read-only mode')).toBe(false);
+    });
+  });
+
+  // netadvanced/vikunja-mcp#28: `id` works on nearly every other
+  // vikunja_tasks subcommand, so create-subtask/bulk-create-subtasks accept
+  // it as an alias for `parentTaskId` (mirrors PROJECT_ID_ALIAS_SUBCOMMANDS
+  // in src/tools/projects/index.ts for the identical trap).
+  describe('id/parentTaskId alias (create-subtask, bulk-create-subtasks)', () => {
+    const parentTask = { id: 243, title: 'Parent', project_id: 5, related_tasks: {} };
+    const parentTaskWithChild = (childId: number) => ({
+      id: 243,
+      title: 'Parent',
+      project_id: 5,
+      related_tasks: { subtask: [{ id: childId, title: 'Child', done: false }] },
+    });
+    const createdChild = { id: 42, title: 'Child', project_id: 5 };
+
+    it('accepts `id` as an alias for `parentTaskId` on create-subtask', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(parentTask)) // resolve-parent: GET /tasks/243
+        .mockResolvedValueOnce(jsonResponse(createdChild)) // create-task: PUT /projects/5/tasks
+        .mockResolvedValueOnce(
+          jsonResponse({ task_id: 243, other_task_id: 42, relation_kind: 'subtask' }),
+        ) // create-relation
+        .mockResolvedValueOnce(jsonResponse(parentTaskWithChild(42))); // verify-relation
+
+      const result = await callTool('create-subtask', { id: 243, title: 'Child' });
+
+      expect(result.content[0].text).toContain('under parent task 243');
+      // The parent was resolved via id 243 (aliased to parentTaskId), not a
+      // second wasted call.
+      expect(mockFetch.mock.calls[0]?.[0]).toBe('https://api.vikunja.test/api/v1/tasks/243');
+    });
+
+    it('accepts `id` as an alias for `parentTaskId` on bulk-create-subtasks', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(parentTask)) // resolve-parent (once for the batch)
+        .mockResolvedValueOnce(jsonResponse(createdChild)) // create-task
+        .mockResolvedValueOnce(
+          jsonResponse({ task_id: 243, other_task_id: 42, relation_kind: 'subtask' }),
+        ) // create-relation
+        .mockResolvedValueOnce(jsonResponse(parentTaskWithChild(42))); // verify-relation
+
+      const result = await callTool('bulk-create-subtasks', {
+        id: 243,
+        subtasks: [{ title: 'Child' }],
+      });
+
+      expect(result.content[0].text).toContain('under parent 243');
+    });
+
+    it('rejects `id` and `parentTaskId` supplied together when they disagree', async () => {
+      await expect(
+        callTool('create-subtask', { id: 243, parentTaskId: 999, title: 'Child' }),
+      ).rejects.toThrow(/id \(243\) and parentTaskId \(999\) were both supplied and disagree/);
+
+      // Rejected before any network call was made.
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects `id` and `parentTaskId` supplied together and disagreeing on bulk-create-subtasks', async () => {
+      await expect(
+        callTool('bulk-create-subtasks', {
+          id: 243,
+          parentTaskId: 999,
+          subtasks: [{ title: 'Child' }],
+        }),
+      ).rejects.toThrow(/id \(243\) and parentTaskId \(999\) were both supplied and disagree/);
+
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('allows `id` and `parentTaskId` supplied together when they match', async () => {
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse(parentTask))
+        .mockResolvedValueOnce(jsonResponse(createdChild))
+        .mockResolvedValueOnce(
+          jsonResponse({ task_id: 243, other_task_id: 42, relation_kind: 'subtask' }),
+        )
+        .mockResolvedValueOnce(jsonResponse(parentTaskWithChild(42)));
+
+      const result = await callTool('create-subtask', {
+        id: 243,
+        parentTaskId: 243,
+        title: 'Child',
+      });
+
+      expect(result.content[0].text).toContain('under parent task 243');
     });
   });
 });

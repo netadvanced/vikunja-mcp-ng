@@ -30,7 +30,7 @@ import {
   type CreateProjectArgs,
   type UpdateProjectArgs,
   type DeleteProjectArgs,
-  type ArchiveProjectArgs
+  type ArchiveProjectArgs,
 } from './crud';
 
 import {
@@ -41,7 +41,7 @@ import {
   type GetChildrenArgs,
   type GetTreeArgs,
   type GetBreadcrumbArgs,
-  type MoveProjectArgs
+  type MoveProjectArgs,
 } from './hierarchy';
 
 import {
@@ -54,7 +54,7 @@ import {
   type ListSharesArgs,
   type GetShareArgs,
   type DeleteShareArgs,
-  type AuthShareArgs
+  type AuthShareArgs,
 } from './sharing';
 
 import {
@@ -86,6 +86,8 @@ import {
 } from './views';
 
 import { duplicateProject, type DuplicateProjectArgs } from './duplicate';
+
+import { setupKanban, type SetupKanbanArgs, type SetupKanbanTaskInput } from './kanban-setup';
 
 import {
   removeProjectBackground,
@@ -120,7 +122,7 @@ import {
   type RemoveProjectTeamArgs,
   type ShareWithUserArgs,
   type ShareWithTeamArgs,
-  type ListMembersArgs
+  type ListMembersArgs,
 } from './sharing-access';
 
 // The three project-backgrounds subcommands (G7,
@@ -182,6 +184,7 @@ const PROJECT_ID_ALIAS_SUBCOMMANDS = new Set<string>([
   'remove-background',
   'set-unsplash-background',
   'search-unsplash',
+  'setup-kanban',
 ]);
 
 /**
@@ -199,7 +202,9 @@ export function resolveBackgroundsEnabled(override?: boolean): boolean {
     return override;
   }
   try {
-    return isModuleEnabled(ConfigurationManager.getInstance().loadConfiguration().modules.backgrounds);
+    return isModuleEnabled(
+      ConfigurationManager.getInstance().loadConfiguration().modules.backgrounds,
+    );
   } catch (error) {
     logger.error(
       'Failed to load module gating configuration while resolving the backgrounds module; ' +
@@ -222,19 +227,51 @@ export function registerProjectsTool(
 ): void {
   const backgroundsEnabled = resolveBackgroundsEnabled(backgroundsEnabledOverride);
   const baseSubcommands = [
-    'list', 'get', 'create', 'update', 'delete', 'archive', 'unarchive',
-    'get-children', 'get-tree', 'get-breadcrumb', 'move',
-    'create-share', 'list-shares', 'get-share', 'delete-share', 'auth-share',
-    'list-buckets', 'create-bucket', 'update-bucket', 'delete-bucket',
-    'list-views', 'get-view', 'create-view', 'update-view', 'delete-view',
-    'set-done-bucket', 'list-view-tasks', 'duplicate',
+    'list',
+    'get',
+    'create',
+    'update',
+    'delete',
+    'archive',
+    'unarchive',
+    'get-children',
+    'get-tree',
+    'get-breadcrumb',
+    'move',
+    'create-share',
+    'list-shares',
+    'get-share',
+    'delete-share',
+    'auth-share',
+    'list-buckets',
+    'create-bucket',
+    'update-bucket',
+    'delete-bucket',
+    'list-views',
+    'get-view',
+    'create-view',
+    'update-view',
+    'delete-view',
+    'set-done-bucket',
+    'list-view-tasks',
+    'duplicate',
+    // Composite: provisions a whole Kanban board (project + view + ordered
+    // buckets + placed tasks) in one call — see src/tools/projects/kanban-setup.ts.
+    'setup-kanban',
     // Direct user/team sharing — primitives
-    'list-project-users', 'search-project-users', 'add-project-user',
-    'update-project-user-permission', 'remove-project-user',
-    'list-project-teams', 'add-project-team',
-    'update-project-team-permission', 'remove-project-team',
+    'list-project-users',
+    'search-project-users',
+    'add-project-user',
+    'update-project-user-permission',
+    'remove-project-user',
+    'list-project-teams',
+    'add-project-team',
+    'update-project-team-permission',
+    'remove-project-team',
     // Direct user/team sharing — composites
-    'share-with-user', 'share-with-team', 'list-members',
+    'share-with-user',
+    'share-with-team',
+    'list-members',
   ];
   const subcommandValues = (
     backgroundsEnabled ? [...baseSubcommands, ...BACKGROUND_SUBCOMMANDS] : baseSubcommands
@@ -244,14 +281,29 @@ export function registerProjectsTool(
     'vikunja_projects',
     withReadOnlyNote(
       'vikunja_projects',
-      'Manage projects with full CRUD operations, hierarchy management, sharing capabilities, project views, Kanban buckets, and duplication. '
-      + 'CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds subcommands (get, update, delete, archive, unarchive, get-children, get-tree, '
-      + 'get-breadcrumb, move, list-buckets, create-bucket, update-bucket, delete-bucket, list-view-tasks, list-views, get-view, create-view, '
-      + 'update-view, delete-view, set-done-bucket, duplicate, and the backgrounds subcommands) identify the target project via `id` — `projectId` '
-      + 'is accepted there too as an alias for `id`. Sharing subcommands (create-share, share-with-user, list-project-users, etc.) use `projectId` only.'
-      + (backgroundsEnabled
-        ? ' The opt-in backgrounds module adds remove-background/set-unsplash-background/search-unsplash'
-        : ''),
+      'Manage projects with full CRUD operations, hierarchy management, sharing capabilities, project views, Kanban buckets, and duplication. ' +
+        'CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds subcommands (get, update, delete, archive, unarchive, get-children, get-tree, ' +
+        'get-breadcrumb, move, list-buckets, create-bucket, update-bucket, delete-bucket, list-view-tasks, list-views, get-view, create-view, ' +
+        'update-view, delete-view, set-done-bucket, duplicate, and the backgrounds subcommands) identify the target project via `id` — `projectId` ' +
+        'is accepted there too as an alias for `id`. Sharing subcommands (create-share, share-with-user, list-project-users, etc.) use `projectId` only. ' +
+        "`create-share`'s share label is the `name` field, NOT `title` (`title` is the project's own title field, used by `create`/`update`) — " +
+        'passing `title` to `create-share` is rejected with a validation error naming the correct field. ' +
+        'Creating a project and its tasks in one call, whether or not it needs a Kanban board, by hand costs many separate calls — ' +
+        'create the project, then bulk-create the tasks (plus create/rename each bucket and move each task into its column, if a board is ' +
+        'wanted). Use `setup-kanban` instead: ONE call given a project title (or an existing `id` to reuse) and an optional `tasks` array ' +
+        'provisions the project and its tasks — this is the one-call "create a project with tasks" path, Kanban or not. `columns` is ' +
+        'OPTIONAL: omit it entirely for a plain project+tasks call (no Kanban view, bucket, or placement step runs, or is even touched) — ' +
+        'supply an ordered `columns` array (each task may then carry a `column` name plus the normal task fields) to also provision a whole ' +
+        'Kanban board: ensuring its Kanban view, creating/renaming/reusing buckets to match `columns` in order, and placing every task with ' +
+        'a `column`. Prefer it over hand-rolling create -> vikunja_task_bulk bulk-create (project+tasks only), or ' +
+        'create -> create-bucket (xN) -> vikunja_task_bulk bulk-create -> vikunja_tasks set-bucket / vikunja_task_bulk bulk-set-bucket (xN) ' +
+        "(with a board). A task's `column` (when given) must match one of the requested `columns` entries (case-insensitive), and requires " +
+        '`columns` to be present at all — either mismatch is rejected UP FRONT with a validation error naming the bad column, the task, and ' +
+        'the valid choices (or that no columns were given), before anything is created; re-run corrected, no cleanup needed. A task with no ' +
+        '`column` is created unplaced, not an error.' +
+        (backgroundsEnabled
+          ? ' The opt-in backgrounds module adds remove-background/set-unsplash-background/search-unsplash'
+          : ''),
     ),
     {
       subcommand: z.enum(subcommandValues),
@@ -260,12 +312,25 @@ export function registerProjectsTool(
       // (below, under Sharing arguments) is accepted as an alias for `id` on
       // those subcommands (see PROJECT_ID_ALIAS_SUBCOMMANDS); the sharing
       // subcommands use `projectId` directly instead.
-      id: z.number().positive().optional(),
+      id: z
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          'The project id targeted by CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds ' +
+            'subcommands (get, update, delete, list-buckets, create-bucket, update-bucket, ' +
+            'delete-bucket, list-view-tasks, etc.) — NOT a bucket or view id. `projectId` is ' +
+            'accepted as an alias for `id` on those same subcommands. Get project ids from ' +
+            'vikunja_projects list.',
+        ),
       title: z.string().optional(),
       description: z.string().optional(),
       parentProjectId: z.number().positive().optional(),
       isArchived: z.boolean().optional(),
-      hexColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
+      hexColor: z
+        .string()
+        .regex(/^#[0-9A-Fa-f]{6}$/)
+        .optional(),
       page: z.number().min(1).optional(),
       perPage: z.number().min(1).max(100).optional(),
       search: z.string().optional(),
@@ -276,9 +341,33 @@ export function registerProjectsTool(
       // delete-bucket, list-view-tasks, set-done-bucket subcommands).
       // z.coerce tolerates MCP clients whose cached tool schema predates
       // this param and therefore send it as a string over JSON-RPC.
-      viewId: z.coerce.number().positive().optional(),
-      bucketId: z.coerce.number().positive().optional(),
-      bucketTitle: z.string().optional(),
+      viewId: z.coerce
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          "The project's Kanban view id (a project VIEW, not a bucket). Optional — when " +
+            "omitted it is auto-resolved to the project's Kanban view. Get an explicit " +
+            "value from vikunja_projects list-views (look for viewKind: 'kanban').",
+        ),
+      bucketId: z.coerce
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          'The Kanban bucket (column) id — e.g. the id of the "Doing" column. Get it from ' +
+            'vikunja_projects list-buckets (each bucket in the response has an id). On ' +
+            'update-bucket/delete-bucket, bucketTitle may be used instead to identify the ' +
+            'bucket by name (e.g. "Doing") when you don\'t have the numeric id.',
+        ),
+      bucketTitle: z
+        .string()
+        .optional()
+        .describe(
+          'The Kanban bucket\'s display name (e.g. "Doing"), accepted as an alternative to ' +
+            'bucketId on update-bucket/delete-bucket — resolved internally via list-buckets. ' +
+            'bucketId wins when both are supplied.',
+        ),
       limit: z.coerce.number().min(0).optional(),
       // Lane-order position for create-bucket/update-bucket. Vikunja
       // positions are float64s — fractional values slot a bucket between
@@ -292,11 +381,90 @@ export function registerProjectsTool(
       defaultBucketId: z.coerce.number().positive().optional(),
       // Duplicate-project arguments (duplicate subcommand).
       duplicateShares: z.boolean().optional(),
+      // setup-kanban composite arguments (issue #173). `columns` and
+      // `tasks` are dedicated to this subcommand; `title`/`description`/
+      // `parentProjectId` above are reused when setup-kanban creates a new
+      // project (i.e. when `id` is omitted).
+      columns: z
+        .array(z.string().min(1))
+        .min(1)
+        .optional()
+        .describe(
+          'Optional for setup-kanban: an ORDERED, non-empty array of Kanban column/bucket ' +
+            'names, e.g. ["To Do", "Doing", "Done"]. Buckets are created/renamed/reused to ' +
+            'match this exact order. Omit entirely for a plain project+tasks call with no ' +
+            'Kanban board — no Kanban view or bucket is created or touched in that case. A ' +
+            "task's `column` is only valid when `columns` is supplied.",
+        ),
+      tasks: z
+        .array(
+          z.object({
+            title: z.string().min(1),
+            column: z
+              .string()
+              .optional()
+              .describe(
+                'Must match one of the setup-kanban `columns` entries (case-insensitive). A ' +
+                  'mismatch is rejected up front — the whole call fails before anything is ' +
+                  'created — rather than creating an orphaned, unplaced task.',
+              ),
+            description: z.string().optional(),
+            priority: z.number().min(0).max(5).optional(),
+            dueDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
+                  'to midnight UTC.',
+              ),
+            startDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
+                  'to midnight UTC.',
+              ),
+            endDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
+                  'to midnight UTC.',
+              ),
+            labels: z
+              .array(z.string())
+              .optional()
+              .describe(
+                "Label titles — get-or-created by title, same as apply-label's labelTitles.",
+              ),
+            assignees: z.array(z.number()).optional().describe('Numeric assignee user ids.'),
+          }),
+        )
+        .optional()
+        .describe(
+          'Used by setup-kanban: tasks to bulk-create and place into their named column ' +
+            "(each task's `column`, matched against `columns`).",
+        ),
       // Sharing arguments (link shares + direct user/team sharing)
-      projectId: z.number().positive().optional(),
+      projectId: z
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          'The project id. Required (as `projectId`) by sharing subcommands (create-share, ' +
+            'share-with-user, list-members, etc.). Also accepted as an alias for `id` on ' +
+            'CRUD/hierarchy/Kanban-bucket/view subcommands (list-buckets, create-bucket, ' +
+            'update-bucket, delete-bucket, list-view-tasks, etc.) — NOT a bucket id or view id.',
+        ),
       shareId: z.string().optional(),
       shareHash: z.string().optional(),
-      right: z.union([z.enum(['read', 'write', 'admin']), z.literal(0), z.literal(1), z.literal(2)]).optional(),
+      right: z
+        .union([z.enum(['read', 'write', 'admin']), z.literal(0), z.literal(1), z.literal(2)])
+        .optional(),
+      // `name` is `create-share`'s share label — distinct from `title` above
+      // (the project's own title field). Passing `title` instead of `name`
+      // to `create-share` is rejected (not remapped) by `createProjectShare`
+      // with a validation error naming both fields explicitly.
       name: z.string().optional(),
       password: z.string().optional(),
       // Direct user/team sharing arguments
@@ -346,354 +514,527 @@ export function registerProjectsTool(
         }
 
         try {
-        const result = await (async (): Promise<McpResponse> => {
-          switch (args.subcommand) {
-            // CRUD operations
-            case 'list':
-              return await listProjects(args as ListProjectsArgs, authManager);
+          const result = await (async (): Promise<McpResponse> => {
+            switch (args.subcommand) {
+              // CRUD operations
+              case 'list':
+                return await listProjects(args as ListProjectsArgs, authManager);
 
-            case 'get':
-              if (args.id === undefined || args.id === null) {
-                throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
+              case 'get':
+                if (args.id === undefined || args.id === null) {
+                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
+                }
+                validateId(args.id, 'id');
+                return await getProject(args as GetProjectArgs, authManager);
+
+              case 'create':
+                if (!args.title) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project title is required for create operation',
+                  );
+                }
+                return await createProject(args as CreateProjectArgs, authManager);
+
+              case 'update':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for update operation',
+                  );
+                }
+                return await updateProject(args as UpdateProjectArgs, authManager);
+
+              case 'delete':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for delete operation',
+                  );
+                }
+                return await deleteProject(args as DeleteProjectArgs, authManager);
+
+              case 'archive':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for archive operation',
+                  );
+                }
+                return await archiveProject(args as ArchiveProjectArgs, authManager);
+
+              case 'unarchive':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for unarchive operation',
+                  );
+                }
+                return await unarchiveProject(args as ArchiveProjectArgs, authManager);
+
+              // Hierarchy operations
+              case 'get-children':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for get-children operation',
+                  );
+                }
+                return await getProjectChildren(args as GetChildrenArgs, context, authManager);
+
+              case 'get-tree':
+                return await getProjectTree(args as GetTreeArgs, context, authManager);
+
+              case 'get-breadcrumb':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for get-breadcrumb operation',
+                  );
+                }
+                return await getProjectBreadcrumb(args as GetBreadcrumbArgs, context, authManager);
+
+              case 'move':
+                if (args.id === undefined || args.id === null) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for move operation',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await moveProject(args as MoveProjectArgs, context, authManager);
+
+              // Sharing operations — link shares
+              case 'create-share':
+                if (!args.projectId) {
+                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
+                }
+                if (!args.right) {
+                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required');
+                }
+                return await createProjectShare(args as CreateShareArgs, authManager);
+
+              case 'list-shares':
+                if (!args.projectId) {
+                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
+                }
+                return await listProjectShares(args as ListSharesArgs, authManager);
+
+              case 'get-share':
+                if (args.shareId === undefined || args.shareId === null) {
+                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID is required');
+                }
+                if (args.shareId.trim() === '') {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Share ID must be a non-empty string',
+                  );
+                }
+                return await getProjectShare(args as GetShareArgs, authManager);
+
+              case 'delete-share':
+                if (args.shareId === undefined || args.shareId === null) {
+                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID is required');
+                }
+                if (args.shareId.trim() === '') {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Share ID must be a non-empty string',
+                  );
+                }
+                return await deleteProjectShare(args as DeleteShareArgs, authManager);
+
+              case 'auth-share': {
+                if (!args.shareHash) {
+                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share hash is required');
+                }
+                const authShareArgs: AuthShareArgs = {
+                  shareHash: args.shareHash,
+                };
+                if (args.projectId !== undefined) authShareArgs.projectId = args.projectId;
+                if (args.password !== undefined) authShareArgs.password = args.password;
+                return await authProjectShare(authShareArgs, authManager);
               }
-              validateId(args.id, 'id');
-              return await getProject(args as GetProjectArgs, authManager);
 
-            case 'create':
-              if (!args.title) {
-                throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project title is required for create operation');
-              }
-              return await createProject(args as CreateProjectArgs, authManager);
+              // Sharing operations — direct user access (primitives)
+              case 'list-project-users':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for list-project-users operation',
+                  );
+                }
+                return await listProjectUsers(args as ListProjectUsersArgs, authManager);
 
-          case 'update':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for update operation');
-            }
-            return await updateProject(args as UpdateProjectArgs, authManager);
+              case 'search-project-users':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for search-project-users operation',
+                  );
+                }
+                return await searchProjectUsers(args as SearchProjectUsersArgs, authManager);
 
-          case 'delete':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for delete operation');
-            }
-            return await deleteProject(args as DeleteProjectArgs, authManager);
+              case 'add-project-user':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for add-project-user operation',
+                  );
+                }
+                if (!args.username) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'username is required for add-project-user operation',
+                  );
+                }
+                if (!args.right) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Share right is required for add-project-user operation',
+                  );
+                }
+                return await addProjectUser(args as AddProjectUserArgs, authManager);
 
-          case 'archive':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for archive operation');
-            }
-            return await archiveProject(args as ArchiveProjectArgs, authManager);
+              case 'update-project-user-permission':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for update-project-user-permission operation',
+                  );
+                }
+                if (!args.userId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'userId is required for update-project-user-permission operation',
+                  );
+                }
+                if (!args.right) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Share right is required for update-project-user-permission operation',
+                  );
+                }
+                return await updateProjectUserPermission(
+                  args as UpdateProjectUserPermissionArgs,
+                  authManager,
+                );
 
-          case 'unarchive':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for unarchive operation');
-            }
-            return await unarchiveProject(args as ArchiveProjectArgs, authManager);
+              case 'remove-project-user':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for remove-project-user operation',
+                  );
+                }
+                if (!args.userId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'userId is required for remove-project-user operation',
+                  );
+                }
+                return await removeProjectUser(args as RemoveProjectUserArgs, authManager);
 
-          // Hierarchy operations
-          case 'get-children':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for get-children operation');
-            }
-            return await getProjectChildren(args as GetChildrenArgs, context, authManager);
+              // Sharing operations — direct team access (primitives)
+              case 'list-project-teams':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for list-project-teams operation',
+                  );
+                }
+                return await listProjectTeams(args as ListProjectTeamsArgs, authManager);
 
-          case 'get-tree':
-            return await getProjectTree(args as GetTreeArgs, context, authManager);
+              case 'add-project-team':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for add-project-team operation',
+                  );
+                }
+                if (!args.teamId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'teamId is required for add-project-team operation',
+                  );
+                }
+                if (!args.right) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Share right is required for add-project-team operation',
+                  );
+                }
+                return await addProjectTeam(args as AddProjectTeamArgs, authManager);
 
-          case 'get-breadcrumb':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for get-breadcrumb operation');
-            }
-            return await getProjectBreadcrumb(args as GetBreadcrumbArgs, context, authManager);
+              case 'update-project-team-permission':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for update-project-team-permission operation',
+                  );
+                }
+                if (!args.teamId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'teamId is required for update-project-team-permission operation',
+                  );
+                }
+                if (!args.right) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Share right is required for update-project-team-permission operation',
+                  );
+                }
+                return await updateProjectTeamPermission(
+                  args as UpdateProjectTeamPermissionArgs,
+                  authManager,
+                );
 
-          case 'move':
-            if (args.id === undefined || args.id === null) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for move operation');
-            }
-            validateId(args.id, 'id');
-            return await moveProject(args as MoveProjectArgs, context, authManager);
+              case 'remove-project-team':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for remove-project-team operation',
+                  );
+                }
+                if (!args.teamId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'teamId is required for remove-project-team operation',
+                  );
+                }
+                return await removeProjectTeam(args as RemoveProjectTeamArgs, authManager);
 
-          // Sharing operations — link shares
-          case 'create-share':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
-            }
-            if (!args.right) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required');
-            }
-            return await createProjectShare(args as CreateShareArgs, authManager);
+              // Sharing operations — composites
+              case 'share-with-user':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for share-with-user operation',
+                  );
+                }
+                if (!args.username) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'username is required for share-with-user operation',
+                  );
+                }
+                if (!args.right) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Share right is required for share-with-user operation',
+                  );
+                }
+                return await shareProjectWithUser(args as ShareWithUserArgs, authManager);
 
-          case 'list-shares':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
-            }
-            return await listProjectShares(args as ListSharesArgs, authManager);
+              case 'share-with-team':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for share-with-team operation',
+                  );
+                }
+                if (!args.teamName) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'teamName is required for share-with-team operation',
+                  );
+                }
+                if (!args.right) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Share right is required for share-with-team operation',
+                  );
+                }
+                return await shareProjectWithTeam(args as ShareWithTeamArgs, authManager);
 
-          case 'get-share':
-            if (args.shareId === undefined || args.shareId === null) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID is required');
-            }
-            if (args.shareId.trim() === '') {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID must be a non-empty string');
-            }
-            return await getProjectShare(args as GetShareArgs, authManager);
+              case 'list-members':
+                if (!args.projectId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for list-members operation',
+                  );
+                }
+                return await listProjectMembers(args as ListMembersArgs, authManager);
 
-          case 'delete-share':
-            if (args.shareId === undefined || args.shareId === null) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID is required');
-            }
-            if (args.shareId.trim() === '') {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID must be a non-empty string');
-            }
-            return await deleteProjectShare(args as DeleteShareArgs, authManager);
+              // setup-kanban composite (issue #173) — validates its own required
+              // fields (columns, and either id or title) internally; `id` here
+              // has already had the projectId alias applied above when present.
+              case 'setup-kanban':
+                return await setupKanban(args as SetupKanbanArgs, authManager);
 
-          case 'auth-share': {
-            if (!args.shareHash) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share hash is required');
-            }
-            const authShareArgs: AuthShareArgs = {
-              shareHash: args.shareHash
-            };
-            if (args.projectId !== undefined) authShareArgs.projectId = args.projectId;
-            if (args.password !== undefined) authShareArgs.password = args.password;
-            return await authProjectShare(authShareArgs, authManager);
-          }
+              // Kanban bucket operations
+              case 'list-buckets':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'id (or projectId, accepted as an alias) is required for list-buckets operation — ' +
+                      'the project whose Kanban buckets to list; get it from vikunja_projects list.',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await listBuckets(args as ListBucketsArgs, authManager);
 
-          // Sharing operations — direct user access (primitives)
-          case 'list-project-users':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-project-users operation');
-            }
-            return await listProjectUsers(args as ListProjectUsersArgs, authManager);
+              case 'create-bucket':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'id (or projectId, accepted as an alias) is required for create-bucket operation — ' +
+                      'the project to add the bucket to; get it from vikunja_projects list.',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await createBucket(args as CreateBucketArgs, authManager);
 
-          case 'search-project-users':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for search-project-users operation');
-            }
-            return await searchProjectUsers(args as SearchProjectUsersArgs, authManager);
+              case 'update-bucket':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'id (or projectId, accepted as an alias) is required for update-bucket operation — ' +
+                      'the project whose bucket to update (also pass bucketId or bucketTitle to identify ' +
+                      'the bucket itself); get the project id from vikunja_projects list.',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await updateBucket(args as UpdateBucketArgs, authManager);
 
-          case 'add-project-user':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for add-project-user operation');
-            }
-            if (!args.username) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'username is required for add-project-user operation');
-            }
-            if (!args.right) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for add-project-user operation');
-            }
-            return await addProjectUser(args as AddProjectUserArgs, authManager);
+              case 'delete-bucket':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'id (or projectId, accepted as an alias) is required for delete-bucket operation — ' +
+                      'the project whose bucket to delete; get it from vikunja_projects list.',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await deleteBucket(args as DeleteBucketArgs, authManager);
 
-          case 'update-project-user-permission':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for update-project-user-permission operation');
-            }
-            if (!args.userId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'userId is required for update-project-user-permission operation');
-            }
-            if (!args.right) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for update-project-user-permission operation');
-            }
-            return await updateProjectUserPermission(args as UpdateProjectUserPermissionArgs, authManager);
+              case 'list-view-tasks':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for list-view-tasks operation',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await listViewTasks(args as ListViewTasksArgs, authManager);
 
-          case 'remove-project-user':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for remove-project-user operation');
-            }
-            if (!args.userId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'userId is required for remove-project-user operation');
-            }
-            return await removeProjectUser(args as RemoveProjectUserArgs, authManager);
+              // Project view operations
+              case 'list-views':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for list-views operation',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await listViews(args as ListViewsArgs, authManager);
 
-          // Sharing operations — direct team access (primitives)
-          case 'list-project-teams':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-project-teams operation');
-            }
-            return await listProjectTeams(args as ListProjectTeamsArgs, authManager);
+              case 'get-view':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for get-view operation',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await getView(args as GetViewArgs, authManager);
 
-          case 'add-project-team':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for add-project-team operation');
-            }
-            if (!args.teamId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'teamId is required for add-project-team operation');
-            }
-            if (!args.right) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for add-project-team operation');
-            }
-            return await addProjectTeam(args as AddProjectTeamArgs, authManager);
+              case 'create-view':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for create-view operation',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await createView(args as CreateViewArgs, authManager);
 
-          case 'update-project-team-permission':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for update-project-team-permission operation');
-            }
-            if (!args.teamId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'teamId is required for update-project-team-permission operation');
-            }
-            if (!args.right) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for update-project-team-permission operation');
-            }
-            return await updateProjectTeamPermission(args as UpdateProjectTeamPermissionArgs, authManager);
+              case 'update-view':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for update-view operation',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await updateView(args as UpdateViewArgs, authManager);
 
-          case 'remove-project-team':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for remove-project-team operation');
-            }
-            if (!args.teamId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'teamId is required for remove-project-team operation');
-            }
-            return await removeProjectTeam(args as RemoveProjectTeamArgs, authManager);
+              case 'delete-view':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for delete-view operation',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await deleteView(args as DeleteViewArgs, authManager);
 
-          // Sharing operations — composites
-          case 'share-with-user':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for share-with-user operation');
-            }
-            if (!args.username) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'username is required for share-with-user operation');
-            }
-            if (!args.right) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for share-with-user operation');
-            }
-            return await shareProjectWithUser(args as ShareWithUserArgs, authManager);
+              case 'set-done-bucket':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for set-done-bucket operation',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await setDoneBucket(args as SetDoneBucketArgs, authManager);
 
-          case 'share-with-team':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for share-with-team operation');
-            }
-            if (!args.teamName) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'teamName is required for share-with-team operation');
-            }
-            if (!args.right) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required for share-with-team operation');
-            }
-            return await shareProjectWithTeam(args as ShareWithTeamArgs, authManager);
+              // Duplicate operation
+              case 'duplicate':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for duplicate operation',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await duplicateProject(args as DuplicateProjectArgs, authManager);
 
-          case 'list-members':
-            if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-members operation');
+              // Project backgrounds (G7, opt-in `backgrounds` module). Only
+              // reachable when the module is enabled — see
+              // BACKGROUND_SUBCOMMANDS above; the zod enum itself excludes
+              // these subcommand strings when the module is disabled, so an
+              // unrecognized-subcommand rejection happens at schema validation
+              // time in that case, never reaching this switch.
+              case 'remove-background':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for remove-background operation',
+                  );
+                }
+                validateId(args.id, 'id');
+                return await removeProjectBackground(args as RemoveBackgroundArgs, authManager);
+
+              case 'set-unsplash-background':
+                if (!args.id) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'Project ID is required for set-unsplash-background operation',
+                  );
+                }
+                validateId(args.id, 'id');
+                if (!args.unsplashImageId) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    'unsplashImageId is required for set-unsplash-background operation',
+                  );
+                }
+                return await setUnsplashBackground(args as SetUnsplashBackgroundArgs, authManager);
+
+              case 'search-unsplash':
+                return await searchUnsplashBackgrounds(args as SearchUnsplashArgs, authManager);
+
+              default:
+                throw new MCPError(
+                  ErrorCode.VALIDATION_ERROR,
+                  `Unknown subcommand: ${String(args.subcommand)}`,
+                );
             }
-            return await listProjectMembers(args as ListMembersArgs, authManager);
+          })();
 
-          // Kanban bucket operations
-          case 'list-buckets':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-buckets operation');
-            }
-            validateId(args.id, 'id');
-            return await listBuckets(args as ListBucketsArgs, authManager);
-
-          case 'create-bucket':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for create-bucket operation');
-            }
-            validateId(args.id, 'id');
-            return await createBucket(args as CreateBucketArgs, authManager);
-
-          case 'update-bucket':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for update-bucket operation');
-            }
-            validateId(args.id, 'id');
-            return await updateBucket(args as UpdateBucketArgs, authManager);
-
-          case 'delete-bucket':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for delete-bucket operation');
-            }
-            validateId(args.id, 'id');
-            return await deleteBucket(args as DeleteBucketArgs, authManager);
-
-          case 'list-view-tasks':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-view-tasks operation');
-            }
-            validateId(args.id, 'id');
-            return await listViewTasks(args as ListViewTasksArgs, authManager);
-
-          // Project view operations
-          case 'list-views':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for list-views operation');
-            }
-            validateId(args.id, 'id');
-            return await listViews(args as ListViewsArgs, authManager);
-
-          case 'get-view':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for get-view operation');
-            }
-            validateId(args.id, 'id');
-            return await getView(args as GetViewArgs, authManager);
-
-          case 'create-view':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for create-view operation');
-            }
-            validateId(args.id, 'id');
-            return await createView(args as CreateViewArgs, authManager);
-
-          case 'update-view':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for update-view operation');
-            }
-            validateId(args.id, 'id');
-            return await updateView(args as UpdateViewArgs, authManager);
-
-          case 'delete-view':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for delete-view operation');
-            }
-            validateId(args.id, 'id');
-            return await deleteView(args as DeleteViewArgs, authManager);
-
-          case 'set-done-bucket':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for set-done-bucket operation');
-            }
-            validateId(args.id, 'id');
-            return await setDoneBucket(args as SetDoneBucketArgs, authManager);
-
-          // Duplicate operation
-          case 'duplicate':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for duplicate operation');
-            }
-            validateId(args.id, 'id');
-            return await duplicateProject(args as DuplicateProjectArgs, authManager);
-
-          // Project backgrounds (G7, opt-in `backgrounds` module). Only
-          // reachable when the module is enabled — see
-          // BACKGROUND_SUBCOMMANDS above; the zod enum itself excludes
-          // these subcommand strings when the module is disabled, so an
-          // unrecognized-subcommand rejection happens at schema validation
-          // time in that case, never reaching this switch.
-          case 'remove-background':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for remove-background operation');
-            }
-            validateId(args.id, 'id');
-            return await removeProjectBackground(args as RemoveBackgroundArgs, authManager);
-
-          case 'set-unsplash-background':
-            if (!args.id) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required for set-unsplash-background operation');
-            }
-            validateId(args.id, 'id');
-            if (!args.unsplashImageId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'unsplashImageId is required for set-unsplash-background operation');
-            }
-            return await setUnsplashBackground(args as SetUnsplashBackgroundArgs, authManager);
-
-          case 'search-unsplash':
-            return await searchUnsplashBackgrounds(args as SearchUnsplashArgs, authManager);
-
-          default:
-            throw new MCPError(ErrorCode.VALIDATION_ERROR, `Unknown subcommand: ${String(args.subcommand)}`);
-        }
-        })();
-
-        return result;
+          return result;
         } catch (error) {
           throw wrapToolError(error, 'vikunja_projects', args.subcommand, args.id);
         }
@@ -703,10 +1044,10 @@ export function registerProjectsTool(
         }
         throw new MCPError(
           ErrorCode.INTERNAL_ERROR,
-          `Unexpected error: ${error instanceof Error ? error.message : 'Unknown error'}`
+          `Unexpected error: ${error instanceof Error ? error.message : 'Unknown error'}`,
         );
       }
-    }
+    },
   );
 }
 
@@ -753,7 +1094,9 @@ export type {
   ListMembersArgs,
   RemoveBackgroundArgs,
   SetUnsplashBackgroundArgs,
-  SearchUnsplashArgs
+  SearchUnsplashArgs,
+  SetupKanbanArgs,
+  SetupKanbanTaskInput,
 };
 
 // Export all functions for direct use if needed
@@ -787,6 +1130,9 @@ export {
   deleteBucket,
   listViewTasks,
 
+  // Kanban board composite
+  setupKanban,
+
   // Project views
   listViews,
   getView,
@@ -815,5 +1161,5 @@ export {
   // Backgrounds (opt-in `backgrounds` module)
   removeProjectBackground,
   setUnsplashBackground,
-  searchUnsplashBackgrounds
+  searchUnsplashBackgrounds,
 };

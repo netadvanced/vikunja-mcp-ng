@@ -145,10 +145,7 @@ describe('TaskCreationService', () => {
         ['john', 101],
         ['jane', 102],
       ]),
-      projectUsers: [
-        { id: 101, username: 'john' } as User,
-        { id: 102, username: 'jane' } as User,
-      ],
+      projectUsers: [{ id: 101, username: 'john' } as User, { id: 102, username: 'jane' } as User],
     };
 
     // Setup mock task
@@ -185,10 +182,7 @@ describe('TaskCreationService', () => {
       fetchOkOnce(createdTask);
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
-        labels: [
-          { id: 1, title: 'urgent' } as Label,
-          { id: 2, title: 'bug' } as Label,
-        ],
+        labels: [{ id: 1, title: 'urgent' } as Label, { id: 2, title: 'bug' } as Label],
       });
       mockClient.tasks.assignUserToTask.mockResolvedValue({});
 
@@ -197,7 +191,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -246,7 +240,7 @@ describe('TaskCreationService', () => {
         minimalTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -270,7 +264,7 @@ describe('TaskCreationService', () => {
 
       // Act & Assert
       await expect(
-        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps),
       ).rejects.toThrow(MCPError);
 
       // isAuthenticationError is called with the original network-level
@@ -290,12 +284,12 @@ describe('TaskCreationService', () => {
 
       // Act & Assert - Should bubble up even with catchErrors=true
       await expect(
-        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, true)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, true),
       ).rejects.toThrow(MCPError);
 
       // Act & Assert - Should also bubble up with catchErrors=false
       await expect(
-        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, false)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, false),
       ).rejects.toThrow(MCPError);
     });
 
@@ -308,7 +302,7 @@ describe('TaskCreationService', () => {
 
       // Act & Assert
       await expect(
-        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, false)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, false),
       ).rejects.toThrow('API rate limit exceeded');
     });
 
@@ -324,7 +318,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -351,10 +345,7 @@ describe('TaskCreationService', () => {
       fetchOkOnce(createdTask);
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
-        labels: [
-          { id: 1, title: 'urgent' } as Label,
-          { id: 2, title: 'bug' } as Label,
-        ],
+        labels: [{ id: 1, title: 'urgent' } as Label, { id: 2, title: 'bug' } as Label],
       });
 
       // Act
@@ -362,7 +353,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -400,7 +391,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -430,7 +421,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -460,7 +451,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -492,10 +483,7 @@ describe('TaskCreationService', () => {
       fetchOkOnce(createdTask);
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
-        labels: [
-          { id: 1, title: 'urgent' } as Label,
-          { id: 2, title: 'bug' } as Label,
-        ],
+        labels: [{ id: 1, title: 'urgent' } as Label, { id: 2, title: 'bug' } as Label],
       });
 
       // Act
@@ -503,7 +491,7 @@ describe('TaskCreationService', () => {
         taskWithUnknownLabels,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -531,7 +519,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -562,7 +550,7 @@ describe('TaskCreationService', () => {
         taskWithoutLabels,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -597,7 +585,7 @@ describe('TaskCreationService', () => {
         taskWithoutLabels,
         456,
         authManager,
-        entityMapsWithNoUsers
+        entityMapsWithNoUsers,
       );
 
       // Assert
@@ -629,7 +617,7 @@ describe('TaskCreationService', () => {
         taskWithoutLabels,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -664,7 +652,7 @@ describe('TaskCreationService', () => {
         taskWithUnknownUsers,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -683,10 +671,7 @@ describe('TaskCreationService', () => {
       // Arrange
       const taskWithReminders: ImportedTask = {
         title: 'Test Task with Reminders',
-        reminders: [
-          { reminder: '2024-12-31T10:00:00Z' },
-          { reminder: '2024-11-30T09:00:00Z' },
-        ],
+        reminders: [{ reminder: '2024-12-31T10:00:00Z' }, { reminder: '2024-11-30T09:00:00Z' }],
         labels: [], // Remove labels to isolate reminder testing
         assignees: [], // Remove assignees to isolate reminder testing
       };
@@ -704,7 +689,7 @@ describe('TaskCreationService', () => {
         taskWithReminders,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -713,10 +698,7 @@ describe('TaskCreationService', () => {
       expect(result.warnings![0]).toContain('Reminders cannot be added after task creation');
       expect(logger.warn).toHaveBeenCalledWith('Reminders cannot be added after task creation', {
         taskId: 123,
-        reminders: [
-          { reminder: '2024-12-31T10:00:00Z' },
-          { reminder: '2024-11-30T09:00:00Z' },
-        ],
+        reminders: [{ reminder: '2024-12-31T10:00:00Z' }, { reminder: '2024-11-30T09:00:00Z' }],
       });
     });
   });
@@ -744,7 +726,7 @@ describe('TaskCreationService', () => {
         taskWithEmptyArrays,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -778,7 +760,7 @@ describe('TaskCreationService', () => {
         taskWithUndefined,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -813,7 +795,7 @@ describe('TaskCreationService', () => {
         taskWithInvalidRepeatMode,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -850,7 +832,7 @@ describe('TaskCreationService', () => {
         taskWithMultipleIssues,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert

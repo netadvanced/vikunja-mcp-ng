@@ -1,6 +1,6 @@
 /**
  * Tests for src/index.ts - Main Server Entry Point
- * Coverage for server initialization, environment processing, 
+ * Coverage for server initialization, environment processing,
  * auto-authentication, factory initialization, and tool registration
  */
 
@@ -59,6 +59,8 @@ const mockStartHttpTransport = jest.fn();
 // in tests/oidc/http-e2e.test.ts.
 const mockSetupOidcHttpAuth = jest.fn();
 
+const mockResolvePackageVersion = jest.fn().mockReturnValue('9.9.9-test');
+
 // Set up all mocks before imports
 jest.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   McpServer: MockMcpServer,
@@ -85,6 +87,10 @@ jest.mock('../src/tools', () => ({
 
 jest.mock('../src/utils/logger', () => ({
   logger: mockLogger,
+}));
+
+jest.mock('../src/utils/version', () => ({
+  resolvePackageVersion: mockResolvePackageVersion,
 }));
 
 jest.mock('../src/utils/security', () => ({
@@ -116,7 +122,7 @@ describe('Main Server Entry Point (index.ts)', () => {
     // Save original environment and process.exit
     originalEnv = { ...process.env };
     originalExit = process.exit;
-    
+
     // Mock process.exit
     mockProcessExit = jest.spyOn(process, 'exit').mockImplementation(() => {
       throw new Error('process.exit called'); // Throw to prevent actual exit
@@ -128,7 +134,7 @@ describe('Main Server Entry Point (index.ts)', () => {
     delete process.env.VIKUNJA_API_TOKEN_FILE;
     delete process.env.MCP_MODE;
     delete process.env.DEBUG;
-    
+
     // Always set NODE_ENV=test to prevent main() execution unless specifically testing main()
     process.env.NODE_ENV = 'test';
     process.env.JEST_WORKER_ID = '1';
@@ -151,23 +157,24 @@ describe('Main Server Entry Point (index.ts)', () => {
     it('should load dotenv configuration on import', () => {
       // Import the module to trigger initialization
       require('../src/index');
-      
+
       expect(mockDotenvConfig).toHaveBeenCalledTimes(1);
     });
 
-    it('should create McpServer with correct configuration', () => {
+    it('should create McpServer with the version resolved from package.json', () => {
       require('../src/index');
-      
+
       expect(MockMcpServer).toHaveBeenCalledTimes(1);
       expect(MockMcpServer).toHaveBeenCalledWith({
         name: 'vikunja-mcp-ng',
-        version: '0.3.0',
+        version: '9.9.9-test',
       });
+      expect(mockResolvePackageVersion).toHaveBeenCalledWith(path.resolve(__dirname, '..', 'src'));
     });
 
     it('should create AuthManager instance', () => {
       require('../src/index');
-      
+
       expect(MockAuthManager).toHaveBeenCalledTimes(1);
     });
   });
@@ -178,17 +185,19 @@ describe('Main Server Entry Point (index.ts)', () => {
       process.env.VIKUNJA_URL = 'https://vikunja.example.com/api/v1';
       process.env.VIKUNJA_API_TOKEN = 'tk_test123';
       mockAuthManager.getAuthType.mockReturnValue('api-token');
-      
+
       require('../src/index');
-      
+
       expect(mockCreateSecureConnectionMessage).toHaveBeenCalledWith(
         'https://vikunja.example.com/api/v1',
-        'tk_test123'
+        'tk_test123',
       );
-      expect(mockLogger.info).toHaveBeenCalledWith('Auto-authenticating: Secure connection message');
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        'Auto-authenticating: Secure connection message',
+      );
       expect(mockAuthManager.connect).toHaveBeenCalledWith(
         'https://vikunja.example.com/api/v1',
-        'tk_test123'
+        'tk_test123',
       );
       expect(mockAuthManager.getAuthType).toHaveBeenCalledTimes(1);
       expect(mockLogger.info).toHaveBeenCalledWith('Using detected auth type: api-token');
@@ -198,34 +207,38 @@ describe('Main Server Entry Point (index.ts)', () => {
       process.env.VIKUNJA_URL = 'https://vikunja.example.com/api/v1';
       process.env.VIKUNJA_API_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.token';
       mockAuthManager.getAuthType.mockReturnValue('jwt');
-      
+
       require('../src/index');
-      
+
       expect(mockAuthManager.connect).toHaveBeenCalledWith(
         'https://vikunja.example.com/api/v1',
-        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.token'
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.token',
       );
       expect(mockLogger.info).toHaveBeenCalledWith('Using detected auth type: jwt');
     });
 
     it('should not auto-authenticate when VIKUNJA_URL is missing', () => {
       process.env.VIKUNJA_API_TOKEN = 'tk_test123';
-      
+
       require('../src/index');
-      
+
       expect(mockCreateSecureConnectionMessage).not.toHaveBeenCalled();
       expect(mockAuthManager.connect).not.toHaveBeenCalled();
-      expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining('Auto-authenticating'));
+      expect(mockLogger.info).not.toHaveBeenCalledWith(
+        expect.stringContaining('Auto-authenticating'),
+      );
     });
 
     it('should not auto-authenticate when VIKUNJA_API_TOKEN is missing', () => {
       process.env.VIKUNJA_URL = 'https://vikunja.example.com/api/v1';
-      
+
       require('../src/index');
-      
+
       expect(mockCreateSecureConnectionMessage).not.toHaveBeenCalled();
       expect(mockAuthManager.connect).not.toHaveBeenCalled();
-      expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining('Auto-authenticating'));
+      expect(mockLogger.info).not.toHaveBeenCalledWith(
+        expect.stringContaining('Auto-authenticating'),
+      );
     });
 
     it('should not auto-authenticate when both environment variables are missing', () => {
@@ -233,7 +246,9 @@ describe('Main Server Entry Point (index.ts)', () => {
 
       expect(mockCreateSecureConnectionMessage).not.toHaveBeenCalled();
       expect(mockAuthManager.connect).not.toHaveBeenCalled();
-      expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining('Auto-authenticating'));
+      expect(mockLogger.info).not.toHaveBeenCalledWith(
+        expect.stringContaining('Auto-authenticating'),
+      );
     });
   });
 
@@ -260,7 +275,7 @@ describe('Main Server Entry Point (index.ts)', () => {
 
       expect(mockAuthManager.connect).toHaveBeenCalledWith(
         'https://vikunja.example.com/api/v1',
-        'tk_from_file_456'
+        'tk_from_file_456',
       );
     });
 
@@ -276,7 +291,7 @@ describe('Main Server Entry Point (index.ts)', () => {
 
       expect(mockProcessExit).toHaveBeenCalledWith(1);
       expect(mockLogger.error).toHaveBeenCalledWith(
-        expect.stringContaining('Both VIKUNJA_API_TOKEN and VIKUNJA_API_TOKEN_FILE')
+        expect.stringContaining('Both VIKUNJA_API_TOKEN and VIKUNJA_API_TOKEN_FILE'),
       );
       expect(mockAuthManager.connect).not.toHaveBeenCalled();
     });
@@ -297,7 +312,7 @@ describe('Main Server Entry Point (index.ts)', () => {
       expect(mockRegisterTools).toHaveBeenCalledWith(
         mockMcpServer,
         mockAuthManager,
-        mockClientFactory
+        mockClientFactory,
       );
     });
 
@@ -312,14 +327,10 @@ describe('Main Server Entry Point (index.ts)', () => {
 
       expect(mockLogger.warn).toHaveBeenCalledWith(
         'Failed to initialize client factory during startup:',
-        initError
+        initError,
       );
       expect(mockSetGlobalClientFactory).not.toHaveBeenCalled();
-      expect(mockRegisterTools).toHaveBeenCalledWith(
-        mockMcpServer,
-        mockAuthManager,
-        undefined
-      );
+      expect(mockRegisterTools).toHaveBeenCalledWith(mockMcpServer, mockAuthManager, undefined);
     });
 
     it('should handle null factory result gracefully', async () => {
@@ -331,11 +342,7 @@ describe('Main Server Entry Point (index.ts)', () => {
       await indexModule.factoryInitializationPromise;
 
       expect(mockSetGlobalClientFactory).not.toHaveBeenCalled();
-      expect(mockRegisterTools).toHaveBeenCalledWith(
-        mockMcpServer,
-        mockAuthManager,
-        undefined
-      );
+      expect(mockRegisterTools).toHaveBeenCalledWith(mockMcpServer, mockAuthManager, undefined);
     });
 
     it('should handle undefined factory result gracefully', async () => {
@@ -347,11 +354,7 @@ describe('Main Server Entry Point (index.ts)', () => {
       await indexModule.factoryInitializationPromise;
 
       expect(mockSetGlobalClientFactory).not.toHaveBeenCalled();
-      expect(mockRegisterTools).toHaveBeenCalledWith(
-        mockMcpServer,
-        mockAuthManager,
-        undefined
-      );
+      expect(mockRegisterTools).toHaveBeenCalledWith(mockMcpServer, mockAuthManager, undefined);
     });
 
     it('should handle factory creation errors gracefully', async () => {
@@ -365,16 +368,12 @@ describe('Main Server Entry Point (index.ts)', () => {
 
       expect(mockLogger.warn).toHaveBeenCalledWith(
         'Failed to initialize client factory during startup:',
-        initError
+        initError,
       );
       // The initializeFactory catches errors internally, so no error is logged and no catch block is executed
       expect(mockLogger.error).not.toHaveBeenCalled();
       expect(mockRegisterTools).toHaveBeenCalledTimes(1); // Only in then() block
-      expect(mockRegisterTools).toHaveBeenCalledWith(
-        mockMcpServer,
-        mockAuthManager,
-        undefined
-      );
+      expect(mockRegisterTools).toHaveBeenCalledWith(mockMcpServer, mockAuthManager, undefined);
     });
 
     it('should fallback to legacy registration when promise chain fails', async () => {
@@ -399,11 +398,7 @@ describe('Main Server Entry Point (index.ts)', () => {
 
       expect(mockLogger.error).toHaveBeenCalledWith('Failed to initialize:', expect.any(Error));
       expect(mockRegisterTools).toHaveBeenCalledTimes(2); // Once in then(), once in catch()
-      expect(mockRegisterTools).toHaveBeenLastCalledWith(
-        mockMcpServer,
-        mockAuthManager,
-        undefined
-      );
+      expect(mockRegisterTools).toHaveBeenLastCalledWith(mockMcpServer, mockAuthManager, undefined);
     });
   });
 
@@ -411,43 +406,39 @@ describe('Main Server Entry Point (index.ts)', () => {
     it('should register tools with client factory when initialization succeeds', async () => {
       const mockClientFactory = { test: 'factory' };
       mockCreateVikunjaClientFactory.mockResolvedValue(mockClientFactory);
-      
+
       require('../src/index');
-      
+
       // Wait for async initialization
-      await new Promise(resolve => setTimeout(resolve, 0));
-      
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
       expect(mockRegisterTools).toHaveBeenCalledTimes(1);
       expect(mockRegisterTools).toHaveBeenCalledWith(
         mockMcpServer,
         mockAuthManager,
-        mockClientFactory
+        mockClientFactory,
       );
     });
 
     it('should register tools without client factory when initialization fails', async () => {
       mockCreateVikunjaClientFactory.mockRejectedValue(new Error('Factory failed'));
-      
+
       require('../src/index');
-      
+
       // Wait for async initialization and error handling
-      await new Promise(resolve => setTimeout(resolve, 0));
-      
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
       expect(mockRegisterTools).toHaveBeenCalledTimes(1); // Only once since initializeFactory catches errors
-      expect(mockRegisterTools).toHaveBeenCalledWith(
-        mockMcpServer,
-        mockAuthManager,
-        undefined
-      );
+      expect(mockRegisterTools).toHaveBeenCalledWith(mockMcpServer, mockAuthManager, undefined);
     });
   });
 
   describe('Server Startup (main function)', () => {
     it('should not start server in test environment (NODE_ENV=test)', () => {
       process.env.NODE_ENV = 'test';
-      
+
       require('../src/index');
-      
+
       expect(MockStdioServerTransport).not.toHaveBeenCalled();
       expect(mockMcpServer.connect).not.toHaveBeenCalled();
       expect(mockLogger.info).not.toHaveBeenCalledWith('Vikunja MCP server started');
@@ -455,9 +446,9 @@ describe('Main Server Entry Point (index.ts)', () => {
 
     it('should not start server when JEST_WORKER_ID is set', () => {
       process.env.JEST_WORKER_ID = '1';
-      
+
       require('../src/index');
-      
+
       expect(MockStdioServerTransport).not.toHaveBeenCalled();
       expect(mockMcpServer.connect).not.toHaveBeenCalled();
       expect(mockLogger.info).not.toHaveBeenCalledWith('Vikunja MCP server started');
@@ -466,9 +457,9 @@ describe('Main Server Entry Point (index.ts)', () => {
     it('should not start server when both NODE_ENV=test and JEST_WORKER_ID are set', () => {
       process.env.NODE_ENV = 'test';
       process.env.JEST_WORKER_ID = '1';
-      
+
       require('../src/index');
-      
+
       expect(MockStdioServerTransport).not.toHaveBeenCalled();
       expect(mockMcpServer.connect).not.toHaveBeenCalled();
     });
@@ -617,7 +608,7 @@ describe('Main Server Entry Point (index.ts)', () => {
 
     it('should export clearGlobalClientFactory function', () => {
       const indexModule = require('../src/index');
-      
+
       expect(indexModule.clearGlobalClientFactory).toBeDefined();
       expect(indexModule.clearGlobalClientFactory).toBe(mockClearGlobalClientFactory);
     });
@@ -630,51 +621,51 @@ describe('Main Server Entry Point (index.ts)', () => {
       const mockClientFactory = { test: 'factory' };
       mockCreateVikunjaClientFactory.mockResolvedValue(mockClientFactory);
       mockAuthManager.getAuthType.mockReturnValue('api-token');
-      
+
       require('../src/index');
-      
+
       // Wait for async operations
-      await new Promise(resolve => setTimeout(resolve, 0));
-      
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
       // Verify auto-auth
       expect(mockAuthManager.connect).toHaveBeenCalledWith(
         'https://vikunja.example.com/api/v1',
-        'tk_test123'
+        'tk_test123',
       );
-      
+
       // Verify factory initialization
       expect(mockCreateVikunjaClientFactory).toHaveBeenCalledWith(mockAuthManager);
       expect(mockSetGlobalClientFactory).toHaveBeenCalledWith(mockClientFactory);
-      
+
       // Verify tool registration
       expect(mockRegisterTools).toHaveBeenCalledWith(
         mockMcpServer,
         mockAuthManager,
-        mockClientFactory
+        mockClientFactory,
       );
     });
 
     it('should handle startup flow without auto-auth but with successful factory init', async () => {
       const mockClientFactory = { test: 'factory' };
       mockCreateVikunjaClientFactory.mockResolvedValue(mockClientFactory);
-      
+
       require('../src/index');
-      
+
       // Wait for async operations
-      await new Promise(resolve => setTimeout(resolve, 0));
-      
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
       // Verify no auto-auth
       expect(mockAuthManager.connect).not.toHaveBeenCalled();
-      
+
       // Verify factory initialization
       expect(mockCreateVikunjaClientFactory).toHaveBeenCalledWith(mockAuthManager);
       expect(mockSetGlobalClientFactory).toHaveBeenCalledWith(mockClientFactory);
-      
+
       // Verify tool registration
       expect(mockRegisterTools).toHaveBeenCalledWith(
         mockMcpServer,
         mockAuthManager,
-        mockClientFactory
+        mockClientFactory,
       );
     });
 
@@ -684,31 +675,27 @@ describe('Main Server Entry Point (index.ts)', () => {
       const factoryError = new Error('Factory failed');
       mockCreateVikunjaClientFactory.mockRejectedValue(factoryError);
       mockAuthManager.getAuthType.mockReturnValue('api-token');
-      
+
       require('../src/index');
-      
+
       // Wait for async operations
-      await new Promise(resolve => setTimeout(resolve, 0));
-      
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
       // Verify auto-auth
       expect(mockAuthManager.connect).toHaveBeenCalledWith(
         'https://vikunja.example.com/api/v1',
-        'tk_test123'
+        'tk_test123',
       );
-      
+
       // Verify factory initialization failure
       expect(mockLogger.warn).toHaveBeenCalledWith(
         'Failed to initialize client factory during startup:',
-        factoryError
+        factoryError,
       );
       expect(mockSetGlobalClientFactory).not.toHaveBeenCalled();
-      
+
       // Verify fallback tool registration
-      expect(mockRegisterTools).toHaveBeenCalledWith(
-        mockMcpServer,
-        mockAuthManager,
-        undefined
-      );
+      expect(mockRegisterTools).toHaveBeenCalledWith(mockMcpServer, mockAuthManager, undefined);
     });
   });
 
@@ -718,9 +705,9 @@ describe('Main Server Entry Point (index.ts)', () => {
       process.env.VIKUNJA_API_TOKEN = '';
       process.env.MCP_MODE = '';
       process.env.DEBUG = '';
-      
+
       require('../src/index');
-      
+
       // Empty strings should be falsy for auth check
       expect(mockAuthManager.connect).not.toHaveBeenCalled();
     });
@@ -728,9 +715,9 @@ describe('Main Server Entry Point (index.ts)', () => {
     it('should handle whitespace-only environment variables', () => {
       process.env.VIKUNJA_URL = '   ';
       process.env.VIKUNJA_API_TOKEN = '\t\n';
-      
+
       require('../src/index');
-      
+
       // Whitespace-only should still trigger auth attempt
       expect(mockAuthManager.connect).toHaveBeenCalledWith('   ', '\t\n');
     });
@@ -739,12 +726,12 @@ describe('Main Server Entry Point (index.ts)', () => {
       process.env.VIKUNJA_URL = 'https://vikunja.example.com/api/v1?special=true&encoded=%20';
       process.env.VIKUNJA_API_TOKEN = 'tk_special!@#$%^&*()token';
       mockAuthManager.getAuthType.mockReturnValue('api-token');
-      
+
       require('../src/index');
-      
+
       expect(mockAuthManager.connect).toHaveBeenCalledWith(
         'https://vikunja.example.com/api/v1?special=true&encoded=%20',
-        'tk_special!@#$%^&*()token'
+        'tk_special!@#$%^&*()token',
       );
     });
   });
@@ -752,15 +739,15 @@ describe('Main Server Entry Point (index.ts)', () => {
   describe('Async Error Boundary', () => {
     it('should handle Promise rejection in initializeFactory chain', async () => {
       mockCreateVikunjaClientFactory.mockRejectedValue(new Error('Async error'));
-      
+
       require('../src/index');
-      
+
       // Wait for promise rejection handling
-      await new Promise(resolve => setTimeout(resolve, 0));
-      
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
       expect(mockLogger.warn).toHaveBeenCalledWith(
         'Failed to initialize client factory during startup:',
-        expect.any(Error)
+        expect.any(Error),
       );
       // Since initializeFactory catches errors internally, no error log should occur
       expect(mockLogger.error).not.toHaveBeenCalled();
@@ -770,15 +757,15 @@ describe('Main Server Entry Point (index.ts)', () => {
       mockCreateVikunjaClientFactory.mockImplementation(() => {
         throw new Error('Sync factory error');
       });
-      
+
       require('../src/index');
-      
+
       // Wait for error handling
-      await new Promise(resolve => setTimeout(resolve, 0));
-      
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
       expect(mockLogger.warn).toHaveBeenCalledWith(
         'Failed to initialize client factory during startup:',
-        expect.any(Error)
+        expect.any(Error),
       );
       // Since initializeFactory catches errors internally, no error log should occur
       expect(mockLogger.error).not.toHaveBeenCalled();

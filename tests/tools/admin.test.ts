@@ -24,7 +24,12 @@ jest.mock('../../src/auth/AuthManager');
 const mockFetch = jest.fn();
 global.fetch = mockFetch as any;
 
-function mockResponse(opts: { ok?: boolean; status?: number; statusText?: string; body?: unknown }): Response {
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  body?: unknown;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', body } = opts;
   const text = body === undefined ? '' : JSON.stringify(body);
   return {
@@ -127,7 +132,12 @@ describe('Admin Tool', () => {
     it('should list all instance projects with query params', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ body: [{ id: 1, title: 'P1' }] }));
 
-      const result = await mockHandler({ subcommand: 'list-projects', page: 2, perPage: 5, search: 'p' });
+      const result = await mockHandler({
+        subcommand: 'list-projects',
+        page: 2,
+        perPage: 5,
+        search: 'p',
+      });
 
       expect(mockFetch).toHaveBeenCalledWith(
         'https://api.vikunja.test/api/v1/admin/projects?page=2&per_page=5&s=p',
@@ -144,15 +154,24 @@ describe('Admin Tool', () => {
     });
 
     it('should PATCH the owner_id payload', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ body: { id: 1, title: 'P1', owner: { id: 9 } } }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: { id: 1, title: 'P1', owner: { id: 9 } } }),
+      );
 
-      const result = await mockHandler({ subcommand: 'set-project-owner', projectId: 1, ownerId: 9 });
-
-      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/api/v1/admin/projects/1/owner', {
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ owner_id: 9 }),
+      const result = await mockHandler({
+        subcommand: 'set-project-owner',
+        projectId: 1,
+        ownerId: 9,
       });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/admin/projects/1/owner',
+        {
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ owner_id: 9 }),
+        },
+      );
       expect(result.content[0].text).toContain('reassigned to user 9');
     });
   });
@@ -191,7 +210,9 @@ describe('Admin Tool', () => {
     });
 
     it('should POST the exact expected payload', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ body: { ...mockAdminUser, username: 'bob' } }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: { ...mockAdminUser, username: 'bob' } }),
+      );
 
       const result = await mockHandler({
         subcommand: 'create-user',
@@ -254,7 +275,9 @@ describe('Admin Tool', () => {
     });
 
     it('should require a valid userId even when confirm is true', async () => {
-      await expect(mockHandler({ subcommand: 'delete-user', confirm: true })).rejects.toThrow(MCPError);
+      await expect(mockHandler({ subcommand: 'delete-user', confirm: true })).rejects.toThrow(
+        MCPError,
+      );
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
@@ -280,10 +303,13 @@ describe('Admin Tool', () => {
         mode: 'now',
       });
 
-      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/api/v1/admin/users/3?mode=now', {
-        method: 'DELETE',
-        headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/admin/users/3?mode=now',
+        {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
+        },
+      );
       expect(result.content[0].text).toContain('completed immediately');
     });
   });
@@ -301,16 +327,21 @@ describe('Admin Tool', () => {
 
       const result = await mockHandler({ subcommand: 'set-user-admin', userId: 1, isAdmin: true });
 
-      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/api/v1/admin/users/1/admin', {
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_admin: true }),
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/admin/users/1/admin',
+        {
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ is_admin: true }),
+        },
+      );
       expect(result.content[0].text).toContain('admin flag set to true');
     });
 
     it('should allow explicitly demoting a user (isAdmin: false)', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ body: { ...mockAdminUser, is_admin: false } }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: { ...mockAdminUser, is_admin: false } }),
+      );
 
       await mockHandler({ subcommand: 'set-user-admin', userId: 1, isAdmin: false });
 
@@ -335,7 +366,9 @@ describe('Admin Tool', () => {
       ['disabled', 2],
       ['account-locked', 3],
     ])('should convert status %s to the numeric wire value %d', async (status, numeric) => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ body: { ...mockAdminUser, status: numeric } }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: { ...mockAdminUser, status: numeric } }),
+      );
 
       await mockHandler({ subcommand: 'set-user-status', userId: 1, status });
 
@@ -355,7 +388,12 @@ describe('Admin Tool', () => {
 
     it('should wrap non-MCP errors as API_ERROR', async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', body: { message: 'boom' } }),
+        mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Internal Server Error',
+          body: { message: 'boom' },
+        }),
       );
 
       await expect(mockHandler({ subcommand: 'overview' })).rejects.toThrow(MCPError);
@@ -383,7 +421,9 @@ describe('Admin Tool', () => {
 
         await expect(
           mockHandler({ subcommand: 'delete-user', userId: 1, confirm: true }),
-        ).rejects.toThrow(new MCPError(ErrorCode.API_ERROR, 'Admin operation failed: unexpected failure'));
+        ).rejects.toThrow(
+          new MCPError(ErrorCode.API_ERROR, 'Admin operation failed: unexpected failure'),
+        );
       });
 
       it('should handle a non-Error throw as an INTERNAL_ERROR', async () => {
@@ -395,7 +435,10 @@ describe('Admin Tool', () => {
         await expect(
           mockHandler({ subcommand: 'delete-user', userId: 1, confirm: true }),
         ).rejects.toThrow(
-          new MCPError(ErrorCode.INTERNAL_ERROR, 'An unexpected error occurred during admin operation'),
+          new MCPError(
+            ErrorCode.INTERNAL_ERROR,
+            'An unexpected error occurred during admin operation',
+          ),
         );
       });
     });
@@ -412,7 +455,11 @@ describe('Admin Tool', () => {
 
       expect(
         isReadOnlyRejection(
-          await callAndCatch(mockHandler, { subcommand: 'set-project-owner', projectId: 1, ownerId: 2 }),
+          await callAndCatch(mockHandler, {
+            subcommand: 'set-project-owner',
+            projectId: 1,
+            ownerId: 2,
+          }),
         ),
       ).toBe(true);
       expect(
@@ -432,9 +479,9 @@ describe('Admin Tool', () => {
       expect(
         isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'list-projects' })),
       ).toBe(false);
-      expect(isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'list-users' }))).toBe(
-        false,
-      );
+      expect(
+        isReadOnlyRejection(await callAndCatch(mockHandler, { subcommand: 'list-users' })),
+      ).toBe(false);
     });
 
     it('does not raise the read-only error for delete-user when readOnly is off', async () => {

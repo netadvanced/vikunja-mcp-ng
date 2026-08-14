@@ -230,8 +230,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** create-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** create-template');
       expect(markdown).toContain('Template "Sprint Template" created successfully');
     });
 
@@ -282,8 +282,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** create-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** create-template');
 
       // Verify the template data structure
       const createCall = (mockFilterStorage.create as jest.Mock).mock.calls[0][0];
@@ -321,8 +321,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** create-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** create-template');
 
       // Verify undefined IDs are filtered out
       const createCall = (mockFilterStorage.create as jest.Mock).mock.calls[0][0];
@@ -378,8 +378,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** create-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** create-template');
 
       const createCall = (mockFilterStorage.create as jest.Mock).mock.calls[0][0];
       const templateData = JSON.parse(createCall.filter);
@@ -425,8 +425,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** create-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** create-template');
 
       const createCall = (mockFilterStorage.create as jest.Mock).mock.calls[0][0];
       const templateData = JSON.parse(createCall.filter);
@@ -484,8 +484,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** list-templates");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** list-templates');
       expect(markdown).toContain('2'); // Should show count of 2 templates
     });
 
@@ -514,8 +514,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** list-templates");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** list-templates');
       expect(markdown).toContain('1'); // Should show count of 1 template (invalid one filtered out)
     });
 
@@ -528,7 +528,9 @@ describe('Templates Tool', () => {
     it('should handle list errors with non-Error objects', async () => {
       (mockFilterStorage.list as jest.Mock).mockRejectedValue('String error');
 
-      await expect(toolHandler({ subcommand: 'list' })).rejects.toThrow('Failed to list templates: Unknown error');
+      await expect(toolHandler({ subcommand: 'list' })).rejects.toThrow(
+        'Failed to list templates: Unknown error',
+      );
     });
   });
 
@@ -560,8 +562,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** get-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** get-template');
       expect(markdown).toContain('Sprint Template');
     });
 
@@ -638,8 +640,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** update-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** update-template');
       expect(markdown).toContain('Template "New Name" updated successfully');
     });
 
@@ -717,8 +719,8 @@ describe('Templates Tool', () => {
       // Should still return success even if the second findByName fails
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** update-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** update-template');
       expect(markdown).toContain('Template "New Name" updated successfully');
     });
 
@@ -793,8 +795,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** delete-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** delete-template');
       expect(markdown).toContain('Template "Template to delete" deleted successfully');
     });
 
@@ -929,8 +931,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** instantiate-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** instantiate-template');
       expect(markdown).toContain('Project "Sprint 24" created from template');
     });
 
@@ -964,8 +966,8 @@ describe('Templates Tool', () => {
       // Should still succeed even if labels fail
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** instantiate-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** instantiate-template');
       expect(markdown).toContain('1'); // Should show 1 created task
     });
 
@@ -1060,8 +1062,8 @@ describe('Templates Tool', () => {
       // Should still succeed but report the failure
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** instantiate-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** instantiate-template');
       expect(markdown).toContain('1'); // Should show created and failed task counts
     });
 
@@ -1142,8 +1144,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** instantiate-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** instantiate-template');
     });
 
     it('should handle tasks with position field', async () => {
@@ -1474,10 +1476,12 @@ describe('Templates Tool', () => {
           title: 'Project',
           // No description field at all
         },
-        tasks: [{
-          title: 'Task',
-          // No description
-        }],
+        tasks: [
+          {
+            title: 'Task',
+            // No description
+          },
+        ],
       };
 
       (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
@@ -1515,11 +1519,13 @@ describe('Templates Tool', () => {
           title: 'Project {{TODAY}}',
           description: 'Desc {{NOW}}',
         },
-        tasks: [{
-          title: 'Task {{TODAY}}',
-          description: 'Task desc {{NOW}}',
-          due_date: '2025-12-31T00:00:00Z', // Add due_date to test line 357
-        }],
+        tasks: [
+          {
+            title: 'Task {{TODAY}}',
+            description: 'Task desc {{NOW}}',
+            due_date: '2025-12-31T00:00:00Z', // Add due_date to test line 357
+          },
+        ],
       };
 
       (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
@@ -1557,9 +1563,11 @@ describe('Templates Tool', () => {
           title: undefined, // Undefined title
           description: 'Description',
         },
-        tasks: [{
-          title: undefined, // Undefined task title
-        }],
+        tasks: [
+          {
+            title: undefined, // Undefined task title
+          },
+        ],
       };
 
       (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
@@ -1614,9 +1622,11 @@ describe('Templates Tool', () => {
           title: 'Project {{TODAY}}',
           description: 'Starting {{NOW}}',
         },
-        tasks: [{
-          title: 'Task for {{TODAY}}',
-        }],
+        tasks: [
+          {
+            title: 'Task for {{TODAY}}',
+          },
+        ],
       };
 
       (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
@@ -1689,7 +1699,7 @@ describe('Templates Tool', () => {
       // Make session storage resolution throw an unexpected error; this happens
       // before the subcommand switch, so it hits the handler's top-level catch.
       (storageManager.getStorage as jest.Mock).mockRejectedValue(
-        new TypeError('Unexpected type error')
+        new TypeError('Unexpected type error'),
       );
 
       await expect(
@@ -1702,7 +1712,7 @@ describe('Templates Tool', () => {
     it('should handle non-Error objects thrown at top level', async () => {
       // Reject with a non-Error value to exercise the 'Unknown error' branch.
       (storageManager.getStorage as jest.Mock).mockRejectedValue(
-        'String thrown' // eslint-disable-line no-throw-literal
+        'String thrown', // eslint-disable-line no-throw-literal
       );
 
       await expect(

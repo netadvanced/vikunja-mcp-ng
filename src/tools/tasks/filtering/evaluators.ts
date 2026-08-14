@@ -114,7 +114,11 @@ export function evaluateComparison(actual: unknown, operator: string, expected: 
 /**
  * Evaluates date comparisons (supports relative dates like "now+7d")
  */
-export function evaluateDateComparison(actual: string, operator: string, expected: string): boolean {
+export function evaluateDateComparison(
+  actual: string,
+  operator: string,
+  expected: string,
+): boolean {
   const actualDate = new Date(actual);
   const expectedDate = parseRelativeDate(expected);
 
@@ -193,7 +197,11 @@ export function parseRelativeDate(dateStr: string): Date | null {
 /**
  * Evaluates string comparisons
  */
-export function evaluateStringComparison(actual: string, operator: string, expected: string): boolean {
+export function evaluateStringComparison(
+  actual: string,
+  operator: string,
+  expected: string,
+): boolean {
   switch (operator) {
     case '=':
       return actual === expected;
@@ -210,7 +218,11 @@ export function evaluateStringComparison(actual: string, operator: string, expec
 /**
  * Evaluates array comparisons (for assignees and labels)
  */
-export function evaluateArrayComparison(actual: number[], operator: string, expected: number[]): boolean {
+export function evaluateArrayComparison(
+  actual: number[],
+  operator: string,
+  expected: number[],
+): boolean {
   switch (operator) {
     case 'in':
       // Check if any expected value is in the actual array

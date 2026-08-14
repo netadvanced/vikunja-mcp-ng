@@ -58,9 +58,9 @@ describe('duplicateProject', () => {
     });
 
     it('throws when an explicit parentProjectId is invalid (but allows 0 = root)', async () => {
-      await expect(
-        duplicateProject({ id: 5, parentProjectId: -2 }, authManager),
-      ).rejects.toThrow('parentProjectId must be a positive integer');
+      await expect(duplicateProject({ id: 5, parentProjectId: -2 }, authManager)).rejects.toThrow(
+        'parentProjectId must be a positive integer',
+      );
     });
   });
 
@@ -78,9 +78,7 @@ describe('duplicateProject', () => {
       const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
       expect(url).toBe('https://vikunja.test/api/v1/projects/5/duplicate');
       expect(init.method).toBe('PUT');
-      expect(init.body).toBe(
-        JSON.stringify({ parent_project_id: 0, duplicate_shares: false }),
-      );
+      expect(init.body).toBe(JSON.stringify({ parent_project_id: 0, duplicate_shares: false }));
 
       const text = result.content[0].text;
       expect(text).toContain('Project 5 duplicated as project 42');
@@ -91,15 +89,10 @@ describe('duplicateProject', () => {
         mockResponse({ text: JSON.stringify({ duplicated_project: { id: 7 } }) }),
       );
 
-      await duplicateProject(
-        { id: 5, parentProjectId: 9, duplicateShares: true },
-        authManager,
-      );
+      await duplicateProject({ id: 5, parentProjectId: 9, duplicateShares: true }, authManager);
 
       const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-      expect(init.body).toBe(
-        JSON.stringify({ parent_project_id: 9, duplicate_shares: true }),
-      );
+      expect(init.body).toBe(JSON.stringify({ parent_project_id: 9, duplicate_shares: true }));
     });
 
     it('reports success generically when the response has no duplicated_project id', async () => {

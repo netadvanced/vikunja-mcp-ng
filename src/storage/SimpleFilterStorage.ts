@@ -49,7 +49,9 @@ export class SimpleFilterStorage implements FilterStorage {
     const release = await this.mutex.acquire();
     try {
       this.updateAccessTime();
-      return Array.from(this.filters.values()).sort((a, b) => b.updated.getTime() - a.updated.getTime());
+      return Array.from(this.filters.values()).sort(
+        (a, b) => b.updated.getTime() - a.updated.getTime(),
+      );
     } finally {
       release();
     }
@@ -246,7 +248,11 @@ export class FilterStorageManager {
     this.startCleanupTimer();
   }
 
-  async getStorage(sessionId: string, userId?: string, apiUrl?: string): Promise<SimpleFilterStorage> {
+  async getStorage(
+    sessionId: string,
+    userId?: string,
+    apiUrl?: string,
+  ): Promise<SimpleFilterStorage> {
     const release = await this.mutex.acquire();
     try {
       let storage = this.storageInstances.get(sessionId);
@@ -260,13 +266,15 @@ export class FilterStorageManager {
     }
   }
 
-  async getAllStats(): Promise<Array<{
-    sessionId: string;
-    filterCount: number;
-    createdAt: Date;
-    lastAccessAt: Date;
-    memoryUsageKb: number;
-  }>> {
+  async getAllStats(): Promise<
+    Array<{
+      sessionId: string;
+      filterCount: number;
+      createdAt: Date;
+      lastAccessAt: Date;
+      memoryUsageKb: number;
+    }>
+  > {
     const release = await this.mutex.acquire();
     try {
       const stats = [];
@@ -288,8 +296,10 @@ export class FilterStorageManager {
 
   private startCleanupTimer(): void {
     this.cleanupInterval = setInterval(() => {
-      this.cleanupInactiveSessions().catch(error => {
-        logger.error('Failed to cleanup inactive sessions', { error: error instanceof Error ? error.message : String(error) });
+      this.cleanupInactiveSessions().catch((error) => {
+        logger.error('Failed to cleanup inactive sessions', {
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
     }, this.CLEANUP_INTERVAL_MS);
     // Timer hygiene: don't let this module-level interval keep the process
@@ -381,17 +391,23 @@ process.on('exit', () => {
 });
 
 process.on('SIGINT', () => {
-  storageManager.destroy().then(() => {
-    process.exit(0);
-  }).catch(() => {
-    process.exit(1);
-  });
+  storageManager
+    .destroy()
+    .then(() => {
+      process.exit(0);
+    })
+    .catch(() => {
+      process.exit(1);
+    });
 });
 
 process.on('SIGTERM', () => {
-  storageManager.destroy().then(() => {
-    process.exit(0);
-  }).catch(() => {
-    process.exit(1);
-  });
+  storageManager
+    .destroy()
+    .then(() => {
+      process.exit(0);
+    })
+    .catch(() => {
+      process.exit(1);
+    });
 });

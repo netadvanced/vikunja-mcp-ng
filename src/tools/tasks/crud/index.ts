@@ -24,6 +24,4 @@ export type { GetTaskArgs } from './TaskReadService';
 import type { components } from '../../../types/generated/vikunja-openapi';
 export type Task = components['schemas']['models.Task'];
 
-export type {
-  AorpBuilderConfig,
-} from '../../../utils/response-factory';
+export type { AorpBuilderConfig } from '../../../utils/response-factory';

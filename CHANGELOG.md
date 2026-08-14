@@ -8,12 +8,258 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 ## [Unreleased]
 
-Nothing yet.
+### Security
+
+- Refreshed the dependency tree to clear five advisories, all reached transitively through
+  `@modelcontextprotocol/sdk`: `fast-uri` 3.1.4 → 3.1.5 (host confusion via backslash authority,
+  high) and `hono` 4.12.32 → 4.13.1 (four advisories, the notable one being `memo()` retaining SSR
+  output across requests). Neither package is called by this server on the stdio path, but both ship
+  in the runtime tree, so they are worth keeping current. Dev-scope `js-yaml` moved to 4.3.1 and
+  `brace-expansion` to its patched lines. `npm audit` is clean at zero, runtime and dev alike.
+  The `fast-uri` and `js-yaml` overrides now name the patched floor rather than the older one they
+  were pinned to, so a fresh install without the lockfile cannot silently land back on a
+  vulnerable version.
 
 
 
 
 
+
+
+
+
+
+## [0.6.2] - 2026-07-28
+
+A correctness release, and a good argument for testing the parts of a surface you can only refuse.
+Closing a long-standing coverage hole — the JWT-only tools that no test session had ever been
+authenticated to reach — surfaced a real bug on the first run: **file uploads were being sent as
+JSON**, so attaching a file to a task failed with an opaque server error in any session that had
+already listed attachments. Also here: the version this server reports to its clients is correct
+again after four minors of drift, and `setup-kanban` no longer requires a Kanban board.
+
+Released as a patch by owner discretion despite the additive `columns` capability below, on the
+same pre-1.0 basis as `0.5.2` (see [docs/RELEASING.md](docs/RELEASING.md) §3) — nothing in this
+release requires a caller to change anything.
+
+### Added
+
+- `vikunja_projects setup-kanban` now treats `columns` as **optional** (#185). Omit it and the call
+  is a plain "create a project and its tasks" composite — no Kanban view, bucket, or placement step
+  runs, or is even touched, and it costs strictly fewer API calls than the board form. Supplying
+  `columns` behaves exactly as before. This makes the one-call project+tasks path an honest one:
+  agents were already reaching for `setup-kanban` for non-Kanban work because nothing else offered
+  it. A task naming a `column` when no `columns` were given is rejected up front, before anything
+  is created.
+
+### Fixed
+
+- **Multipart uploads were sent as JSON when a JSON call had already hit the same endpoint group**
+  (#199). Circuit breakers are cached by name, and the cached breaker was returned without checking
+  it wrapped the same operation — so `/tasks/{id}/attachments` (list, JSON) followed by
+  `/tasks/{id}/attachments` (upload, multipart) fired the upload through the JSON helper, sending
+  `Content-Type: application/json` with the form body serialised to `{}`. Vikunja rejected it as an
+  opaque HTTP 500. Affected `vikunja_tasks attach` and `vikunja_users upload-avatar`; both are
+  order-dependent, which is why the failure never reproduced in isolation.
+- A related latent bug in the same mechanism: `withNamedRetry` registered each caller's closure
+  under a shared breaker name, so a second call under that name silently re-ran the **first**
+  caller's operation and returned its result. No shipped code path used those helpers, but the trap
+  is now closed.
+- The MCP `initialize` handshake reported version `0.3.0` (#186) — hardcoded, and stale since
+  `0.4.0`. It is now derived from `package.json`, and a live check fails the build if the two ever
+  drift again. `server.json`'s registry manifest is kept in sync by the release script.
+- `npm run build` never cleaned `dist/` (#187), so a deleted source file left its compiled output
+  behind indefinitely. Published packages were never affected (CI builds from a clean checkout);
+  local installs running from `dist/` were.
+
+### Changed
+
+- In-range dependency refresh (#189), including `@modelcontextprotocol/sdk` 1.29.0 → 1.30.0. No
+  security driver — `npm audit` was already clean. Major upgrades (`zod` 4, `typescript` 7,
+  `eslint` 10, `uuid` 14) are deliberately deferred, each needing its own evaluation.
+
+### Internal
+
+- The MCP e2e harness now runs a **second, JWT-authenticated session** (#198) covering the tools
+  that are gated off under API-token auth. Previously the entire JWT-only surface was verified only
+  by confirming we correctly refuse it — one permanently skipped check and one spec-documented 401
+  mislabelled as tolerated server drift. Both are now real assertions, and the full supported matrix
+  (Vikunja 2.4.0 and 2.3.0 × PostgreSQL and SQLite) runs with **zero skipped checks**; the only
+  remaining tolerance is an upstream server bug that exists solely below 2.4.0.
+- The battle-testing sweeper now removes prefixed tasks that an agent created inside a pre-existing
+  project (#188), which previously survived cleanup forever.
+- Test coverage recovered on the filtering evaluators and orchestrator, and two modules that had
+  been listed as untested were found to be unreachable and deleted instead (#182).
+
+## [0.6.1] - 2026-07-25
+
+An agent-ergonomics release built from battle-harness evidence. Setting up a Kanban board — the one
+flow weaker agents still fumbled after 0.6.0 — now takes a single tool call instead of roughly
+thirty-eight (measured: haiku pass-rate 2/3 → 3/3 on the `q3-offsite-kanban` scenario, zero
+validation errors). Applying a label to N tasks is likewise one call instead of N. Two real bugs in
+the new composite were caught by running it against a live Vikunja server rather than against mocks,
+and the changelog tooling that quietly dropped a commit from every release draft is fixed.
+
+### Added
+
+- **Provision a whole Kanban board in one call.** `vikunja_projects` gains `setup-kanban`: it
+  creates (or reuses) the project, ensures the Kanban view exists, creates the requested columns in
+  order, bulk-creates the tasks, and places each one in its column — resolving view and bucket ids
+  internally so the caller never juggles them. Re-running it against an existing project reuses the
+  view and columns instead of duplicating them (#173, #175).
+- **Apply or remove a label across many tasks at once.** `vikunja_task_labels` `apply-label` /
+  `remove-label` now accept `taskIds` alongside the single-task `id`; label titles are resolved
+  get-or-create *once* per call and reused across every task, with honest per-task reporting of
+  partial failures (#178).
+- **`id` is accepted as an alias for `parentTaskId`** on `create-subtask` and
+  `bulk-create-subtasks`, matching the alias handling the project subcommands already had.
+  Supplying both with conflicting values is rejected rather than silently resolved (#178).
+
+### Fixed
+
+- **Kanban columns came back in the wrong order.** `setup-kanban` pinned bucket positions to their
+  zero-based index, but Vikunja's `position` is a non-pointer float64 — an explicit `0` is
+  indistinguishable on the wire from an omitted value, so the server substituted its own id-derived
+  default and the *first* requested column sorted **last**. Positions are now non-zero and
+  65536-spaced, matching Vikunja's own lane spacing so callers can still slot buckets between
+  columns afterwards (#177).
+- **A typo'd column name no longer half-builds a board.** `setup-kanban` validates every task's
+  column against the requested column list up front and rejects the call before creating anything,
+  instead of creating the task and then failing to place it. Genuine partial failures now surface
+  the project id in the standard extractable form, so a caller keeps the handle on a project that
+  really was created (#176).
+- **Changelog drafts silently dropped the oldest commit of every release.** `git log
+  --pretty=format:%s` emits no trailing newline, so the generator's `while read` loop discarded its
+  final line. Unclassifiable commits are now reported loudly under their own heading with a stderr
+  warning, rather than vanishing (#174).
+
+### Changed
+
+- Battle-harness accounting made trustworthy: `optimalCallCount` re-derived for all 13 scenarios
+  against the current tool surface, a `buckets-in-order` verify type added (the old verifiers
+  checked bucket names and contents but never their order, which is how the ordering bug shipped),
+  and `docs/BATTLE-TESTING.md` gained a testable re-baselining rule — an optimum must be reachable
+  without fabricating structure the prompt never asked for, and may never be set equal to an
+  observed call count without independent derivation (#179, #180).
+
+> **On the version number.** `setup-kanban` is a new capability, which
+> [docs/RELEASING.md](docs/RELEASING.md) §1 would normally make a *minor* bump. This ships as a
+> patch by owner discretion — the work is scoped as the ergonomics/bugfix follow-up to 0.6.0, and
+> `0.7.0` is reserved for the Vikunja v2 API migration. Nothing a caller relies on changed: every
+> addition is additive and the single-task/`parentTaskId` forms behave exactly as before. Same
+> latitude as the [0.5.2](#052---2026-07-22) exception.
+
+## [0.6.0] - 2026-07-24
+
+A reliability and agent-ergonomics milestone on the Vikunja 2.4.0-aligned baseline (minimum
+supported 2.3.0). Two silent-failure bugs that could bite *any* client are fixed — a circuit-breaker
+cascade that let one bad request poison an entire session, and date-only due dates being silently
+lost — alongside a batch of changes that make weaker AI agents far more reliable against the tool
+surface (measured: haiku scenario pass-rate 7/15 → 14/15). **Breaking:** the minimum Node.js is now
+22 LTS.
+
+### Added
+
+- **Attach labels by name in one call.** `vikunja_task_labels` `apply-label` now accepts
+  `labelTitles` — labels are get-or-created and attached in a single call instead of the old
+  list → match → create dance. Backed by a new `ensure` subcommand on `vikunja_labels`
+  (idempotent get-or-create by title) and a shared `ensureLabelByTitle` helper (#159, #162).
+- **Per-session API-version / capability detection.** `vikunja_auth` `status`/`info` now report the
+  connected server version and whether the Vikunja v2 API is available, cached per session. No
+  behavior change yet — it's the seam the upcoming v2 fast-paths will consult (#149).
+- **Multi-architecture Docker images** — releases now publish `linux/amd64` *and* `linux/arm64`
+  (Apple Silicon, ARM servers), with SLSA build provenance (#146).
+
+### Changed
+
+- **BREAKING — minimum Node.js is now 22 LTS** (was 20). Node 20 is no longer supported (#152).
+- **Clearer Kanban/bucket guidance.** Argument descriptions and error messages across
+  `vikunja_tasks` and `vikunja_projects` bucket operations now state exactly which id each expects
+  (project `id` vs `viewId` vs `bucketId`) and how to obtain it — cutting the validation errors
+  weaker agents hit (#161).
+- **Filter discoverability.** The `vikunja_tasks` `filter` parameter and `vikunja_filters` gained
+  copy-pasteable syntax examples (operators, `&&`/`||`, date literals) (#158).
+
+### Fixed
+
+- **Circuit-breaker cascade (reliability).** A single client-side `4xx` (e.g. a malformed
+  bulk-create) no longer trips the circuit breaker. Previously one bad request opened the breaker
+  and *every* subsequent write failed with "Breaker is open" for the rest of the session; the
+  open-circuit message is also reworded so callers know it's a transient condition to retry, not an
+  auth failure to reconnect through (#163).
+- **Silent date data-loss.** Date-only due / start / end dates (`YYYY-MM-DD`) were rejected by
+  Vikunja (which requires RFC3339) and silently lost. They are now coerced to RFC3339 across
+  single-create, bulk-create, and bulk-update; bulk-create additionally now forwards
+  `startDate`/`endDate` at all (they were previously dropped entirely) (#164, #167, #168). This was
+  also a root trigger of the circuit-breaker cascade above.
+- **403 misclassification.** Removing a label that isn't attached (or an absent assignee) returns
+  Vikunja's `403`, which was misread as an auth error and retried 3× with a misleading message.
+  These paths now reconcile against actual state and report an accurate, idempotent outcome (#154,
+  #155, #157).
+
+### Security
+
+- `@hono/node-server` overridden to `^2.0.5` — clears GHSA-frvp-7c67-39w9 (#153).
+- `fast-uri` bumped to `3.1.4` — clears GHSA-v2hh-gcrm-f6hx (#151). `npm audit` reports zero
+  vulnerabilities.
+
+### Internal
+
+- Vendored the Vikunja **v2 OpenAPI spec** and generated types — preparation for the v2 API
+  migration (0.7.0); not wired into runtime yet (#147).
+- Battle-testing: added `bulk-set-bucket` / `bulk-create-subtasks` scenarios and fixed the
+  kanban bucket-count verification (read from the view's tasks endpoint) (#148, #150); locked in
+  subresource 4xx-not-retried / 5xx-retried behavior with tests (#156).
+- Release notes now link npm + GHCR package pages; documented the post-1.0 maintenance-branch
+  policy (#145, #144).
+
+## [0.5.2] - 2026-07-22
+
+A maintenance patch: sharing and filter bug fixes, a dependency security bump, and the
+under-the-hood groundwork for Vikunja 2.4.0. The announced, hardened *"optimised for Vikunja 2.4"*
+alignment shipped as **[0.6.0](#060---2026-07-24)** (a reliability and agent-ergonomics
+milestone) — this release only laid the groundwork and did not yet claim it. (v2 API fast-paths
+turned out not to be part of 0.6.0 either — 0.6.0 only vendored the v2 spec/types; the actual
+migration is tracked for a later release, see 0.6.0's Internal notes.)
+
+### Added
+
+- **Bucket position** — `vikunja_projects` create-bucket / update-bucket now accept an optional
+  `position` argument to control kanban bucket ordering. Contributed by @angusmaul (#122).
+
+### Changed
+
+- **Vikunja 2.4.0 groundwork.** The e2e/version-matrix default pin moved `2.3.0` → `2.4.0`, the
+  vendored OpenAPI spec was refreshed directly from the pinned 2.4.0 container and types
+  regenerated (the only surface change: five creation endpoints corrected `200` → `201`), and the
+  known `GET /tasks/{id}/assignees` server-drift tolerance is now version-gated — a hard failure on
+  2.4.0+, where the upstream 500 is fixed. Minimum supported Vikunja remains **2.3.0**.
+
+### Fixed
+
+- **Sharing:** creating a link share now rejects a `name`/`title` mix-up instead of silently
+  producing an unnamed share, and a `GET`-by-id on a just-created share no longer 404s (worked
+  around an upstream link-share hash-vs-id bug by routing through the list endpoint) (#133).
+- **Filters:** raw filter strings are now always re-serialized through the server-boundary field
+  translation, so client-facing field names round-trip correctly instead of being rejected by the
+  server's parser (#129).
+
+### Removed
+
+- Dropped the unused `better-sqlite3` dependency (declared but never imported).
+
+### Security
+
+- Overrode transitive `js-yaml` to `>=4.2.1`, clearing GHSA-52cp-r559-cp3m (a dev-scope
+  quadratic-CPU advisory). `npm audit` reports zero vulnerabilities.
+
+### Internal
+
+- Docs: ground-up rewrite of `RELEASING.md` (including the mandatory pre-tag checklist) and a full
+  audit refresh of `ROADMAP.md`; 2.4.0 API-coverage re-audit (no new endpoint surface); OIDC
+  resource-server design doc added for a future OIDC mode.
+- Test/CI: fixed the `spyOn`/`mockRestore` root cause and silenced localStorage teardown noise;
+  bumped the release-workflow actions to current majors.
 
 ## [0.5.1] - 2026-07-20
 

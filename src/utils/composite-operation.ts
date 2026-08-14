@@ -113,7 +113,9 @@ export interface CompositeStep<TResult = unknown, TBefore = unknown> {
   /** Performs the step's work. Throwing aborts the run and (in atomic mode) triggers rollback. */
   execute: (ctx: StepRunContext) => Promise<TResult> | TResult;
   /** Optional compensating action, invoked only in atomic mode after a later step fails. */
-  compensate?: (ctx: CompensationContext<TResult, TBefore>) => Promise<CompensationOutcome> | CompensationOutcome;
+  compensate?: (
+    ctx: CompensationContext<TResult, TBefore>,
+  ) => Promise<CompensationOutcome> | CompensationOutcome;
 }
 
 /** Trace entry for a single step, always present for every registered step regardless of whether it ran. */
@@ -245,10 +247,13 @@ export class CompositeOperation {
       execute: (ctx: StepRunContext): Promise<unknown> => Promise.resolve(executeFn(ctx)),
     };
     if (captureBeforeFn) {
-      erased.captureBefore = (ctx: StepRunContext): Promise<unknown> => Promise.resolve(captureBeforeFn(ctx));
+      erased.captureBefore = (ctx: StepRunContext): Promise<unknown> =>
+        Promise.resolve(captureBeforeFn(ctx));
     }
     if (compensateFn) {
-      erased.compensate = (ctx: CompensationContext): Promise<CompensationOutcome> | CompensationOutcome =>
+      erased.compensate = (
+        ctx: CompensationContext,
+      ): Promise<CompensationOutcome> | CompensationOutcome =>
         compensateFn(ctx as CompensationContext<TResult, TBefore>);
     }
 
@@ -273,7 +278,7 @@ export class CompositeOperation {
     const beforeSnapshots = new Map<string, unknown>();
     const traces: StepTrace[] = this.steps.map((step) => ({
       name: step.name,
-      status: 'skipped' as StepStatus,
+      status: 'skipped',
       destructive: step.destructive,
     }));
     const succeeded: Array<{ index: number; step: ErasedStep }> = [];
@@ -293,7 +298,12 @@ export class CompositeOperation {
         traces[index] = { name: step.name, status: 'succeeded', destructive: step.destructive };
         succeeded.push({ index, step });
       } catch (err) {
-        traces[index] = { name: step.name, status: 'failed', destructive: step.destructive, error: err };
+        traces[index] = {
+          name: step.name,
+          status: 'failed',
+          destructive: step.destructive,
+          error: err,
+        };
         failureError = err;
         failedIndex = index;
         failedStepName = step.name;
@@ -326,7 +336,12 @@ export class CompositeOperation {
           ? `Step "${step.name}" performed a destructive operation with no compensate() defined. ` +
             `Vikunja has no undelete — this cannot be automatically rolled back. Manually verify whether recovery is needed.`
           : `Step "${step.name}" succeeded but defines no compensate(), so it was left as-is. Manually verify/undo if needed.`;
-        traces[index] = { name: step.name, status: 'succeeded', destructive: step.destructive, guidance };
+        traces[index] = {
+          name: step.name,
+          status: 'succeeded',
+          destructive: step.destructive,
+          guidance,
+        };
         continue;
       }
 
@@ -386,7 +401,12 @@ export class CompositeOperation {
     };
   }
 
-  private buildGuidance(traces: StepTrace[], failedStepName: string, failedIndex: number, atomic: boolean): string {
+  private buildGuidance(
+    traces: StepTrace[],
+    failedStepName: string,
+    failedIndex: number,
+    atomic: boolean,
+  ): string {
     const lines: string[] = [
       `Composite operation failed at step "${failedStepName}" (step ${failedIndex + 1} of ${traces.length}), ` +
         `running in ${atomic ? 'atomic' : 'best-effort'} mode.`,
@@ -410,7 +430,9 @@ export class CompositeOperation {
           break;
         case 'compensation-skipped-concurrent-edit':
           // guidance is always set alongside this status (CompensationSkipped.guidance is required)
-          lines.push(`  - "${trace.name}": succeeded, rollback skipped (concurrent edit detected). ${trace.guidance}`);
+          lines.push(
+            `  - "${trace.name}": succeeded, rollback skipped (concurrent edit detected). ${trace.guidance}`,
+          );
           break;
         case 'failed':
           lines.push(`  - "${trace.name}": failed with the triggering error.`);

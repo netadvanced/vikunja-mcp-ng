@@ -48,10 +48,7 @@ export async function handleAttach(
   const { id, filePath, fileContent, filename } = args ?? {};
 
   if (typeof id !== 'number' || !Number.isFinite(id) || id <= 0) {
-    throw new MCPError(
-      ErrorCode.VALIDATION_ERROR,
-      'attach requires a positive numeric task id',
-    );
+    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'attach requires a positive numeric task id');
   }
 
   let bytes: Buffer;
@@ -82,10 +79,7 @@ export async function handleAttach(
     name = filename || 'attachment.bin';
     source = 'fileContent';
   } else {
-    throw new MCPError(
-      ErrorCode.VALIDATION_ERROR,
-      'attach requires filePath or fileContent',
-    );
+    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'attach requires filePath or fileContent');
   }
 
   // Strip any directory component a caller might inject via `filename`.

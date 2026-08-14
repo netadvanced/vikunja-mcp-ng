@@ -33,13 +33,7 @@ function mockResponse(opts: {
   text?: string;
   textThrows?: boolean;
 }): Response {
-  const {
-    ok = true,
-    status = 200,
-    statusText = 'OK',
-    text = '',
-    textThrows = false,
-  } = opts;
+  const { ok = true, status = 200, statusText = 'OK', text = '', textThrows = false } = opts;
   return {
     ok,
     status,
@@ -84,12 +78,8 @@ describe('vikunja-rest helper', () => {
       // apiUrl had no /api/v1 prefix, so it must have been appended.
       expect(url).toBe('https://vikunja.test/api/v1/tasks/7');
       expect(init.method).toBe('GET');
-      expect((init.headers as Record<string, string>).Authorization).toBe(
-        'Bearer tk_test-token',
-      );
-      expect((init.headers as Record<string, string>)['Content-Type']).toBe(
-        'application/json',
-      );
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tk_test-token');
+      expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
       // No body when none is supplied.
       expect(init.body).toBeUndefined();
     });
@@ -168,9 +158,7 @@ describe('vikunja-rest helper', () => {
       ).rejects.toThrow(MCPError);
       await expect(
         vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, noRetry),
-      ).rejects.toThrow(
-        'Vikunja REST request failed (GET /tasks/1): connection refused',
-      );
+      ).rejects.toThrow('Vikunja REST request failed (GET /tasks/1): connection refused');
     });
 
     it('includes the error code API_ERROR on network failure', async () => {
@@ -188,9 +176,7 @@ describe('vikunja-rest helper', () => {
     it('stringifies a non-Error rejection value', async () => {
       mockFetch.mockRejectedValueOnce('plain string failure');
 
-      await expect(
-        vikunjaRestRequest(authManager, 'GET', '/tasks/1'),
-      ).rejects.toThrow(
+      await expect(vikunjaRestRequest(authManager, 'GET', '/tasks/1')).rejects.toThrow(
         'Vikunja REST request failed (GET /tasks/1): plain string failure',
       );
     });
@@ -205,9 +191,7 @@ describe('vikunja-rest helper', () => {
         }),
       );
 
-      await expect(
-        vikunjaRestRequest(authManager, 'GET', '/tasks/999'),
-      ).rejects.toThrow(
+      await expect(vikunjaRestRequest(authManager, 'GET', '/tasks/999')).rejects.toThrow(
         'Vikunja REST request failed (GET /tasks/999): HTTP 404 Not Found — task does not exist',
       );
     });
@@ -320,9 +304,7 @@ describe('vikunja-rest helper', () => {
         vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, {
           retry: { maxRetries: 0 },
         }),
-      ).rejects.toThrow(
-        'Vikunja REST request failed (GET /tasks/1): HTTP 502 Bad Gateway',
-      );
+      ).rejects.toThrow('Vikunja REST request failed (GET /tasks/1): HTTP 502 Bad Gateway');
     });
   });
 
@@ -347,10 +329,7 @@ describe('vikunja-rest helper', () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify(views) }));
 
       await expect(resolveKanbanViewId(authManager, 4)).rejects.toThrow(
-        new MCPError(
-          ErrorCode.NOT_FOUND,
-          'Project 4 has no Kanban view, so it has no buckets',
-        ),
+        new MCPError(ErrorCode.NOT_FOUND, 'Project 4 has no Kanban view, so it has no buckets'),
       );
     });
 
@@ -382,9 +361,7 @@ describe('vikunja-rest helper', () => {
   describe('deriveRestBreakerName', () => {
     it('groups by the first two non-numeric path segments', () => {
       expect(deriveRestBreakerName('/webhooks/events')).toBe('vikunja-rest-webhooks-events');
-      expect(deriveRestBreakerName('/projects/4/webhooks')).toBe(
-        'vikunja-rest-projects-webhooks',
-      );
+      expect(deriveRestBreakerName('/projects/4/webhooks')).toBe('vikunja-rest-projects-webhooks');
       expect(deriveRestBreakerName('/tasks/7')).toBe('vikunja-rest-tasks');
       expect(deriveRestBreakerName('/teams/3/members/alice')).toBe('vikunja-rest-teams-members');
     });
@@ -427,9 +404,7 @@ describe('vikunja-rest helper', () => {
     it('does not retry a network error with no recognizable transient signal', async () => {
       mockFetch.mockRejectedValueOnce(new Error('boom'));
 
-      await expect(
-        vikunjaRestRequest(authManager, 'GET', '/tasks/1'),
-      ).rejects.toThrow('boom');
+      await expect(vikunjaRestRequest(authManager, 'GET', '/tasks/1')).rejects.toThrow('boom');
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
@@ -473,9 +448,7 @@ describe('vikunja-rest helper', () => {
         mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: '' }),
       );
 
-      await expect(
-        vikunjaRestRequest(authManager, 'GET', '/tasks/1'),
-      ).rejects.toThrow('HTTP 404');
+      await expect(vikunjaRestRequest(authManager, 'GET', '/tasks/1')).rejects.toThrow('HTTP 404');
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
@@ -522,11 +495,15 @@ describe('vikunja-rest helper', () => {
       ).rejects.toThrow('HTTP 500');
       expect(mockFetch).toHaveBeenCalledTimes(2);
 
-      // The breaker is now open: a third call fails immediately with the
-      // breaker's own error, and never reaches fetch again.
+      // The breaker is now open: a third call fails immediately without
+      // reaching fetch again. Issue #163 reworded opossum's raw "Breaker is
+      // open" message (which read as a hard/permanent failure and once led
+      // an agent to call `vikunja_auth disconnect` in response) into
+      // guidance that the condition is transient and self-recovering — see
+      // `rewordBreakerOpenError` in src/utils/retry.ts.
       await expect(
         vikunjaRestRequest(authManager, 'GET', '/tasks/1', undefined, opts),
-      ).rejects.toThrow('Breaker is open');
+      ).rejects.toThrow('circuit breaker open');
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
@@ -542,10 +519,11 @@ describe('vikunja-rest helper', () => {
       await expect(
         vikunjaRestRequest(authManager, 'GET', '/a', undefined, failingOpts),
       ).rejects.toThrow('HTTP 500');
-      // Group A's breaker is now open.
+      // Group A's breaker is now open (message reworded per #163 — see the
+      // comment on the earlier "opens after repeated failures" test).
       await expect(
         vikunjaRestRequest(authManager, 'GET', '/a', undefined, failingOpts),
-      ).rejects.toThrow('Breaker is open');
+      ).rejects.toThrow('circuit breaker open');
 
       // A different, healthy endpoint group is unaffected.
       mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ ok: true }) }));
@@ -554,6 +532,112 @@ describe('vikunja-rest helper', () => {
           breakerName: 'test-breaker-group-b',
         }),
       ).resolves.toEqual({ ok: true });
+    });
+
+    // #163 regression: an intermittent bulk-create HTTP 400 ("Invalid model
+    // provided", Vikunja error code 2004) tripped the breaker OPEN, after
+    // which every later create in the SAME session failed instantly with
+    // "Breaker is open" — a failing run logged ~19 such rejections where a
+    // clean run logged 0. A client-side 4xx is a caller/data problem, not a
+    // service-health signal, and must never trip the breaker.
+    it('#163: a batched-create 400 does NOT open the breaker for subsequent unrelated creates', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({
+          ok: false,
+          status: 400,
+          statusText: 'Bad Request',
+          text: JSON.stringify({ code: 2004, message: 'Invalid model provided' }),
+        }),
+      );
+      const opts = {
+        breakerName: 'test-breaker-400-excluded',
+        retry: {
+          maxRetries: 0,
+          errorThresholdPercentage: 1,
+          // Set to 1 so the breaker would trip after a SINGLE failure if 4xx
+          // responses counted toward it at all — matching the sensitivity
+          // used by the 500-opens-the-breaker tests above.
+          volumeThreshold: 1,
+          resetTimeout: 60_000,
+        },
+      };
+
+      // Several consecutive batched-create 400s, same as a real bulk-create
+      // session hitting the same validation problem repeatedly.
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('HTTP 400');
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('HTTP 400');
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('HTTP 400');
+
+      // Every call reached fetch and surfaced the REAL 400 — none were
+      // fast-failed by an open breaker, proving the breaker never opened.
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+
+      // A subsequent unrelated create against the SAME breaker still
+      // succeeds normally, confirming the breaker is still closed.
+      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 99 }) }));
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', { title: 'ok' }, opts),
+      ).resolves.toEqual({ id: 99 });
+    });
+
+    // Contrast case for #163: 5xx (service-health signal) must still trip
+    // the breaker exactly as before this fix.
+    it('#163: a 5xx still opens the breaker (contrast case)', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', text: '' }),
+      );
+      const opts = {
+        breakerName: 'test-breaker-500-still-trips',
+        retry: {
+          maxRetries: 0,
+          errorThresholdPercentage: 1,
+          volumeThreshold: 1,
+          resetTimeout: 60_000,
+        },
+      };
+
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('HTTP 500');
+
+      // Breaker is now open: the next call fails fast without reaching fetch.
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('circuit breaker open');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    // Contrast case for #163: a network-level failure (also a service-health
+    // signal, not a caller/data problem) must still trip the breaker.
+    it('#163: a network error still opens the breaker (contrast case)', async () => {
+      mockFetch.mockRejectedValue(
+        Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      );
+      const opts = {
+        breakerName: 'test-breaker-network-still-trips',
+        retry: {
+          maxRetries: 0,
+          errorThresholdPercentage: 1,
+          volumeThreshold: 1,
+          resetTimeout: 60_000,
+        },
+      };
+
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('ECONNRESET');
+
+      // Breaker is now open: the next call fails fast without reaching fetch.
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', undefined, opts),
+      ).rejects.toThrow('circuit breaker open');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -585,6 +669,51 @@ describe('vikunja-rest helper', () => {
       const headers = init.headers as Record<string, string>;
       expect(headers.Authorization).toBe('Bearer tk_test-token');
       expect(headers['Content-Type']).toBeUndefined();
+    });
+
+    // Regression: netadvanced/vikunja-mcp-ng#199. Breakers are cached by
+    // name in a process-wide registry, and before the fix both helpers
+    // derived the SAME name for sibling paths — so a JSON call made first
+    // left the multipart call firing `vikunjaRestRequestRaw`, which
+    // JSON.stringify'd the FormData to `{}` and set a JSON Content-Type.
+    // Live symptom was an opaque HTTP 500 from Vikunja
+    // ("request Content-Type isn't multipart/form-data"). These tests fail
+    // without the `-multipart` breaker-name suffix.
+    describe('breaker-name collision with the JSON helper (#199)', () => {
+      it.each([
+        ['avatar upload', '/user/settings/avatar', '/user/settings/avatar/upload'],
+        ['task attachments', '/tasks/42/attachments', '/tasks/42/attachments'],
+      ])('sends %s as multipart even after a JSON call on the same path group', async (
+        _label,
+        jsonPath,
+        multipartPath,
+      ) => {
+        // 1. JSON call first — this is what registers the breaker under the
+        //    shared derived name.
+        mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ ok: true }) }));
+        await vikunjaRestRequest(authManager, 'GET', jsonPath);
+
+        // 2. Multipart call second, same derived group.
+        mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ success: [] }) }));
+        const form = makeForm();
+        await vikunjaRestMultipartRequest(authManager, 'PUT', multipartPath, form);
+
+        const [, init] = mockFetch.mock.calls[1] as [string, RequestInit];
+        // The body must still BE the FormData — not a JSON string of it.
+        expect(init.body).toBe(form);
+        expect(typeof init.body).not.toBe('string');
+        // And fetch must be left to set the multipart boundary itself.
+        expect((init.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+      });
+
+      it('registers the multipart breaker under a distinct name', () => {
+        expect(deriveRestBreakerName('/user/settings/avatar')).toBe('vikunja-rest-user-settings');
+        expect(deriveRestBreakerName('/user/settings/avatar/upload')).toBe(
+          'vikunja-rest-user-settings',
+        );
+        // Same derived group for both paths — which is exactly why the
+        // multipart helper must not use the derived name verbatim.
+      });
     });
 
     it('does not retry on failure by default (unlike the JSON variant)', async () => {
@@ -631,9 +760,7 @@ describe('vikunja-rest helper', () => {
 
       await expect(
         vikunjaRestMultipartRequest(authManager, 'PUT', '/tasks/1/attachments', makeForm()),
-      ).rejects.toThrow(
-        'Vikunja REST request failed (PUT /tasks/1/attachments): ECONNREFUSED',
-      );
+      ).rejects.toThrow('Vikunja REST request failed (PUT /tasks/1/attachments): ECONNREFUSED');
     });
   });
 });

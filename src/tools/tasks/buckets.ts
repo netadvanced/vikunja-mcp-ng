@@ -135,12 +135,17 @@ export async function setTaskBucket(
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   if (!args.id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Task id is required for set-bucket operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'id is required for set-bucket operation — the id of the task to move (from ' +
+        'vikunja_tasks list/get), NOT the bucket or project id.',
+    );
   }
   if (args.bucketId === undefined || args.bucketId === null) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'bucketId is required for set-bucket operation',
+      'bucketId is required for set-bucket operation — the destination Kanban bucket id; ' +
+        'call vikunja_projects list-buckets to get bucket ids.',
     );
   }
   validateId(args.id, 'id');
@@ -227,13 +232,16 @@ export async function bulkSetTaskBucket(
   if (!args.taskIds || args.taskIds.length === 0) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'taskIds array is required for bulk-set-bucket operation',
+      'taskIds array is required for bulk-set-bucket operation — the ids of the tasks to ' +
+        'move (from vikunja_tasks list), NOT bucket or project ids.',
     );
   }
   if (args.bucketId === undefined || args.bucketId === null) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'bucketId is required for bulk-set-bucket operation',
+      'bucketId is required for bulk-set-bucket operation — the destination Kanban bucket ' +
+        'id (a single id shared by every task in taskIds); call vikunja_projects list-buckets ' +
+        'to get bucket ids.',
     );
   }
   if (args.taskIds.length > MAX_BULK_OPERATION_TASKS) {

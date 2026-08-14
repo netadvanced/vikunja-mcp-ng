@@ -209,7 +209,7 @@ async function handleIncomingRequest(
 
   let authorized: boolean;
   try {
-    authorized = await ctx.authMiddleware(req as HttpRequestWithAuth, res);
+    authorized = await ctx.authMiddleware(req, res);
   } catch (error) {
     logger.warn('OIDC authentication middleware threw unexpectedly:', error);
     sendJson(res, 401, { error: 'invalid_token' });
@@ -254,7 +254,7 @@ async function handleIncomingRequest(
         transport.handleRequest(req as HttpRequestWithAuth, res)
       );
     } else {
-      await transport.handleRequest(req as HttpRequestWithAuth, res);
+      await transport.handleRequest(req, res);
     }
   } finally {
     // Tear down this request's transport + server. `handleRequest` has

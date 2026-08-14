@@ -77,10 +77,7 @@ describe('Tasks Tool - Reminders', () => {
   // reminder_date }`) does not match what the server actually returns.
   const mockTaskWithReminders = {
     ...mockTask,
-    reminders: [
-      { reminder: '2024-12-25T10:00:00Z' },
-      { reminder: '2024-12-31T23:59:00Z' },
-    ],
+    reminders: [{ reminder: '2024-12-25T10:00:00Z' }, { reminder: '2024-12-31T23:59:00Z' }],
   };
 
   /** Configures fetchMock: GET returns `getResponse`, POST captures the body and returns it. */
@@ -116,7 +113,9 @@ describe('Tasks Tool - Reminders', () => {
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as any;
 
     originalFetch = globalThis.fetch;
@@ -129,7 +128,7 @@ describe('Tasks Tool - Reminders', () => {
     // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). create-subtask/bulk-create-subtasks identify the parent via `parentTaskId` — `id` is accepted as an alias for it on these two subcommands (supplying both and disagreeing is rejected). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
       expect.any(Object),
       expect.any(Object), // ToolAnnotations
       expect.any(Function),
@@ -165,7 +164,7 @@ describe('Tasks Tool - Reminders', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('add-reminder');
       expect(markdown).toContain('Reminder added successfully');
     });
@@ -183,15 +182,12 @@ describe('Tasks Tool - Reminders', () => {
       });
 
       expect(postedBody()).toMatchObject({
-        reminders: [
-          { reminder: '2024-12-25T10:00:00Z' },
-          { reminder: '2024-12-31T23:59:00Z' },
-        ],
+        reminders: [{ reminder: '2024-12-25T10:00:00Z' }, { reminder: '2024-12-31T23:59:00Z' }],
       });
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('add-reminder');
     });
 
@@ -236,7 +232,7 @@ describe('Tasks Tool - Reminders', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('remove-reminder');
       expect(markdown).toContain('Reminder 2024-12-25T10:00:00Z removed successfully');
     });
@@ -254,7 +250,7 @@ describe('Tasks Tool - Reminders', () => {
       });
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('Reminder 2024-12-25T10:00:00Z removed successfully');
     });
 
@@ -268,7 +264,7 @@ describe('Tasks Tool - Reminders', () => {
       });
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
     });
 
     it('should error when reminderIndex and reminderDate disagree', async () => {
@@ -337,7 +333,7 @@ describe('Tasks Tool - Reminders', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('remove-reminder');
     });
 
@@ -395,7 +391,7 @@ describe('Tasks Tool - Reminders', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('list-reminders');
       expect(markdown).toContain('Found 2 reminder(s)');
     });
@@ -409,7 +405,7 @@ describe('Tasks Tool - Reminders', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('Found 0 reminder(s)');
     });
 
@@ -492,6 +488,71 @@ describe('Tasks Tool - Reminders', () => {
           id: 1,
         }),
       ).rejects.toThrow('String error');
+    });
+  });
+
+  describe('POST write error retry behavior (#154)', () => {
+    // add-reminder rides on the full task-update endpoint: GET /tasks/{id} to
+    // read the current task, then POST /tasks/{id} to write it back. The write
+    // goes through vikunjaRestRequest, whose defaultRestShouldRetry retries ONLY
+    // statusCode >= 500 || 429 — never a 4xx. These tests lock that in by
+    // counting POST attempts: every 4xx must fail FAST (exactly one POST), so a
+    // future regression re-introducing retry-on-4xx (the labels-tool bug behind
+    // #154) is caught; a 5xx/429 must be retried (1 initial + 2 retries = 3,
+    // per DEFAULT_JSON_RETRY.maxRetries === 2 in src/utils/vikunja-rest.ts).
+
+    /** GET succeeds with the current task; POST answers `postResponse`. */
+    function mockPostFailure(postResponse: Response): void {
+      fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          return Promise.resolve(postResponse);
+        }
+        return Promise.resolve(restOk(mockTask));
+      });
+    }
+
+    const postCalls = (): unknown[] =>
+      fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'POST',
+      );
+
+    it.each([401, 403, 404, 422])(
+      'fails fast on a %i POST (attempted exactly once, real status surfaced)',
+      async (status) => {
+        mockPostFailure(restError(status, 'Client Error', `err ${status}`));
+
+        await expect(
+          callTool('add-reminder', {
+            id: 1,
+            reminderDate: '2024-12-25T10:00:00Z',
+          }),
+        ).rejects.toThrow(`HTTP ${status}`);
+        expect(postCalls()).toHaveLength(1);
+      },
+    );
+
+    it('retries a 500 POST then surfaces it (5xx IS retried)', async () => {
+      mockPostFailure(restError(500, 'Internal Server Error', 'boom'));
+
+      await expect(
+        callTool('add-reminder', {
+          id: 1,
+          reminderDate: '2024-12-25T10:00:00Z',
+        }),
+      ).rejects.toThrow('HTTP 500');
+      expect(postCalls()).toHaveLength(3);
+    });
+
+    it('retries a 429 POST then surfaces it (rate-limit IS retried)', async () => {
+      mockPostFailure(restError(429, 'Too Many Requests', 'slow down'));
+
+      await expect(
+        callTool('add-reminder', {
+          id: 1,
+          reminderDate: '2024-12-25T10:00:00Z',
+        }),
+      ).rejects.toThrow('HTTP 429');
+      expect(postCalls()).toHaveLength(3);
     });
   });
 });

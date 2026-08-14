@@ -25,7 +25,13 @@
 
 import type { AuthManager } from '../auth/AuthManager';
 import { MCPError, ErrorCode } from '../types';
-import { createCircuitBreaker, withRetry, isRetryableError, type RetryOptions } from './retry';
+import {
+  createCircuitBreaker,
+  withRetry,
+  isRetryableError,
+  rewordBreakerOpenError,
+  type RetryOptions,
+} from './retry';
 import { getRequestContext } from '../context/requestContext';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -325,7 +331,10 @@ export async function vikunjaRestRequest<T = unknown>(
   };
   const breaker = createCircuitBreaker(vikunjaRestRequestRaw, breakerName, retryOptions);
   const result = await withRetry(
-    () => breaker.fire(effectiveAuthManager, method, path, body),
+    () =>
+      breaker.fire(effectiveAuthManager, method, path, body).catch((error: unknown) => {
+        throw rewordBreakerOpenError(error);
+      }),
     retryOptions,
   );
   return result as T;
@@ -427,19 +436,30 @@ export async function vikunjaRestMultipartRequest<T = unknown>(
   options?: VikunjaRestRequestOptions,
 ): Promise<T> {
   const effectiveAuthManager = resolveEffectiveAuthManager(authManager, options);
-  const breakerName = options?.breakerName ?? deriveRestBreakerName(path);
+  // `-multipart` suffix is load bearing (#199): without it this derives the
+  // SAME name as the JSON helper for sibling paths (`/user/settings/avatar`
+  // vs `/user/settings/avatar/upload`, `/tasks/{id}/attachments` for both
+  // list and upload), and `createCircuitBreaker` returns whichever breaker
+  // was registered first under that name — so an upload preceded by a JSON
+  // call in the same group was fired through `vikunjaRestRequestRaw`, which
+  // JSON.stringify'd the `FormData` to `{}` and set
+  // `Content-Type: application/json`. The server rejected it with a 500
+  // ("request Content-Type isn't multipart/form-data") that pointed nowhere
+  // near the real cause. The two paths SHOULD trip independently anyway:
+  // uploads deliberately don't retry (`DEFAULT_MULTIPART_RETRY`) while JSON
+  // calls do, so sharing breaker state between them was never intended.
+  const breakerName = options?.breakerName ?? `${deriveRestBreakerName(path)}-multipart`;
   const retryOptions: RetryOptions = {
     ...DEFAULT_MULTIPART_RETRY,
     shouldRetry: defaultRestShouldRetry,
     ...options?.retry,
   };
-  const breaker = createCircuitBreaker(
-    vikunjaRestMultipartRequestRaw,
-    breakerName,
-    retryOptions,
-  );
+  const breaker = createCircuitBreaker(vikunjaRestMultipartRequestRaw, breakerName, retryOptions);
   const result = await withRetry(
-    () => breaker.fire(effectiveAuthManager, method, path, form),
+    () =>
+      breaker.fire(effectiveAuthManager, method, path, form).catch((error: unknown) => {
+        throw rewordBreakerOpenError(error);
+      }),
     retryOptions,
   );
   return result as T;

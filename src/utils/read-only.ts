@@ -223,6 +223,10 @@ const PROJECTS: ClassificationTable = {
   'delete-view': 'destructive',
   'set-done-bucket': 'write',
   duplicate: 'write',
+  // Composite (issue #173): provisions a project + Kanban view + buckets +
+  // tasks in one call. Classified 'write' like `create` — it can create a
+  // new project and always creates/renames buckets and tasks.
+  'setup-kanban': 'write',
   // Project backgrounds (G7, opt-in `backgrounds` module — see
   // src/tools/projects/backgrounds.ts). remove-background deletes the
   // currently-set background (destructive); set-unsplash-background writes
@@ -239,6 +243,10 @@ const LABELS: ClassificationTable = {
   create: 'write',
   update: 'write',
   delete: 'destructive',
+  // ensure (E-item, friction #4): get-or-create by title. Classified 'write'
+  // like `create` since it can create a new label — even though the reuse
+  // path is a pure read, the dispatcher only sees the subcommand up front.
+  ensure: 'write',
 };
 
 // vikunja_teams' 'members' subcommand fans out to a second enum

@@ -1,0 +1,17 @@
+{
+  "id": "bulk-create-subtasks",
+  "title": "Bulk subtask creation ergonomics",
+  "description": "Probes whether the agent discovers vikunja_tasks's bulk-create-subtasks composite (src/tools/tasks/subtasks.ts -- resolves the parent once, then creates+relates every subtask in one call, per-subtask atomic rollback) rather than issuing one create-subtask call per subtask, the way subtask-breakdown.json's smaller (3-subtask) scenario is deliberately left free to do. RE-VERIFIED 2026-07-25 (netadvanced/vikunja-mcp#28 C1): optimalCallCount reasoning unchanged -- create-project (1) + create-task (1, the single parent \"Redesign homepage\") + bulk-create-subtasks with all 5 subtasks in one call (1) = 3. Neither of the two capabilities that shipped since this was last set (apply-label/remove-label taskIds, PR #178; vikunja_projects setup-kanban, PR #175) reduce this further: there is no label or Kanban-board dimension to this ask, and no tool merges project-creation with subtask-relation-creation.",
+  "promptTemplate": "Create a project called \"{{prefix}}Website Revamp\" with one task called \"{{prefix}}Redesign homepage\". Break that task down into 5 subtasks in a single bulk operation: \"{{prefix}}Wireframe\", \"{{prefix}}Copy draft\", \"{{prefix}}Visual design\", \"{{prefix}}Frontend build\", and \"{{prefix}}QA pass\".",
+  "optimalCallCount": 3,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Website Revamp" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Website Revamp", "min": 6 },
+    {
+      "type": "task-has-subtasks",
+      "projectTitleContains": "{{prefix}}Website Revamp",
+      "parentTitleContains": "{{prefix}}Redesign homepage",
+      "min": 5
+    }
+  ]
+}

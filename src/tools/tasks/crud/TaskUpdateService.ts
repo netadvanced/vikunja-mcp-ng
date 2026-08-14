@@ -135,7 +135,11 @@ export async function updateTask(
     }
 
     // Fetch the complete updated task
-    const completeTask = await vikunjaRestRequest<VikunjaTask>(authManager, 'GET', `/tasks/${args.id}`);
+    const completeTask = await vikunjaRestRequest<VikunjaTask>(
+      authManager,
+      'GET',
+      `/tasks/${args.id}`,
+    );
 
     // Verify project move actually stuck — Vikunja can report success while leaving
     // the task in the old project (silent failure → data loss if the old project is deleted)
@@ -151,18 +155,18 @@ export async function updateTask(
     const response = createTaskResponse(
       'update-task',
       'Task updated successfully',
-      { task: completeTask } as unknown as Parameters<typeof createTaskResponse>[2],
+      { task: completeTask },
       {
         timestamp: new Date().toISOString(),
         affectedFields: updateState.affectedFields,
         previousState: updateState.previousState,
         taskId: args.id,
-      } as unknown as Parameters<typeof createTaskResponse>[3],
+      },
       undefined, // verbosity (ignored - using standard AORP)
       undefined, // useOptimizedFormat (ignored - using standard AORP)
       undefined, // useAorp (ignored - always using AORP)
       undefined, // aorpConfig (using auto-generated)
-      args.sessionId
+      args.sessionId,
     );
 
     return {
@@ -192,17 +196,23 @@ export async function updateTask(
     }
 
     // Handle fetch/connection errors with helpful guidance
-    if (error instanceof Error && (
-      error.message.includes('fetch failed') ||
-      error.message.includes('ECONNREFUSED') ||
-      error.message.includes('ENOTFOUND')
-    )) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('fetch failed') ||
+        error.message.includes('ECONNREFUSED') ||
+        error.message.includes('ENOTFOUND'))
+    ) {
       throw handleFetchError(error, 'update task');
     }
 
     // Use standardized error transformation for all other errors
     if (args.id) {
-      throw handleStatusCodeError(error, 'update task', args.id, `Task with ID ${args.id} not found`);
+      throw handleStatusCodeError(
+        error,
+        'update task',
+        args.id,
+        `Task with ID ${args.id} not found`,
+      );
     }
     throw transformApiError(error, 'Failed to update task');
   }
@@ -235,22 +245,31 @@ async function analyzeUpdateState(
   const affectedFields: string[] = [];
 
   if (args.title !== undefined && args.title !== currentTask.title) affectedFields.push('title');
-  if (args.description !== undefined && args.description !== currentTask.description) affectedFields.push('description');
-  if (args.dueDate !== undefined && args.dueDate !== currentTask.due_date) affectedFields.push('dueDate');
-  if (args.startDate !== undefined && args.startDate !== currentTask.start_date) affectedFields.push('start_date');
-  if (args.endDate !== undefined && args.endDate !== currentTask.end_date) affectedFields.push('end_date');
-  if (args.priority !== undefined && args.priority !== currentTask.priority) affectedFields.push('priority');
-  if (args.percentDone !== undefined && args.percentDone !== currentTask.percent_done) affectedFields.push('percentDone');
+  if (args.description !== undefined && args.description !== currentTask.description)
+    affectedFields.push('description');
+  if (args.dueDate !== undefined && args.dueDate !== currentTask.due_date)
+    affectedFields.push('dueDate');
+  if (args.startDate !== undefined && args.startDate !== currentTask.start_date)
+    affectedFields.push('start_date');
+  if (args.endDate !== undefined && args.endDate !== currentTask.end_date)
+    affectedFields.push('end_date');
+  if (args.priority !== undefined && args.priority !== currentTask.priority)
+    affectedFields.push('priority');
+  if (args.percentDone !== undefined && args.percentDone !== currentTask.percent_done)
+    affectedFields.push('percentDone');
   if (args.done !== undefined && args.done !== currentTask.done) affectedFields.push('done');
-  if (args.projectId !== undefined && args.projectId !== currentTask.project_id) affectedFields.push('projectId');
-  if (args.repeatAfter !== undefined && args.repeatAfter !== currentTask.repeat_after) affectedFields.push('repeatAfter');
+  if (args.projectId !== undefined && args.projectId !== currentTask.project_id)
+    affectedFields.push('projectId');
+  if (args.repeatAfter !== undefined && args.repeatAfter !== currentTask.repeat_after)
+    affectedFields.push('repeatAfter');
   // args.repeatMode is the user-facing string enum ('day'|'week'|...);
   // currentTask.repeat_mode is the API's numeric enum (0|1|2) — these were
   // never the same representation even before this migration (the legacy client's
   // type incorrectly claimed both were the string enum), so this comparison
   // is always true when repeatMode is supplied. Cast preserves that existing
   // runtime behavior while satisfying the now-correctly-typed comparison.
-  if (args.repeatMode !== undefined && (args.repeatMode as unknown) !== currentTask.repeat_mode) affectedFields.push('repeatMode');
+  if (args.repeatMode !== undefined && (args.repeatMode as unknown) !== currentTask.repeat_mode)
+    affectedFields.push('repeatMode');
   if (args.labels !== undefined) affectedFields.push('labels');
   if (args.assignees !== undefined) affectedFields.push('assignees');
   // bucketId has no comparable "current" representation here (models.Task's
@@ -264,7 +283,7 @@ async function analyzeUpdateState(
   return {
     currentTask,
     previousState,
-    affectedFields
+    affectedFields,
   };
 }
 
@@ -318,7 +337,11 @@ function buildUpdateData(currentTask: VikunjaTask, args: UpdateTaskArgs): Vikunj
  * vs an invalid label id) from the MCP client and made the diagnostic
  * round-trip much longer for the consumer.
  */
-async function updateTaskLabels(authManager: AuthManager, taskId: number, labelIds: number[]): Promise<void> {
+async function updateTaskLabels(
+  authManager: AuthManager,
+  taskId: number,
+  labelIds: number[],
+): Promise<void> {
   try {
     await setTaskLabels(authManager, taskId, labelIds);
   } catch (labelError) {
@@ -326,16 +349,11 @@ async function updateTaskLabels(authManager: AuthManager, taskId: number, labelI
     if (isAuthenticationError(labelError)) {
       throw new MCPError(
         ErrorCode.API_ERROR,
-        detail
-          ? `${AUTH_ERROR_MESSAGES.LABEL_UPDATE} ${detail}`
-          : AUTH_ERROR_MESSAGES.LABEL_UPDATE,
+        detail ? `${AUTH_ERROR_MESSAGES.LABEL_UPDATE} ${detail}` : AUTH_ERROR_MESSAGES.LABEL_UPDATE,
       );
     }
     if (detail) {
-      throw new MCPError(
-        ErrorCode.API_ERROR,
-        `Failed to update task labels ${detail}`,
-      );
+      throw new MCPError(ErrorCode.API_ERROR, `Failed to update task labels ${detail}`);
     }
     throw labelError;
   }
@@ -345,7 +363,11 @@ async function updateTaskLabels(authManager: AuthManager, taskId: number, labelI
  * Updates task assignees with diff calculation and authentication error
  * handling, via the direct-REST assignee endpoints.
  */
-async function updateTaskAssignees(authManager: AuthManager, taskId: number, newAssigneeIds: number[]): Promise<void> {
+async function updateTaskAssignees(
+  authManager: AuthManager,
+  taskId: number,
+  newAssigneeIds: number[],
+): Promise<void> {
   try {
     // Get current assignees to calculate diff
     const currentTask = await getTaskViaRest(authManager, taskId);
@@ -367,7 +389,9 @@ async function updateTaskAssignees(authManager: AuthManager, taskId: number, new
     // removal loop directly below): concurrent per-user writes to the same
     // task risk "database is locked" 500s on SQLite-backed instances.
     for (const userId of toAdd) {
-      await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId });
+      await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
+        user_id: userId,
+      });
     }
 
     // Remove old assignees only after new ones are successfully added. DELETE
@@ -388,7 +412,7 @@ async function updateTaskAssignees(authManager: AuthManager, taskId: number, new
     if (isAuthenticationError(assigneeError)) {
       throw new MCPError(
         ErrorCode.API_ERROR,
-        `${AUTH_ERROR_MESSAGES.ASSIGNEE_UPDATE} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`
+        `${AUTH_ERROR_MESSAGES.ASSIGNEE_UPDATE} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`,
       );
     }
     throw assigneeError;

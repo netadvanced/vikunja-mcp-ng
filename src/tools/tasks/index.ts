@@ -19,7 +19,6 @@ import { createAuthRequiredError, handleFetchError } from '../../utils/error-han
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../../utils/read-only';
 
-
 // Import all operation handlers
 import { createTask, getTask, updateTask, deleteTask, createTaskResponse } from './crud';
 import { bulkCreateTasks, bulkUpdateTasks, bulkDeleteTasks } from './bulk-operations';
@@ -42,6 +41,24 @@ import { createSubtask, listSubtasks, bulkCreateSubtasks } from './subtasks';
 import { duplicateTask } from './duplicate';
 import { markTaskRead } from './mark-read';
 
+/**
+ * Subcommands where `id` is accepted as an alias for `parentTaskId`.
+ *
+ * `id` works on nearly every other `vikunja_tasks` subcommand (get, update,
+ * delete, set-bucket, ...), so an agent reaching for it on `create-subtask`/
+ * `bulk-create-subtasks` previously paid a full wasted round-trip: sweep
+ * evidence (netadvanced/vikunja-mcp#28) shows `bulk-create-subtasks` called
+ * with `id: 243` failing with "parentTaskId is required to create subtasks",
+ * only succeeding on a retry with `parentTaskId: 243`. Mirrors the
+ * `PROJECT_ID_ALIAS_SUBCOMMANDS` fix in `src/tools/projects/index.ts` for the
+ * identical trap. If both `id` and `parentTaskId` are supplied and disagree,
+ * the call is rejected outright rather than silently picking one — see the
+ * alias resolution in the tool handler below.
+ */
+const SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS = new Set<string>([
+  'create-subtask',
+  'bulk-create-subtasks',
+]);
 
 /**
  * Get session-scoped storage instance.
@@ -55,7 +72,9 @@ import { markTaskRead } from './mark-read';
  * mode, so calling `.getSession()` on it directly throws for every request
  * regardless of provisioning status.
  */
-async function getSessionStorage(authManager: AuthManager): ReturnType<typeof storageManager.getStorage> {
+async function getSessionStorage(
+  authManager: AuthManager,
+): ReturnType<typeof storageManager.getStorage> {
   const effectiveAuthManager = hasRequestContext()
     ? await getAuthManagerFromContext()
     : authManager;
@@ -99,7 +118,7 @@ async function listTasks(
     const response = createTaskResponse(
       'list-tasks',
       `Found ${taskCount} tasks${filteringMessage}`,
-      { tasks: filteringResult.tasks || [] } as unknown as Parameters<typeof createTaskResponse>[2],
+      { tasks: filteringResult.tasks || [] },
       {
         timestamp: new Date().toISOString(),
         count: taskCount,
@@ -109,7 +128,7 @@ async function listTasks(
       undefined, // useOptimizedFormat (ignored - using standard AORP)
       undefined, // useAorp (ignored - always using AORP)
       undefined, // aorpConfig (using auto-generated)
-      args.sessionId
+      args.sessionId,
     );
 
     logger.debug('Tasks tool response', { subcommand: 'list', itemCount: taskCount });
@@ -139,9 +158,9 @@ async function listTasks(
 }
 
 export function registerTasksTool(
-  server: McpServer, 
-  authManager: AuthManager, 
-  clientFactory?: VikunjaClientFactory
+  server: McpServer,
+  authManager: AuthManager,
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_tasks',
@@ -150,8 +169,10 @@ export function registerTasksTool(
       'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). ' +
         'download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. ' +
         'create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). ' +
+        'create-subtask/bulk-create-subtasks identify the parent via `parentTaskId` — `id` is accepted as an alias for it on these two subcommands (supplying both and disagreeing is rejected). ' +
         'bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). ' +
         'bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). ' +
+        'set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. ' +
         'duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). ' +
         'mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
     ),
@@ -196,7 +217,14 @@ export function registerTasksTool(
       // Task creation/update fields
       title: z.string().optional(),
       description: z.string().optional(),
-      projectId: z.number().optional(),
+      projectId: z
+        .number()
+        .optional()
+        .describe(
+          'The project id, used by create/list/etc. to scope the task(s). On set-bucket/' +
+            'bulk-set-bucket this is optional and only needed to override auto-resolution ' +
+            '(normally resolved from the task itself); it is NOT the bucket id.',
+        ),
       dueDate: z.string().optional(),
       startDate: z.string().optional(),
       endDate: z.string().optional(),
@@ -204,11 +232,25 @@ export function registerTasksTool(
       percentDone: z.number().min(0).max(1).optional(),
       labels: z.array(z.number()).optional(),
       assignees: z.array(z.number()).optional(),
-      // Kanban bucket fields (set-bucket subcommand).
+      // Kanban bucket fields (set-bucket, bulk-set-bucket subcommands).
       // z.coerce tolerates MCP clients whose cached tool schema predates
       // these params and therefore send them as strings over JSON-RPC.
-      bucketId: z.coerce.number().optional(),
-      viewId: z.coerce.number().optional(),
+      bucketId: z.coerce
+        .number()
+        .optional()
+        .describe(
+          'The destination Kanban bucket (column) id for set-bucket/bulk-set-bucket — e.g. ' +
+            'the id of the "Doing" column. Get it from vikunja_projects list-buckets, NOT from ' +
+            'this tool. This is a bucket id, not a project or view id.',
+        ),
+      viewId: z.coerce
+        .number()
+        .optional()
+        .describe(
+          'Optional Kanban view id for set-bucket/bulk-set-bucket, auto-resolved from the ' +
+            "task's project when omitted. Get an explicit value from vikunja_projects " +
+            "list-views (look for viewKind: 'kanban'). This is a view id, not a bucket id.",
+        ),
       // Task position fields (set-position subcommand). position is a
       // float64 per the API (see models.TaskPosition) - see docs on
       // spreading tasks between two positions - so it is not coerced to an
@@ -224,13 +266,29 @@ export function registerTasksTool(
       repeatAfter: z.number().min(0).optional(),
       repeatMode: z.enum(['day', 'week', 'month', 'year']).optional(),
       // Query fields
-      id: z.number().optional(),
+      id: z
+        .number()
+        .optional()
+        .describe(
+          'The task id, used by most subcommands (get, update, delete, set-bucket, etc.) to ' +
+            'identify the target task. On set-bucket this is the task to move — NOT the ' +
+            'bucket id (use bucketId for that) or a project id. bulk-set-bucket moves several ' +
+            'tasks at once and uses the separate taskIds array instead of id. On ' +
+            'create-subtask/bulk-create-subtasks, `id` is accepted as an alias for ' +
+            '`parentTaskId` (the parent task) — see parentTaskId.',
+        ),
       filter: z
         .string()
         .optional()
         .describe(
-          'Filter query string (e.g. "priority >= 4 && dueDate < now+14d"). Fields use ' +
-            'camelCase (dueDate, percentDone, startDate, endDate, doneAt, project, plus ' +
+          'Filter query string. Operators: = != > >= < <= like in "not in". Combine ' +
+            'conditions with && (AND) or || (OR); group with parentheses. Examples: ' +
+            '"priority >= 4" (high priority, priority is 0-5, so >= 4 means urgent/DO NOW); ' +
+            '"dueDate < now+14d" (due within 14 days); "priority >= 4 && dueDate < now+7d" ' +
+            "(high priority AND due soon); \"labels in 'bug', 'urgent'\" (has either label); " +
+            '"done = false && dueDate <= now" (overdue, not done). Date literals: now, ' +
+            'now+14d, now-1w, or ISO 8601 (2024-12-31). Fields use camelCase (dueDate, ' +
+            'percentDone, startDate, endDate, doneAt, project, plus ' +
             'done/priority/assignees/labels/created/updated/title/description); ' +
             'snake_case aliases (due_date, percent_done, etc.) are also accepted and ' +
             'normalized automatically. Build one with vikunja_filters build/validate.',
@@ -256,7 +314,14 @@ export function registerTasksTool(
       comment: z.string().optional(),
       commentId: z.number().optional(),
       // Bulk operation fields
-      taskIds: z.array(z.number()).optional(),
+      taskIds: z
+        .array(z.number())
+        .optional()
+        .describe(
+          'Task ids for bulk operations (bulk-update, bulk-delete, bulk-set-bucket). On ' +
+            'bulk-set-bucket these are the tasks to move into the single bucket named by ' +
+            'bucketId.',
+        ),
       field: z.string().optional(),
       value: z.unknown().optional(),
       tasks: z
@@ -293,7 +358,15 @@ export function registerTasksTool(
       // Subtask composite fields (create-subtask, bulk-create-subtasks).
       // title/description/dueDate/priority/labels/assignees/bucketId are
       // shared with the generic create/set-bucket fields above.
-      parentTaskId: z.number().optional(),
+      parentTaskId: z
+        .number()
+        .optional()
+        .describe(
+          'The parent task id for create-subtask/bulk-create-subtasks — the existing task the ' +
+            'new subtask(s) attach to. `id` is accepted as an alias for `parentTaskId` on these ' +
+            'two subcommands. Supplying both `id` and `parentTaskId` with different values is ' +
+            'rejected as a validation error.',
+        ),
       // Opt into atomic rollback for create-subtask / bulk-create-subtasks
       // (default best-effort; bulk-create-subtasks applies it PER SUBTASK,
       // never across the batch) — see docs/ENDPOINT-PLAYBOOK.md §5.
@@ -317,7 +390,33 @@ export function registerTasksTool(
       sessionId: z.string().optional(),
     },
     getToolAnnotations('vikunja_tasks'),
-    async (args) => {
+    async (rawArgs) => {
+      // Ergonomic id/parentTaskId alias for create-subtask/bulk-create-subtasks
+      // — see SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS above (the same trap already
+      // solved for projects via PROJECT_ID_ALIAS_SUBCOMMANDS). Precedence is
+      // explicit: if both are supplied and disagree, reject rather than
+      // silently picking one.
+      if (
+        SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS.has(rawArgs.subcommand) &&
+        rawArgs.id !== undefined &&
+        rawArgs.id !== null &&
+        rawArgs.parentTaskId !== undefined &&
+        rawArgs.parentTaskId !== null &&
+        rawArgs.id !== rawArgs.parentTaskId
+      ) {
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          `id (${rawArgs.id}) and parentTaskId (${rawArgs.parentTaskId}) were both supplied and ` +
+            `disagree for ${rawArgs.subcommand} — provide only one, or make them match.`,
+        );
+      }
+      const args =
+        SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS.has(rawArgs.subcommand) &&
+        (rawArgs.parentTaskId === undefined || rawArgs.parentTaskId === null) &&
+        rawArgs.id !== undefined &&
+        rawArgs.id !== null
+          ? { ...rawArgs, parentTaskId: rawArgs.id }
+          : rawArgs;
       try {
         logger.debug('Executing tasks tool', { subcommand: args.subcommand, args });
 
@@ -377,7 +476,7 @@ export function registerTasksTool(
             return listAssignees(args as Parameters<typeof listAssignees>[0], authManager);
 
           case 'comment':
-            return handleComment(args as Parameters<typeof handleComment>[0], authManager);
+            return handleComment(args, authManager);
 
           case 'attach':
             return handleAttach(args as TaskAttachArgs, authManager);
@@ -422,18 +521,18 @@ export function registerTasksTool(
             return addReminder(args as Parameters<typeof addReminder>[0], authManager);
 
           case 'remove-reminder':
-            return removeReminder(args as Parameters<typeof removeReminder>[0], authManager);
+            return removeReminder(args, authManager);
 
           case 'list-reminders':
             return listReminders(args as Parameters<typeof listReminders>[0], authManager);
           case 'apply-label':
-            return applyLabels(args as Parameters<typeof applyLabels>[0], authManager);
+            return applyLabels(args, authManager);
 
           case 'remove-label':
-            return removeLabels(args as Parameters<typeof removeLabels>[0], authManager);
+            return removeLabels(args, authManager);
 
           case 'list-labels':
-            return listTaskLabels(args as Parameters<typeof listTaskLabels>[0], authManager);
+            return listTaskLabels(args, authManager);
 
           case 'set-bucket':
             return setTaskBucket(args as Parameters<typeof setTaskBucket>[0], authManager);
@@ -451,7 +550,10 @@ export function registerTasksTool(
             return createSubtask(args as Parameters<typeof createSubtask>[0], authManager);
 
           case 'bulk-create-subtasks':
-            return bulkCreateSubtasks(args as Parameters<typeof bulkCreateSubtasks>[0], authManager);
+            return bulkCreateSubtasks(
+              args as Parameters<typeof bulkCreateSubtasks>[0],
+              authManager,
+            );
 
           case 'list-subtasks':
             return listSubtasks(args as Parameters<typeof listSubtasks>[0], authManager);

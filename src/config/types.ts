@@ -299,7 +299,7 @@ export class ConfigurationError extends Error {
   constructor(
     public readonly field: string,
     message: string,
-    public readonly value?: unknown
+    public readonly value?: unknown,
   ) {
     super(`Configuration error in ${field}: ${message}`);
     this.name = 'ConfigurationError';

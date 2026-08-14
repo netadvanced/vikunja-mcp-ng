@@ -86,13 +86,26 @@ describe('parseTranscriptText', () => {
     const lines = [
       JSON.stringify({
         type: 'assistant',
-        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'mcp__x__y', input: {} }] },
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'c1', name: 'mcp__x__y', input: {} }],
+        },
       }),
       JSON.stringify({
         type: 'user',
         message: {
           role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: 'c1', content: [{ type: 'text', text: 'block-a' }, { type: 'text', text: 'block-b' }], is_error: false }],
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'c1',
+              content: [
+                { type: 'text', text: 'block-a' },
+                { type: 'text', text: 'block-b' },
+              ],
+              is_error: false,
+            },
+          ],
         },
       }),
       JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'done' }),

@@ -7,6 +7,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
+import type { VikunjaCapabilities } from '../types/vikunja';
 import { MCPError, ErrorCode } from '../types/errors';
 import { clearGlobalClientFactory, getAuthManagerFromContext, hasRequestContext } from '../client';
 import { getCurrentIdentity, type Identity } from '../context/requestContext';
@@ -19,6 +20,7 @@ import { ConfigurationManager } from '../config/ConfigurationManager';
 import { createStandardResponse } from '../utils/response-factory';
 import { formatMcpResponse } from '../utils/simple-response';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import { getOrDetectCapabilities } from '../utils/capabilities';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 interface AuthArgs {
@@ -104,12 +106,20 @@ interface VikunjaInfoResponse {
  * On failure of either step, the caller's freshly-created session is rolled
  * back (`authManager.disconnect()`) so a failed 'connect' does not leave a
  * broken session behind, and a clear, actionable MCPError is thrown.
+ *
+ * Once both round trips succeed, this also runs (and caches on the session)
+ * the one-time capability/version detection described in
+ * `src/utils/capabilities.ts` — the `GET /info` payload already fetched
+ * above plus a best-effort `GET /api/v2/openapi.json` probe. This is
+ * read-only groundwork for a future v2 migration: it never throws (a failed
+ * probe just caches `hasV2Api: false`) and doesn't change what `connect`
+ * requires to succeed.
  */
 async function verifyConnection(
   authManager: AuthManager,
   apiUrl: string,
   authType: 'api-token' | 'jwt',
-): Promise<string | undefined> {
+): Promise<VikunjaCapabilities> {
   // `verifyConnection` always probes with the EXPLICITLY-passed manager — the
   // stdio `connect` session, or `provision`'s throwaway holding the candidate
   // token being validated before it is stored. In oidc-http mode an ALS
@@ -149,16 +159,18 @@ async function verifyConnection(
       ErrorCode.AUTH_REQUIRED,
       `Vikunja server at ${apiUrl} was reachable, but the provided ${
         authType === 'jwt' ? 'JWT' : 'API'
-      } token was rejected: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      } token was rejected: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
-  return typeof info.version === 'string' ? info.version : undefined;
+  return getOrDetectCapabilities(authManager, info);
 }
 
-export function registerAuthTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerAuthTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_auth',
     withReadOnlyNote(
@@ -166,8 +178,8 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
       'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info). ' +
         'In oidc-http mode, self-service credential provisioning (provision, status, ' +
         'deprovision) additionally links your validated OIDC identity to a Vikunja API ' +
-        "token in the server's encrypted credential vault — connect/disconnect are not " +
-        'available in that mode (provision/deprovision replace them).',
+        "token in the server's encrypted credential vault — connect is not available in " +
+        'that mode (provision replaces it), and disconnect acts as an alias of deprovision.',
     ),
     {
       subcommand: z.enum([
@@ -237,9 +249,10 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
             // Verify the connection actually works before reporting success —
             // see verifyConnection()'s doc comment for why this is a
             // two-step round trip (unauthenticated /info, then a cheap
-            // authenticated call). Throws (and rolls back the session) on
-            // failure.
-            const serverVersion = await verifyConnection(authManager, args.apiUrl, detectedAuthType);
+            // authenticated call), plus the one-time capability/version
+            // detection cached on the session. Throws (and rolls back the
+            // session) on failure of either round trip.
+            const capabilities = await verifyConnection(authManager, args.apiUrl, detectedAuthType);
 
             const response = createStandardResponse(
               'auth-connect',
@@ -248,7 +261,9 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
               {
                 apiUrl: args.apiUrl,
                 authType: authManager.getAuthType(),
-                ...(serverVersion !== undefined ? { serverVersion } : {}),
+                ...(capabilities.serverVersion !== undefined
+                  ? { serverVersion: capabilities.serverVersion }
+                  : {}),
               },
             );
             return {
@@ -312,7 +327,7 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
               // needed.
               const response = createStandardResponse(
                 'auth-refresh',
-                'JWT tokens expire and this server cannot refresh them automatically. Vikunja\'s POST /user/token/refresh endpoint requires a refresh-token cookie issued at login, but this server authenticates with a static Bearer token and holds no such cookie. When your JWT expires, obtain a new one (e.g. by logging in to Vikunja again) and call vikunja_auth connect with the new token.',
+                "JWT tokens expire and this server cannot refresh them automatically. Vikunja's POST /user/token/refresh endpoint requires a refresh-token cookie issued at login, but this server authenticates with a static Bearer token and holds no such cookie. When your JWT expires, obtain a new one (e.g. by logging in to Vikunja again) and call vikunja_auth connect with the new token.",
                 { refreshed: false, authType: 'jwt', tokenExpires: true },
                 {
                   reason:
@@ -384,17 +399,25 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
                 'Authentication required. Please use vikunja_auth.connect first.',
               );
             }
-            const info = await vikunjaRestRequest<VikunjaInfoResponse>(
-              authManager,
-              'GET',
-              '/info',
-            );
+            const info = await vikunjaRestRequest<VikunjaInfoResponse>(authManager, 'GET', '/info');
+
+            // Refreshes the info-derived capability fields from this fresh
+            // /info response while reusing the cached hasV2Api probe result
+            // (or, for a session that never went through 'connect's
+            // detection, running it once now) — see
+            // `getOrDetectCapabilities` in `src/utils/capabilities.ts`.
+            const capabilities = await getOrDetectCapabilities(authManager, info);
 
             const response = createStandardResponse(
               'auth-info',
               'Vikunja server info retrieved successfully',
               { info },
-              typeof info.version === 'string' ? { serverVersion: info.version } : undefined,
+              {
+                ...(capabilities.serverVersion !== undefined
+                  ? { serverVersion: capabilities.serverVersion }
+                  : {}),
+                hasV2Api: capabilities.hasV2Api,
+              },
             );
             return {
               content: formatMcpResponse(response),
@@ -428,7 +451,7 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
             // (GET /info, then a cheap authenticated probe).
             const throwaway = new AuthManager();
             throwaway.connect(vikunjaUrl, args.apiToken);
-            const serverVersion = await verifyConnection(throwaway, vikunjaUrl, 'api-token');
+            const { serverVersion } = await verifyConnection(throwaway, vikunjaUrl, 'api-token');
 
             const vault = requireActiveVault();
             await vault.provision(identity, vikunjaUrl, args.apiToken);
@@ -477,6 +500,6 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
       } catch (error) {
         throw wrapAuthError(error, args.subcommand);
       }
-    })
+    }),
   );
 }

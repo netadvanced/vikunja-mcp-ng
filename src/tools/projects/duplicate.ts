@@ -48,7 +48,10 @@ export async function duplicateProject(
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   if (!args.id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project id is required for duplicate operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'Project id is required for duplicate operation',
+    );
   }
   validateId(args.id, 'id');
   if (args.parentProjectId !== undefined && args.parentProjectId !== 0) {

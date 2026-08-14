@@ -21,7 +21,7 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 export function registerTaskRelationsTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_task_relations',
@@ -34,20 +34,22 @@ export function registerTaskRelationsTool(
       // Task identification
       id: z.number(),
       otherTaskId: z.number().optional(),
-      relationKind: z.enum([
-        'unknown',
-        'subtask',
-        'parenttask',
-        'related',
-        'duplicateof',
-        'duplicates',
-        'blocking',
-        'blocked',
-        'precedes',
-        'follows',
-        'copiedfrom',
-        'copiedto',
-      ]).optional(),
+      relationKind: z
+        .enum([
+          'unknown',
+          'subtask',
+          'parenttask',
+          'related',
+          'duplicateof',
+          'duplicates',
+          'blocking',
+          'blocked',
+          'precedes',
+          'follows',
+          'copiedfrom',
+          'copiedto',
+        ])
+        .optional(),
     },
     getToolAnnotations('vikunja_task_relations'),
     async (args) => {
@@ -56,7 +58,7 @@ export function registerTaskRelationsTool(
           operation: args.operation,
           taskId: args.id,
           otherTaskId: args.otherTaskId,
-          relationKind: args.relationKind
+          relationKind: args.relationKind,
         });
 
         // Check authentication (closure-gate precedence fix: defer to the
@@ -88,7 +90,6 @@ export function registerTaskRelationsTool(
           },
           authManager,
         );
-
       } catch (error) {
         if (error instanceof MCPError) {
           throw error;

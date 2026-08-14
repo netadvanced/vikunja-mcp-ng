@@ -154,9 +154,9 @@ describe('project views', () => {
 
   describe('createView', () => {
     it('throws a VALIDATION_ERROR when the project id is missing', async () => {
-      await expect(createView({ title: 'New View', viewKind: 'list' }, authManager)).rejects.toThrow(
-        'Project id is required for create-view operation',
-      );
+      await expect(
+        createView({ title: 'New View', viewKind: 'list' }, authManager),
+      ).rejects.toThrow('Project id is required for create-view operation');
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
@@ -208,7 +208,11 @@ describe('project views', () => {
 
       const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
       expect(init.body).toBe(
-        JSON.stringify({ title: 'Board', view_kind: 'kanban', bucket_configuration_mode: 'manual' }),
+        JSON.stringify({
+          title: 'Board',
+          view_kind: 'kanban',
+          bucket_configuration_mode: 'manual',
+        }),
       );
     });
   });
@@ -244,9 +248,9 @@ describe('project views', () => {
     });
 
     it('throws when doneBucketId is not a positive integer', async () => {
-      await expect(
-        updateView({ id: 5, viewId: 11, doneBucketId: 0 }, authManager),
-      ).rejects.toThrow('doneBucketId must be a positive integer');
+      await expect(updateView({ id: 5, viewId: 11, doneBucketId: 0 }, authManager)).rejects.toThrow(
+        'doneBucketId must be a positive integer',
+      );
     });
 
     it('fetches the current view, merges the change, and POSTs the full model', async () => {

@@ -42,7 +42,9 @@ function isPersistedTemplateRecord(value: unknown): value is PersistedTemplateRe
   }
   const record = value as Record<string, unknown>;
   return (
-    typeof record.id === 'string' && typeof record.name === 'string' && typeof record.data === 'string'
+    typeof record.id === 'string' &&
+    typeof record.name === 'string' &&
+    typeof record.data === 'string'
   );
 }
 
@@ -55,7 +57,9 @@ function isPersistedTemplateRecord(value: unknown): value is PersistedTemplateRe
  * `undefined` when neither is set — persistence stays opt-in, and the
  * in-memory-only default is byte-identical to pre-persistence behavior.
  */
-export function resolveTemplatesPersistPath(configuredPath: string | undefined): string | undefined {
+export function resolveTemplatesPersistPath(
+  configuredPath: string | undefined,
+): string | undefined {
   const envPath = process.env.VIKUNJA_MCP_TEMPLATES_FILE;
   if (envPath !== undefined && envPath.trim().length > 0) {
     return envPath;
@@ -80,10 +84,13 @@ export function loadTemplatesFile(filePath: string): PersistedTemplateRecord[] {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== 'ENOENT') {
-      logger.warn('Failed to read templates persistence file, starting with an empty template set', {
-        filePath,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      logger.warn(
+        'Failed to read templates persistence file, starting with an empty template set',
+        {
+          filePath,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
     return [];
   }
@@ -92,10 +99,13 @@ export function loadTemplatesFile(filePath: string): PersistedTemplateRecord[] {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    logger.warn('Templates persistence file is not valid JSON, starting with an empty template set', {
-      filePath,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logger.warn(
+      'Templates persistence file is not valid JSON, starting with an empty template set',
+      {
+        filePath,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
     return [];
   }
 
@@ -128,7 +138,10 @@ export function loadTemplatesFile(filePath: string): PersistedTemplateRecord[] {
  * Creates the parent directory if it doesn't exist yet, so a fresh Docker
  * volume mount works without a separate provisioning step.
  */
-export function writeTemplatesFileAtomic(filePath: string, records: PersistedTemplateRecord[]): void {
+export function writeTemplatesFileAtomic(
+  filePath: string,
+  records: PersistedTemplateRecord[],
+): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
   const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);

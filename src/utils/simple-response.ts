@@ -57,7 +57,7 @@ export function createSuccessResponse(
   operation: string,
   message: string,
   data?: ResponseData,
-  metadata?: ResponseMetadata
+  metadata?: ResponseMetadata,
 ): SimpleResponse {
   const content = formatSuccessMessage(operation, message, data, metadata);
 
@@ -80,7 +80,7 @@ export function createErrorResponse(
   operation: string,
   message: string,
   errorCode: string = 'UNKNOWN_ERROR',
-  metadata?: ResponseMetadata
+  metadata?: ResponseMetadata,
 ): SimpleResponse {
   const content = formatErrorMessage(operation, message, errorCode, metadata);
 
@@ -107,13 +107,15 @@ export function formatSuccessMessage(
   operation: string,
   message: string,
   data?: ResponseData,
-  metadata?: Record<string, unknown>
+  metadata?: Record<string, unknown>,
 ): string {
   let content = `## ✅ Success\n\n${message}\n\n**Operation:** ${operation}\n\n`;
 
   // Include metadata first if provided
   if (metadata && typeof metadata === 'object') {
-    const metadataEntries = Object.entries(metadata).filter(([_, value]) => value !== undefined && value !== null);
+    const metadataEntries = Object.entries(metadata).filter(
+      ([_, value]) => value !== undefined && value !== null,
+    );
     if (metadataEntries.length > 0) {
       content += formatObjectData(metadata);
     }
@@ -134,7 +136,7 @@ export function formatSuccessMessage(
     // Check for known collection types first (skipped for single resources).
     const collection = looksLikeSingleResource
       ? null
-      : (data.tasks || data.projects || data.labels || data.users || data.items);
+      : data.tasks || data.projects || data.labels || data.users || data.items;
 
     if (collection && Array.isArray(collection)) {
       content += `**Results:** ${collection.length} item(s)\n\n`;
@@ -148,7 +150,7 @@ export function formatSuccessMessage(
       // compact id/title line for everything else. This is a single-item
       // ("get") response, so the heading layout stays legitimate here — only
       // multi-item list rendering (formatDataItemsList) changes.
-      content += formatSingleDataItem(data as DataItem);
+      content += formatSingleDataItem(data);
     } else if (data && typeof data === 'object') {
       content += formatObjectData(data as Record<string, unknown>);
     }
@@ -165,7 +167,7 @@ export function formatErrorMessage(
   operation: string,
   message: string,
   errorCode: string,
-  metadata?: ResponseMetadata
+  metadata?: ResponseMetadata,
 ): string {
   let output = `## ❌ Error\n\n${message}\n\n**Error Code:** ${errorCode}`;
 
@@ -216,7 +218,7 @@ function formatTaskItem(task: Task, index: number): string {
 
   // Header with title and ID
   parts.push(`### ${index + 1}. **${task.title}** (ID: ${task.id})`);
-  parts.push(...formatTaskDetailLines(task).map(line => `- ${line}`));
+  parts.push(...formatTaskDetailLines(task).map((line) => `- ${line}`));
 
   return parts.join('\n') + '\n';
 }
@@ -259,16 +261,18 @@ function formatTaskDetailLines(task: Task): string[] {
 
   // Labels (if any)
   if (task.labels && task.labels.length > 0) {
-    const labelTitles = task.labels.map(l => l.title).join(', ');
+    const labelTitles = task.labels.map((l) => l.title).join(', ');
     parts.push(`**Labels:** ${labelTitles}`);
   }
 
   // Assignees (if any)
   if (task.assignees && task.assignees.length > 0) {
-    const assigneeNames = task.assignees.map(a => {
-      const email = a.email ? ` (${a.email})` : '';
-      return `${a.username}${email}`;
-    }).join(', ');
+    const assigneeNames = task.assignees
+      .map((a) => {
+        const email = a.email ? ` (${a.email})` : '';
+        return `${a.username}${email}`;
+      })
+      .join(', ');
     parts.push(`**Assignees:** ${assigneeNames}`);
   }
 
@@ -289,12 +293,12 @@ function isRichTaskItem(item: DataItem): boolean {
   const task = item as unknown as Task;
   return Boolean(
     task.title &&
-      (task.description ||
-        task.priority !== undefined ||
-        task.due_date ||
-        task.labels ||
-        task.assignees ||
-        task.done !== undefined)
+    (task.description ||
+      task.priority !== undefined ||
+      task.due_date ||
+      task.labels ||
+      task.assignees ||
+      task.done !== undefined),
   );
 }
 
@@ -326,7 +330,7 @@ function formatListItemLine(item: DataItem, index: number): string {
   // formatTaskDetailLines always emits at least a **Status:** line once
   // isRichTaskItem() is true, so `details` is never empty here.
   const details = formatTaskDetailLines(item as unknown as Task);
-  return [header, ...details.map(line => `   - ${line}`)].join('\n');
+  return [header, ...details.map((line) => `   - ${line}`)].join('\n');
 }
 
 /**
@@ -389,15 +393,18 @@ function formatObjectData(data: Record<string, unknown>): string {
   const entries = Object.entries(data);
   if (entries.length === 0) return '';
 
-  return entries
-    .filter(([_, value]) => value !== undefined && value !== null)
-    .map(([key, value]) => {
-      const formattedValue = typeof value === 'object' && value !== null
-        ? JSON.stringify(value, null, 2)
-        : String(value);
-      return `**${key}:** ${formattedValue}`;
-    })
-    .join('\n') + '\n\n';
+  return (
+    entries
+      .filter(([_, value]) => value !== undefined && value !== null)
+      .map(([key, value]) => {
+        const formattedValue =
+          typeof value === 'object' && value !== null
+            ? JSON.stringify(value, null, 2)
+            : String(value);
+        return `**${key}:** ${formattedValue}`;
+      })
+      .join('\n') + '\n\n'
+  );
 }
 
 /**
@@ -405,10 +412,12 @@ function formatObjectData(data: Record<string, unknown>): string {
  * Direct replacement for AORP formatting
  */
 export function formatMcpResponse(response: SimpleResponse): Array<{ type: 'text'; text: string }> {
-  return [{
-    type: 'text' as const,
-    text: response.content,
-  }];
+  return [
+    {
+      type: 'text' as const,
+      text: response.content,
+    },
+  ];
 }
 
 // Note: ResponseData and DataItem are exported from types/index.ts

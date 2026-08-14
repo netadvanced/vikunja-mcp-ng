@@ -21,11 +21,14 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 export function registerTaskRemindersTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_task_reminders',
-    withReadOnlyNote('vikunja_task_reminders', 'Manage task reminders: add, remove, list reminders'),
+    withReadOnlyNote(
+      'vikunja_task_reminders',
+      'Manage task reminders: add, remove, list reminders',
+    ),
     {
       operation: z.enum(['add-reminder', 'remove-reminder', 'list-reminders']),
       // Task and reminder identification
@@ -39,7 +42,11 @@ export function registerTaskRemindersTool(
     getToolAnnotations('vikunja_task_reminders'),
     async (args) => {
       try {
-        logger.debug('Executing task reminders tool', { operation: args.operation, taskId: args.id, reminderIndex: args.reminderIndex });
+        logger.debug('Executing task reminders tool', {
+          operation: args.operation,
+          taskId: args.id,
+          reminderIndex: args.reminderIndex,
+        });
 
         // Check authentication (closure-gate precedence fix: defer to the
         // per-request context when bound — see hasRequestContext's doc
@@ -65,7 +72,7 @@ export function registerTaskRemindersTool(
             return addReminder(
               {
                 id: args.id,
-                reminderDate: args.reminderDate || ''
+                reminderDate: args.reminderDate || '',
               },
               authManager,
             );
@@ -75,7 +82,7 @@ export function registerTaskRemindersTool(
               {
                 id: args.id,
                 reminderDate: args.reminderDate,
-                reminderIndex: args.reminderIndex
+                reminderIndex: args.reminderIndex,
               },
               authManager,
             );

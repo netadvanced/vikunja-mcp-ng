@@ -93,7 +93,7 @@ export function parseMarkdown(text: string): MarkdownParseResult {
      */
     hasHeading(level: number, pattern: RegExp): boolean {
       const headings = this.getHeadings(level);
-      return headings.some(h => pattern.test(h));
+      return headings.some((h) => pattern.test(h));
     },
 
     /**
@@ -103,7 +103,7 @@ export function parseMarkdown(text: string): MarkdownParseResult {
     hasSection(sectionName: string): boolean {
       const allHeadings = this.getHeadings();
       const pattern = new RegExp(sectionName, 'i');
-      return allHeadings.some(h => pattern.test(h));
+      return allHeadings.some((h) => pattern.test(h));
     },
 
     /**
@@ -119,7 +119,7 @@ export function parseMarkdown(text: string): MarkdownParseResult {
      */
     getAorpStatus(): AorpStatusInfo {
       const headings = this.getHeadings(2);
-      const statusHeading = headings.find(h => /^(✅|❌)\s+(Success|Error)/.test(h));
+      const statusHeading = headings.find((h) => /^(✅|❌)\s+(Success|Error)/.test(h));
 
       if (!statusHeading) {
         return { type: 'unknown', heading: '' };
@@ -324,6 +324,6 @@ export function parseMarkdown(text: string): MarkdownParseResult {
       }
 
       return metadata;
-    }
+    },
   };
 }

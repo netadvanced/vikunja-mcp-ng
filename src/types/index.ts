@@ -10,6 +10,7 @@ export {
   type LoginCredentials,
   type AuthToken,
   type AuthSession,
+  type VikunjaCapabilities,
   type StandardTaskResponse,
   type StandardProjectResponse,
   type MinimalTask,
@@ -39,7 +40,6 @@ export {
 // Export from responses (Simple responses)
 export {
   type ResponseMetadata,
-  type StandardErrorResponse,
   type TaskResponseData,
   type TaskResponseMetadata,
   type QualityIndicatorData,
@@ -74,7 +74,7 @@ export {
   createErrorResponse,
   formatMcpResponse,
   formatSuccessMessage,
-  formatErrorMessage
+  formatErrorMessage,
 } from '../utils/simple-response';
 
 // Project API interfaces
@@ -157,7 +157,7 @@ export {
   createStandardResponse,
   createTaskResponse as createTaskAorpResponse,
   createSimpleErrorResponse as createAorpErrorResponse,
-  formatResponseForMcp as formatAorpAsMarkdown
+  formatResponseForMcp as formatAorpAsMarkdown,
 } from '../utils/response-factory';
 
 // AORP compatibility types (for migration)
@@ -176,7 +176,6 @@ export interface AorpFactoryOptions {
   sessionId?: string;
   [key: string]: unknown; // More specific than any
 }
-
 
 export interface AorpFactoryResult {
   response: SimpleResponse; // Use proper SimpleResponse type

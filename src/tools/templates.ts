@@ -46,7 +46,9 @@ type VikunjaTask = components['schemas']['models.Task'];
  * mode, so calling `.getSession()` on it directly throws for every request
  * regardless of provisioning status.
  */
-async function getSessionStorage(authManager: AuthManager): ReturnType<typeof storageManager.getStorage> {
+async function getSessionStorage(
+  authManager: AuthManager,
+): ReturnType<typeof storageManager.getStorage> {
   const effectiveAuthManager = hasRequestContext()
     ? await getAuthManagerFromContext()
     : authManager;
@@ -69,7 +71,8 @@ async function getSessionStorage(authManager: AuthManager): ReturnType<typeof st
  * before this file-backed persistence support was added.
  */
 function getTemplatesPersistPath(): string | undefined {
-  const configuredPath = ConfigurationManager.getInstance().loadConfiguration().templates.persistPath;
+  const configuredPath =
+    ConfigurationManager.getInstance().loadConfiguration().templates.persistPath;
   return resolveTemplatesPersistPath(configuredPath);
 }
 
@@ -161,7 +164,11 @@ interface TemplateData {
   variables?: Record<string, string>;
 }
 
-export function registerTemplatesTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerTemplatesTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_templates',
     withReadOnlyNote(

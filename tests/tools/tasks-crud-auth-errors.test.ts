@@ -67,7 +67,10 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
   const mockRest = vikunjaRestRequest as jest.Mock;
 
   /** Sentinel wrapper marking a routeRest handler value as a rejection. */
-  const REJECT = (value: unknown): { __reject: true; value: unknown } => ({ __reject: true, value });
+  const REJECT = (value: unknown): { __reject: true; value: unknown } => ({
+    __reject: true,
+    value,
+  });
 
   type RestHandler = unknown | ((path: string) => unknown);
 
@@ -86,7 +89,9 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
    * so one method can succeed for one path and fail for another.
    */
   function routeRest(
-    handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', RestHandler>> & { labels?: unknown },
+    handlers: Partial<Record<'GET' | 'POST' | 'PUT' | 'DELETE', RestHandler>> & {
+      labels?: unknown;
+    },
   ): void {
     mockRest.mockImplementation((_auth: unknown, method: string, path?: unknown) => {
       const isLabelBulk = typeof path === 'string' && path.includes('/labels/bulk');
@@ -97,7 +102,11 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       if (typeof handler === 'function') {
         handler = (handler as (p: string) => unknown)(path as string);
       }
-      if (handler && typeof handler === 'object' && (handler as { __reject?: true }).__reject === true) {
+      if (
+        handler &&
+        typeof handler === 'object' &&
+        (handler as { __reject?: true }).__reject === true
+      ) {
         return Promise.reject((handler as { value: unknown }).value);
       }
       return Promise.resolve(handler);
@@ -111,7 +120,10 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
     return error as Error & { status: number };
   };
 
-  const createAxiosAuthError = (status: number, message?: string): Error & { response: { status: number } } => {
+  const createAxiosAuthError = (
+    status: number,
+    message?: string,
+  ): Error & { response: { status: number } } => {
     const error = new Error(message || 'Authentication failed');
     (error as any).response = { status };
     return error as Error & { response: { status: number } };
@@ -165,20 +177,26 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       });
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-          labels: [1, 2],
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            labels: [1, 2],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(MCPError);
 
       // Verify the error message includes authentication guidance
       try {
-        await createTask({
-          projectId: 1,
-          title: 'Test Task',
-          labels: [1, 2],
-        }, mockAuthManager);
+        await createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            labels: [1, 2],
+          },
+          mockAuthManager,
+        );
       } catch (error) {
         expect(error).toBeInstanceOf(MCPError);
         expect((error as MCPError).message).toContain('Task ID: 1');
@@ -199,11 +217,14 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       });
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-          labels: [1, 2],
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            labels: [1, 2],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(MCPError);
 
       // Verify rollback was attempted
@@ -225,22 +246,28 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       });
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-          labels: [1],
-          assignees: [1, 2],
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            labels: [1],
+            assignees: [1, 2],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(MCPError);
 
       // Verify the error message includes retry information
       try {
-        await createTask({
-          projectId: 1,
-          title: 'Test Task',
-          labels: [1],
-          assignees: [1, 2],
-        }, mockAuthManager);
+        await createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            labels: [1],
+            assignees: [1, 2],
+          },
+          mockAuthManager,
+        );
       } catch (error) {
         expect(error).toBeInstanceOf(MCPError);
         expect((error as MCPError).message).toContain('(Retried');
@@ -262,11 +289,14 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       });
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-          assignees: [1, 2],
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            assignees: [1, 2],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(MCPError);
 
       // Verify rollback was attempted
@@ -297,20 +327,26 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       });
 
       await expect(
-        updateTask({
-          id: 1,
-          title: 'Updated Title',
-          labels: [1, 2, 3],
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            title: 'Updated Title',
+            labels: [1, 2, 3],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(MCPError);
 
       // Verify the specific auth error message is thrown
       try {
-        await updateTask({
-          id: 1,
-          title: 'Updated Title',
-          labels: [1, 2, 3],
-        }, mockAuthManager);
+        await updateTask(
+          {
+            id: 1,
+            title: 'Updated Title',
+            labels: [1, 2, 3],
+          },
+          mockAuthManager,
+        );
       } catch (error) {
         expect(error).toBeInstanceOf(MCPError);
         expect((error as MCPError).code).toBe(ErrorCode.API_ERROR);
@@ -328,11 +364,14 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       });
 
       await expect(
-        updateTask({
-          id: 1,
-          title: 'Updated Title',
-          labels: [1, 2, 3],
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            title: 'Updated Title',
+            labels: [1, 2, 3],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(MCPError);
     });
 
@@ -355,18 +394,24 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       });
 
       await expect(
-        updateTask({
-          id: 1,
-          assignees: [1, 4], // Remove 2 and 3, add 4
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            assignees: [1, 4], // Remove 2 and 3, add 4
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(MCPError);
 
       // Verify the specific auth error message is thrown
       try {
-        await updateTask({
-          id: 1,
-          assignees: [1, 4], // Remove 2 and 3, add 4
-        }, mockAuthManager);
+        await updateTask(
+          {
+            id: 1,
+            assignees: [1, 4], // Remove 2 and 3, add 4
+          },
+          mockAuthManager,
+        );
       } catch (error) {
         expect(error).toBeInstanceOf(MCPError);
         expect((error as MCPError).code).toBe(ErrorCode.API_ERROR);
@@ -389,10 +434,13 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       });
 
       await expect(
-        updateTask({
-          id: 1,
-          assignees: [1], // Remove assignee 2
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            assignees: [1], // Remove assignee 2
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(MCPError);
     });
 
@@ -404,18 +452,24 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       routeRest({ GET: mockTask, POST: mockTask, PUT: REJECT(authError) });
 
       await expect(
-        updateTask({
-          id: 1,
-          assignees: [1, 2, 3],
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            assignees: [1, 2, 3],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(MCPError);
 
       // Verify the error message includes retry information
       try {
-        await updateTask({
-          id: 1,
-          assignees: [1, 2, 3],
-        }, mockAuthManager);
+        await updateTask(
+          {
+            id: 1,
+            assignees: [1, 2, 3],
+          },
+          mockAuthManager,
+        );
       } catch (error) {
         expect(error).toBeInstanceOf(MCPError);
         expect((error as MCPError).message).toContain('(Retried');
@@ -428,10 +482,13 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       routeRest({ GET: mockTask, POST: mockTask, PUT: REJECT(authError) });
 
       await expect(
-        updateTask({
-          id: 1,
-          assignees: [1, 2, 3],
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            assignees: [1, 2, 3],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow(MCPError);
     });
   });
@@ -448,11 +505,14 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       });
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-          labels: [1, 2],
-        }, mockAuthManager)
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            labels: [1, 2],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Failed to complete task creation: Network timeout');
     });
 
@@ -478,10 +538,13 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       });
 
       await expect(
-        updateTask({
-          id: 1,
-          labels: [1, 2, 3],
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            labels: [1, 2, 3],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Database connection failed');
     });
   });
@@ -493,11 +556,14 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
       routeRest({ PUT: createdTaskNoId });
 
       await expect(
-        createTask({
-          projectId: 1,
-          title: 'Test Task',
-          labels: [1],
-        }, mockAuthManager),
+        createTask(
+          {
+            projectId: 1,
+            title: 'Test Task',
+            labels: [1],
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('did not return a task id');
 
       // Verify no label operations were attempted due to missing task ID
@@ -521,15 +587,22 @@ describe('Tasks CRUD - Authentication Error Handling', () => {
 
       routeRest({ GET: taskWithoutAssignees, POST: taskWithoutAssignees, PUT: undefined });
 
-      await updateTask({
-        id: 1,
-        assignees: [1, 2],
-      }, mockAuthManager);
+      await updateTask(
+        {
+          id: 1,
+          assignees: [1, 2],
+        },
+        mockAuthManager,
+      );
 
       // Should handle undefined assignees gracefully and add new ones via the
       // additive per-user PUT /tasks/1/assignees { user_id } endpoint
-      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', { user_id: 1 });
-      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', { user_id: 2 });
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', {
+        user_id: 1,
+      });
+      expect(mockRest).toHaveBeenCalledWith(mockAuthManager, 'PUT', '/tasks/1/assignees', {
+        user_id: 2,
+      });
     });
   });
 });

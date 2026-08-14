@@ -118,7 +118,9 @@ export function registerAdminTool(
       confirm: z
         .boolean()
         .optional()
-        .describe('Must be true to perform delete-user — this operation is irreversible in "now" mode.'),
+        .describe(
+          'Must be true to perform delete-user — this operation is irreversible in "now" mode.',
+        ),
       status: z
         .enum(['active', 'email-confirmation-required', 'disabled', 'account-locked'])
         .optional(),
@@ -256,9 +258,15 @@ export function registerAdminTool(
             if (args.name !== undefined) body.name = args.name;
             if (args.language !== undefined) body.language = args.language;
             if (args.isAdmin !== undefined) body.is_admin = args.isAdmin;
-            if (args.skipEmailConfirm !== undefined) body.skip_email_confirm = args.skipEmailConfirm;
+            if (args.skipEmailConfirm !== undefined)
+              body.skip_email_confirm = args.skipEmailConfirm;
 
-            const user = await vikunjaRestRequest<AdminUser>(authManager, 'POST', '/admin/users', body);
+            const user = await vikunjaRestRequest<AdminUser>(
+              authManager,
+              'POST',
+              '/admin/users',
+              body,
+            );
 
             logger.info('Created user (admin)', { userId: user.id, username: user.username });
 
@@ -285,7 +293,11 @@ export function registerAdminTool(
             if (args.mode !== undefined) query.set('mode', args.mode);
             const qs = query.toString();
 
-            await vikunjaRestRequest(authManager, 'DELETE', `/admin/users/${userId}${qs ? `?${qs}` : ''}`);
+            await vikunjaRestRequest(
+              authManager,
+              'DELETE',
+              `/admin/users/${userId}${qs ? `?${qs}` : ''}`,
+            );
 
             logger.info('Deleted user (admin)', { userId, mode: args.mode ?? 'scheduled' });
 
@@ -367,7 +379,10 @@ export function registerAdminTool(
         if (error instanceof Error) {
           throw new MCPError(ErrorCode.API_ERROR, `Admin operation failed: ${error.message}`);
         }
-        throw new MCPError(ErrorCode.INTERNAL_ERROR, 'An unexpected error occurred during admin operation');
+        throw new MCPError(
+          ErrorCode.INTERNAL_ERROR,
+          'An unexpected error occurred during admin operation',
+        );
       }
     },
   );

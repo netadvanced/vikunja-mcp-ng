@@ -128,7 +128,7 @@ export async function handleRelationSubcommands(
           // wants the richer local `Task`. The formatter only reads fields
           // defensively, so narrow via the parameter type.
           response as unknown as Parameters<typeof createStandardResponse>[2],
-          response.metadata as Record<string, unknown>
+          response.metadata as Record<string, unknown>,
         );
 
         return {
@@ -147,7 +147,11 @@ export async function handleRelationSubcommands(
         if (error instanceof MCPError) {
           throw wrapIfRestOrigin(error, 'create task relation');
         }
-        throw handleStatusCodeError(error, 'create task relation', `${args.id}-${args.otherTaskId}`);
+        throw handleStatusCodeError(
+          error,
+          'create task relation',
+          `${args.id}-${args.otherTaskId}`,
+        );
       }
     }
 
@@ -222,7 +226,7 @@ export async function handleRelationSubcommands(
           // wants the richer local `Task`. The formatter only reads fields
           // defensively, so narrow via the parameter type.
           response as unknown as Parameters<typeof createStandardResponse>[2],
-          response.metadata as Record<string, unknown>
+          response.metadata as Record<string, unknown>,
         );
 
         return {
@@ -241,7 +245,11 @@ export async function handleRelationSubcommands(
         if (error instanceof MCPError) {
           throw wrapIfRestOrigin(error, 'remove task relation');
         }
-        throw handleStatusCodeError(error, 'remove task relation', `${args.id}-${args.otherTaskId}`);
+        throw handleStatusCodeError(
+          error,
+          'remove task relation',
+          `${args.id}-${args.otherTaskId}`,
+        );
       }
     }
 
@@ -304,7 +312,7 @@ export async function handleRelationSubcommands(
           // wants the richer local `Task`. The formatter only reads fields
           // defensively, so narrow via the parameter type.
           response as unknown as Parameters<typeof createStandardResponse>[2],
-          response.metadata as Record<string, unknown>
+          response.metadata as Record<string, unknown>,
         );
 
         return {

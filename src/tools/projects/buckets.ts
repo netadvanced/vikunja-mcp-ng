@@ -20,7 +20,11 @@ import type { AuthManager } from '../../auth/AuthManager';
 import { MCPError, ErrorCode } from '../../types';
 import { validateId } from '../../utils/validation';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
-import { vikunjaRestRequest, resolveKanbanView, resolveKanbanViewId } from '../../utils/vikunja-rest';
+import {
+  vikunjaRestRequest,
+  resolveKanbanView,
+  resolveKanbanViewId,
+} from '../../utils/vikunja-rest';
 import type { components } from '../../types/generated/vikunja-openapi';
 
 export interface ListBucketsArgs {
@@ -117,8 +121,15 @@ function validateNonNegativeNumber(value: number, fieldName: string): void {
   }
 }
 
-/** Fetches the buckets of a project's view. */
-async function fetchBuckets(
+/**
+ * Fetches the buckets of a project's view.
+ *
+ * Exported so callers that need the raw, structured bucket list — not
+ * `listBuckets`'s formatted MCP response — can reuse the exact same fetch
+ * (e.g. `setupKanban`, `src/tools/projects/kanban-setup.ts`, which needs
+ * numeric bucket ids to place tasks after resolving each requested column).
+ */
+export async function fetchBuckets(
   authManager: AuthManager,
   projectId: number,
   viewId: number,
@@ -129,6 +140,60 @@ async function fetchBuckets(
     `/projects/${projectId}/views/${viewId}/buckets`,
   );
   return Array.isArray(buckets) ? buckets : [];
+}
+
+/**
+ * Creates a bucket and returns the raw, structured `VikunjaBucket` (not a
+ * formatted MCP response). This is the exact request `createBucket` (the
+ * `create-bucket` subcommand handler) sends — extracted so `setupKanban`
+ * can reuse it directly and get the created bucket's numeric id back for
+ * task placement, without parsing a markdown-formatted response.
+ */
+export async function createBucketRaw(
+  authManager: AuthManager,
+  projectId: number,
+  viewId: number,
+  fields: { title: string; limit?: number; position?: number },
+): Promise<VikunjaBucket> {
+  const body: VikunjaBucket = { title: fields.title };
+  if (fields.limit !== undefined) body.limit = fields.limit;
+  if (fields.position !== undefined) body.position = fields.position;
+  return vikunjaRestRequest<VikunjaBucket>(
+    authManager,
+    'PUT',
+    `/projects/${projectId}/views/${viewId}/buckets`,
+    body,
+  );
+}
+
+/**
+ * Updates a bucket (fetch-merge-POST already applied by the caller via
+ * `current`) and returns the raw, structured `VikunjaBucket`. This is the
+ * exact request `updateBucket` (the `update-bucket` subcommand handler)
+ * sends — extracted so `setupKanban` can reuse it directly (e.g. to rename
+ * a leftover default bucket to a requested column name, or to pin a
+ * reused bucket's `position` to enforce column order) without parsing a
+ * markdown-formatted response.
+ */
+export async function updateBucketRaw(
+  authManager: AuthManager,
+  projectId: number,
+  viewId: number,
+  current: VikunjaBucket,
+  fields: { title?: string; limit?: number; position?: number },
+): Promise<VikunjaBucket> {
+  const payload: VikunjaBucket = {
+    ...current,
+    ...(fields.title !== undefined && { title: fields.title }),
+    ...(fields.limit !== undefined && { limit: fields.limit }),
+    ...(fields.position !== undefined && { position: fields.position }),
+  };
+  return vikunjaRestRequest<VikunjaBucket>(
+    authManager,
+    'POST',
+    `/projects/${projectId}/views/${viewId}/buckets/${current.id}`,
+    payload,
+  );
 }
 
 /**
@@ -172,7 +237,12 @@ function resolveBucketFromList(
     }
     return match;
   }
-  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'bucketId or bucketTitle is required');
+  throw new MCPError(
+    ErrorCode.VALIDATION_ERROR,
+    'bucketId or bucketTitle is required — pass the numeric bucketId from vikunja_projects ' +
+      'list-buckets, or the bucket\'s display name as bucketTitle (e.g. "Doing") to resolve it ' +
+      'by name instead.',
+  );
 }
 
 /**
@@ -189,7 +259,8 @@ export async function listBuckets(
   if (!args.id) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'Project id is required for list-buckets operation',
+      'id (or projectId, accepted as an alias) is required for list-buckets operation — ' +
+        'the project whose Kanban buckets to list; get it from vikunja_projects list.',
     );
   }
   validateId(args.id, 'id');
@@ -259,7 +330,8 @@ export async function createBucket(
   if (!args.id) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'Project id is required for create-bucket operation',
+      'id (or projectId, accepted as an alias) is required for create-bucket operation — ' +
+        'the project to add the bucket to; get it from vikunja_projects list.',
     );
   }
   if (!args.title || args.title.trim() === '') {
@@ -273,16 +345,13 @@ export async function createBucket(
   const viewId =
     args.viewId !== undefined ? args.viewId : await resolveKanbanViewId(authManager, args.id);
 
-  const body: VikunjaBucket = { title: args.title.trim() };
-  if (args.limit !== undefined) body.limit = args.limit;
-  if (args.position !== undefined) body.position = args.position;
+  const bucketFields: { title: string; limit?: number; position?: number } = {
+    title: args.title.trim(),
+  };
+  if (args.limit !== undefined) bucketFields.limit = args.limit;
+  if (args.position !== undefined) bucketFields.position = args.position;
 
-  const bucket = await vikunjaRestRequest<VikunjaBucket>(
-    authManager,
-    'PUT',
-    `/projects/${args.id}/views/${viewId}/buckets`,
-    body,
-  );
+  const bucket = await createBucketRaw(authManager, args.id, viewId, bucketFields);
 
   const affectedFields = ['title'];
   if (args.limit !== undefined) affectedFields.push('limit');
@@ -294,7 +363,12 @@ export async function createBucket(
     {
       projectId: args.id,
       viewId,
-      bucket: { id: bucket.id, title: bucket.title, position: bucket.position, limit: bucket.limit },
+      bucket: {
+        id: bucket.id,
+        title: bucket.title,
+        position: bucket.position,
+        limit: bucket.limit,
+      },
     },
     {
       timestamp: new Date().toISOString(),
@@ -322,7 +396,9 @@ export async function updateBucket(
   if (!args.id) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'Project id is required for update-bucket operation',
+      'id (or projectId, accepted as an alias) is required for update-bucket operation — ' +
+        'the project whose bucket to update (also pass bucketId or bucketTitle to identify ' +
+        'the bucket itself); get the project id from vikunja_projects list.',
     );
   }
   validateId(args.id, 'id');
@@ -350,19 +426,12 @@ export async function updateBucket(
     args.id,
   );
 
-  const payload: VikunjaBucket = {
-    ...current,
-    ...(args.title !== undefined && { title: args.title.trim() }),
-    ...(args.limit !== undefined && { limit: args.limit }),
-    ...(args.position !== undefined && { position: args.position }),
-  };
+  const updateFields: { title?: string; limit?: number; position?: number } = {};
+  if (args.title !== undefined) updateFields.title = args.title.trim();
+  if (args.limit !== undefined) updateFields.limit = args.limit;
+  if (args.position !== undefined) updateFields.position = args.position;
 
-  const updated = await vikunjaRestRequest<VikunjaBucket>(
-    authManager,
-    'POST',
-    `/projects/${args.id}/views/${viewId}/buckets/${current.id}`,
-    payload,
-  );
+  const updated = await updateBucketRaw(authManager, args.id, viewId, current, updateFields);
 
   const affectedFields: string[] = [];
   if (args.title !== undefined) affectedFields.push('title');
@@ -405,7 +474,8 @@ export async function deleteBucket(
   if (!args.id) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'Project id is required for delete-bucket operation',
+      'id (or projectId, accepted as an alias) is required for delete-bucket operation — ' +
+        'the project whose bucket to delete; get it from vikunja_projects list.',
     );
   }
   validateId(args.id, 'id');

@@ -1090,7 +1090,7 @@ Description,1`;
 
     it('should handle CSV lines that are falsy (empty string after filter)', async () => {
       const csvData = `title,description\n\n\nTask 1,Desc 1\n\n`;
-      
+
       mockClient.tasks.createTask.mockResolvedValue({ id: 501, title: 'Task 1' });
 
       const result = await toolHandler({
@@ -1117,7 +1117,7 @@ Description,1`;
     it('should handle tasks array with null elements during iteration', async () => {
       // Test the branch where tasks[i] could be falsy
       const tasksData = [{ title: 'Task 1' }, { title: 'Task 2' }];
-      
+
       // Mock the task creation to succeed
       mockClient.tasks.createTask
         .mockResolvedValueOnce({ id: 601, title: 'Task 1' })
@@ -1149,7 +1149,7 @@ Description,1`;
       // other paths (e.g. the batch size / no-tasks-found validation
       // errors thrown directly in registerBatchImportTool).
       mockClient.tasks.createTask.mockRejectedValue(
-        new MCPError(ErrorCode.API_ERROR, 'Custom API error message')
+        new MCPError(ErrorCode.API_ERROR, 'Custom API error message'),
       );
 
       const result = await toolHandler({
@@ -1183,7 +1183,7 @@ Description,1`;
         expect.objectContaining({
           error: expect.stringContaining('Error: Connection failed'),
           message: 'Connection failed',
-        })
+        }),
       );
     });
 
@@ -1211,13 +1211,13 @@ Description,1`;
         expect.objectContaining({
           error: expect.any(String),
           message: expect.stringContaining('String error'),
-        })
+        }),
       );
     });
 
     it('should handle CSV with empty values for labels and assignees', async () => {
       const csvData = `title,labels,assignees\nTask 1,,`;
-      
+
       mockClient.tasks.createTask.mockResolvedValue({ id: 701, title: 'Task 1' });
 
       const result = await toolHandler({
@@ -1233,7 +1233,7 @@ Description,1`;
         percent_done: 0,
         project_id: 1,
       });
-      
+
       // Should not try to update labels or assignees when they are empty
       expect(labelWrite).not.toHaveBeenCalled();
       expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
@@ -1270,13 +1270,13 @@ Description,1`;
       expect(result.content[0].text).toContain('Successfully imported: 1 tasks');
       expect(result.content[0].text).toContain('Warnings:');
       expect(result.content[0].text).toContain(
-        'Labels specified but not assigned (API token limitation)'
+        'Labels specified but not assigned (API token limitation)',
       );
     });
 
     it('should handle CSV skip errors during parsing with skipErrors flag', async () => {
       const csvData = `title,hexColor\nTask 1,#FF0000\nTask 2,invalid-color\nTask 3,#00FF00`;
-      
+
       mockClient.tasks.createTask
         .mockResolvedValueOnce({ id: 901, title: 'Task 1' })
         .mockResolvedValueOnce({ id: 903, title: 'Task 3' });
@@ -1295,7 +1295,7 @@ Description,1`;
 
     it('should log debug for parsed labels from CSV', async () => {
       const csvData = `title,labels\n"Task 1","bug;feature;urgent"`;
-      
+
       mockClient.tasks.createTask.mockResolvedValue({ id: 1001, title: 'Task 1' });
 
       await toolHandler({
@@ -1309,7 +1309,7 @@ Description,1`;
         expect.objectContaining({
           rawValue: 'bug;feature;urgent',
           parsedLabels: ['bug', 'feature', 'urgent'],
-        })
+        }),
       );
     });
 
@@ -1349,7 +1349,7 @@ Description,1`;
     it('should handle assignees when projectUsers is empty but not due to auth failure', async () => {
       // Mock empty users array (but not due to auth failure)
       mockClient.users.getUsers.mockResolvedValue([]);
-      
+
       const taskData = {
         title: 'Task with assignees',
         assignees: ['john'],
@@ -1396,7 +1396,7 @@ Description,1`;
         expect.objectContaining({
           taskId: 1301,
           reminders: ['2025-01-01T00:00:00Z', '2025-01-02T00:00:00Z'],
-        })
+        }),
       );
       expect(result.content[0].text).toContain('Successfully imported: 1 tasks');
     });
@@ -1449,7 +1449,7 @@ Description,1`;
       // Should show warning about labels not being assigned
       expect(result.content[0].text).toContain('Warnings:');
       expect(result.content[0].text).toContain(
-        'Labels specified but not assigned (API token limitation)'
+        'Labels specified but not assigned (API token limitation)',
       );
     });
 
@@ -1467,7 +1467,7 @@ Description,1`;
     it('should handle CSV with empty lines', async () => {
       // CSV with empty lines to test filter
       const csvData = `title\n\nTask 1\n\n`;
-      
+
       mockClient.tasks.createTask.mockResolvedValue({ id: 1801, title: 'Task 1' });
 
       const result = await toolHandler({
@@ -1481,7 +1481,7 @@ Description,1`;
 
     it('should handle CSV row with invalid data format', async () => {
       const csvData = `title,priority,hexColor\nValid Task,5,#FF0000\nInvalid Task,999,invalid-hex`;
-      
+
       const result = await toolHandler({
         projectId: 1,
         format: 'csv',
@@ -1496,7 +1496,7 @@ Description,1`;
     it('should handle CSV labels with falsy value in ternary', async () => {
       // Test the value ? split : [] branch for labels (line 190)
       const csvData = `title,labels\n"Task 1",""\n"Task 2",`;
-      
+
       mockClient.tasks.createTask
         .mockResolvedValueOnce({ id: 1501, title: 'Task 1' })
         .mockResolvedValueOnce({ id: 1502, title: 'Task 2' });
@@ -1514,15 +1514,7 @@ Description,1`;
 
     it('should handle malformed labels response as defensive measure', async () => {
       // Test lines 291-301 defensive branches
-      const labelsResponses = [
-        undefined,
-        null,
-        {},
-        'string',
-        123,
-        true,
-        false
-      ];
+      const labelsResponses = [undefined, null, {}, 'string', 123, true, false];
 
       for (const response of labelsResponses) {
         jest.clearAllMocks();
@@ -1543,7 +1535,7 @@ Description,1`;
     it('should handle sparse array in JSON', async () => {
       // Test with array containing null
       const sparseData = '[{"title": "Task 1"},{"title": "Task 3"}]';
-      
+
       mockClient.tasks.createTask
         .mockResolvedValueOnce({ id: 1701, title: 'Task 1' })
         .mockResolvedValueOnce({ id: 1703, title: 'Task 3' });
@@ -1575,9 +1567,9 @@ Description,1`;
         id: 1801,
         title: 'Task with mixed labels',
       });
-      
+
       // Mock successful label update
-      
+
       // Mock verification - labels successfully assigned
       mockClient.tasks.getTask.mockResolvedValue({
         id: 1801,
@@ -1599,7 +1591,7 @@ Description,1`;
           body: JSON.stringify({ labels: [{ id: 1 }] }),
         }),
       );
-      
+
       // Task completed successfully, only 'bug' label was applied
       expect(result.content[0].text).toContain('Successfully imported: 1 tasks');
     });
@@ -1652,7 +1644,7 @@ Description,1`;
         expect.objectContaining({
           error: 'String rejection',
           message: 'Unknown error',
-        })
+        }),
       );
     });
 
@@ -1700,14 +1692,14 @@ Description,1`;
         expect.objectContaining({
           taskId: 'unknown',
           reminders: ['2025-01-01T00:00:00Z'],
-        })
+        }),
       );
     });
 
     it('should handle label warning when task has no ID', async () => {
       // Test lines 471, 480-486 when createdTask.id is falsy
       mockClient.labels.getLabels.mockResolvedValue([]);
-      
+
       const taskData = {
         title: 'Task without ID',
         labels: ['unknown-label'],
@@ -1762,7 +1754,7 @@ Description,1`;
     it('should handle label error that is not an auth error and not Error instance', async () => {
       // Test line 451
       const taskData = {
-        title: 'Task with labels', 
+        title: 'Task with labels',
         labels: ['bug'],
       };
 
@@ -1815,7 +1807,7 @@ Description,1`;
         expect.objectContaining({
           taskId: 2201,
           error: expect.stringContaining('Verification failed'),
-        })
+        }),
       );
     });
 
@@ -1861,7 +1853,7 @@ Description,1`;
     it('should handle CSV with assignees empty value branch', async () => {
       // Test line 197 false branch
       const csvData = `title,assignees\n"Task 1","john;jane"\n"Task 2",""`;
-      
+
       mockClient.tasks.createTask
         .mockResolvedValueOnce({ id: 2401, title: 'Task 1' })
         .mockResolvedValueOnce({ id: 2402, title: 'Task 2' });
@@ -1901,7 +1893,7 @@ Description,1`;
         expect.objectContaining({
           error: expect.stringContaining('Labels fetch failed'),
           stack: expect.any(String),
-        })
+        }),
       );
     });
 
@@ -1925,14 +1917,14 @@ Description,1`;
 
       expect(logger.warn).toHaveBeenCalledWith(
         'Failed to fetch users',
-        expect.objectContaining({ error: expect.any(Error) })
+        expect.objectContaining({ error: expect.any(Error) }),
       );
     });
 
     it('should handle CSV with various edge cases for label/assignee parsing', async () => {
       // Test empty values and edge cases in CSV parsing
       const csvData = `title,labels,assignees\n"Task 1","",""\n"Task 2",,\n"Task 3","label1","user1"`;
-      
+
       mockClient.tasks.createTask
         .mockResolvedValueOnce({ id: 2701, title: 'Task 1' })
         .mockResolvedValueOnce({ id: 2702, title: 'Task 2' })
@@ -1946,7 +1938,7 @@ Description,1`;
 
       expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(3);
       expect(result.content[0].text).toContain('Successfully imported: 3 tasks');
-      
+
       // Should not try to update labels/assignees for first two tasks
       expect(labelWrite).not.toHaveBeenCalled();
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
@@ -1954,7 +1946,11 @@ Description,1`;
 
     it('should handle auth error with non-Error object during task creation', async () => {
       // Test line 367 for non-Error case - must contain auth keywords
-      mockClient.tasks.createTask.mockRejectedValue(new Error('401 Unauthorized: missing, malformed, expired or otherwise invalid token provided'));
+      mockClient.tasks.createTask.mockRejectedValue(
+        new Error(
+          '401 Unauthorized: missing, malformed, expired or otherwise invalid token provided',
+        ),
+      );
 
       const result = await toolHandler({
         projectId: 1,
@@ -1982,7 +1978,7 @@ Description,1`;
 
       expect(logger.warn).toHaveBeenCalledWith(
         'Failed to fetch users',
-        expect.objectContaining({ error: expect.any(Error) })
+        expect.objectContaining({ error: expect.any(Error) }),
       );
     });
 
@@ -2025,7 +2021,7 @@ Description,1`;
       // Should show warning about labels not fully assigned
       expect(result.content[0].text).toContain('Warnings:');
       expect(result.content[0].text).toContain(
-        'Labels specified but not assigned (API token limitation)'
+        'Labels specified but not assigned (API token limitation)',
       );
     });
 
@@ -2178,7 +2174,7 @@ Description,1`;
         expect.objectContaining({
           error: expect.stringContaining('GET /labels'),
           stack: expect.any(String),
-        })
+        }),
       );
     });
 
@@ -2209,7 +2205,7 @@ Description,1`;
         expect.objectContaining({
           taskId: 3801,
           error: expect.stringContaining('Verification error'),
-        })
+        }),
       );
     });
 
@@ -2247,7 +2243,9 @@ Description,1`;
         title: 'Task with labels',
       });
 
-      labelWrite.mockRejectedValue(new Error('missing, malformed, expired or otherwise invalid token provided'));
+      labelWrite.mockRejectedValue(
+        new Error('missing, malformed, expired or otherwise invalid token provided'),
+      );
 
       const result = await toolHandler({
         projectId: 1,

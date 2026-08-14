@@ -22,7 +22,8 @@ describe('AuthManager', () => {
     });
 
     it('should detect JWT token with eyJ prefix and 3 parts', () => {
-      const validJWT = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+      const validJWT =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
       expect(AuthManager.detectAuthType(validJWT)).toBe('jwt');
     });
 
@@ -63,7 +64,8 @@ describe('AuthManager', () => {
 
     it('should store session with JWT auth type', () => {
       const apiUrl = 'https://vikunja.example.com/api/v1';
-      const apiToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+      const apiToken =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
 
       authManager.connect(apiUrl, apiToken, 'jwt');
 
@@ -87,7 +89,8 @@ describe('AuthManager', () => {
 
     it('should auto-detect JWT token when no authType provided', () => {
       const apiUrl = 'https://vikunja.example.com/api/v1';
-      const apiToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+      const apiToken =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
 
       authManager.connect(apiUrl, apiToken);
 
@@ -196,6 +199,76 @@ describe('AuthManager', () => {
       expect(status.apiUrl).toBe(apiUrl);
       expect(status.authType).toBe('jwt');
     });
+
+    it('should omit serverVersion/hasV2Api when no capabilities have been cached', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+
+      const status = authManager.getStatus();
+      expect(status.serverVersion).toBeUndefined();
+      expect(status.hasV2Api).toBeUndefined();
+    });
+
+    it('should surface serverVersion and hasV2Api once capabilities are cached', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+      authManager.setCapabilities({
+        serverVersion: '2.4.0',
+        features: { version: '2.4.0' },
+        hasV2Api: true,
+      });
+
+      const status = authManager.getStatus();
+      expect(status.serverVersion).toBe('2.4.0');
+      expect(status.hasV2Api).toBe(true);
+    });
+
+    it('should surface hasV2Api:false without a serverVersion field when version is unknown', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+      authManager.setCapabilities({ features: {}, hasV2Api: false });
+
+      const status = authManager.getStatus();
+      expect(status.serverVersion).toBeUndefined();
+      expect(status.hasV2Api).toBe(false);
+    });
+  });
+
+  describe('getCapabilities / setCapabilities', () => {
+    it('should return undefined when there is no active session', () => {
+      expect(authManager.getCapabilities()).toBeUndefined();
+    });
+
+    it('should return undefined for a session with no cached capabilities', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+      expect(authManager.getCapabilities()).toBeUndefined();
+    });
+
+    it('should cache and return capabilities for the active session', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+      const capabilities = {
+        serverVersion: '2.4.0',
+        features: { version: '2.4.0', concurrent_writes: true },
+        hasV2Api: false,
+      };
+      authManager.setCapabilities(capabilities);
+      expect(authManager.getCapabilities()).toEqual(capabilities);
+    });
+
+    it('should throw AUTH_REQUIRED when setting capabilities without a session', () => {
+      expect(() => authManager.setCapabilities({ features: {}, hasV2Api: false })).toThrow(
+        MCPError,
+      );
+      expect(() => authManager.setCapabilities({ features: {}, hasV2Api: false })).toThrow(
+        'Authentication required. Please use vikunja_auth.connect first.',
+      );
+    });
+
+    it('should clear cached capabilities on disconnect', () => {
+      authManager.connect('https://vikunja.example.com/api/v1', 'test-token');
+      authManager.setCapabilities({ features: {}, hasV2Api: true });
+      expect(authManager.getCapabilities()).toBeDefined();
+
+      authManager.disconnect();
+      expect(authManager.getCapabilities()).toBeUndefined();
+    });
   });
 
   describe('getAuthType', () => {
@@ -261,14 +334,14 @@ describe('AuthManager', () => {
       it('should set userId in authenticated session', () => {
         testableAuthManager.setTestUserId('user-123');
         expect(testableAuthManager.getTestUserId()).toBe('user-123');
-        
+
         const status = testableAuthManager.getStatus();
         expect(status.userId).toBe('user-123');
       });
 
       it('should throw AUTH_REQUIRED error when not authenticated', () => {
         const unauthenticatedManager = createTestableAuthManager();
-        
+
         expect(() => unauthenticatedManager.setTestUserId('user-123')).toThrow(MCPError);
         expect(() => unauthenticatedManager.setTestUserId('user-123')).toThrow(
           'Authentication required. Please use vikunja_auth.connect first.',
@@ -285,7 +358,7 @@ describe('AuthManager', () => {
       it('should update existing userId', () => {
         testableAuthManager.setTestUserId('user-123');
         expect(testableAuthManager.getTestUserId()).toBe('user-123');
-        
+
         testableAuthManager.setTestUserId('user-456');
         expect(testableAuthManager.getTestUserId()).toBe('user-456');
       });
@@ -301,7 +374,7 @@ describe('AuthManager', () => {
       it('should throw AUTH_REQUIRED error when not authenticated', () => {
         const unauthenticatedManager = createTestableAuthManager();
         const expiry = new Date('2024-12-31T23:59:59Z');
-        
+
         expect(() => unauthenticatedManager.setTestTokenExpiry(expiry)).toThrow(MCPError);
         expect(() => unauthenticatedManager.setTestTokenExpiry(expiry)).toThrow(
           'Authentication required. Please use vikunja_auth.connect first.',
@@ -318,10 +391,10 @@ describe('AuthManager', () => {
       it('should update existing token expiry', () => {
         const expiry1 = new Date('2024-12-31T23:59:59Z');
         const expiry2 = new Date('2025-06-30T12:00:00Z');
-        
+
         testableAuthManager.setTestTokenExpiry(expiry1);
         expect(testableAuthManager.getTestTokenExpiry()).toEqual(expiry1);
-        
+
         testableAuthManager.setTestTokenExpiry(expiry2);
         expect(testableAuthManager.getTestTokenExpiry()).toEqual(expiry2);
       });
@@ -339,7 +412,7 @@ describe('AuthManager', () => {
 
       it('should throw AUTH_REQUIRED error when not authenticated', () => {
         const unauthenticatedManager = createTestableAuthManager();
-        
+
         expect(() => unauthenticatedManager.getTestUserId()).toThrow(MCPError);
         expect(() => unauthenticatedManager.getTestUserId()).toThrow(
           'Authentication required. Please use vikunja_auth.connect first.',
@@ -367,7 +440,7 @@ describe('AuthManager', () => {
 
       it('should throw AUTH_REQUIRED error when not authenticated', () => {
         const unauthenticatedManager = createTestableAuthManager();
-        
+
         expect(() => unauthenticatedManager.getTestTokenExpiry()).toThrow(MCPError);
         expect(() => unauthenticatedManager.getTestTokenExpiry()).toThrow(
           'Authentication required. Please use vikunja_auth.connect first.',
@@ -408,7 +481,7 @@ describe('AuthManager', () => {
         testableAuthManager.setTestUserId('user-123');
         const expiry = new Date('2024-12-31T23:59:59Z');
         testableAuthManager.setTestTokenExpiry(expiry);
-        
+
         // Update with undefined values (should not change existing values)
         testableAuthManager.updateSessionProperty({});
         expect(testableAuthManager.getTestUserId()).toBe('user-123');
@@ -417,8 +490,10 @@ describe('AuthManager', () => {
 
       it('should throw AUTH_REQUIRED error when not authenticated', () => {
         const unauthenticatedManager = createTestableAuthManager();
-        
-        expect(() => unauthenticatedManager.updateSessionProperty({ userId: 'user-123' })).toThrow(MCPError);
+
+        expect(() => unauthenticatedManager.updateSessionProperty({ userId: 'user-123' })).toThrow(
+          MCPError,
+        );
         expect(() => unauthenticatedManager.updateSessionProperty({ userId: 'user-123' })).toThrow(
           'Authentication required. Please use vikunja_auth.connect first.',
         );
@@ -435,7 +510,7 @@ describe('AuthManager', () => {
         // The updateSessionProperty method is typed to only accept userId and tokenExpiry
         // But for testing security, we can try to bypass TypeScript with an invalid object
         const invalidUpdates = { apiUrl: 'new-url', apiToken: 'new-token' } as any;
-        
+
         expect(() => testableAuthManager.updateSessionProperty(invalidUpdates)).toThrow(MCPError);
         expect(() => testableAuthManager.updateSessionProperty(invalidUpdates)).toThrow(
           'Invalid session properties: apiUrl, apiToken. Only userId and tokenExpiry are allowed.',

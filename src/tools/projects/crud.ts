@@ -24,7 +24,12 @@ import type { AuthManager } from '../../auth/AuthManager';
 import { MCPError, ErrorCode, type CreateProjectRequest } from '../../types';
 import { transformApiError } from '../../utils/error-handler';
 import { vikunjaRestRequest } from '../../utils/vikunja-rest';
-import { validateId, validateHexColor, validateProjectData, calculateProjectDepth } from './validation';
+import {
+  validateId,
+  validateHexColor,
+  validateProjectData,
+  calculateProjectDepth,
+} from './validation';
 import { createProjectResponse, createProjectListResponse } from './response-formatter';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
 import type { components } from '../../types/generated/vikunja-openapi';
@@ -126,7 +131,7 @@ export function buildProjectUpdatePayload(
     parentProjectId?: number;
     isArchived?: boolean;
     hexColor?: string;
-  }
+  },
 ): VikunjaProject {
   return {
     ...currentProject,
@@ -205,7 +210,15 @@ export async function listProjects(
   args: ListProjectsArgs,
   authManager: AuthManager,
 ): Promise<McpResponse> {
-  const { page = 1, perPage = 50, search, isArchived, verbosity, useOptimizedFormat, useAorp } = args;
+  const {
+    page = 1,
+    perPage = 50,
+    search,
+    isArchived,
+    verbosity,
+    useOptimizedFormat,
+    useAorp,
+  } = args;
 
   try {
     const params = new URLSearchParams();
@@ -245,20 +258,15 @@ export async function listProjects(
       options.useAorp = useAorp;
     }
 
-    const result = createProjectListResponse(
-      responseArray,
-      page,
-      perPage,
-      options
-    );
+    const result = createProjectListResponse(responseArray, page, perPage, options);
 
     return {
       content: [
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError) {
@@ -289,7 +297,7 @@ export async function getProject(
       {},
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -297,8 +305,8 @@ export async function getProject(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
@@ -323,7 +331,7 @@ export async function createProject(
     hexColor,
     verbosity,
     useOptimizedFormat,
-    useAorp
+    useAorp,
   } = args;
 
   try {
@@ -358,11 +366,9 @@ export async function createProject(
       // Check depth constraints
       if (allProjects.length > 0) {
         const depth = calculateProjectDepth(parentProjectId, allProjects);
-        if (depth >= 10) { // MAX_PROJECT_DEPTH
-          throw new MCPError(
-            ErrorCode.VALIDATION_ERROR,
-            'Maximum allowed depth is 10 levels'
-          );
+        if (depth >= 10) {
+          // MAX_PROJECT_DEPTH
+          throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Maximum allowed depth is 10 levels');
         }
       }
     }
@@ -408,7 +414,7 @@ export async function createProject(
       {},
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -416,8 +422,8 @@ export async function createProject(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError) {
@@ -443,20 +449,19 @@ export async function updateProject(
     hexColor,
     verbosity,
     useOptimizedFormat,
-    useAorp
+    useAorp,
   } = args;
 
   try {
     validateId(id, 'project id');
 
     // Check if at least one field to update is provided
-    const hasUpdateFields = (
+    const hasUpdateFields =
       title !== undefined ||
       description !== undefined ||
       parentProjectId !== undefined ||
       isArchived !== undefined ||
-      hexColor !== undefined
-    );
+      hexColor !== undefined;
 
     if (!hasUpdateFields) {
       throw new MCPError(ErrorCode.VALIDATION_ERROR, 'No fields to update provided');
@@ -468,7 +473,11 @@ export async function updateProject(
     }
 
     // Get current project
-    const currentProject = await vikunjaRestRequest<VikunjaProject>(authManager, 'GET', `/projects/${id}`);
+    const currentProject = await vikunjaRestRequest<VikunjaProject>(
+      authManager,
+      'GET',
+      `/projects/${id}`,
+    );
 
     // Get all projects for hierarchy validation
     let allProjects: VikunjaProject[] = [];
@@ -481,7 +490,8 @@ export async function updateProject(
     }
 
     // Validate update data, filter out undefined values for exactOptionalPropertyTypes
-    const validationUpdateData: { title?: string; hexColor?: string; parentProjectId?: number } = {};
+    const validationUpdateData: { title?: string; hexColor?: string; parentProjectId?: number } =
+      {};
 
     if (title !== undefined) {
       validationUpdateData.title = title;
@@ -491,7 +501,11 @@ export async function updateProject(
       validationUpdateData.hexColor = hexColor;
     }
 
-    const resolvedParentProjectId = parentProjectId ?? (currentProject && typeof currentProject.parent_project_id === 'number' ? currentProject.parent_project_id : undefined);
+    const resolvedParentProjectId =
+      parentProjectId ??
+      (currentProject && typeof currentProject.parent_project_id === 'number'
+        ? currentProject.parent_project_id
+        : undefined);
     if (resolvedParentProjectId !== undefined) {
       validationUpdateData.parentProjectId = resolvedParentProjectId;
     }
@@ -501,11 +515,9 @@ export async function updateProject(
     // Check depth constraints if parentProjectId is being updated
     if (parentProjectId !== undefined && allProjects.length > 0) {
       const depth = calculateProjectDepth(parentProjectId, allProjects);
-      if (depth >= 10) { // MAX_PROJECT_DEPTH
-        throw new MCPError(
-          ErrorCode.VALIDATION_ERROR,
-          'Maximum allowed depth is 10 levels'
-        );
+      if (depth >= 10) {
+        // MAX_PROJECT_DEPTH
+        throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Maximum allowed depth is 10 levels');
       }
     }
 
@@ -542,7 +554,7 @@ export async function updateProject(
       {},
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -550,8 +562,8 @@ export async function updateProject(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
@@ -585,7 +597,7 @@ export async function deleteProject(
       {},
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -593,8 +605,8 @@ export async function deleteProject(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
@@ -617,7 +629,11 @@ export async function archiveProject(
     validateId(id, 'project id');
 
     // Get current project first
-    const currentProject = await vikunjaRestRequest<VikunjaProject>(authManager, 'GET', `/projects/${id}`);
+    const currentProject = await vikunjaRestRequest<VikunjaProject>(
+      authManager,
+      'GET',
+      `/projects/${id}`,
+    );
 
     // Check if project is already archived
     if (currentProject.is_archived) {
@@ -628,7 +644,7 @@ export async function archiveProject(
         {},
         verbosity,
         useOptimizedFormat,
-        useAorp
+        useAorp,
       );
 
       return {
@@ -636,8 +652,8 @@ export async function archiveProject(
           {
             type: 'text' as const,
             text: formatAorpAsMarkdown(result.response),
-          }
-        ]
+          },
+        ],
       };
     }
 
@@ -656,7 +672,7 @@ export async function archiveProject(
       {},
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -664,8 +680,8 @@ export async function archiveProject(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
@@ -688,7 +704,11 @@ export async function unarchiveProject(
     validateId(id, 'project id');
 
     // Get current project first
-    const currentProject = await vikunjaRestRequest<VikunjaProject>(authManager, 'GET', `/projects/${id}`);
+    const currentProject = await vikunjaRestRequest<VikunjaProject>(
+      authManager,
+      'GET',
+      `/projects/${id}`,
+    );
 
     // Check if project is already active (not archived)
     if (!currentProject.is_archived) {
@@ -699,7 +719,7 @@ export async function unarchiveProject(
         {},
         verbosity,
         useOptimizedFormat,
-        useAorp
+        useAorp,
       );
 
       return {
@@ -707,8 +727,8 @@ export async function unarchiveProject(
           {
             type: 'text' as const,
             text: formatAorpAsMarkdown(result.response),
-          }
-        ]
+          },
+        ],
       };
     }
 
@@ -727,7 +747,7 @@ export async function unarchiveProject(
       {},
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -735,8 +755,8 @@ export async function unarchiveProject(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {

@@ -3,24 +3,27 @@
 This document describes the disposable local Vikunja stack in `docker/e2e/`,
 used to run `scripts/test-mcp.ts` (`npm run test:mcp`) against a real Vikunja
 server instead of mocks. The stack supports two DB backends — Postgres
-(default) and SQLite (`VIKUNJA_DB=sqlite`, item F2 / tracking issue #28) —
+(default) and SQLite (the `-sqlite` targets, item F2 / tracking issue #28) —
 see "DB backend variant" below.
 
-> **Production safety.** This stack — and `npm run test:mcp` in general — is
-> for a throwaway local Vikunja instance only. Never point `VIKUNJA_URL` /
-> `VIKUNJA_API_TOKEN` at a production Vikunja instance, and never run this
-> (or any automated test run) against one. `test:mcp` creates and deletes
-> projects, tasks, and labels, and the bootstrap script creates a
-> known-password test user — none of that is safe against real data.
+**Production safety.** This stack — and `npm run test:mcp` in general — is
+for a throwaway local Vikunja instance only. Never point `VIKUNJA_URL` /
+`VIKUNJA_API_TOKEN` at a production Vikunja instance, and never run this
+(or any automated test run) against one. `test:mcp` creates and deletes
+projects, tasks, and labels, and the bootstrap script creates a
+known-password test user — none of that is safe against real data.
 
 ## What's in `docker/e2e/`
 
-- `docker-compose.yml` — a multi-service stack, namespaced under the compose
-  project name `vikunja-mcp-e2e` so it can't collide with anything else
-  running on the machine. Uses non-default host ports: **33456** for
-  Vikunja (`VIKUNJA_URL` points here, same for both DB backends) and 33457
-  for Postgres (optional, for ad-hoc `psql` debugging only, postgres backend
-  only). Two DB-backend variants are defined as Compose *profiles* —
+- `docker-compose.yml` — a multi-service stack, namespaced under a
+  per-target compose project name (`vikunja-e2e-<version>-<db>`,
+  interpolated from `E2E_PROJECT`, default `vikunja-e2e-2.4.0-postgres`) so
+  it can't collide with anything else running on the machine. Uses
+  non-default host ports, all *derived* from the version (see "Targets"
+  below): the default target publishes **8240** for Vikunja (`VIKUNJA_URL`
+  points here, same for both DB backends) and **18240** for Postgres
+  (optional, for ad-hoc `psql` debugging only, postgres backend only).
+  Two DB-backend variants are defined as Compose *profiles* —
   `postgres` (`db` + `files-init` + `vikunja`, the pre-existing default) and
   `sqlite` (`sqlite-db-init` + `files-init` + `vikunja-sqlite`, added by item
   F2) — see the comment block at the top of the file for the full profile
@@ -32,24 +35,36 @@ see "DB backend variant" below.
 - `bootstrap.sh` — waits for the stack to become healthy, creates a test
   user via the Vikunja container CLI, logs in to get a JWT, and uses that
   JWT to mint a long-lived `tk_*` API token (falling back to the JWT itself
-  if token creation fails). Writes `docker/e2e/.env` (gitignored) and
-  prints `export VIKUNJA_URL=...` / `export VIKUNJA_API_TOKEN=...` lines.
+  if token creation fails). Writes the target's own credentials file,
+  `docker/e2e/.env.<version>-<db>` (gitignored), and prints
+  `export VIKUNJA_URL=...` / `export VIKUNJA_API_TOKEN=...` lines.
   Safe to re-run against an already-bootstrapped stack (idempotent: it logs
-  in with the existing test user instead of re-creating it, and mints a
-  fresh token each time). Reads `VIKUNJA_DB` (default `postgres`) to select
-  which Compose profile/service to bring up and bootstrap against.
+  in with the existing test user instead of re-creating it, and reuses the
+  stored token if it still authenticates — see "Credentials are stable"
+  below). Reads `VIKUNJA_E2E_TARGET` (default `2.4.0-postgres`) to select
+  which version, Compose profile/service, and ports to bring up and
+  bootstrap against.
+- `stacks.sh` — the lifecycle helper behind `npm run e2e:up:all` /
+  `e2e:down` / `e2e:reset` / `e2e:status`. Resolves each `<version>-<db>`
+  target via `scripts/lib/e2e-target.ts`, then calls `bootstrap.sh` (`up`)
+  or `docker compose ... down` (with `-v` only on `reset`).
 
-## DB backend variant (`VIKUNJA_DB=postgres|sqlite`)
+## DB backend variant (postgres | sqlite)
 
-By default (`VIKUNJA_DB` unset, or `postgres`) this stack behaves exactly as
-it always has: Vikunja backed by a real Postgres service. Set
-`VIKUNJA_DB=sqlite` to instead run Vikunja against its own embedded SQLite
-database (a file in the `vikunja-mcp-e2e-sqlite-db` named volume, no
-separate DB service at all):
+By default the stack behaves exactly as it always has: Vikunja backed by a
+real Postgres service. Pick a `-sqlite` target instead to run Vikunja
+against its own embedded SQLite database (a file in the
+`vikunja-mcp-e2e-sqlite-db` named volume, no separate DB service at all):
 
 ```bash
-VIKUNJA_DB=sqlite npm run e2e:up
+VIKUNJA_E2E_TARGET=2.4.0-sqlite npm run e2e:up
 ```
+
+(`npm run e2e:up` selects everything — version, DB backend, ports, env file
+— from `VIKUNJA_E2E_TARGET` alone; a bare `VIKUNJA_DB=` / `VIKUNJA_VERSION=`
+is ignored there. `npm run test:matrix` still takes `VIKUNJA_VERSION` /
+`VIKUNJA_DB` and derives the target from them — see "Version-matrix
+testing" below.)
 
 This exists because SQLite and Postgres have different concurrency
 characteristics under concurrent writes — SQLite serializes writers with a
@@ -62,10 +77,12 @@ variant existed, because this stack only ever ran Postgres. Running the
 same harnesses against the `sqlite` variant surfaces that class of bug
 instead of silently passing.
 
-`npm run e2e:down` always tears down *both* profiles (`--profile postgres
---profile sqlite down -v`, see `package.json`) so `-v` reliably removes all
-three named volumes regardless of which variant was last up — there is no
-"leftover sqlite volume" case to worry about after a plain `e2e:down`.
+`npm run e2e:down` always stops *both* profiles (`--profile postgres
+--profile sqlite down`, see `docker/e2e/stacks.sh`) but deliberately keeps
+the volumes — see "Stopping vs resetting" below. `npm run e2e:reset` is the
+same command plus `-v`, so it reliably removes all three named volumes
+regardless of which variant was last up — there is no "leftover sqlite
+volume" case to worry about after a `reset`.
 
 `scripts/mcp-e2e.ts` includes one check explicitly written to catch this
 class of bug: a 12-task `bulk-create` stress check, labeled
@@ -73,28 +90,78 @@ class of bug: a 12-task `bulk-create` stress check, labeled
 Postgres and on a SQLite stack whose `bulk-create` write concurrency has
 been fixed (e.g. serialized); on an *unfixed* SQLite stack it is expected to
 intermittently under-create (partial success, e.g. 11/12) with
-`"database is locked"` visible in `docker compose logs vikunja-sqlite` even
+`"database is locked"` visible in `docker compose -f docker/e2e/docker-compose.yml
+-p vikunja-e2e-2.4.0-sqlite logs vikunja-sqlite` (each target is its own
+Compose project — see "Targets" below) even
 though the HTTP response body only ever says `"Internal Server Error"`. A
-`FAIL` on this one check against `VIKUNJA_DB=sqlite` is expected and
+`FAIL` on this one check against a `-sqlite` target is expected and
 documented, not a harness bug — see the PR that introduced this check for
 recorded before/after evidence.
 
-## Bringing the stack up
+## Targets: one persistent stack per Vikunja version
+
+Since issue #205 there is no single "the stack". Each **target** —
+`<version>-<db>` — is its own Compose project with its own volumes and its
+own ports, so several versions run **at the same time** and one agent's work
+cannot disturb another's:
+
+| Target | API port | Notes |
+|---|---|---|
+| `2.4.0-postgres` | **8240** | the default; aligned/tested version |
+| `2.3.0-postgres` | **8230** | the v1 floor (minimum supported) |
+| `2.4.0-sqlite` | 9240 | SQLite-only failure classes |
+| `2.3.0-sqlite` | 9230 | |
+
+Ports are **derived, never hand-assigned**: `8000 + (major×100 + minor×10 +
+patch)` for Postgres, `9000 + …` for SQLite, so Vikunja 2.4.1 lands on 8241
+with no edit anywhere. The formula and the target list live in
+`scripts/lib/e2e-target.ts`, which both the shell scripts and the TypeScript
+harnesses consult — never hardcode a port.
 
 ```bash
-npm run e2e:up
+npm run e2e:up                                   # default target (2.4.0-postgres, port 8240)
+VIKUNJA_E2E_TARGET=2.3.0-postgres npm run e2e:up # the floor, port 8230
+npm run e2e:up:all                               # every standard target at once
+npm run e2e:status                               # what's up, on which port, running which version
 ```
 
-This runs `docker/e2e/bootstrap.sh`, which itself brings the compose stack
-up (`docker compose -f docker/e2e/docker-compose.yml up -d --wait`) before
-bootstrapping it. On success it prints:
+Each target writes its own credentials file,
+`docker/e2e/.env.<version>-<db>` (gitignored — these hold live tokens).
 
-```
-export VIKUNJA_URL=http://localhost:33456/api/v1
-export VIKUNJA_API_TOKEN=tk_...
-```
+### Credentials are stable
 
-and writes the same two values to `docker/e2e/.env`.
+`bootstrap.sh` is idempotent about tokens: if the target's env file holds a
+token that still authenticates, it is **reused**. A token therefore survives
+`npm run e2e:down` and only ever changes when someone deliberately runs
+`npm run e2e:reset`.
+
+This matters because it used to be otherwise: `e2e:down` ran `down -v`,
+destroying the volumes, so the next `e2e:up` produced a fresh database, a
+fresh user, and a fresh token — silently invalidating the credential any
+other process was holding.
+
+### Two users, deliberately
+
+| User | Purpose |
+|---|---|
+| `e2e-test` | The shared identity every harness authenticates as, and the owner of the stored token. **Nothing may mutate its user-level state.** |
+| `e2e-mutable` | For tests that change identity-scoped state — API tokens, user settings, avatar provider. Breaking this user cannot break anyone else's run. |
+
+Both are provisioned by `bootstrap.sh`. The JWT lane in
+`scripts/mcp-e2e.ts` authenticates as `e2e-mutable` precisely because it
+changes the avatar provider.
+
+### Running several harnesses at once
+
+Concurrent runs against the **same** target are safe:
+
+- Each `test:e2e:mcp` run uses a unique fixture prefix
+  (`mcp-e2e-<runId>-`) and only ever sweeps its own. The root-prefix sweep,
+  which collects strays from crashed runs, is opt-in via `--sweep-all` —
+  running it while another run is live will delete that run's data.
+- The battle harness behaves the same way (`--sweep-all`).
+- `dist/` is rebuilt only when it is stale, under a lock, so two runs cannot
+  wipe the server binary out from under each other.
 
 ## Running `test:mcp` against it
 
@@ -105,11 +172,12 @@ eval "$(npm run e2e:up | grep '^export ')"
 npm run test:mcp
 ```
 
-or, once `docker/e2e/.env` exists (e.g. from a prior `npm run e2e:up`),
-source it:
+or, once the target's credentials file exists (e.g. from a prior
+`npm run e2e:up`), source it — one file per target, so pick the one matching
+the stack you want to hit:
 
 ```bash
-set -a && source docker/e2e/.env && set +a
+set -a && source docker/e2e/.env.2.4.0-postgres && set +a
 npm run test:mcp
 ```
 
@@ -125,7 +193,7 @@ MCP client config:
       "command": "node",
       "args": ["/path/to/vikunja-mcp/dist/index.js"],
       "env": {
-        "VIKUNJA_URL": "http://localhost:33456/api/v1",
+        "VIKUNJA_URL": "http://localhost:8240",
         "VIKUNJA_API_TOKEN": "tk_..."
       }
     }
@@ -133,7 +201,7 @@ MCP client config:
 }
 ```
 
-Then follow `docs/MCP-TEST-CHECKLIST.md` for the manual walkthrough.
+Then follow [docs/MCP-TEST-CHECKLIST.md](MCP-TEST-CHECKLIST.md) for the manual walkthrough.
 
 ## Inspecting the stack by hand (web UI)
 
@@ -141,8 +209,8 @@ The `vikunja/vikunja` image serves the built frontend and the API from the
 same process on the same port, so once `npm run e2e:up` reports the stack
 healthy you can just open it in a browser:
 
-- **Web UI:** http://localhost:33456/
-- **API base:** http://localhost:33456/api/v1
+- **Web UI:** http://localhost:8240/ (default target; 8230 for the 2.3.0 floor)
+- **API base:** http://localhost:8240/api/v1
 - **Login:** the bootstrap-created test user — username `e2e-test`, password
   as set in `TEST_PASSWORD` at the top of `docker/e2e/bootstrap.sh` (a fixed,
   throwaway, local-only credential; it's never randomized, so the value in
@@ -150,21 +218,28 @@ healthy you can just open it in a browser:
   trusting a copy of it in this doc going stale).
 
 This is a real login against the local instance, independent of the
-`tk_*` API token in `docker/e2e/.env` — useful for eyeballing whatever
+`tk_*` API token in `docker/e2e/.env.<version>-<db>` — useful for eyeballing whatever
 `test:mcp` (or a manual MCP client session) just created/changed in the
 `MCP-Test` project, or any other project, while the automated run's output
 is still on screen.
 
-## Tearing the stack down
+## Stopping vs resetting
 
 ```bash
-npm run e2e:down
+npm run e2e:down     # stop containers, KEEP volumes — tokens stay valid
+npm run e2e:reset    # destroy volumes — this ROTATES the target's API token
 ```
 
-This runs `docker compose -f docker/e2e/docker-compose.yml down -v`,
-removing the containers **and** the named volumes (`-v`) — the stack leaves
-nothing behind. Run it whenever you're done; there's no reason to leave a
-Vikunja instance listening on localhost between sessions.
+`down` deliberately does **not** pass `-v`. Destroying volumes recreates the
+database, the user, and therefore the API token, which is exactly how a
+concurrent worktree lost its credential mid-session. Rotation must be a
+deliberate `reset`, never a side effect of stopping a stack.
+
+Both accept explicit targets (`npm run e2e:down 2.3.0-postgres`); with no
+argument they apply to every standard target.
+
+Leaving the stacks up between sessions is now the expected state — that is
+what makes them a stable fixture rather than something every run rebuilds.
 
 ## How the bootstrap works, in detail
 
@@ -190,26 +265,46 @@ Vikunja instance listening on localhost between sessions.
 
 ## Version pinning and refresh
 
-The stack pins `vikunja/vikunja:2.3.0` — see the comment block at the top
-of `docker/e2e/docker-compose.yml` for the full reasoning. Short version:
-`2.3.0` is the latest stable tag on Docker Hub, and it's the closest
-reproducible baseline to the vendored OpenAPI spec at
-`docs/vikunja-openapi.json` (`info.version` = `v2.3.0-1019-g95b7e673`,
-i.e. an `unstable` build 1019 commits ahead of the `v2.3.0` tag — that
-spec was fetched from `try.vikunja.io`, which always runs `unstable`, via
-`npm run fetch:api-spec`). Expect the vendored spec to document some
-endpoints/fields slightly ahead of what `2.3.0` actually serves; that's a
-**known, expected gap**, not test drift, unless it manifests as an actual
-failure in a real run.
+**Policy: minimum supported Vikunja is 2.3.0 (the v1-floor); aligned/tested
+default is 2.4.0.** Some workarounds in `src/` (see e.g.
+`src/tools/projects/sharing.ts`'s by-id-share-GET workaround) exist
+specifically for upstream bugs still present at 2.3.0 but fixed by 2.4.0 —
+those stay until 2.3.0 support is actually dropped, not merely because the
+default pin moved past the fix. Both versions are worth running locally
+(see "Version-matrix testing" below): 2.4.0 as the everyday default, 2.3.0
+as the periodic v1-floor regression check.
+
+The stack pins `vikunja/vikunja:2.4.0` by default — see the comment block
+at the top of `docker/e2e/docker-compose.yml` for the full reasoning and
+history (aligned 2026-07-20, tracking issue #28 item A1, after a clean
+`test:matrix` pass on both DB backends with zero tolerated drifts). The
+vendored OpenAPI spec at `docs/vikunja-openapi.json` is fetched directly
+from this same pinned container's own `/api/v1/docs.json` (`npm run
+fetch:api-spec:container`, see `[docs/API-SPEC.md](API-SPEC.md)`) — its `info.version`
+matches the pin exactly (`v2.4.0`, confirmed byte-for-byte, no ahead-of-tag
+drift), unlike the previous approach of fetching from `try.vikunja.io`
+(`npm run fetch:api-spec`), which always runs `unstable` and is confirmed
+to run ahead of any tagged release (the prior 2.3.0-era vendored spec
+reported `v2.3.0-1019-g95b7e673`, i.e. 1019 commits past the tag). Use
+`npm run fetch:api-spec:container` as the default refresh path; reach for
+`npm run fetch:api-spec` only if you deliberately want to preview
+upstream's `unstable` build.
 
 To refresh the pin when a newer stable Vikunja release ships:
 
 1. Check available tags: `curl -s https://hub.docker.com/v2/repositories/vikunja/vikunja/tags?page_size=100`
    (or the [releases page](https://github.com/go-vikunja/vikunja/releases)).
-2. Bump the tag in `docker/e2e/docker-compose.yml` and its comment block.
-3. `npm run fetch:api-spec` to refresh `docs/vikunja-openapi.json` against
-   the (unstable) spec, if you also want to re-check spec/tool alignment.
-4. `npm run e2e:down && npm run e2e:up && npm run test:mcp` and re-triage
+2. Bump the tag in `docker/e2e/docker-compose.yml` and its comment block,
+   and the `DEFAULT_TARGET` / `standardTargets()` values in
+   `scripts/lib/e2e-target.ts` (the resolver every script and harness reads
+   the version, ports, and env-file name from).
+3. Bring the stack up on the new tag and refresh `docs/vikunja-openapi.json`
+   from it (`VIKUNJA_E2E_TARGET=X.Y.Z-postgres npm run e2e:up && npm run
+   fetch:api-spec:container && npm run generate:api-types`), if you also
+   want to re-check spec/tool alignment. Note `fetch:api-spec:container`
+   hits the **8240** default-target port (see `package.json`), so refresh
+   from the target that owns that port.
+4. `npm run e2e:reset && npm run e2e:up && npm run test:mcp` and re-triage
    any new failures using the same (a)/(b)/(c) categories as any other
    real-server run (script staleness / real server drift / environment
    issue — see the PR that introduced this stack for the categorization
@@ -225,7 +320,7 @@ calls anything under `src/tools/`. (It even has a leftover
 MCP tool response that is never called anywhere in the file.) A clean
 `test:mcp` run confirms the real Vikunja server behaves the way the
 scripted REST calls assume; it does **not** confirm that `src/tools/*.ts`
-sends those exact requests. Cross-check against `docs/API-COVERAGE.md`
+sends those exact requests. Cross-check against [docs/API-COVERAGE.md](API-COVERAGE.md)
 (which *is* audited against the actual tool source) for tool-level
 correctness, and treat a clean `test:mcp` run as necessary but not
 sufficient evidence that the MCP tools themselves are correct. The harness
@@ -252,12 +347,16 @@ npm run e2e:up   # if not already running
 npm run test:e2e:mcp
 ```
 
-It requires no environment variables — the stack's fixed local port
-(`http://localhost:33456`) is hard-coded, and credentials are obtained
-itself the same way `docker/e2e/bootstrap.sh` does (log in as `e2e-test`,
-mint a fresh `tk_*` API token via `PUT /tokens`, tolerating the 201 the real
-server returns where the spec documents 200). It doesn't need
-`docker/e2e/.env` to exist.
+It requires no environment variables — the target's local API URL comes
+from the resolver (`scripts/lib/e2e-target.ts`; default target
+`2.4.0-postgres`, i.e. `http://localhost:8240/api/v1`, selectable with
+`VIKUNJA_E2E_TARGET`), and credentials come from that target's
+`docker/e2e/.env.<version>-<db>` when it exists (the stable token — see
+"Credentials are stable" above). If it doesn't, the harness mints its own
+the same way `docker/e2e/bootstrap.sh` does (log in as `e2e-test`, mint a
+fresh `tk_*` API token via `PUT /tokens`, tolerating the 201 the real
+server returns where the spec documents 200), so a missing credentials file
+never blocks a run.
 
 ### Coverage
 
@@ -288,8 +387,9 @@ stack (fully cleaned up automatically by the harness's own teardown, but
 the near-miss is exactly why this exists). To make that class of mistake
 structurally impossible:
 
-- The target URL is hard-coded to the documented local e2e port and is
-  only overridable via the harness-specific `MCP_E2E_VIKUNJA_URL` — never
+- The target URL always comes from the local-only target resolver (or that
+  target's own credentials file) and is only overridable via the
+  harness-specific `MCP_E2E_VIKUNJA_URL`/`VIKUNJA_E2E_TARGET` — never
   the ambient `VIKUNJA_URL` — and is then required to resolve to
   `localhost`/`127.0.0.1`/`::1` or the process aborts immediately, before
   building or spawning anything.
@@ -326,19 +426,23 @@ Every mismatch the harness finds is reported as one of:
   — reproduced with a raw, tool-independent request to confirm it isn't
   this codebase's fault before filing it here).
 
-A **known, currently-tolerated** instance of the last category:
-`GET /tasks/{id}/assignees` returns HTTP 500 unconditionally on Vikunja
-2.3.0 (fixed upstream on `go-vikunja/vikunja`'s `main` via PR #2791, not in
-a tagged release yet as of this writing). The harness still *runs* this
-check on every version — it is never globally skipped — but when it hits
-exactly this signature, it's reported as `⚠ list task assignees
-(server-drift, tolerated: ...)` instead of `✗ ...`: recorded as a
-`server-drift` finding and excluded from the pass/fail counts and exit
-code, rather than as a hard failure. See `driftTolerated()` in
-`scripts/mcp-e2e.ts` for the implementation. **Remove this tolerance** once
-a Vikunja release ships that fix and re-test — if it still 500s on a
-newer tagged release, that's a new, real regression, not the same known
-gap.
+A **known, version-gated tolerance** of the last category: `GET
+/tasks/{id}/assignees` returns HTTP 500 unconditionally on Vikunja versions
+below 2.4.0 (fixed upstream on `go-vikunja/vikunja`'s `main` via PR #2791,
+confirmed shipped in the 2.4.0 tagged release during the 2.4.0-alignment
+work, tracking issue #28 item A1). The harness detects the server version
+via `GET /info` at startup and only tolerates this exact signature when the
+detected version is `< 2.4.0`; on 2.4.0+ it's a hard failure like any other
+regression. It still *runs* this check on every version — never globally
+skipped — reported as `⚠ list task assignees (server-drift, tolerated:
+...)` instead of `✗ ...` only below 2.4.0: recorded as a `server-drift`
+finding and excluded from the pass/fail counts and exit code there, but a
+genuine `✓ list task assignees` pass on 2.4.0+ (confirmed in
+`e2e-verdicts/vikunja-2.4.0-{postgres,sqlite}.md`). See
+`detectServerVersion()`/`versionLessThan()`/`driftTolerated()` in
+`scripts/mcp-e2e.ts` for the implementation. If this ever 500s on a 2.4.0+
+server, that's a new, real regression, not the same known gap — the
+tolerance won't mask it.
 
 ## Version-matrix testing (`npm run test:matrix`)
 
@@ -352,27 +456,24 @@ stack-recreation and harness-invocation steps. The matrix is version × db
 variant" above).
 
 ```bash
-npm run test:matrix                                          # 2.3.0 / postgres (defaults)
-VIKUNJA_VERSION=2.4.0 npm run test:matrix                     # a different tag, still postgres
+npm run test:matrix                                          # 2.4.0 / postgres (defaults, aligned/tested)
+VIKUNJA_VERSION=2.3.0 npm run test:matrix                     # the v1-floor regression check
 VIKUNJA_DB=sqlite npm run test:matrix                         # default version, sqlite backend
-VIKUNJA_VERSION=2.4.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
+VIKUNJA_VERSION=2.3.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
 ```
 
-For the chosen `VIKUNJA_VERSION` (default `2.3.0`, matching the compose
+For the chosen `VIKUNJA_VERSION` (default `2.4.0`, matching the compose
 file's own default — see "Version pinning and refresh" above) and
 `VIKUNJA_DB` (default `postgres` — see "DB backend variant" above), it:
 
-1. **Ensures the stack is up on that version and backend.** If the local
-   stack is already running and `GET /api/v1/info` reports the requested
-   version *and* `docker compose ps` shows the requested backend's service
-   (`vikunja` for postgres, `vikunja-sqlite` for sqlite) is up, it's reused
-   as-is (still re-running `npm run e2e:up` to mint a fresh token into
-   `docker/e2e/.env`, cheap and idempotent). If it's running a *different*
-   version or backend, it's fully recreated (`npm run e2e:down` — which
-   drops all three named volumes regardless of which variant was up, so
-   there's no stale-schema/stale-backend risk — then `VIKUNJA_VERSION=
-   <version> VIKUNJA_DB=<db> npm run e2e:up`). If it's not running at all,
-   it's brought up fresh on the requested version/backend.
+1. **Ensures that target's stack is up.** Since issue #205 it **never tears
+   anything down**: `<version>-<db>` names a target with its own Compose
+   project, ports, and volumes (see "Targets" above), so a matrix run can
+   no longer re-pin a shared stack out from under a concurrent worktree. It
+   just runs `VIKUNJA_E2E_TARGET=<version>-<db> npm run e2e:up`, which is
+   idempotent and reuses the target's stable token if it's already up (see
+   `ensureStack()` in `scripts/test-matrix.ts`). If the target isn't
+   running at all, that same call brings it up fresh.
 2. **Runs both harnesses against it**: `npm run test:mcp` (the ~23-check
    direct-REST suite) and `npm run test:e2e:mcp` (the ~50+-check MCP-tool
    -layer suite, including the `bulk-create` stress check labeled
@@ -390,12 +491,17 @@ file's own default — see "Version pinning and refresh" above) and
    own `✓`/`✗`/`⊘`/`⚠` stdout lines — see "Findings categorization" above
    for what those mean), and a closing verdict paragraph. The overall
    verdict is `PASS` only if *both* harnesses exit 0 with zero non-tolerated
-   (`✗`) failures; `⚠ server-drift` entries don't block a `PASS`. Note that
-   until the `bulk-create` write-concurrency fix for #116 lands, a
-   `sqlite`-backend run is *expected* to `FAIL` on that one check — see "DB
-   backend variant" above — so a `FAIL` verdict on `vikunja-2.3.0-sqlite.md`
-   alone is not, by itself, a regression signal the way a `postgres` `FAIL`
-   would be; check *which* check failed.
+   (`✗`) failures; `⚠ server-drift` entries don't block a `PASS`. Historical
+   note: prior to the 2.4.0 alignment, a `sqlite`-backend run against 2.3.0
+   was *expected* to occasionally `FAIL` (or under-create, 11/12) on the
+   `bulk-create` stress check per #116's SQLite lock-storm-under-circuit-
+   breaker issue. As of the 2.4.0 alignment (tracking issue #28 item A1),
+   this check passed 12/12 across 5 repeated runs against `2.4.0`/sqlite —
+   see "Vikunja 2.4.0 and `concurrent_writes`" below. This project's
+   client-side write-serialization is retained regardless, as
+   defense-in-depth for the documented v1-floor (2.3.0, where the fix isn't
+   present) — see the comment on the `create` `BatchProcessor` in
+   `src/tools/tasks/bulk-operations-simplified.ts`.
 5. **Exits 0 on `PASS`, 1 on `FAIL`** — usable as a plain shell gate even
    without CI (GitHub Actions are disabled repo-wide by explicit owner
    decision; this is why this entire workflow is a local script rather
@@ -405,13 +511,17 @@ file's own default — see "Version pinning and refresh" above) and
 
 Exactly like `test:e2e:mcp` (see above), this script never reads the
 ambient `VIKUNJA_URL` / `VIKUNJA_API_TOKEN` env vars — every child process
-it spawns (`npm run e2e:down`, `npm run e2e:up`, `npm run test:mcp`,
+it spawns (`npm run e2e:up`, `npm run test:mcp`,
 `npm run test:e2e:mcp`) gets a copy of `process.env` with those (plus
 `VIKUNJA_API_TOKEN_FILE`) stripped first. `test:mcp` needs *some*
 credentials (unlike `test:e2e:mcp`, it doesn't mint its own), so this
 script reads them explicitly out of `docker/e2e/.env` after bootstrapping
 and hands them to that one child process only, asserting the URL resolves
-to `localhost`/`127.0.0.1`/`::1` first. This matters concretely in this
+to `localhost`/`127.0.0.1`/`::1` first. **Known gap:** that path is the
+pre-#205 one — `bootstrap.sh` now writes `docker/e2e/.env.<version>-<db>`,
+so `test:matrix` fails on a checkout with no leftover `docker/e2e/.env`
+until `scripts/test-matrix.ts` is pointed at the target's env file. This
+matters concretely in this
 repo: this directory has a real, production-pointed `.envrc` that a
 developer's shell may already have loaded via direnv — never read `.env`
 or `.envrc` directly, and never trust that ambient env vars are safe
@@ -426,6 +536,28 @@ the tree. Regenerate with `npm run test:matrix` rather than trusting a
 stale committed one; paste or attach the freshly-generated file's contents
 in a PR description when a run needs to be shown to a reviewer.
 
+### Vikunja 2.4.0 and `concurrent_writes`
+
+As part of the 2.4.0 alignment (tracking issue #28, item A1), `GET
+/api/v1/info` on a 2.4.0 server was observed to advertise a new field not
+present in the documented 2.3.0 response: `"concurrent_writes": true`. The
+`bulk-create` stress check (`npm run test:e2e:mcp`, labeled
+`sqlite-sensitive, see #116`) was re-run **5 times** against a fresh
+`VIKUNJA_VERSION=2.4.0 VIKUNJA_DB=sqlite` stack to rule out a lucky single
+run: **12/12 concurrent creates succeeded on all 5 runs**, zero
+under-creates, zero circuit-breaker trips. This is consistent with upstream
+having genuinely fixed (or now at least reliably supporting) the SQLite
+write-concurrency issue tracked in #116.
+
+**This does not change this project's own behavior.** The client-side
+serialization in `src/tools/tasks/bulk-operations-simplified.ts` (the
+`create` `BatchProcessor`'s `maxConcurrency: 1`) is retained regardless, as
+defense-in-depth — this project's documented minimum supported Vikunja
+version is still 2.3.0 (which does not advertise `concurrent_writes` and
+does exhibit the lock-storm), a deployer's server may not be running
+2.4.0+ at all, and serializing creates is cheap in the common case. See
+that file's comment for the exact revisit condition.
+
 ### When a new Vikunja release ships
 
 1. `curl -s https://hub.docker.com/v2/repositories/vikunja/vikunja/tags?page_size=100`
@@ -436,16 +568,24 @@ in a PR description when a run needs to be shown to a reviewer.
    to document and tolerate the same way the assignees case above is
    tolerated) before going further.
 3. If it passes (or once triaged failures are addressed), refresh the
-   vendored spec if you also want to re-check spec/tool alignment:
-   `npm run fetch:api-spec && npm run generate:api-types`.
+   vendored spec from the newly-pinned container if you also want to
+   re-check spec/tool alignment: `VIKUNJA_E2E_TARGET=X.Y.Z-postgres npm run
+   e2e:up && npm run fetch:api-spec:container && npm run generate:api-types`
+   (`fetch:api-spec:container` reads port 8240 — see step 3 of "Version
+   pinning and refresh" above; see
+   [docs/API-SPEC.md](API-SPEC.md) for why the container, not `try.vikunja.io`, is the
+   source of truth).
 4. Bump the *default* pin in `docker/e2e/docker-compose.yml` (the
-   `${VIKUNJA_VERSION:-2.3.0}` fallback) and re-run `npm run test:matrix`
-   with no override to confirm the new default is green.
+   `${VIKUNJA_VERSION:-2.4.0}` fallback, the `${E2E_PROJECT:-…}` /
+   `${E2E_PORT:-…}` fallbacks, and the matching comment block) — and
+   `DEFAULT_TARGET` / `standardTargets()` in `scripts/lib/e2e-target.ts` —
+   then re-run `npm run test:matrix` with no override to confirm the new
+   default is green.
 5. Cut a **minor** release aligned to the new Vikunja version, per
-   `docs/RELEASING.md` §7's Docker compatibility-tag scheme (`X.Y.Z`,
+   [docs/RELEASING.md](RELEASING.md) §3's Docker compatibility-tag scheme (`X.Y.Z`,
    `X.Y.Z-vikunja<A.B.C>`, `latest`) — changing the base Vikunja version
    this project targets is always at least a minor bump (see
-   `docs/RELEASING.md` §1).
+   [docs/RELEASING.md](RELEASING.md) §1).
 
 ## OIDC `oidc-http` transport e2e lane (`npm run test:e2e:oidc`)
 
@@ -515,15 +655,22 @@ on it, and it's not part of the published package (see `files` in
 
 Run it against the local stack:
 
+**Known gap:** unlike `test:e2e:mcp`, this script has not been migrated to
+the target resolver — it still defaults to the pre-#205 port `33456`
+(`scripts/capture-sample-screenshots.ts`), which no target publishes any
+more, so point it at the stack explicitly until that's fixed:
+
 ```bash
-npm run e2e:up   # if not already running
-npx playwright install chromium   # first run only, or after bumping the playwright version
+npm run e2e:up                    # if not already running
+npx playwright install chromium   # first run only, or after bumping playwright
+
+CAPTURE_SCREENSHOTS_VIKUNJA_URL=http://localhost:8240/api/v1 \
+CAPTURE_SCREENSHOTS_VIKUNJA_WEB_URL=http://localhost:8240 \
 npm run capture:samples
 ```
 
-It requires no environment variables — like `test:e2e:mcp`, it's hard-coded
-to the local stack's fixed port and refuses to run against anything that
-doesn't resolve to `localhost`/`127.0.0.1`/`::1`. It logs in as the
+Either way it refuses to run against anything that doesn't resolve to
+`localhost`/`127.0.0.1`/`::1`. It logs in as the
 bootstrap-created `e2e-test` user via the real login form, and creates a
 second CLI user (`sample-alice`, via the container's `vikunja user`
 subcommand — there's no `/admin/users` API on the pinned stack version) to
@@ -552,13 +699,17 @@ script can't produce faithfully:
   stay-informed.md's "subscribe bell icon in the project header" — this
   version only exposes subscribe state via the project's "..." menu) — the
   script captures the nearest honest equivalent and notes the substitution.
-- **The admin panel** (all three placeholders in admin-ops.md) — the pinned
-  stack (`vikunja/vikunja:2.3.0`) doesn't implement the `/admin/*` API or
-  its frontend at all (`GET /admin/overview` 404s; no `admin` group appears
-  in `GET /routes`). This is the same documented spec/pinned-version gap
-  described in "Version pinning and refresh" above — the vendored OpenAPI
-  spec is captured from an `unstable` build ~1000 commits ahead of the
-  pinned stable tag. Rather than fabricate a screenshot of a UI that isn't
+- **The admin panel** (all three placeholders in admin-ops.md) — still not
+  implemented as of the pinned `vikunja/vikunja:2.4.0` (re-verified during
+  the 2.4.0 alignment, tracking issue #28 item A1): `GET /admin/overview`
+  still 404s under a JWT (confirmed genuinely "not found", not an auth
+  rejection — an API-token-authenticated request 401s earlier instead,
+  since admin routes are JWT-only, but a JWT-authenticated request reaches
+  routing and gets a plain 404), and no `admin` group appears in `GET
+  /routes`. The vendored OpenAPI spec still documents `/admin/*` paths
+  (unchanged from the previous vendored spec — see "Version pinning and
+  refresh" above), so this remains a documented spec/served-API gap, not
+  test drift. Rather than fabricate a screenshot of a UI that isn't
   actually running, the script replaces those three placeholders with an
   explanatory note instead of an image. Re-run the script once the pin
   moves to a release that ships the admin panel.

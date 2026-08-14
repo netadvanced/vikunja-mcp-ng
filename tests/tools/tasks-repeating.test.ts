@@ -137,7 +137,9 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     // Register the tool
@@ -146,7 +148,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
     // Get the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_tasks',
-      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
+      'Manage tasks with comprehensive operations (create, update, delete, list, assign, attach/list/delete files, comment, bulk operations, set Kanban bucket, bulk set Kanban bucket, set position, lookup by per-project index, create/list subtasks, bulk create subtasks, duplicate, mark-read). download-attachment cannot deliver file bytes through MCP (no binary channel) — it returns the direct download URL and auth guidance instead. create-subtask is a composite (resolve parent -> create task -> relate -> verify) with opt-in atomic rollback via `atomic: true` (default best-effort — see docs/ENDPOINT-PLAYBOOK.md §5). create-subtask/bulk-create-subtasks identify the parent via `parentTaskId` — `id` is accepted as an alias for it on these two subcommands (supplying both and disagreeing is rejected). bulk-create-subtasks creates several subtasks under the same parent in one call (resolves the parent once, then creates/relates each sequentially, per-subtask atomic rollback, honest partial reporting of which subtasks were created/related/failed). bulk-set-bucket moves several tasks into the same Kanban bucket in one call (resolves the project/view once, then applies each move sequentially, honest partial reporting of failedIds). set-bucket/bulk-set-bucket use FOUR distinct ids: `id`/`taskIds` (the task(s) being moved, from vikunja_tasks list/get), `bucketId` (the destination Kanban bucket, from vikunja_projects list-buckets), `viewId` (the Kanban view, auto-resolved when omitted), and the optional `projectId` override — see each field description for exactly which id it expects. duplicate copies a task (labels, assignees, attachments, reminders) into the same project (PUT /tasks/{taskID}/duplicate, no body). mark-read removes the current unread status entry for a task (POST /tasks/{projecttask}/read).',
       expect.any(Object),
       expect.any(Object), // ToolAnnotations
       expect.any(Function),
@@ -194,7 +196,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-task');
       expect(markdown).toContain('**projectId:**');
       expect(markdown).toContain('Task created successfully');
@@ -231,7 +233,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-task');
       expect(markdown).toContain('Task created successfully');
     });
@@ -267,7 +269,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-task');
       expect(markdown).toContain('Task created successfully');
     });
@@ -303,7 +305,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-task');
       expect(markdown).toContain('Task created successfully');
     });
@@ -331,17 +333,19 @@ describe('Tasks Tool - Repeating Tasks', () => {
       // Route by request shape rather than call order: bulk-create runs the
       // per-task PUT+GET pairs with concurrency, so call order across tasks
       // isn't guaranteed.
-      mockRest.mockImplementation((_auth: unknown, method: string, path: string, body?: { title?: string }) => {
-        if (method === 'PUT') {
-          const match = createdTasks.find((t) => t.title === body?.title);
-          return Promise.resolve(match);
-        }
-        if (method === 'GET') {
-          const match = createdTasks.find((t) => path === `/tasks/${t.id}`);
-          return Promise.resolve(match);
-        }
-        return Promise.resolve(undefined);
-      });
+      mockRest.mockImplementation(
+        (_auth: unknown, method: string, path: string, body?: { title?: string }) => {
+          if (method === 'PUT') {
+            const match = createdTasks.find((t) => t.title === body?.title);
+            return Promise.resolve(match);
+          }
+          if (method === 'GET') {
+            const match = createdTasks.find((t) => path === `/tasks/${t.id}`);
+            return Promise.resolve(match);
+          }
+          return Promise.resolve(undefined);
+        },
+      );
 
       const result = await callTool('bulk-create', {
         projectId: 17,
@@ -361,7 +365,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('create-tasks');
       expect(markdown).toContain('Successfully created 2 tasks');
       expect(markdown).toContain('**count:**');
@@ -406,7 +410,7 @@ describe('Tasks Tool - Repeating Tasks', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('update-task');
       expect(markdown).toContain('Task updated successfully');
       expect(markdown).toContain('**affectedFields:**');

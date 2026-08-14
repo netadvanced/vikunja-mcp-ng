@@ -12,7 +12,12 @@ import { withRetry, RETRY_CONFIG } from '../../../utils/retry';
 import { transformApiError, handleFetchError } from '../../../utils/error-handler';
 import { sanitizeString } from '../../../utils/validation';
 import { AUTH_ERROR_MESSAGES } from '../constants';
-import { validateDateString, validateId, convertRepeatConfiguration } from '../validation';
+import {
+  validateDateString,
+  validateId,
+  convertRepeatConfiguration,
+  normalizeDateForApi,
+} from '../validation';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
 import type { components } from '../../../types/generated/vikunja-openapi';
@@ -66,7 +71,8 @@ export async function createTask(
     // Sanitize and validate user inputs for comprehensive security
     const sanitizedTitle = sanitizeString(args.title);
     // Preserve empty strings as they are valid descriptions
-    const sanitizedDescription = args.description !== undefined ? sanitizeString(args.description) : undefined;
+    const sanitizedDescription =
+      args.description !== undefined ? sanitizeString(args.description) : undefined;
 
     // Validate optional date fields
     if (args.dueDate) {
@@ -97,9 +103,17 @@ export async function createTask(
 
     // Add optional fields with sanitized values
     if (sanitizedDescription !== undefined) newTask.description = sanitizedDescription;
-    if (args.dueDate !== undefined) newTask.due_date = args.dueDate;
-    if (args.startDate !== undefined) newTask.start_date = args.startDate;
-    if (args.endDate !== undefined) newTask.end_date = args.endDate;
+    // Coerce date-only values (e.g. '2026-07-24') to RFC3339 before sending —
+    // Vikunja rejects bare dates with HTTP 400 code 2004 "Invalid model
+    // provided" (#167), the same error that trips the circuit-breaker
+    // cascade (#163). Full timestamps and empty/undefined values pass
+    // through unchanged.
+    if (args.dueDate !== undefined)
+      newTask.due_date = normalizeDateForApi(args.dueDate) ?? args.dueDate;
+    if (args.startDate !== undefined)
+      newTask.start_date = normalizeDateForApi(args.startDate) ?? args.startDate;
+    if (args.endDate !== undefined)
+      newTask.end_date = normalizeDateForApi(args.endDate) ?? args.endDate;
     if (args.priority !== undefined) newTask.priority = args.priority;
 
     // Handle repeat configuration. The generated `models.Task.repeat_mode`
@@ -138,7 +152,7 @@ export async function createTask(
     const creationState: CreationState = {
       createdTask,
       labelsAdded: false,
-      assigneesAdded: false
+      assigneesAdded: false,
     };
 
     if (needsPostCreate) {
@@ -154,7 +168,6 @@ export async function createTask(
           await addAssigneesToTask(authManager, createdTask.id, args.assignees);
           creationState.assigneesAdded = true;
         }
-
       } catch (updateError) {
         // Attempt to clean up the partially created task
         await rollbackTaskCreation(authManager, creationState, updateError);
@@ -206,7 +219,7 @@ export async function createTask(
       assigneeWarning
         ? `Task created, but assignees may not have been saved. ${assigneeWarning}`
         : 'Task created successfully',
-      { task: completeTask } as unknown as Parameters<typeof createTaskResponse>[2],
+      { task: completeTask },
       {
         timestamp: new Date().toISOString(),
         projectId: args.projectId,
@@ -221,7 +234,7 @@ export async function createTask(
       undefined, // useOptimizedFormat (ignored - using standard AORP)
       undefined, // useAorp (ignored - always using AORP)
       undefined, // aorpConfig (using auto-generated)
-      args.sessionId
+      args.sessionId,
     );
 
     logger.debug('Tasks tool response', {
@@ -244,11 +257,12 @@ export async function createTask(
     }
 
     // Handle fetch/connection errors with helpful guidance
-    if (error instanceof Error && (
-      error.message.includes('fetch failed') ||
-      error.message.includes('ECONNREFUSED') ||
-      error.message.includes('ENOTFOUND')
-    )) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('fetch failed') ||
+        error.message.includes('ECONNREFUSED') ||
+        error.message.includes('ENOTFOUND'))
+    ) {
       throw handleFetchError(error, 'create task');
     }
 
@@ -267,7 +281,11 @@ export async function createTask(
  * circuit breaker across calls, so a later create would re-fire the first
  * call's label set against the wrong task.
  */
-async function addLabelsToTask(authManager: AuthManager, taskId: number, labelIds: number[]): Promise<void> {
+async function addLabelsToTask(
+  authManager: AuthManager,
+  taskId: number,
+  labelIds: number[],
+): Promise<void> {
   try {
     for (const labelId of labelIds) {
       await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/labels`, {
@@ -290,7 +308,11 @@ async function addLabelsToTask(authManager: AuthManager, taskId: number, labelId
  * Adds assignees to a task with retry logic for authentication errors, via the
  * direct-REST additive single-assign endpoint.
  */
-async function addAssigneesToTask(authManager: AuthManager, taskId: number, assigneeIds: number[]): Promise<void> {
+async function addAssigneesToTask(
+  authManager: AuthManager,
+  taskId: number,
+  assigneeIds: number[],
+): Promise<void> {
   try {
     // Assign each user via the ADDITIVE single-assign endpoint (PUT
     // /tasks/{taskID}/assignees, body { user_id }, models.TaskAssginee) rather
@@ -303,11 +325,12 @@ async function addAssigneesToTask(authManager: AuthManager, taskId: number, assi
     // assignee-restore fix.
     for (const userId of assigneeIds) {
       await withRetry(
-        () => vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }),
+        () =>
+          vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }),
         {
           ...RETRY_CONFIG.AUTH_ERRORS,
-          shouldRetry: (error) => isAuthenticationError(error)
-        }
+          shouldRetry: (error) => isAuthenticationError(error),
+        },
       );
     }
   } catch (assigneeError) {
@@ -328,7 +351,7 @@ async function addAssigneesToTask(authManager: AuthManager, taskId: number, assi
 async function rollbackTaskCreation(
   authManager: AuthManager,
   creationState: CreationState,
-  originalError: unknown
+  originalError: unknown,
 ): Promise<never> {
   // Attempt to clean up the partially created task
   let rollbackSucceeded = false;

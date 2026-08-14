@@ -11,7 +11,9 @@ describe('runSetup', () => {
 
     expect(result.errors).toEqual([]);
     expect(result.createdLabelIds).toHaveLength(1);
-    expect(client.createdLabels).toEqual([{ id: result.createdLabelIds[0], title: 'battle-run1-existing-tag' }]);
+    expect(client.createdLabels).toEqual([
+      { id: result.createdLabelIds[0], title: 'battle-run1-existing-tag' },
+    ]);
   });
 
   it('runs multiple setup actions in order and collects all created label ids', async () => {
@@ -24,7 +26,10 @@ describe('runSetup', () => {
     const result = await runSetup(client, actions);
 
     expect(result.createdLabelIds).toHaveLength(2);
-    expect(client.createdLabels.map((l) => l.title)).toEqual(['battle-run1-tag-a', 'battle-run1-tag-b']);
+    expect(client.createdLabels.map((l) => l.title)).toEqual([
+      'battle-run1-tag-a',
+      'battle-run1-tag-b',
+    ]);
   });
 
   it('is a no-op (no errors, no created labels) when given an empty action list', async () => {

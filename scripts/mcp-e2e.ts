@@ -61,10 +61,12 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { resolveTarget, DEFAULT_TARGET } from './lib/e2e-target';
 
 // ============================================================================
 // Configuration
@@ -75,10 +77,82 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DIST_ENTRY = path.join(REPO_ROOT, 'dist', 'index.js');
 
+// Read once at startup for the handshake-version regression guard below (issue #186).
+const PACKAGE_VERSION = (
+  JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf-8')) as { version: string }
+).version;
+
+// Which persistent stack to run against (issue #205). `VIKUNJA_E2E_TARGET`
+// names a `<version>-<db>` target; the resolver owns the port mapping so no
+// port is ever hardcoded here.
+const TARGET = resolveTarget(process.env.VIKUNJA_E2E_TARGET || DEFAULT_TARGET);
+
+/**
+ * Credentials written by docker/e2e/bootstrap.sh for this target. Stable for
+ * the life of the stack — only `npm run e2e:reset` rotates them.
+ */
+function readTargetEnv(): Record<string, string> {
+  const file = path.join(REPO_ROOT, TARGET.envFile);
+  if (!existsSync(file)) return {};
+  return Object.fromEntries(
+    readFileSync(file, 'utf-8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'))
+      .map((line) => {
+        const idx = line.indexOf('=');
+        return [line.slice(0, idx), line.slice(idx + 1)] as const;
+      }),
+  );
+}
+
+const TARGET_ENV = readTargetEnv();
+
 // Deliberately NOT `process.env.VIKUNJA_URL` — see the safety note in the
 // file header. `MCP_E2E_VIKUNJA_URL` is a distinct name a developer would
 // never have already exported for pointing a real MCP client at production.
-const VIKUNJA_URL = process.env.MCP_E2E_VIKUNJA_URL || 'http://localhost:33456/api/v1';
+const VIKUNJA_URL = process.env.MCP_E2E_VIKUNJA_URL || TARGET_ENV.VIKUNJA_URL || TARGET.apiUrl;
+
+// Cached once at startup by `detectServerVersion()` (called early in `main`)
+// so `driftTolerated`-gated checks (currently just the assignees-500 case,
+// see `testAssignees` below) can condition their tolerance on the actual
+// server under test rather than assuming a fixed version. `null` means
+// "not yet detected" -- checked-for at the one call site that needs it.
+let detectedServerVersion: string | null = null;
+
+/**
+ * Fetches GET /info and normalizes its `version` field ("v2.3.0" -> "2.3.0")
+ * for version-gating drift tolerances. Never throws: if this fails for any
+ * reason, callers get `null` and treat that conservatively (see call site).
+ */
+async function detectServerVersion(): Promise<string | null> {
+  try {
+    const res = await fetch(`${VIKUNJA_URL}/info`);
+    if (!res.ok) return null;
+    const body = (await res.json()) as { version?: string };
+    if (!body.version) return null;
+    return body.version.replace(/^v/, '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bare-bones `X.Y.Z` semver "is `version` strictly less than `target`"
+ * comparison -- sufficient for the plain release tags this project pins to
+ * (no pre-release/build-metadata suffixes to handle here; `/info` reports
+ * clean tags like `v2.3.0`/`v2.4.0` for actual tagged releases).
+ */
+function versionLessThan(version: string, target: string): boolean {
+  const a = version.split('.').map((n) => parseInt(n, 10));
+  const b = target.split('.').map((n) => parseInt(n, 10));
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    if (av !== bv) return av < bv;
+  }
+  return false;
+}
 
 /** Aborts the process if `url` is not localhost/127.0.0.1 — see file header. */
 function assertLocalUrl(url: string): void {
@@ -105,7 +179,30 @@ function assertLocalUrl(url: string): void {
 const TEST_USERNAME = 'e2e-test';
 const TEST_PASSWORD = 'VikunjaMcpE2E-2026!';
 const TOKEN_TITLE = 'vikunja-mcp-e2e-harness';
-const NAME_PREFIX = 'mcp-e2e-';
+
+/**
+ * The user whose identity-scoped state tests are allowed to mutate — API
+ * tokens, user settings, avatar provider (issue #205). `e2e-test` is the
+ * shared identity every harness authenticates as and every stored token
+ * belongs to, so changing ITS settings is visible to any concurrent run.
+ * Provisioned by docker/e2e/bootstrap.sh alongside `e2e-test`.
+ */
+const MUTABLE_USERNAME = 'e2e-mutable';
+
+/**
+ * Per-RUN fixture prefix (issue #205). This used to be the fixed string
+ * `mcp-e2e-`, which every run also swept before and after itself — so two
+ * concurrent runs on one stack deleted each other's fixtures mid-test. The
+ * run id keeps each run's data disjoint AND keeps the sweep scoped to it.
+ * Strays from crashed runs are collected by `--sweep-all`, which is now a
+ * deliberate housekeeping flag rather than something every run does.
+ */
+const RUN_ID = process.env.MCP_E2E_RUN_ID || `${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
+const NAME_PREFIX = `mcp-e2e-${RUN_ID}-`;
+
+/** Root prefix shared by every run — only swept when `--sweep-all` is passed. */
+const ROOT_PREFIX = 'mcp-e2e-';
+const SWEEP_ALL = process.argv.includes('--sweep-all');
 
 // ============================================================================
 // Result tracking (mirrors scripts/test-mcp.ts's simple reporter)
@@ -120,13 +217,16 @@ interface StepResult {
   /**
    * Set when a check hit a *known, tracked* server-side regression on the
    * version under test (currently: GET /tasks/{id}/assignees 500ing on
-   * Vikunja 2.3.0, see `driftTolerated` below) rather than a real tool bug.
-   * Tolerated checks are excluded from the failure count / exit code but
-   * still surfaced distinctly (not silently dropped) in both this script's
-   * own [Summary] output and the version-matrix verdict file
+   * Vikunja versions below 2.4.0, see `driftTolerated` below) rather than a
+   * real tool bug. Tolerated checks are excluded from the failure count /
+   * exit code but still surfaced distinctly (not silently dropped) in both
+   * this script's own [Summary] output and the version-matrix verdict file
    * (scripts/test-matrix.ts) so nobody mistakes "tolerated" for "fixed".
-   * Remove the corresponding tolerance once a Vikunja release ships the fix
-   * (upstream go-vikunja/vikunja PR #2791) and this starts failing for real.
+   * This tolerance is now version-gated (only applies when the detected
+   * server is < 2.4.0, see `testAssignees`) rather than global -- fixed
+   * upstream (go-vikunja/vikunja PR #2791) and confirmed shipped in the
+   * 2.4.0 tag, so a 2.4.0+ server hitting this signature is a real,
+   * hard-failing regression, not a tolerated one.
    */
   serverDrift?: boolean;
   error?: string;
@@ -184,15 +284,15 @@ function driftTolerated(name: string, summary: string, detail: string): void {
 // Credentials: replicate docker/e2e/bootstrap.sh's login + token-mint flow
 // ============================================================================
 
-async function login(): Promise<string> {
+async function login(username: string = TEST_USERNAME): Promise<string> {
   const res = await fetch(`${VIKUNJA_URL}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: TEST_USERNAME, password: TEST_PASSWORD }),
+    body: JSON.stringify({ username, password: TEST_PASSWORD }),
   });
   if (!res.ok) {
     throw new Error(
-      `POST /login failed: ${res.status} ${await res.text()} -- is the e2e stack up? Run 'npm run e2e:up'.`,
+      `POST /login as '${username}' failed: ${res.status} ${await res.text()} -- is the e2e stack up? Run 'npm run e2e:up'.`,
     );
   }
   const body = (await res.json()) as { token: string };
@@ -239,6 +339,14 @@ async function getApiToken(): Promise<string> {
   if (process.env.MCP_E2E_VIKUNJA_API_TOKEN) {
     log('Using MCP_E2E_VIKUNJA_API_TOKEN from the environment.');
     return process.env.MCP_E2E_VIKUNJA_API_TOKEN;
+  }
+  // Prefer the target's stable token (issue #205). Minting a fresh one per
+  // run still works as a fallback, but it accumulates tokens on the shared
+  // `e2e-test` user and pointlessly diverges from what every other harness
+  // is authenticating with.
+  if (TARGET_ENV.VIKUNJA_API_TOKEN) {
+    log(`Using the stable token for target ${TARGET.id} (${TARGET.envFile}).`);
+    return TARGET_ENV.VIKUNJA_API_TOKEN;
   }
   log(`Logging in as '${TEST_USERNAME}'...`);
   const jwt = await login();
@@ -298,12 +406,30 @@ function extractAllIds(text: string): number[] {
   return [...text.matchAll(/"id":\s*(-?\d+)/g)].map((m) => Number(m[1]));
 }
 
+/**
+ * Extracts bucket `title`s from a `list-buckets` response's raw JSON dump,
+ * IN THE ORDER the server returned them (i.e. the actual board order — see
+ * `formatObjectData` in src/utils/simple-response.ts, which JSON.stringifies
+ * the `buckets` array verbatim, preserving server order). This is the only
+ * way this harness can see column ORDER rather than just bucket count/names
+ * — see issue #173's setup-kanban position-0 regression, which every
+ * COUNT-only assertion here missed.
+ */
+function extractBucketTitlesInOrder(text: string): string[] {
+  return [...text.matchAll(/"title":\s*"([^"]*)"/g)].map((m) => m[1] as string);
+}
+
 // ============================================================================
 // Cleanup-by-name-prefix (idempotent: safe to run even after a failed prior run)
 // ============================================================================
 
 async function cleanupByPrefix(h: McpHarness): Promise<void> {
-  log('\n[Cleanup-by-prefix]');
+  // Scoped to THIS run's prefix unless `--sweep-all` was passed (issue
+  // #205): a run must never delete a concurrent run's fixtures. The root
+  // prefix still exists so someone can deliberately collect strays left by
+  // crashed runs -- that is housekeeping, not per-run behaviour.
+  const prefix = SWEEP_ALL ? ROOT_PREFIX : NAME_PREFIX;
+  log(`\n[Cleanup-by-prefix: ${prefix}${SWEEP_ALL ? ' (--sweep-all: ALL runs)' : ' (this run only)'}]`);
 
   // Saved filters first (they appear as pseudo-projects; deleting the
   // filter also removes the pseudo-project entry).
@@ -312,7 +438,7 @@ async function cleanupByPrefix(h: McpHarness): Promise<void> {
     const idTitlePairs = [...listRes.text.matchAll(/"id":\s*(-?\d+)[^}]*?"title":\s*"([^"]*)"/g)];
     for (const m of idTitlePairs) {
       const [, idStr, title] = m;
-      if (title && title.startsWith(NAME_PREFIX) && idStr) {
+      if (title && title.startsWith(prefix) && idStr) {
         const id = Number(idStr);
         await h.call('vikunja_filters', { action: 'delete', parameters: { id } });
         log(`  deleted stale saved filter "${title}" (id ${id})`);
@@ -328,7 +454,7 @@ async function cleanupByPrefix(h: McpHarness): Promise<void> {
     const projectMatches = [...listRes.text.matchAll(/\*\*([^*]+)\*\* \(ID: (\d+)\)/g)];
     for (const m of projectMatches) {
       const [, title, idStr] = m;
-      if (title && title.startsWith(NAME_PREFIX) && idStr) {
+      if (title && title.startsWith(prefix) && idStr) {
         const projectId = Number(idStr);
         await deleteProjectAndTasks(h, projectId, title);
       }
@@ -343,7 +469,7 @@ async function cleanupByPrefix(h: McpHarness): Promise<void> {
     const labelMatches = [...listRes.text.matchAll(/\*\*([^*]+)\*\* \(ID: (\d+)\)/g)];
     for (const m of labelMatches) {
       const [, title, idStr] = m;
-      if (title && title.startsWith(NAME_PREFIX) && idStr) {
+      if (title && title.startsWith(prefix) && idStr) {
         await h.call('vikunja_labels', { subcommand: 'delete', id: Number(idStr) });
         log(`  deleted stale label "${title}" (id ${idStr})`);
       }
@@ -399,6 +525,8 @@ interface FlowContext {
   projectId?: number;
   taskId?: number;
   labelId?: number;
+  ensureLabelId?: number;
+  attachByTitleLabelId?: number;
   filterId?: number;
   selfUserId?: number;
   bucketId?: number;
@@ -444,6 +572,37 @@ const EXPECTED_TOOLS_ABSENT = [
   'vikunja_user_deletion',
 ];
 
+/**
+ * Regression guard for netadvanced/vikunja-mcp-ng#186: the `initialize` handshake's
+ * serverInfo.version must equal package.json's version. A hardcoded literal in
+ * src/index.ts (`version: '0.3.0'`) silently drifted through 0.4.0, 0.5.x, 0.6.0, and
+ * 0.6.1 without ever failing a unit test, because unit tests mock the version rather
+ * than perform a real handshake. This is the live, no-mocks check that would have
+ * caught it: it reads serverInfo straight off the real MCP `Client` returned by the
+ * SDK's own handshake, against the built `dist/index.js` spawned as a real child
+ * process (see `main`), not against src/index.ts's source.
+ */
+function testHandshakeVersion(client: Client): void {
+  log('\n[Handshake version (netadvanced/vikunja-mcp-ng#186 regression guard)]');
+  const serverInfo = client.getServerVersion();
+  const actualVersion = serverInfo?.version;
+  const matches = actualVersion === PACKAGE_VERSION;
+  assertStep(
+    'initialize handshake reports the installed package.json version',
+    matches,
+    `expected version "${PACKAGE_VERSION}", got serverInfo=${JSON.stringify(serverInfo)}`,
+  );
+  if (!matches) {
+    record(
+      'tool-bug',
+      `MCP handshake advertises version "${String(actualVersion)}" instead of package.json's "${PACKAGE_VERSION}"`,
+      'The initialize handshake\'s serverInfo.version must be derived from package.json ' +
+        '(src/utils/version.ts resolvePackageVersion) — see netadvanced/vikunja-mcp-ng#186. ' +
+        `Full serverInfo: ${JSON.stringify(serverInfo)}`,
+    );
+  }
+}
+
 async function testToolList(h: McpHarness): Promise<void> {
   log('\n[Tool list]');
   const tools = await h.listToolNames();
@@ -484,6 +643,42 @@ async function testAuth(h: McpHarness): Promise<void> {
       'auth info includes server version',
       /version/i.test(info.text),
       info.text.slice(0, 300),
+    );
+    // api-version-detect groundwork (netadvanced/vikunja-mcp#28): 'info'
+    // runs the session capability/version detector (GET /info already
+    // above, plus a one-time GET /api/v2/openapi.json probe) and must
+    // surface both fields. `hasV2Api` is version-dependent — the v2 API is
+    // present on Vikunja 2.4.0+ but ABSENT on the 2.3.0 v1-floor — so we
+    // probe the live endpoint here for ground truth and assert the detector
+    // agrees, rather than hard-coding `true` (which false-failed on 2.3.0).
+    assertStep(
+      'auth info surfaces hasV2Api',
+      /hasV2Api/.test(info.text),
+      info.text.slice(0, 300),
+    );
+    let v2Live = false;
+    try {
+      v2Live = (await fetch(`${VIKUNJA_URL.replace('/api/v1', '/api/v2')}/openapi.json`)).ok;
+    } catch {
+      v2Live = false;
+    }
+    assertStep(
+      `auth info reports hasV2Api:${v2Live} matching the live v2 probe (GET /api/v2/openapi.json ${v2Live ? '200' : 'absent'})`,
+      new RegExp(`hasV2Api[^a-zA-Z]*${v2Live}`, 'i').test(info.text),
+      info.text.slice(0, 300),
+    );
+  }
+
+  // 'status' is a cache-only read of whatever capability snapshot 'info'
+  // (above) just cached on the session — re-check it now reflects that,
+  // confirming the cache (not just the one-off 'info' response) carries
+  // serverVersion/hasV2Api.
+  const statusAfterInfo = await h.call('vikunja_auth', { subcommand: 'status' });
+  if (assertOk('auth status (after info)', statusAfterInfo)) {
+    assertStep(
+      'auth status reports serverVersion and hasV2Api once cached',
+      /serverVersion/.test(statusAfterInfo.text) && /hasV2Api/.test(statusAfterInfo.text),
+      statusAfterInfo.text.slice(0, 300),
     );
   }
 
@@ -629,9 +824,61 @@ async function testTasks(h: McpHarness, ctx: FlowContext): Promise<void> {
     id: ctx.taskId,
     title: updatedTitle,
     priority: 5,
+    dueDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
   });
   if (assertOk('update task', update)) {
     assertStep('update task reflects new title', update.text.includes(updatedTitle), update.text.slice(0, 400));
+  }
+
+  // Filter-syntax discoverability check (netadvanced/vikunja-mcp#28, item
+  // filter-discoverability): exercises the exact priority+due-date pattern
+  // documented in the vikunja_tasks `filter` param and vikunja_filters tool
+  // descriptions ("priority >= 4 && dueDate < now+7d") end-to-end against a
+  // real task (priority 5, due in 3 days), scoped to this project so it is
+  // unaffected by other tasks accumulated in the e2e account.
+  const priorityDueFilter = await h.call('vikunja_tasks', {
+    subcommand: 'list',
+    projectId: ctx.projectId,
+    filter: 'priority >= 4 && dueDate < now+7d',
+  });
+  if (assertOk('list tasks (priority + due-date filter)', priorityDueFilter)) {
+    assertStep(
+      'priority+due-date filter matches the high-priority, soon-due task',
+      extractAllIds(priorityDueFilter.text).includes(ctx.taskId),
+      priorityDueFilter.text.slice(0, 400),
+    );
+  }
+
+  // Same filter with snake_case field alias (due_date) - confirms the
+  // documented alias normalization (src/utils/filters.ts FILTER_FIELD_ALIASES)
+  // is live end-to-end, not just at the unit-test level.
+  const snakeCaseFilter = await h.call('vikunja_tasks', {
+    subcommand: 'list',
+    projectId: ctx.projectId,
+    filter: 'priority >= 4 && due_date < now+7d',
+  });
+  if (assertOk('list tasks (snake_case due_date alias filter)', snakeCaseFilter)) {
+    assertStep(
+      'snake_case due_date alias matches the same task as camelCase dueDate',
+      extractAllIds(snakeCaseFilter.text).includes(ctx.taskId),
+      snakeCaseFilter.text.slice(0, 400),
+    );
+  }
+
+  // Negative control: a priority filter that should exclude this task
+  // (priority 5 is not < 2) confirms the filter is actually being applied
+  // rather than the endpoint silently ignoring it and returning everything.
+  const excludingFilter = await h.call('vikunja_tasks', {
+    subcommand: 'list',
+    projectId: ctx.projectId,
+    filter: 'priority < 2',
+  });
+  if (assertOk('list tasks (excluding priority filter)', excludingFilter)) {
+    assertStep(
+      'low-priority filter excludes the priority-5 task',
+      !extractAllIds(excludingFilter.text).includes(ctx.taskId),
+      excludingFilter.text.slice(0, 400),
+    );
   }
 
   const projectList = await h.call('vikunja_tasks', { subcommand: 'list', projectId: ctx.projectId });
@@ -850,6 +1097,64 @@ async function testSubtaskComposites(h: McpHarness, ctx: FlowContext): Promise<v
       listSubtasks.text.slice(0, 300),
     );
   }
+
+  // `id` accepted as an alias for `parentTaskId` on create-subtask /
+  // bulk-create-subtasks (SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS,
+  // src/tools/tasks/index.ts) — netadvanced/vikunja-mcp#28 sweep evidence
+  // showed bulk-create-subtasks called with `id: 243` failing with
+  // "parentTaskId is required to create subtasks" before this alias
+  // shipped. `id` works on nearly every other vikunja_tasks subcommand, so
+  // an agent reaching for it here paid a full wasted round-trip.
+  const createSubtaskViaIdAlias = await h.call('vikunja_tasks', {
+    subcommand: 'create-subtask',
+    id: ctx.taskId,
+    title: `${NAME_PREFIX}subtask-via-id-alias`,
+  });
+  if (assertOk('create-subtask (`id` alias for parentTaskId)', createSubtaskViaIdAlias)) {
+    assertStep(
+      'create-subtask via `id` alias reports the parent task id',
+      createSubtaskViaIdAlias.text.includes(String(ctx.taskId)),
+      createSubtaskViaIdAlias.text.slice(0, 300),
+    );
+  }
+
+  const bulkCreateSubtasksViaIdAlias = await h.call('vikunja_tasks', {
+    subcommand: 'bulk-create-subtasks',
+    id: ctx.taskId,
+    subtasks: [{ title: `${NAME_PREFIX}bulk-subtask-via-id-alias` }],
+  });
+  if (assertOk('bulk-create-subtasks (`id` alias for parentTaskId)', bulkCreateSubtasksViaIdAlias)) {
+    assertStep(
+      'bulk-create-subtasks via `id` alias reports 1 subtask created',
+      bulkCreateSubtasksViaIdAlias.text.includes('1 subtask'),
+      bulkCreateSubtasksViaIdAlias.text.slice(0, 400),
+    );
+  }
+
+  // Both `id` and `parentTaskId` supplied and DISAGREEING must be rejected
+  // outright — precedence is explicit, never a silent pick-one.
+  const conflictingAliasCall = await h.call('vikunja_tasks', {
+    subcommand: 'create-subtask',
+    id: ctx.taskId,
+    parentTaskId: ctx.taskId + 999999, // guaranteed to differ from ctx.taskId
+    title: `${NAME_PREFIX}subtask-conflicting-alias`,
+  });
+  assertStep(
+    'create-subtask rejects conflicting `id`/`parentTaskId` values (isError, validation-shaped)',
+    conflictingAliasCall.isError && /both supplied and disagree/i.test(conflictingAliasCall.text),
+    conflictingAliasCall.text.slice(0, 400),
+  );
+
+  // Server-side confirmation that the rejected conflicting call created
+  // nothing: the bogus title must not appear anywhere under the parent.
+  const listAfterConflict = await h.call('vikunja_tasks', { subcommand: 'list-subtasks', id: ctx.taskId });
+  if (assertOk('list-subtasks after rejected conflicting alias call', listAfterConflict)) {
+    assertStep(
+      'conflicting id/parentTaskId create-subtask call created no subtask',
+      !listAfterConflict.text.includes(`${NAME_PREFIX}subtask-conflicting-alias`),
+      listAfterConflict.text.slice(0, 400),
+    );
+  }
 }
 
 async function testLabels(h: McpHarness, ctx: FlowContext): Promise<void> {
@@ -887,6 +1192,356 @@ async function testLabels(h: McpHarness, ctx: FlowContext): Promise<void> {
       list.text.slice(0, 300),
     );
   }
+
+  // ensure-label composite (E-item, friction #4): "attach a label by name"
+  // should collapse to one get-or-create call instead of list+match+create.
+  // First call creates (no matching label exists yet under this fresh
+  // title); the second call, with the identical title, must reuse the same
+  // id instead of creating a duplicate.
+  const ensureTitle = `${NAME_PREFIX}ensure-label`;
+  const ensureFirst = await h.call('vikunja_labels', { subcommand: 'ensure', title: ensureTitle });
+  if (!assertOk('ensure-label (first call, create-miss)', ensureFirst)) return;
+  assertStep(
+    'ensure-label first call reports a create, not a reuse',
+    ensureFirst.text.includes('did not exist, created it'),
+    ensureFirst.text.slice(0, 300),
+  );
+  ctx.ensureLabelId = extractId(ensureFirst.text);
+  if (!ctx.ensureLabelId) {
+    fail('ensure-label (id extraction)', `could not extract label id from: ${ensureFirst.text.slice(0, 300)}`);
+    return;
+  }
+
+  const ensureSecond = await h.call('vikunja_labels', { subcommand: 'ensure', title: ensureTitle });
+  if (assertOk('ensure-label (second call, reuse-hit)', ensureSecond)) {
+    assertStep(
+      'ensure-label second call reports a reuse, not a create',
+      ensureSecond.text.includes('already exists (reused)'),
+      ensureSecond.text.slice(0, 300),
+    );
+    assertStep(
+      'ensure-label second call reuses the same id as the first',
+      extractId(ensureSecond.text) === ctx.ensureLabelId,
+      `first=${ctx.ensureLabelId} second=${extractId(ensureSecond.text)}`,
+    );
+  }
+
+  // Same title, different case: still expected to reuse (case-insensitive
+  // exact-title match), not create a third label.
+  const ensureThird = await h.call('vikunja_labels', {
+    subcommand: 'ensure',
+    title: ensureTitle.toUpperCase(),
+  });
+  if (assertOk('ensure-label (third call, case-insensitive reuse)', ensureThird)) {
+    assertStep(
+      'ensure-label third call (different case) still reuses the same id',
+      extractId(ensureThird.text) === ctx.ensureLabelId,
+      `first=${ctx.ensureLabelId} third=${extractId(ensureThird.text)}`,
+    );
+  }
+
+  // attach-by-title (feat/label-attach-by-name): apply-label's `labelTitles`
+  // should get-or-create AND attach in a single call — the whole point being
+  // that weak agents don't have to discover `ensure` on vikunja_labels and
+  // thread its returned id into a second, separate apply-label call. First
+  // call has no matching label yet (create-miss); calling it again with the
+  // identical title must reuse the same id (idempotent), not create a
+  // duplicate, and both calls must actually attach the label to the task.
+  //
+  // apply-label's own response is task-shaped (not label-shaped), so the
+  // resolved label's id is looked up independently via `vikunja_labels list
+  // search=<title>` afterwards, rather than parsed out of apply-label's text
+  // — mirroring the id-extraction approach the stale-label sweep above
+  // already uses for `vikunja_labels list` responses.
+  const attachTitle = `${NAME_PREFIX}attach-by-title`;
+  const attachFirst = await h.call('vikunja_task_labels', {
+    operation: 'apply-label',
+    id: ctx.taskId,
+    labelTitles: [attachTitle],
+  });
+  if (!assertOk('apply-label labelTitles (first call, create-miss)', attachFirst)) return;
+  assertStep(
+    'apply-label labelTitles first call reports a create, not a reuse',
+    attachFirst.text.includes('created'),
+    attachFirst.text.slice(0, 300),
+  );
+
+  const searchAfterFirst = await h.call('vikunja_labels', {
+    subcommand: 'list',
+    search: attachTitle,
+  });
+  if (!assertOk('search for label created via labelTitles', searchAfterFirst)) return;
+  ctx.attachByTitleLabelId = extractId(searchAfterFirst.text);
+  if (!ctx.attachByTitleLabelId) {
+    fail(
+      'apply-label labelTitles (id extraction)',
+      `could not extract label id from: ${searchAfterFirst.text.slice(0, 300)}`,
+    );
+    return;
+  }
+
+  const attachListAfterFirst = await h.call('vikunja_task_labels', {
+    operation: 'list-labels',
+    id: ctx.taskId,
+  });
+  if (assertOk('list task labels after attach-by-title (first call)', attachListAfterFirst)) {
+    assertStep(
+      'task label list includes the label attached via labelTitles',
+      attachListAfterFirst.text.includes(attachTitle) ||
+        extractAllIds(attachListAfterFirst.text).includes(ctx.attachByTitleLabelId),
+      attachListAfterFirst.text.slice(0, 300),
+    );
+  }
+
+  const attachSecond = await h.call('vikunja_task_labels', {
+    operation: 'apply-label',
+    id: ctx.taskId,
+    labelTitles: [attachTitle],
+  });
+  if (assertOk('apply-label labelTitles (second call, reuse-hit)', attachSecond)) {
+    assertStep(
+      'apply-label labelTitles second call reports a reuse, not a create',
+      attachSecond.text.includes('reused'),
+      attachSecond.text.slice(0, 300),
+    );
+  }
+
+  const searchAfterSecond = await h.call('vikunja_labels', {
+    subcommand: 'list',
+    search: attachTitle,
+  });
+  if (assertOk('search for label after attach-by-title (second call)', searchAfterSecond)) {
+    assertStep(
+      'attach-by-title second call reused the same label id as the first (no duplicate created)',
+      extractId(searchAfterSecond.text) === ctx.attachByTitleLabelId,
+      `first=${ctx.attachByTitleLabelId} second=${extractId(searchAfterSecond.text)}`,
+    );
+  }
+}
+
+/**
+ * Multi-task label operations (PR #178, netadvanced/vikunja-mcp#28 C1):
+ * `vikunja_task_labels` apply-label/remove-label accept `taskIds: number[]`
+ * to operate on several tasks in ONE call instead of one call per task.
+ * This was deliberately deferred out of the PR #178 wave (a concurrent wave
+ * owned this file at the time) — this is that live coverage.
+ *
+ * Self-contained: creates its own project + 4 tasks (mirrors
+ * testSetupKanban's pattern) rather than reusing the shared FlowContext
+ * task chain, since this needs several sibling tasks, and cleans itself up
+ * at the end via deleteProjectAndTasks.
+ *
+ * Covers, for BOTH apply-label and remove-label:
+ *   (a) `taskIds` across MULTIPLE tasks in one call, verified SERVER-SIDE
+ *       per task (list-labels), not just by reading the aggregate response
+ *       text.
+ *   (b) the single `id` form still works (backward compatibility).
+ *   (c) partial-failure honesty: one invalid task id mixed in with valid
+ *       ones must be reported as a partial failure (never a clean
+ *       success), while the valid task in the same call is still processed.
+ */
+async function testMultiTaskLabelOps(h: McpHarness): Promise<void> {
+  log('\n[Multi-task label operations (taskIds, PR #178)]');
+
+  const projectTitle = `${NAME_PREFIX}multi-label`;
+  const createProject = await h.call('vikunja_projects', { subcommand: 'create', title: projectTitle });
+  if (!assertOk('create project (multi-task label ops)', createProject)) return;
+  const projectId = extractId(createProject.text);
+  if (!projectId) {
+    fail('create project (multi-task label ops) id extraction', createProject.text.slice(0, 300));
+    return;
+  }
+
+  const bulkCreate = await h.call('vikunja_tasks', {
+    subcommand: 'bulk-create',
+    projectId,
+    tasks: [1, 2, 3, 4].map((n) => ({ title: `${NAME_PREFIX}ml-task-${n}` })),
+  });
+  if (!assertOk('bulk-create tasks (multi-task label ops)', bulkCreate)) {
+    await deleteProjectAndTasks(h, projectId, projectTitle);
+    return;
+  }
+  const taskIds = extractAllIds(bulkCreate.text);
+  if (taskIds.length < 4) {
+    fail('bulk-create tasks (multi-task label ops) id extraction', bulkCreate.text.slice(0, 400));
+    await deleteProjectAndTasks(h, projectId, projectTitle);
+    return;
+  }
+  const [taskA, taskB, taskC, taskD] = taskIds as [number, number, number, number];
+
+  // --- (a) apply-label: `taskIds` across MULTIPLE tasks in one call ---
+  const multiTag = `${NAME_PREFIX}multi-tag`;
+  const applyMulti = await h.call('vikunja_task_labels', {
+    operation: 'apply-label',
+    taskIds: [taskA, taskB, taskC],
+    labelTitles: [multiTag],
+  });
+  if (!assertOk('apply-label taskIds (3 tasks, one call)', applyMulti)) {
+    await deleteProjectAndTasks(h, projectId, projectTitle);
+    return;
+  }
+  assertStep(
+    'apply-label taskIds response reports all 3 tasks applied',
+    /Labels applied to 3 task\(s\) successfully/.test(applyMulti.text),
+    applyMulti.text.slice(0, 400),
+  );
+
+  // SERVER-SIDE verification (the whole point of this check): read each
+  // task's labels back independently via list-labels rather than trusting
+  // apply-label's own aggregate response text.
+  for (const [name, taskId] of [
+    ['task A', taskA],
+    ['task B', taskB],
+    ['task C', taskC],
+  ] as const) {
+    const list = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskId });
+    if (assertOk(`list-labels after multi-task apply-label (${name})`, list)) {
+      assertStep(
+        `${name} actually carries the label server-side after multi-task apply-label`,
+        list.text.includes(multiTag),
+        list.text.slice(0, 300),
+      );
+    }
+  }
+
+  // --- (b) apply-label: same operation, single `id` form (backward compat) ---
+  const singleTag = `${NAME_PREFIX}single-tag`;
+  const applySingle = await h.call('vikunja_task_labels', {
+    operation: 'apply-label',
+    id: taskD,
+    labelTitles: [singleTag],
+  });
+  if (assertOk('apply-label `id` (single task, backward compatibility)', applySingle)) {
+    const listSingle = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskD });
+    if (assertOk('list-labels after single-id apply-label', listSingle)) {
+      assertStep(
+        'single-id apply-label form still attaches the label server-side',
+        listSingle.text.includes(singleTag),
+        listSingle.text.slice(0, 300),
+      );
+    }
+  }
+
+  // --- (c) apply-label: partial-failure honesty (one invalid task id mixed
+  // with a valid one). Vikunja ids are small positive integers on a fresh
+  // e2e stack, so this id is guaranteed not to correspond to a real task.
+  const INVALID_TASK_ID = 999999999;
+  const partialTag = `${NAME_PREFIX}partial-tag`;
+  const applyPartial = await h.call('vikunja_task_labels', {
+    operation: 'apply-label',
+    taskIds: [taskD, INVALID_TASK_ID],
+    labelTitles: [partialTag],
+  });
+  assertStep(
+    'apply-label taskIds partial failure is reported honestly, not as a clean success',
+    /Labels applied to 1 of 2 task\(s\)/.test(applyPartial.text) &&
+      /1 failed/.test(applyPartial.text) &&
+      applyPartial.text.includes(`Failed task IDs: ${INVALID_TASK_ID}`),
+    applyPartial.text.slice(0, 600),
+  );
+  const listAfterPartialApply = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskD });
+  if (assertOk('list-labels after partial-failure apply-label', listAfterPartialApply)) {
+    assertStep(
+      'the VALID task in a partial-failure apply-label call was still processed (label attached)',
+      listAfterPartialApply.text.includes(partialTag),
+      listAfterPartialApply.text.slice(0, 300),
+    );
+  }
+
+  // remove-label needs numeric label ids (no labelTitles) — resolve each
+  // title-created label's id once via search, same pattern testLabels uses.
+  async function resolveLabelId(title: string): Promise<number | undefined> {
+    const search = await h.call('vikunja_labels', { subcommand: 'list', search: title });
+    if (!assertOk(`search for "${title}" label id (for remove-label)`, search)) return undefined;
+    const id = extractId(search.text);
+    if (!id) fail(`"${title}" label id extraction`, search.text.slice(0, 300));
+    return id;
+  }
+
+  const multiTagId = await resolveLabelId(multiTag);
+  if (!multiTagId) {
+    await deleteProjectAndTasks(h, projectId, projectTitle);
+    return;
+  }
+
+  // --- (a) remove-label: `taskIds` across MULTIPLE tasks in one call ---
+  const removeMulti = await h.call('vikunja_task_labels', {
+    operation: 'remove-label',
+    taskIds: [taskA, taskB, taskC],
+    labels: [multiTagId],
+  });
+  if (assertOk('remove-label taskIds (3 tasks, one call)', removeMulti)) {
+    assertStep(
+      'remove-label taskIds response reports all 3 tasks removed',
+      /Labels removed from 3 task\(s\) successfully/.test(removeMulti.text),
+      removeMulti.text.slice(0, 400),
+    );
+  }
+
+  for (const [name, taskId] of [
+    ['task A', taskA],
+    ['task B', taskB],
+    ['task C', taskC],
+  ] as const) {
+    const list = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskId });
+    if (assertOk(`list-labels after multi-task remove-label (${name})`, list)) {
+      assertStep(
+        `${name} no longer carries the label server-side after multi-task remove-label`,
+        !list.text.includes(multiTag),
+        list.text.slice(0, 300),
+      );
+    }
+  }
+
+  // --- (b) remove-label: same operation, single `id` form (backward compat) ---
+  const singleTagId = await resolveLabelId(singleTag);
+  if (singleTagId) {
+    const removeSingle = await h.call('vikunja_task_labels', {
+      operation: 'remove-label',
+      id: taskD,
+      labels: [singleTagId],
+    });
+    if (assertOk('remove-label `id` (single task, backward compatibility)', removeSingle)) {
+      const listAfterRemoveSingle = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskD });
+      if (assertOk('list-labels after single-id remove-label', listAfterRemoveSingle)) {
+        assertStep(
+          'single-id remove-label form actually detaches the label server-side',
+          !listAfterRemoveSingle.text.includes(singleTag),
+          listAfterRemoveSingle.text.slice(0, 300),
+        );
+      }
+    }
+  }
+
+  // --- (c) remove-label: partial-failure honesty (taskD currently carries
+  // partialTag from the apply-label partial-failure check above).
+  const partialTagId = await resolveLabelId(partialTag);
+  if (partialTagId) {
+    const removePartial = await h.call('vikunja_task_labels', {
+      operation: 'remove-label',
+      taskIds: [taskD, INVALID_TASK_ID],
+      labels: [partialTagId],
+    });
+    assertStep(
+      'remove-label taskIds partial failure is reported honestly, not as a clean success',
+      /Labels removed from 1 of 2 task\(s\)/.test(removePartial.text) &&
+        /1 failed/.test(removePartial.text) &&
+        removePartial.text.includes(`Failed task IDs: ${INVALID_TASK_ID}`),
+      removePartial.text.slice(0, 600),
+    );
+    const listAfterPartialRemove = await h.call('vikunja_task_labels', { operation: 'list-labels', id: taskD });
+    if (assertOk('list-labels after partial-failure remove-label', listAfterPartialRemove)) {
+      assertStep(
+        'the VALID task in a partial-failure remove-label call was still processed (label removed)',
+        !listAfterPartialRemove.text.includes(partialTag),
+        listAfterPartialRemove.text.slice(0, 300),
+      );
+    }
+  }
+
+  // Cleanup: self-contained project (own tasks) — clean up here rather
+  // than relying on finalCleanup's FlowContext chain.
+  await deleteProjectAndTasks(h, projectId, projectTitle);
 }
 
 async function testAssignees(h: McpHarness, ctx: FlowContext): Promise<void> {
@@ -923,28 +1578,33 @@ async function testAssignees(h: McpHarness, ctx: FlowContext): Promise<void> {
 
   const list = await h.call('vikunja_task_assignees', { operation: 'list-assignees', id: ctx.taskId });
   // Known, tracked server-side regression: GET /tasks/{id}/assignees 500s
-  // unconditionally on Vikunja 2.3.0 (fixed upstream on go-vikunja/vikunja's
-  // main via PR #2791, but not in any tagged release yet at the time this
-  // was written). Confirmed independently via raw REST (bypassing this tool
-  // entirely) against a fresh task with zero assignees on the same local
-  // stack — same 500. The MCP tool's request (GET /tasks/{taskID}/assignees,
-  // no body) matches the OpenAPI spec exactly; this is a real server-side
-  // bug on the version under test, not something the tool can work around
-  // by sending a different request, and NOT a reason to skip this check
-  // outright -- it still runs every time, on every version, and only this
-  // exact signature is tolerated. Remove this tolerance once a Vikunja
-  // release ships PR #2791 and re-promote this back to a hard failure.
-  if (list.isError && /HTTP 500/.test(list.text) && /assignees/.test(list.text)) {
+  // unconditionally on Vikunja versions below 2.4.0 (fixed upstream on
+  // go-vikunja/vikunja's main via PR #2791; confirmed shipped in the 2.4.0
+  // tagged release during the 2.4.0 alignment work -- both DB backends
+  // passed this exact check with a genuine, non-tolerated 200 there).
+  // Confirmed independently via raw REST (bypassing this tool entirely)
+  // against a fresh task with zero assignees on the same local stack — same
+  // 500 pre-2.4.0. The MCP tool's request (GET /tasks/{taskID}/assignees,
+  // no body) matches the OpenAPI spec exactly; this was a real server-side
+  // bug on affected versions, not something the tool can work around by
+  // sending a different request. The tolerance below is version-gated
+  // (only kicks in when the detected server is < 2.4.0, our documented
+  // v1-floor minimum is 2.3.0) -- it still runs every time, on every
+  // version, and only this exact signature on a pre-2.4.0 server is
+  // tolerated. On 2.4.0+ this same 500 is a hard failure: the fix is
+  // confirmed shipped there, so a regression would be new and real.
+  const preFixServer = detectedServerVersion !== null && versionLessThan(detectedServerVersion, '2.4.0');
+  if (preFixServer && list.isError && /HTTP 500/.test(list.text) && /assignees/.test(list.text)) {
     driftTolerated(
       'list task assignees',
       'GET /tasks/{id}/assignees returns HTTP 500 on this Vikunja version, independent of caller',
       `vikunja_task_assignees {operation:"list-assignees", id:${ctx.taskId}} failed with: ` +
         `${list.text.slice(0, 300)}. Reproduced with a raw, tool-independent curl GET against ` +
         'a fresh task with zero assignees on the same local stack — same 500. Tracked upstream ' +
-        'as go-vikunja/vikunja PR #2791 (fixed on main, not in a tagged release yet as of this ' +
-        'writing). Retest against a newer Vikunja tag once one ships the fix, per ' +
-        'docs/LOCAL-TESTING.md\'s "Version pinning and refresh" section -- if this still 500s ' +
-        'there, remove this tolerance and let it fail for real.',
+        'as go-vikunja/vikunja PR #2791, confirmed fixed and shipped in the 2.4.0 tagged release ' +
+        `(detected server version: ${detectedServerVersion}, our v1-floor minimum is 2.3.0). ` +
+        'This tolerance only applies below 2.4.0 -- see docs/LOCAL-TESTING.md\'s "Version pinning ' +
+        'and refresh" section; if this 500s on 2.4.0+, remove this tolerance and let it fail for real.',
     );
     return;
   }
@@ -1100,6 +1760,291 @@ async function testKanban(h: McpHarness, ctx: FlowContext): Promise<void> {
     bucketId: ctx.bucketId,
   });
   assertOk('bulk-set-bucket', bulkSetBucket);
+
+  // Item bucket-arg-clarity (netadvanced/vikunja-mcp#28 5.3 friction #3):
+  // when a required bucket/view arg is missing, the thrown error must NAME
+  // the specific argument and say how to obtain it — not just "required".
+  // These checks exercise the actual improved error strings end-to-end so a
+  // regression that reverts the wording is caught here, not just in unit
+  // tests that import the handler directly.
+
+  const setBucketMissingBucketId = await h.call('vikunja_tasks', {
+    subcommand: 'set-bucket',
+    id: ctx.taskId,
+  });
+  assertStep(
+    'set-bucket without bucketId names the arg and how to get it',
+    setBucketMissingBucketId.isError &&
+      setBucketMissingBucketId.text.includes('bucketId') &&
+      setBucketMissingBucketId.text.includes('list-buckets'),
+    setBucketMissingBucketId.text.slice(0, 300),
+  );
+
+  const bulkSetBucketMissingBucketId = await h.call('vikunja_tasks', {
+    subcommand: 'bulk-set-bucket',
+    taskIds: [ctx.taskId],
+  });
+  assertStep(
+    'bulk-set-bucket without bucketId names the arg and how to get it',
+    bulkSetBucketMissingBucketId.isError &&
+      bulkSetBucketMissingBucketId.text.includes('bucketId') &&
+      bulkSetBucketMissingBucketId.text.includes('list-buckets'),
+    bulkSetBucketMissingBucketId.text.slice(0, 300),
+  );
+
+  const listBucketsMissingId = await h.call('vikunja_projects', {
+    subcommand: 'list-buckets',
+  });
+  assertStep(
+    'list-buckets without id/projectId names the arg and how to get it',
+    listBucketsMissingId.isError &&
+      listBucketsMissingId.text.includes('id') &&
+      listBucketsMissingId.text.includes('projectId') &&
+      listBucketsMissingId.text.includes('vikunja_projects list'),
+    listBucketsMissingId.text.slice(0, 300),
+  );
+
+  const updateBucketMissingBucketRef = await h.call('vikunja_projects', {
+    subcommand: 'update-bucket',
+    id: ctx.projectId,
+    title: 'irrelevant',
+  });
+  assertStep(
+    'update-bucket without bucketId/bucketTitle names both accepted args and how to get one',
+    updateBucketMissingBucketRef.isError &&
+      updateBucketMissingBucketRef.text.includes('bucketId') &&
+      updateBucketMissingBucketRef.text.includes('bucketTitle') &&
+      updateBucketMissingBucketRef.text.includes('list-buckets'),
+    updateBucketMissingBucketRef.text.slice(0, 300),
+  );
+}
+
+async function testSetupKanban(h: McpHarness): Promise<void> {
+  log('\n[setup-kanban composite]');
+
+  // --- CLEAN call: happy-path assertions only (counts, project id
+  // extraction, bucket count, idempotent reuse). No bogus column here — a
+  // partial-failure response is a different scenario with different
+  // expected assertions (see the unknown-column block below), and mixing
+  // the two into one call was itself the bug being fixed (issue #173
+  // follow-up: the original single-call test asserted happy-path facts
+  // against what is actually a partial-failure response).
+  const title = `${NAME_PREFIX}kanban-composite`;
+  const setup = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    title,
+    columns: ['To Do', 'Doing', 'Done'],
+    tasks: [
+      { title: `${NAME_PREFIX}kc-task-1`, column: 'To Do', priority: 3, dueDate: '2026-09-01' },
+      { title: `${NAME_PREFIX}kc-task-2`, column: 'Doing' },
+      { title: `${NAME_PREFIX}kc-task-3`, column: 'Done' },
+    ],
+  });
+  if (!assertOk('setup-kanban (new project, clean)', setup)) return;
+  assertStep(
+    'setup-kanban reports the project, columns, and tasks created',
+    setup.text.includes('3/3 columns ready') && setup.text.includes('3/3 tasks created'),
+    setup.text.slice(0, 500),
+  );
+
+  const projectId = extractId(setup.text);
+  if (!projectId) {
+    fail('setup-kanban (new project) response contains a project id', setup.text.slice(0, 300));
+    return;
+  }
+
+  // Verify server-side: 3 buckets, and the placed tasks actually landed in
+  // distinct buckets (not all left in whatever bucket is the view default).
+  const buckets = await h.call('vikunja_projects', { subcommand: 'list-buckets', id: projectId });
+  if (assertOk('list-buckets after setup-kanban', buckets)) {
+    const bucketIds = extractAllIds(buckets.text);
+    assertStep(
+      'setup-kanban created exactly 3 buckets',
+      bucketIds.length === 3,
+      `expected 3 bucket ids, got: ${buckets.text.slice(0, 300)}`,
+    );
+    // ORDER, not just count/contents (issue #173 — this is the exact check
+    // that was missing and let the position-0 regression ship: bucket COUNT
+    // and NAMES were both correct while the first column silently landed
+    // last on the board).
+    const bucketOrder = extractBucketTitlesInOrder(buckets.text);
+    assertStep(
+      'setup-kanban (new project) buckets come back in the requested column order',
+      bucketOrder.join('|') === ['To Do', 'Doing', 'Done'].join('|'),
+      `expected order [To Do, Doing, Done], got: [${bucketOrder.join(', ')}]`,
+    );
+  }
+
+  // Idempotent-ish reuse: calling setup-kanban again on the SAME project id
+  // with the SAME column names must not create duplicate buckets.
+  const reuse = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    id: projectId,
+    columns: ['To Do', 'Doing', 'Done'],
+  });
+  if (assertOk('setup-kanban (existing project reuse)', reuse)) {
+    assertStep(
+      'setup-kanban reuse reports the project as reused, not created',
+      reuse.text.includes(`project ${projectId} reused`),
+      reuse.text.slice(0, 300),
+    );
+  }
+
+  const bucketsAfterReuse = await h.call('vikunja_projects', { subcommand: 'list-buckets', id: projectId });
+  if (assertOk('list-buckets after setup-kanban reuse', bucketsAfterReuse)) {
+    const bucketIds = extractAllIds(bucketsAfterReuse.text);
+    assertStep(
+      'setup-kanban reuse does not create duplicate buckets',
+      bucketIds.length === 3,
+      `expected still 3 bucket ids after reuse, got: ${bucketsAfterReuse.text.slice(0, 300)}`,
+    );
+    // Same order check on the REUSE path (existing-project, all-exact-match
+    // reuse) — a separate code path (`resolveColumns`' 'exact' branch) from
+    // the new-project 'created' branch checked above, and the one the
+    // coordinator's live probe exercised directly.
+    const bucketOrderAfterReuse = extractBucketTitlesInOrder(bucketsAfterReuse.text);
+    assertStep(
+      'setup-kanban (existing project reuse) buckets come back in the requested column order',
+      bucketOrderAfterReuse.join('|') === ['To Do', 'Doing', 'Done'].join('|'),
+      `expected order [To Do, Doing, Done], got: [${bucketOrderAfterReuse.join(', ')}]`,
+    );
+  }
+
+  // --- SEPARATE call: the unknown-column path. Fail-fast (issue #173
+  // follow-up) means this must be an up-front rejection — the whole call is
+  // rejected with a validation error before anything is created, not a
+  // partial success with a "created-not-placed" task. Reuses the project
+  // above (via `id`) so "no task was created" is directly verifiable
+  // server-side.
+  const bogusTaskTitle = `${NAME_PREFIX}kc-bogus-column-task`;
+  const bogusColumnCall = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    id: projectId,
+    columns: ['To Do', 'Doing', 'Done'],
+    tasks: [{ title: bogusTaskTitle, column: 'Nonexistent Column' }],
+  });
+  assertStep(
+    'setup-kanban rejects an unknown column up front (isError, VALIDATION_ERROR-shaped)',
+    bogusColumnCall.isError &&
+      bogusColumnCall.text.includes('Nonexistent Column') &&
+      bogusColumnCall.text.includes(bogusTaskTitle) &&
+      /not one of the requested columns/.test(bogusColumnCall.text),
+    bogusColumnCall.text.slice(0, 500),
+  );
+
+  // Verify server-side: the rejected call created nothing — the bogus
+  // task's title must not appear anywhere in the project's task list.
+  const tasksAfterRejection = await h.call('vikunja_tasks', {
+    subcommand: 'list',
+    projectId,
+  });
+  if (assertOk('list tasks after rejected setup-kanban call', tasksAfterRejection)) {
+    assertStep(
+      'setup-kanban unknown-column rejection created no task',
+      !tasksAfterRejection.text.includes(bogusTaskTitle),
+      tasksAfterRejection.text.slice(0, 500),
+    );
+  }
+
+  // Cleanup: this composite creates its own project, independent of the
+  // shared FlowContext.projectId chain, so it cleans itself up here rather
+  // than relying on finalCleanup.
+  await deleteProjectAndTasks(h, projectId, title);
+
+  // --- SEPARATE call: the columns-less path (issue #185) — `columns` is
+  // now optional; a project+tasks-only call must create the project and
+  // its tasks in one call WITHOUT touching any Kanban view or bucket at
+  // all (verified server-side below via list-buckets returning zero).
+  const noColumnsTitle = `${NAME_PREFIX}kanban-composite-no-columns`;
+  const noColumnsCall = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    title: noColumnsTitle,
+    tasks: [
+      { title: `${NAME_PREFIX}nc-task-1`, priority: 2 },
+      { title: `${NAME_PREFIX}nc-task-2` },
+    ],
+  });
+  if (assertOk('setup-kanban (columns-less: project+tasks only)', noColumnsCall)) {
+    assertStep(
+      'setup-kanban columns-less reports tasks created with no "columns ready" segment fabricated',
+      noColumnsCall.text.includes('2/2 tasks created') && !noColumnsCall.text.includes('columns ready'),
+      noColumnsCall.text.slice(0, 500),
+    );
+  }
+
+  const noColumnsProjectId = extractId(noColumnsCall.text);
+  if (!noColumnsProjectId) {
+    fail('setup-kanban (columns-less) response contains a project id', noColumnsCall.text.slice(0, 300));
+  } else {
+    // Verify server-side that this path created/renamed/touched NO bucket.
+    // NOT by asserting zero buckets: Vikunja auto-provisions a default
+    // Kanban view AND a set of default buckets ("To-Do"/"Doing"/"Done" on
+    // 2.4.0) for every new project, server-side, with no involvement from
+    // us — verified by direct REST probe against a plain `PUT /projects`.
+    // The honest, version-independent check is therefore a CONTROL project
+    // created via plain `create`: a columns-less setup-kanban must leave
+    // exactly the same bucket set the server would have made on its own.
+    const controlTitle = `${NAME_PREFIX}kanban-columns-less-control`;
+    const controlCall = await h.call('vikunja_projects', {
+      subcommand: 'create',
+      title: controlTitle,
+    });
+    const controlProjectId = assertOk('create control project (columns-less baseline)', controlCall)
+      ? extractId(controlCall.text)
+      : null;
+
+    const bucketTitles = (text: string): string[] =>
+      [...text.matchAll(/"title":\s*"([^"]*)"/g)].map((m) => m[1] ?? '').sort();
+
+    const noColumnsBuckets = await h.call('vikunja_projects', {
+      subcommand: 'list-buckets',
+      id: noColumnsProjectId,
+    });
+    const controlBuckets = controlProjectId
+      ? await h.call('vikunja_projects', { subcommand: 'list-buckets', id: controlProjectId })
+      : null;
+
+    if (
+      assertOk('list-buckets after columns-less setup-kanban', noColumnsBuckets) &&
+      controlBuckets &&
+      assertOk('list-buckets on the control project', controlBuckets)
+    ) {
+      const actual = bucketTitles(noColumnsBuckets.text);
+      const expected = bucketTitles(controlBuckets.text);
+      assertStep(
+        'setup-kanban columns-less path leaves the server default buckets untouched',
+        actual.length === expected.length && actual.every((t, i) => t === expected[i]),
+        `columns-less buckets ${JSON.stringify(actual)} differ from a plain create's ${JSON.stringify(expected)}`,
+      );
+    }
+
+    if (controlProjectId) await deleteProjectAndTasks(h, controlProjectId, controlTitle);
+    await deleteProjectAndTasks(h, noColumnsProjectId, noColumnsTitle);
+  }
+
+  // A task naming a `column` with no `columns` array at all must be
+  // rejected up front — same fail-fast contract as the unknown-column case
+  // above, and nothing (no project) should be created by the rejected call.
+  const missingColumnsTitle = `${NAME_PREFIX}kanban-composite-should-not-exist`;
+  const columnWithoutColumnsCall = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    title: missingColumnsTitle,
+    tasks: [{ title: `${NAME_PREFIX}should-not-exist-task`, column: 'To Do' }],
+  });
+  assertStep(
+    'setup-kanban rejects a task column when columns is omitted entirely (isError, VALIDATION_ERROR-shaped)',
+    columnWithoutColumnsCall.isError && columnWithoutColumnsCall.text.includes('no columns were'),
+    columnWithoutColumnsCall.text.slice(0, 500),
+  );
+
+  const listAfterRejection = await h.call('vikunja_projects', { subcommand: 'list' });
+  if (assertOk('list projects after rejected columns-less setup-kanban call', listAfterRejection)) {
+    assertStep(
+      'setup-kanban column-without-columns rejection created no project',
+      !listAfterRejection.text.includes(missingColumnsTitle),
+      listAfterRejection.text.slice(0, 500),
+    );
+  }
 }
 
 async function testNotifications(h: McpHarness): Promise<void> {
@@ -1124,19 +2069,17 @@ async function testNotifications(h: McpHarness): Promise<void> {
  * failure, not a skip.
  */
 async function testAvatarSettings(h: McpHarness): Promise<void> {
-  log('\n[Avatar settings (soft-skip: vikunja_users is JWT-only)]');
+  log('\n[Avatar settings gating (API-token session)]');
+  // `vikunja_users` is JWT-only, so under API-token auth the only honest
+  // check here is that it is correctly gated OFF. The subcommands themselves
+  // are exercised for real in the JWT lane (`runJwtLane`, issue #198) —
+  // this used to be a permanent `skip()`, which reported a coverage hole as
+  // if it were an untestable one.
   const result = await h.call('vikunja_users', { subcommand: 'get-avatar' });
-  if (!result.isError) {
-    fail(
-      'avatar settings gating',
-      'vikunja_users.get-avatar unexpectedly succeeded under API-token auth — JWT-only gating regression? ' +
-        result.text.slice(0, 200),
-    );
-    return;
-  }
-  skip(
-    'avatar settings (get-avatar/set-avatar/upload-avatar)',
-    "vikunja_users is JWT-only; this harness runs under API-token auth so it can't exercise these subcommands",
+  assertStep(
+    'avatar settings correctly gated off under API-token auth (exercised for real in the JWT lane)',
+    result.isError,
+    `vikunja_users.get-avatar unexpectedly succeeded under API-token auth — JWT-only gating regression? ${result.text.slice(0, 200)}`,
   );
 }
 
@@ -1182,30 +2125,33 @@ function isAuthRejection(text: string): boolean {
 async function testUserWebhooks(h: McpHarness): Promise<void> {
   log('\n[User-scoped webhooks (scope: user)]');
 
+  // `GET /user/settings/webhooks*` is JWTKeyAuth-only per the OpenAPI spec,
+  // so a 401 under a tk_* token is the server behaving exactly as documented
+  // — NOT a tolerated server regression, which is how this used to be
+  // recorded (`driftTolerated`). Either outcome is a legitimate pass here;
+  // what must never happen is a non-auth error. The JWT lane (`runJwtLane`,
+  // issue #198) exercises these same calls under JWT, where they must
+  // genuinely succeed.
   const listEvents = await h.call('vikunja_webhooks', { subcommand: 'list-events', scope: 'user' });
   if (!listEvents.isError) {
     assertOk('user-scope list-events', listEvents);
-  } else if (isAuthRejection(listEvents.text)) {
-    driftTolerated(
-      'user-scope list-events',
-      'rejected under tk_* API-token auth (spec: JWTKeyAuth-only, expected)',
+  } else {
+    assertStep(
+      'user-scope list-events rejected as spec-documented under tk_* auth (JWTKeyAuth-only)',
+      isAuthRejection(listEvents.text),
       listEvents.text.slice(0, 300),
     );
-  } else {
-    fail('user-scope list-events', listEvents.text.slice(0, 300));
   }
 
   const list = await h.call('vikunja_webhooks', { subcommand: 'list', scope: 'user' });
   if (!list.isError) {
     assertOk('user-scope list', list);
-  } else if (isAuthRejection(list.text)) {
-    driftTolerated(
-      'user-scope list',
-      'rejected under tk_* API-token auth (spec: JWTKeyAuth-only, expected)',
+  } else {
+    assertStep(
+      'user-scope list rejected as spec-documented under tk_* auth (JWTKeyAuth-only)',
+      isAuthRejection(list.text),
       list.text.slice(0, 300),
     );
-  } else {
-    fail('user-scope list', list.text.slice(0, 300));
   }
 
   // These are pure Zod/argument-consistency checks (no server round-trip),
@@ -1259,6 +2205,24 @@ async function finalCleanup(h: McpHarness, ctx: FlowContext): Promise<void> {
     }
   }
 
+  if (ctx.ensureLabelId) {
+    try {
+      await h.call('vikunja_labels', { subcommand: 'delete', id: ctx.ensureLabelId });
+      log(`  deleted label ${ctx.ensureLabelId}`);
+    } catch (e) {
+      log(`  could not delete label ${ctx.ensureLabelId}: ${(e as Error).message}`);
+    }
+  }
+
+  if (ctx.attachByTitleLabelId) {
+    try {
+      await h.call('vikunja_labels', { subcommand: 'delete', id: ctx.attachByTitleLabelId });
+      log(`  deleted label ${ctx.attachByTitleLabelId}`);
+    } catch (e) {
+      log(`  could not delete label ${ctx.attachByTitleLabelId}: ${(e as Error).message}`);
+    }
+  }
+
   if (ctx.projectId) {
     try {
       await h.call('vikunja_projects', { subcommand: 'delete', id: ctx.projectId });
@@ -1275,11 +2239,239 @@ async function finalCleanup(h: McpHarness, ctx: FlowContext): Promise<void> {
 // Main
 // ============================================================================
 
+/** Newest mtime under a directory tree, ignoring anything not a .ts source. */
+function newestSourceMtime(dir: string): number {
+  let newest = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      newest = Math.max(newest, newestSourceMtime(full));
+    } else if (entry.name.endsWith('.ts')) {
+      newest = Math.max(newest, statSync(full).mtimeMs);
+    }
+  }
+  return newest;
+}
+
+/**
+ * Builds `dist/` if it is stale, under an exclusive lock.
+ *
+ * Both guards exist because of a real failure (issue #205): two concurrent
+ * harness runs each called `npm run build`, and since 0.6.2 that starts with
+ * `prebuild: rm -rf dist` — so one run's `dist/` was deleted out from under
+ * the other's server as it spawned, which surfaced as the baffling
+ * `registerAuthTool is not a function` from a half-written module graph.
+ *
+ * Freshness check first: when `dist/` already reflects `src/`, the second run
+ * does not touch it at all, which is the normal case for parallel agents on
+ * an unchanged tree. The lock then serialises the case where a rebuild really
+ * is needed, so only one process is ever writing `dist/`.
+ */
 function buildProject(): void {
-  log('Building project (npm run build)...');
-  const buildResult = spawnSync('npm', ['run', 'build'], { cwd: REPO_ROOT, stdio: 'inherit' });
-  if (buildResult.status !== 0) {
-    throw new Error(`npm run build failed with exit code ${String(buildResult.status)}`);
+  const distEntry = DIST_ENTRY;
+  const lockFile = path.join(REPO_ROOT, 'node_modules', '.mcp-e2e-build.lock');
+
+  const isFresh = (): boolean => {
+    if (!existsSync(distEntry)) return false;
+    return statSync(distEntry).mtimeMs >= newestSourceMtime(path.join(REPO_ROOT, 'src'));
+  };
+
+  if (isFresh()) {
+    log('dist/ is newer than src/ — skipping the build (another run may be using it).');
+    return;
+  }
+
+  // Crude but sufficient advisory lock: exclusive create, stale after 10min.
+  const deadline = Date.now() + 10 * 60_000;
+  for (;;) {
+    try {
+      writeFileSync(lockFile, String(process.pid), { flag: 'wx' });
+      break;
+    } catch {
+      if (existsSync(lockFile) && Date.now() - statSync(lockFile).mtimeMs > 10 * 60_000) {
+        log('Removing a stale build lock (>10min old).');
+        rmSync(lockFile, { force: true });
+        continue;
+      }
+      if (Date.now() > deadline) throw new Error('Timed out waiting for the build lock.');
+      log('Another run is building dist/ — waiting...');
+      spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},2000)']);
+      if (isFresh()) {
+        log('dist/ was rebuilt by the other run — continuing.');
+        return;
+      }
+    }
+  }
+
+  try {
+    log('Building project (npm run build)...');
+    const buildResult = spawnSync('npm', ['run', 'build'], { cwd: REPO_ROOT, stdio: 'inherit' });
+    if (buildResult.status !== 0) {
+      throw new Error(`npm run build failed with exit code ${String(buildResult.status)}`);
+    }
+  } finally {
+    rmSync(lockFile, { force: true });
+  }
+}
+
+// ============================================================================
+// JWT lane (issue #198)
+// ============================================================================
+
+/**
+ * Tools that must be PRESENT once the session is authenticated with a JWT —
+ * the positive counterpart of `EXPECTED_TOOLS_ABSENT`, which the API-token
+ * session asserts. Auth-gated only: `vikunja_users` and the export family.
+ */
+const JWT_ONLY_TOOLS_EXPECTED_PRESENT = [
+  'vikunja_users',
+  'vikunja_export_project',
+  'vikunja_request_user_export',
+  'vikunja_user_export_status',
+  'vikunja_download_user_export',
+];
+
+/**
+ * Tools that must stay ABSENT even under JWT: these are deny-by-default
+ * MODULE-config gates ("dangerous"), not auth gates, so a JWT alone must
+ * never surface them. Asserting this in the JWT lane is what proves the two
+ * gating mechanisms are independent rather than accidentally coupled.
+ */
+const DENY_BY_DEFAULT_TOOLS_EXPECTED_ABSENT = [
+  'vikunja_tokens',
+  'vikunja_caldav_tokens',
+  'vikunja_admin',
+  'vikunja_user_deletion',
+];
+
+/** Smallest valid PNG (1x1, transparent) — uploaded via `fileContent`, no temp file. */
+const TINY_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+/** Reads the current avatar provider out of a `get-avatar` response. */
+function extractAvatarProvider(text: string): string | undefined {
+  return /\*\*avatarProvider:\*\*\s*(\S+)/.exec(text)?.[1] ?? /"avatarProvider":\s*"([^"]*)"/.exec(text)?.[1];
+}
+
+/**
+ * Second session, authenticated with a JWT instead of the `tk_*` API token
+ * the main flow uses (issue #198).
+ *
+ * Why a whole second server process: JWT-only tools are gated at TOOL
+ * REGISTRATION time by the token format the server booted with (see
+ * `src/tools/index.ts`), so they cannot be reached by re-authenticating an
+ * already-running session — the tools simply are not registered in it.
+ *
+ * This closes the harness's last coverage hole: before this, the entire
+ * JWT-only surface was asserted solely by "we correctly refuse it" under
+ * API-token auth — one permanent `skip()` (avatar settings) and one
+ * mis-labelled "tolerated server drift" (user-scope webhooks). The
+ * credential needed nothing new: `getApiToken()` already logs in for a JWT
+ * and then throws it away after exchanging it for a `tk_*` token.
+ */
+async function runJwtLane(jwt: string, inheritedEnv: Record<string, string>): Promise<void> {
+  log('\n╔══════════════════════════════════════╗');
+  log('║   JWT lane (second session, issue #198)   ║');
+  log('╚══════════════════════════════════════╝');
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [DIST_ENTRY],
+    // Same localhost-verified URL as the main session (`assertLocalUrl` ran
+    // in `main` before anything spawned), same ambient-env stripping.
+    env: { ...inheritedEnv, VIKUNJA_URL, VIKUNJA_API_TOKEN: jwt },
+  });
+  const client = new Client({ name: 'mcp-e2e-harness-jwt', version: '1.0.0' }, { capabilities: {} });
+
+  try {
+    await client.connect(transport);
+    log('Connected to a second MCP server instance over stdio (JWT auth).');
+    const h = new McpHarness(client);
+
+    // --- Tool gating under JWT
+    log('\n[Tool gating (JWT session)]');
+    const tools = await h.listToolNames();
+    const missing = JWT_ONLY_TOOLS_EXPECTED_PRESENT.filter((t) => !tools.includes(t));
+    assertStep(
+      'JWT-only tools are registered under JWT auth',
+      missing.length === 0,
+      `missing under JWT: ${missing.join(', ') || 'none'}`,
+    );
+    const leaked = DENY_BY_DEFAULT_TOOLS_EXPECTED_ABSENT.filter((t) => tools.includes(t));
+    assertStep(
+      'deny-by-default modules stay absent under JWT auth (module config is not an auth gate)',
+      leaked.length === 0,
+      `unexpectedly present under JWT: ${leaked.join(', ') || 'none'}`,
+    );
+
+    // --- Avatar settings, for real this time
+    log('\n[Avatar settings (JWT session — the surface the API-token lane can only refuse)]');
+    const initial = await h.call('vikunja_users', { subcommand: 'get-avatar' });
+    const originalProvider = assertOk('get-avatar', initial) ? extractAvatarProvider(initial.text) : undefined;
+    assertStep(
+      'get-avatar returns a provider value',
+      Boolean(originalProvider),
+      `could not read avatarProvider from: ${initial.text.slice(0, 300)}`,
+    );
+
+    const setInitials = await h.call('vikunja_users', {
+      subcommand: 'set-avatar',
+      avatarProvider: 'initials',
+    });
+    if (assertOk('set-avatar (initials)', setInitials)) {
+      const afterSet = await h.call('vikunja_users', { subcommand: 'get-avatar' });
+      assertStep(
+        'set-avatar round-trips through get-avatar',
+        assertOk('get-avatar after set-avatar', afterSet) && extractAvatarProvider(afterSet.text) === 'initials',
+        `expected provider "initials", got: ${afterSet.text.slice(0, 300)}`,
+      );
+    }
+
+    const upload = await h.call('vikunja_users', {
+      subcommand: 'upload-avatar',
+      fileContent: TINY_PNG_BASE64,
+      filename: 'mcp-e2e-avatar.png',
+    });
+    if (assertOk('upload-avatar (inline base64 PNG)', upload)) {
+      const afterUpload = await h.call('vikunja_users', { subcommand: 'get-avatar' });
+      // Vikunja's UploadAvatar handler sets the provider to `upload` as a
+      // side effect — asserting that is what proves the bytes actually
+      // landed server-side rather than the call merely returning 200.
+      assertStep(
+        'upload-avatar flips the provider to "upload" server-side',
+        assertOk('get-avatar after upload', afterUpload) &&
+          extractAvatarProvider(afterUpload.text) === 'upload',
+        `expected provider "upload", got: ${afterUpload.text.slice(0, 300)}`,
+      );
+    }
+
+    // Leave the stack's test user exactly as found.
+    if (originalProvider) {
+      const restore = await h.call('vikunja_users', {
+        subcommand: 'set-avatar',
+        avatarProvider: originalProvider,
+      });
+      assertStep(
+        `avatar provider restored to "${originalProvider}"`,
+        !restore.isError,
+        restore.text.slice(0, 300),
+      );
+    }
+
+    // --- User-scope webhooks, which 401 under a tk_* token by design
+    log('\n[User-scoped webhooks (JWT session)]');
+    assertOk(
+      'user-scope list-events succeeds under JWT',
+      await h.call('vikunja_webhooks', { subcommand: 'list-events', scope: 'user' }),
+    );
+    assertOk(
+      'user-scope list succeeds under JWT',
+      await h.call('vikunja_webhooks', { subcommand: 'list', scope: 'user' }),
+    );
+  } catch (e) {
+    fail('JWT lane', (e as Error).stack || String(e));
+  } finally {
+    await client.close().catch(() => undefined);
   }
 }
 
@@ -1289,6 +2481,8 @@ async function main(): Promise<void> {
   log('╚══════════════════════════════╝');
 
   assertLocalUrl(VIKUNJA_URL);
+  detectedServerVersion = await detectServerVersion();
+  log(`Server version (GET /info): ${detectedServerVersion ?? 'undetected'}`);
   buildProject();
 
   const token = await getApiToken();
@@ -1319,6 +2513,7 @@ async function main(): Promise<void> {
   try {
     await client.connect(transport);
     log('Connected to MCP server over stdio.');
+    testHandshakeVersion(client);
 
     const h = new McpHarness(client);
     const ctx: FlowContext = {};
@@ -1333,10 +2528,12 @@ async function main(): Promise<void> {
       await testBulkCreateStress(h, ctx);
       await testSubtaskComposites(h, ctx);
       await testLabels(h, ctx);
+      await testMultiTaskLabelOps(h);
       await testAssignees(h, ctx);
       await testComments(h, ctx);
       await testReminders(h, ctx);
       await testKanban(h, ctx);
+      await testSetupKanban(h);
       await testNotifications(h);
       await testAvatarSettings(h);
       await testSavedFilters(h, ctx);
@@ -1350,6 +2547,23 @@ async function main(): Promise<void> {
     exitCode = 1;
   } finally {
     await client.close().catch(() => undefined);
+  }
+
+  // Second session under JWT auth (issue #198). Deliberately AFTER the main
+  // session is closed, not concurrent with it: two servers writing to the
+  // same stack under the same prefix would make the cleanup-by-prefix
+  // sweeps race each other.
+  try {
+    // Deliberately the MUTABLE user (issue #205): this lane changes the
+    // avatar provider, which is identity-scoped state. Doing that to
+    // `e2e-test` -- the identity every harness and every stored token
+    // belongs to -- is visible to any concurrent run on this stack.
+    const jwt = await login(MUTABLE_USERNAME);
+    await runJwtLane(jwt, inheritedEnv);
+  } catch (e) {
+    // A login failure here is a real gap in coverage, not a reason to go
+    // quiet — the JWT-only surface would go unexercised.
+    fail('JWT lane (login for the second session)', (e as Error).message);
   }
 
   // ============================================================================

@@ -109,9 +109,9 @@ export function registerNotificationsTool(
     withReadOnlyNote(
       'vikunja_notifications',
       "Manage the current user's Vikunja notifications: list (with optional " +
-        "unread filtering and pagination), mark a single notification read " +
-        "(idempotent — safe to call repeatedly), and mark all notifications " +
-        "read at once.",
+        'unread filtering and pagination), mark a single notification read ' +
+        '(idempotent — safe to call repeatedly), and mark all notifications ' +
+        'read at once.',
     ),
     {
       subcommand: z.enum(['list', 'mark-read', 'mark-all-read']),
@@ -269,7 +269,10 @@ export function registerNotificationsTool(
         }
 
         if (error instanceof Error) {
-          throw new MCPError(ErrorCode.API_ERROR, `Notifications operation failed: ${error.message}`);
+          throw new MCPError(
+            ErrorCode.API_ERROR,
+            `Notifications operation failed: ${error.message}`,
+          );
         }
 
         throw new MCPError(

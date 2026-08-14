@@ -33,7 +33,12 @@ jest.mock('../../src/auth/AuthManager');
 const mockFetch = jest.fn();
 global.fetch = mockFetch as any;
 
-function mockResponse(opts: { ok?: boolean; status?: number; statusText?: string; body?: unknown }): Response {
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  body?: unknown;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', body } = opts;
   const text = body === undefined ? '' : JSON.stringify(body);
   return {
@@ -99,9 +104,7 @@ describe('Reactions Tool', () => {
     it('should throw error when not authenticated', async () => {
       mockAuthManager.isAuthenticated.mockReturnValue(false);
 
-      await expect(
-        mockHandler({ subcommand: 'list', kind: 'tasks', entityId: 1 }),
-      ).rejects.toThrow(
+      await expect(mockHandler({ subcommand: 'list', kind: 'tasks', entityId: 1 })).rejects.toThrow(
         new MCPError(
           ErrorCode.AUTH_REQUIRED,
           'Authentication required. Please use vikunja_auth.connect first.',
@@ -117,16 +120,13 @@ describe('Reactions Tool', () => {
 
       const result = await mockHandler({ subcommand: 'list', kind: 'tasks', entityId: 7 });
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.vikunja.test/api/v1/tasks/7/reactions',
-        {
-          method: 'GET',
-          headers: {
-            Authorization: 'Bearer test-token',
-            'Content-Type': 'application/json',
-          },
+      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/api/v1/tasks/7/reactions', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
         },
-      );
+      });
       expect(result.content[0].text).toContain('**success:** true');
       expect(result.content[0].text).toContain('**count:** 1');
     });
@@ -174,24 +174,19 @@ describe('Reactions Tool', () => {
         value: '👍',
       });
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.vikunja.test/api/v1/tasks/7/reactions',
-        {
-          method: 'PUT',
-          headers: {
-            Authorization: 'Bearer test-token',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ value: '👍' }),
+      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/api/v1/tasks/7/reactions', {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
         },
-      );
+        body: JSON.stringify({ value: '👍' }),
+      });
       expect(result.content[0].text).toContain('Reaction "👍" added to tasks 7');
     });
 
     it('should require a value', async () => {
-      await expect(
-        mockHandler({ subcommand: 'add', kind: 'tasks', entityId: 7 }),
-      ).rejects.toThrow(
+      await expect(mockHandler({ subcommand: 'add', kind: 'tasks', entityId: 7 })).rejects.toThrow(
         new MCPError(ErrorCode.VALIDATION_ERROR, 'value is required for adding a reaction'),
       );
       expect(mockFetch).not.toHaveBeenCalled();
@@ -287,15 +282,17 @@ describe('Reactions Tool', () => {
     it('should throw a validation error for a non-positive entityId', async () => {
       await expect(
         mockHandler({ subcommand: 'list', kind: 'tasks', entityId: -1 }),
-      ).rejects.toThrow(new MCPError(ErrorCode.VALIDATION_ERROR, 'entityId must be a positive integer'));
+      ).rejects.toThrow(
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'entityId must be a positive integer'),
+      );
     });
 
     it('should surface a network failure (fetch rejects) as the MCPError vikunjaRestRequest already produced', async () => {
       mockFetch.mockRejectedValue(new Error('boom'));
 
-      await expect(
-        mockHandler({ subcommand: 'list', kind: 'tasks', entityId: 7 }),
-      ).rejects.toThrow('Vikunja REST request failed (GET /tasks/7/reactions): boom');
+      await expect(mockHandler({ subcommand: 'list', kind: 'tasks', entityId: 7 })).rejects.toThrow(
+        'Vikunja REST request failed (GET /tasks/7/reactions): boom',
+      );
     });
 
     describe('unexpected (non-MCPError) failures from other dependencies', () => {
@@ -350,7 +347,12 @@ describe('Reactions Tool', () => {
 
       expect(
         isReadOnlyRejection(
-          await callAndCatch(mockHandler, { subcommand: 'add', kind: 'tasks', entityId: 1, value: '👍' }),
+          await callAndCatch(mockHandler, {
+            subcommand: 'add',
+            kind: 'tasks',
+            entityId: 1,
+            value: '👍',
+          }),
         ),
       ).toBe(true);
       expect(
@@ -382,7 +384,12 @@ describe('Reactions Tool', () => {
 
       expect(
         isReadOnlyRejection(
-          await callAndCatch(mockHandler, { subcommand: 'add', kind: 'tasks', entityId: 1, value: '👍' }),
+          await callAndCatch(mockHandler, {
+            subcommand: 'add',
+            kind: 'tasks',
+            entityId: 1,
+            value: '👍',
+          }),
         ),
       ).toBe(false);
     });
