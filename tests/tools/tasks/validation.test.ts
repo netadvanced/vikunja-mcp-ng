@@ -4,6 +4,7 @@ import {
   validateId,
   convertRepeatConfiguration,
   processBatches,
+  normalizeDateForApi,
 } from '../../../src/tools/tasks/validation';
 import { MCPError, ErrorCode } from '../../../src/types';
 
@@ -19,8 +20,8 @@ describe('Validation utilities', () => {
       expect(() => validateDateString('invalid-date', 'testDate')).toThrow(
         new MCPError(
           ErrorCode.VALIDATION_ERROR,
-          'testDate must be a valid ISO 8601 date string (e.g., 2024-05-24T10:00:00Z)'
-        )
+          'testDate must be a valid ISO 8601 date string (e.g., 2024-05-24T10:00:00Z)',
+        ),
       );
     });
 
@@ -28,9 +29,32 @@ describe('Validation utilities', () => {
       expect(() => validateDateString('2024-13-45', 'testDate')).toThrow(
         new MCPError(
           ErrorCode.VALIDATION_ERROR,
-          'testDate must be a valid ISO 8601 date string (e.g., 2024-05-24T10:00:00Z)'
-        )
+          'testDate must be a valid ISO 8601 date string (e.g., 2024-05-24T10:00:00Z)',
+        ),
       );
+    });
+  });
+
+  describe('normalizeDateForApi', () => {
+    it('coerces a bare YYYY-MM-DD date to RFC3339 midnight UTC', () => {
+      expect(normalizeDateForApi('2026-07-24')).toBe('2026-07-24T00:00:00Z');
+    });
+
+    it('leaves an already-full RFC3339 timestamp unchanged', () => {
+      expect(normalizeDateForApi('2026-07-24T10:30:00Z')).toBe('2026-07-24T10:30:00Z');
+      expect(normalizeDateForApi('2026-07-24T10:30:00+02:00')).toBe('2026-07-24T10:30:00+02:00');
+    });
+
+    it('passes through undefined unchanged', () => {
+      expect(normalizeDateForApi(undefined)).toBeUndefined();
+    });
+
+    it('passes through an empty string unchanged', () => {
+      expect(normalizeDateForApi('')).toBe('');
+    });
+
+    it('leaves an unrecognized/malformed date string unchanged (validateDateString handles rejection)', () => {
+      expect(normalizeDateForApi('not-a-date')).toBe('not-a-date');
     });
   });
 
@@ -43,19 +67,19 @@ describe('Validation utilities', () => {
 
     it('should throw error for zero', () => {
       expect(() => validateId(0, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
 
     it('should throw error for negative numbers', () => {
       expect(() => validateId(-1, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
 
     it('should throw error for non-integers', () => {
       expect(() => validateId(1.5, 'testId')).toThrow(
-        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer')
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'testId must be a positive integer'),
       );
     });
   });
@@ -117,9 +141,9 @@ describe('Validation utilities', () => {
   describe('processBatches', () => {
     it('should process items in batches', async () => {
       const items = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-      const processor = jest.fn().mockImplementation((batch) => 
-        Promise.resolve(batch.map((n: number) => n * 2))
-      );
+      const processor = jest
+        .fn()
+        .mockImplementation((batch) => Promise.resolve(batch.map((n: number) => n * 2)));
 
       const result = await processBatches(items, 3, processor);
 
@@ -142,9 +166,9 @@ describe('Validation utilities', () => {
 
     it('should handle single batch', async () => {
       const items = [1, 2, 3];
-      const processor = jest.fn().mockImplementation((batch) => 
-        Promise.resolve(batch.map((n: number) => n * 2))
-      );
+      const processor = jest
+        .fn()
+        .mockImplementation((batch) => Promise.resolve(batch.map((n: number) => n * 2)));
 
       const result = await processBatches(items, 10, processor);
 
@@ -162,9 +186,9 @@ describe('Validation utilities', () => {
 
     it('should maintain order of results', async () => {
       const items = Array.from({ length: 20 }, (_, i) => i + 1);
-      const processor = jest.fn().mockImplementation((batch) => 
-        Promise.resolve(batch.map((n: number) => `item-${n}`))
-      );
+      const processor = jest
+        .fn()
+        .mockImplementation((batch) => Promise.resolve(batch.map((n: number) => `item-${n}`)));
 
       const result = await processBatches(items, 7, processor);
 

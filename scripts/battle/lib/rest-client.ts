@@ -39,6 +39,8 @@ export interface VikunjaLabel {
 export interface VikunjaBucket {
   id: number;
   title: string;
+  /** Number of tasks currently in this bucket, per `models.Bucket.count` in the Vikunja OpenAPI spec -- used to verify actual task-to-bucket distribution, not just that the buckets themselves exist. */
+  count?: number;
 }
 
 export interface VikunjaProjectView {
@@ -63,6 +65,7 @@ export interface VikunjaRestClient {
   requestOrEmpty<T>(path: string): Promise<T[]>;
   listProjects(): Promise<VikunjaProject[]>;
   listTasksInProject(projectId: number): Promise<VikunjaTask[]>;
+  listAllTasks(): Promise<VikunjaTask[]>;
   getTask(taskId: number): Promise<VikunjaTask>;
   listLabels(): Promise<VikunjaLabel[]>;
   listViews(projectId: number): Promise<VikunjaProjectView[]>;
@@ -127,6 +130,25 @@ export class RestClient implements VikunjaRestClient {
     );
   }
 
+  /**
+   * Cross-project `GET /tasks` with no `project_id` filter -- the same
+   * strategy the product's own tools use as their primary cross-project
+   * listing path (`RestCrossProjectFilteringStrategy`). Paginates via `page`
+   * since the endpoint returns no total count (see docs/API_NOTES.md):
+   * a full page means there may be more, so keep requesting pages until one
+   * comes back short.
+   */
+  async listAllTasks(): Promise<VikunjaTask[]> {
+    const perPage = 200;
+    const all: VikunjaTask[] = [];
+    for (let page = 1; ; page += 1) {
+      const batch = await this.requestOrEmpty<VikunjaTask>(`/tasks?page=${page}&per_page=${perPage}`);
+      all.push(...batch);
+      if (batch.length < perPage) break;
+    }
+    return all;
+  }
+
   getTask(taskId: number): Promise<VikunjaTask> {
     return this.request<VikunjaTask>('GET', `/tasks/${taskId}`);
   }
@@ -143,7 +165,14 @@ export class RestClient implements VikunjaRestClient {
     const views = await this.listViews(projectId);
     const kanban = views.find((v) => v.view_kind === 'kanban') ?? views[0];
     if (!kanban) return [];
-    return this.requestOrEmpty<VikunjaBucket>(`/projects/${projectId}/views/${kanban.id}/buckets`);
+    // Read buckets via the kanban view's *tasks* endpoint, not /buckets. The plain
+    // /views/{id}/buckets endpoint returns bucket metadata with `count` hardcoded to 0
+    // and no embedded tasks, so it cannot verify task-to-bucket placement (this caused
+    // the bulk-set-bucket scenario to false-FAIL even though the move persisted). The
+    // kanban view's task collection returns each bucket WITH its `count` and `tasks[]`
+    // populated (confirmed against Vikunja 2.4.0) — a strict superset of /buckets, so
+    // both buckets-with-tasks-count and min-buckets-in-project read correctly from it.
+    return this.requestOrEmpty<VikunjaBucket>(`/projects/${projectId}/views/${kanban.id}/tasks`);
   }
 
   listShares(projectId: number): Promise<VikunjaShare[]> {

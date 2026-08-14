@@ -18,17 +18,12 @@ import type {
   HttpConfig,
   TransportMode,
 } from './types';
-import {
-  Environment,
-  ConfigurationError,
-  ApplicationConfigSchema,
-} from './types';
+import { Environment, ConfigurationError, ApplicationConfigSchema } from './types';
 import { readSecretEnv } from './secrets';
 import { logger } from '../utils/logger';
 
 /** Default location of the optional JSON config file, relative to cwd. */
 const DEFAULT_CONFIG_FILE_NAME = 'vikunja-mcp.config.json';
-
 
 /**
  * Environment-specific configuration overrides
@@ -133,7 +128,7 @@ export class ConfigurationManager {
     try {
       // 1. Detect environment
       const environment = this.detectEnvironment();
-      
+
       // 2. Load base configuration from environment profile
       const profileConfig = ENVIRONMENT_PROFILES[environment] || {};
 
@@ -156,21 +151,21 @@ export class ConfigurationManager {
         profileConfig,
         fileConfig,
         envConfig,
-        sourceConfig
+        sourceConfig,
       );
-      
+
       // 7. Validate and transform configuration
       this.config = this.validateConfiguration(rawConfig);
 
       // 8. Log configuration summary (without sensitive values)
       this.logConfigurationSummary();
-      
+
       return this.config;
     } catch (error) {
       if (error instanceof z.ZodError) {
         throw new ConfigurationError(
           'validation',
-          `Configuration validation failed: ${error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`
+          `Configuration validation failed: ${error.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join(', ')}`,
         );
       }
       throw error;
@@ -263,15 +258,15 @@ export class ConfigurationManager {
 
     const nodeEnv = process.env.NODE_ENV?.toLowerCase();
     const jestWorker = process.env.JEST_WORKER_ID;
-    
+
     if (jestWorker || nodeEnv === 'test') {
       return Environment.TEST;
     }
-    
+
     if (nodeEnv === 'production') {
       return Environment.PRODUCTION;
     }
-    
+
     return Environment.DEVELOPMENT;
   }
 
@@ -302,7 +297,7 @@ export class ConfigurationManager {
         throw new ConfigurationError(
           'configFile',
           `Failed to read config file at ${configPath} (from VIKUNJA_MCP_CONFIG): ` +
-            `${error instanceof Error ? error.message : String(error)}`
+            `${error instanceof Error ? error.message : String(error)}`,
         );
       }
       // Default config file is optional — absence is not an error.
@@ -316,18 +311,18 @@ export class ConfigurationManager {
       throw new ConfigurationError(
         'configFile',
         `Config file at ${configPath} is not valid JSON: ` +
-          `${error instanceof Error ? error.message : String(error)}`
+          `${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new ConfigurationError(
         'configFile',
-        `Config file at ${configPath} must contain a JSON object at the top level.`
+        `Config file at ${configPath} must contain a JSON object at the top level.`,
       );
     }
 
-    return parsed as Partial<ApplicationConfig>;
+    return parsed;
   }
 
   /**
@@ -360,7 +355,12 @@ export class ConfigurationManager {
     this.assignEnvValue(rateLimiting, 'enabled', process.env.RATE_LIMIT_ENABLED, true);
 
     const defaultSettings: Record<string, unknown> = {};
-    this.assignEnvValue(defaultSettings, 'requestsPerMinute', process.env.RATE_LIMIT_PER_MINUTE, true);
+    this.assignEnvValue(
+      defaultSettings,
+      'requestsPerMinute',
+      process.env.RATE_LIMIT_PER_MINUTE,
+      true,
+    );
     this.assignEnvValue(defaultSettings, 'requestsPerHour', process.env.RATE_LIMIT_PER_HOUR, true);
     this.assignEnvValue(defaultSettings, 'maxRequestSize', process.env.MAX_REQUEST_SIZE, true);
     this.assignEnvValue(defaultSettings, 'maxResponseSize', process.env.MAX_RESPONSE_SIZE, true);
@@ -370,18 +370,53 @@ export class ConfigurationManager {
     }
 
     const expensiveSettings: Record<string, unknown> = {};
-    this.assignEnvValue(expensiveSettings, 'requestsPerMinute', process.env.EXPENSIVE_RATE_LIMIT_PER_MINUTE, true);
-    this.assignEnvValue(expensiveSettings, 'requestsPerHour', process.env.EXPENSIVE_RATE_LIMIT_PER_HOUR, true);
-    this.assignEnvValue(expensiveSettings, 'maxRequestSize', process.env.EXPENSIVE_MAX_REQUEST_SIZE, true);
-    this.assignEnvValue(expensiveSettings, 'maxResponseSize', process.env.EXPENSIVE_MAX_RESPONSE_SIZE, true);
-    this.assignEnvValue(expensiveSettings, 'executionTimeout', process.env.EXPENSIVE_TOOL_TIMEOUT, true);
+    this.assignEnvValue(
+      expensiveSettings,
+      'requestsPerMinute',
+      process.env.EXPENSIVE_RATE_LIMIT_PER_MINUTE,
+      true,
+    );
+    this.assignEnvValue(
+      expensiveSettings,
+      'requestsPerHour',
+      process.env.EXPENSIVE_RATE_LIMIT_PER_HOUR,
+      true,
+    );
+    this.assignEnvValue(
+      expensiveSettings,
+      'maxRequestSize',
+      process.env.EXPENSIVE_MAX_REQUEST_SIZE,
+      true,
+    );
+    this.assignEnvValue(
+      expensiveSettings,
+      'maxResponseSize',
+      process.env.EXPENSIVE_MAX_RESPONSE_SIZE,
+      true,
+    );
+    this.assignEnvValue(
+      expensiveSettings,
+      'executionTimeout',
+      process.env.EXPENSIVE_TOOL_TIMEOUT,
+      true,
+    );
     if (Object.keys(expensiveSettings).length > 0) {
       rateLimiting.expensive = expensiveSettings;
     }
 
     const bulkSettings: Record<string, unknown> = {};
-    this.assignEnvValue(bulkSettings, 'requestsPerMinute', process.env.BULK_RATE_LIMIT_PER_MINUTE, true);
-    this.assignEnvValue(bulkSettings, 'requestsPerHour', process.env.BULK_RATE_LIMIT_PER_HOUR, true);
+    this.assignEnvValue(
+      bulkSettings,
+      'requestsPerMinute',
+      process.env.BULK_RATE_LIMIT_PER_MINUTE,
+      true,
+    );
+    this.assignEnvValue(
+      bulkSettings,
+      'requestsPerHour',
+      process.env.BULK_RATE_LIMIT_PER_HOUR,
+      true,
+    );
     this.assignEnvValue(bulkSettings, 'maxRequestSize', process.env.BULK_MAX_REQUEST_SIZE, true);
     this.assignEnvValue(bulkSettings, 'maxResponseSize', process.env.BULK_MAX_RESPONSE_SIZE, true);
     this.assignEnvValue(bulkSettings, 'executionTimeout', process.env.BULK_TOOL_TIMEOUT, true);
@@ -390,10 +425,30 @@ export class ConfigurationManager {
     }
 
     const exportSettings: Record<string, unknown> = {};
-    this.assignEnvValue(exportSettings, 'requestsPerMinute', process.env.EXPORT_RATE_LIMIT_PER_MINUTE, true);
-    this.assignEnvValue(exportSettings, 'requestsPerHour', process.env.EXPORT_RATE_LIMIT_PER_HOUR, true);
-    this.assignEnvValue(exportSettings, 'maxRequestSize', process.env.EXPORT_MAX_REQUEST_SIZE, true);
-    this.assignEnvValue(exportSettings, 'maxResponseSize', process.env.EXPORT_MAX_RESPONSE_SIZE, true);
+    this.assignEnvValue(
+      exportSettings,
+      'requestsPerMinute',
+      process.env.EXPORT_RATE_LIMIT_PER_MINUTE,
+      true,
+    );
+    this.assignEnvValue(
+      exportSettings,
+      'requestsPerHour',
+      process.env.EXPORT_RATE_LIMIT_PER_HOUR,
+      true,
+    );
+    this.assignEnvValue(
+      exportSettings,
+      'maxRequestSize',
+      process.env.EXPORT_MAX_REQUEST_SIZE,
+      true,
+    );
+    this.assignEnvValue(
+      exportSettings,
+      'maxResponseSize',
+      process.env.EXPORT_MAX_RESPONSE_SIZE,
+      true,
+    );
     this.assignEnvValue(exportSettings, 'executionTimeout', process.env.EXPORT_TOOL_TIMEOUT, true);
     if (Object.keys(exportSettings).length > 0) {
       rateLimiting.export = exportSettings;
@@ -409,7 +464,7 @@ export class ConfigurationManager {
       featureFlags,
       'enableServerSideFiltering',
       process.env.VIKUNJA_ENABLE_SERVER_SIDE_FILTERING,
-      true
+      true,
     );
     if (Object.keys(featureFlags).length > 0) {
       result.featureFlags = featureFlags;
@@ -432,28 +487,33 @@ export class ConfigurationManager {
       modules,
       'notifications',
       process.env.VIKUNJA_MCP_MODULE_NOTIFICATIONS,
-      true
+      true,
     );
     this.assignEnvValue(
       modules,
       'subscriptions',
       process.env.VIKUNJA_MCP_MODULE_SUBSCRIPTIONS,
-      true
+      true,
     );
     this.assignEnvValue(modules, 'reactions', process.env.VIKUNJA_MCP_MODULE_REACTIONS, true);
     this.assignEnvValue(modules, 'admin', process.env.VIKUNJA_MCP_MODULE_ADMIN, true);
-    this.assignEnvValue(modules, 'userDeletion', process.env.VIKUNJA_MCP_MODULE_USER_DELETION, true);
+    this.assignEnvValue(
+      modules,
+      'userDeletion',
+      process.env.VIKUNJA_MCP_MODULE_USER_DELETION,
+      true,
+    );
     this.assignEnvValue(
       modules,
       'tokenManagement',
       process.env.VIKUNJA_MCP_MODULE_TOKEN_MANAGEMENT,
-      true
+      true,
     );
     this.assignEnvValue(
       modules,
       'caldavTokens',
       process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS,
-      true
+      true,
     );
     this.assignEnvValue(modules, 'backgrounds', process.env.VIKUNJA_MCP_MODULE_BACKGROUNDS, true);
     if (Object.keys(modules).length > 0) {
@@ -484,6 +544,10 @@ export class ConfigurationManager {
     this.assignEnvValue(http, 'host', process.env.VIKUNJA_MCP_HTTP_HOST, false);
     this.assignEnvValue(http, 'port', process.env.VIKUNJA_MCP_HTTP_PORT, true);
     this.assignEnvValue(http, 'path', process.env.VIKUNJA_MCP_HTTP_PATH, false);
+    // Canonical public MCP URL for RFC 9728 discovery (`http.publicUrl`) —
+    // recommended behind a reverse proxy; derived from the request's Host
+    // header when unset. See src/transport/resourceMetadata.ts.
+    this.assignEnvValue(http, 'publicUrl', process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL, false);
     const allowedHostsRaw = process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS;
     if (allowedHostsRaw !== undefined) {
       http.allowedHosts = allowedHostsRaw
@@ -535,7 +599,7 @@ export class ConfigurationManager {
       result.vault = vault;
     }
 
-    return result as Partial<ApplicationConfig>;
+    return result;
   }
 
   /**
@@ -546,7 +610,7 @@ export class ConfigurationManager {
     target: Record<string, unknown>,
     key: string,
     rawValue: string | undefined,
-    parse: boolean
+    parse: boolean,
   ): void {
     if (rawValue === undefined) {
       return;
@@ -573,16 +637,15 @@ export class ConfigurationManager {
     return value;
   }
 
-
   /**
    * Deep merge multiple configuration objects
    */
   private deepMerge(...objects: Record<string, unknown>[]): Record<string, unknown> {
     const result: Record<string, unknown> = {};
-    
+
     for (const obj of objects) {
       if (!obj || typeof obj !== 'object') continue;
-      
+
       for (const key in obj) {
         if (Object.prototype.hasOwnProperty.call(obj, key)) {
           if (
@@ -593,8 +656,8 @@ export class ConfigurationManager {
             !Array.isArray(obj[key])
           ) {
             result[key] = this.deepMerge(
-              result[key] as Record<string, unknown>, 
-              obj[key] as Record<string, unknown>
+              result[key] as Record<string, unknown>,
+              obj[key] as Record<string, unknown>,
             );
           } else {
             result[key] = obj[key];
@@ -602,11 +665,10 @@ export class ConfigurationManager {
         }
       }
     }
-    
+
     return result;
   }
 
-  
   /**
    * Validate configuration using Zod schema
    */
@@ -616,17 +678,17 @@ export class ConfigurationManager {
     } catch (error) {
       if (error instanceof z.ZodError) {
         // Provide detailed validation errors
-        const errors = error.errors.map(err => ({
+        const errors = error.errors.map((err) => ({
           path: err.path.join('.'),
           message: err.message,
           received: 'received' in err ? err.received : 'unknown',
           expected: 'expected' in err ? err.expected : 'unknown',
         }));
-        
+
         throw new ConfigurationError(
           'validation',
-          `Configuration validation failed:\n${errors.map(e => `  - ${e.path}: ${e.message}`).join('\n')}`,
-          { errors, rawConfig }
+          `Configuration validation failed:\n${errors.map((e) => `  - ${e.path}: ${e.message}`).join('\n')}`,
+          { errors, rawConfig },
         );
       }
       throw error;
@@ -638,7 +700,7 @@ export class ConfigurationManager {
    */
   private logConfigurationSummary(): void {
     if (!this.config) return;
-    
+
     const summary = {
       environment: this.config.environment,
       auth: {
@@ -683,14 +745,24 @@ export class ConfigurationManager {
 }
 
 // Export singleton instance getter
-export const getConfiguration = (): Promise<ApplicationConfig> => ConfigurationManager.getInstance().getConfiguration();
-export const getAuthConfig = (): Promise<AuthConfig> => ConfigurationManager.getInstance().getAuthConfig();
-export const getLoggingConfig = (): Promise<LoggingConfig> => ConfigurationManager.getInstance().getLoggingConfig();
-export const getRateLimitConfig = (): Promise<RateLimitConfig> => ConfigurationManager.getInstance().getRateLimitConfig();
-export const getFeatureFlagsConfig = (): Promise<FeatureFlagsConfig> => ConfigurationManager.getInstance().getFeatureFlagsConfig();
-export const isFeatureEnabled = (featureName: string): Promise<boolean> => ConfigurationManager.getInstance().isFeatureEnabled(featureName);
-export const getModulesConfig = (): Promise<ModulesConfig> => ConfigurationManager.getInstance().getModulesConfig();
+export const getConfiguration = (): Promise<ApplicationConfig> =>
+  ConfigurationManager.getInstance().getConfiguration();
+export const getAuthConfig = (): Promise<AuthConfig> =>
+  ConfigurationManager.getInstance().getAuthConfig();
+export const getLoggingConfig = (): Promise<LoggingConfig> =>
+  ConfigurationManager.getInstance().getLoggingConfig();
+export const getRateLimitConfig = (): Promise<RateLimitConfig> =>
+  ConfigurationManager.getInstance().getRateLimitConfig();
+export const getFeatureFlagsConfig = (): Promise<FeatureFlagsConfig> =>
+  ConfigurationManager.getInstance().getFeatureFlagsConfig();
+export const isFeatureEnabled = (featureName: string): Promise<boolean> =>
+  ConfigurationManager.getInstance().isFeatureEnabled(featureName);
+export const getModulesConfig = (): Promise<ModulesConfig> =>
+  ConfigurationManager.getInstance().getModulesConfig();
 export const isReadOnly = (): boolean => ConfigurationManager.getInstance().isReadOnly();
-export const getTemplatesConfig = (): Promise<TemplatesConfig> => ConfigurationManager.getInstance().getTemplatesConfig();
-export const getHttpConfig = (): Promise<HttpConfig> => ConfigurationManager.getInstance().getHttpConfig();
-export const getTransportMode = (): TransportMode => ConfigurationManager.getInstance().getTransportMode();
+export const getTemplatesConfig = (): Promise<TemplatesConfig> =>
+  ConfigurationManager.getInstance().getTemplatesConfig();
+export const getHttpConfig = (): Promise<HttpConfig> =>
+  ConfigurationManager.getInstance().getHttpConfig();
+export const getTransportMode = (): TransportMode =>
+  ConfigurationManager.getInstance().getTransportMode();

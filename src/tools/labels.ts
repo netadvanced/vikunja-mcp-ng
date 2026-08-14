@@ -14,6 +14,21 @@
  *                          the label service's `Update` handler only applies
  *                          fields present on the incoming struct)
  *   - DELETE /labels/{id}  delete
+ *
+ * `ensure` is a composite, not a distinct REST endpoint: it get-or-creates a
+ * label by title (GET /labels?s=<title>, filtered client-side for a
+ * case-insensitive exact-title match; PUT /labels to create when none is
+ * found) so "attach a label by name" collapses from list→match→create into a
+ * single idempotent call. See netadvanced/vikunja-mcp#28 friction #4
+ * (existing-label-reuse cost both models 2x the optimal call count with no
+ * create-or-reuse primitive).
+ *
+ * The get-or-create logic itself lives in the shared `ensureLabelByTitle`
+ * helper (src/utils/label-ensure.ts) — `vikunja_task_labels apply-label` also
+ * calls it (via its `labelTitles` field) so attaching a label by name is a
+ * single call on the tool agents already reach for, instead of requiring a
+ * separate `ensure` call followed by a second `apply-label` call. `ensure`
+ * remains here for the get-or-create-without-attaching use case.
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -27,6 +42,7 @@ import { wrapToolError } from '../utils/error-handler';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
+import { ensureLabelByTitle } from '../utils/label-ensure';
 import type { components } from '../types/generated/vikunja-openapi';
 // `ResponseData.labels` (src/utils/simple-response.ts) is still typed
 // against this simplified local shape (`title: string`, not optional) — the
@@ -56,16 +72,24 @@ function rethrowLabelNotFound(error: unknown, id: number): never {
   throw error;
 }
 
-export function registerLabelsTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerLabelsTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_labels',
     withReadOnlyNote(
       'vikunja_labels',
-      'Manage task labels with full CRUD operations for organizing and categorizing tasks',
+      'Manage task labels with full CRUD operations for organizing and categorizing tasks. ' +
+        'To attach a label by name in one call, pass `labelTitles` to vikunja_task_labels ' +
+        'apply-label instead — it get-or-creates each title and attaches it, no separate lookup ' +
+        'needed. Use subcommand "ensure" here only when you want to get-or-create a label by title ' +
+        '(idempotent, one call) WITHOUT attaching it to a task.',
     ),
     {
       // Operation type
-      subcommand: z.enum(['list', 'get', 'create', 'update', 'delete']),
+      subcommand: z.enum(['list', 'get', 'create', 'update', 'delete', 'ensure']),
 
       // Common parameters
       id: z.number().int().positive().optional(),
@@ -101,7 +125,6 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
       assertWriteAllowed('vikunja_labels', subcommand);
 
       try {
-
         switch (subcommand) {
           case 'list': {
             const params = new URLSearchParams();
@@ -148,7 +171,11 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
 
             let label: VikunjaLabel;
             try {
-              label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'GET', `/labels/${args.id}`);
+              label = await vikunjaRestRequest<VikunjaLabel>(
+                authManager,
+                'GET',
+                `/labels/${args.id}`,
+              );
             } catch (error) {
               rethrowLabelNotFound(error, args.id);
             }
@@ -180,13 +207,18 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
             if (args.description) labelData.description = args.description;
             if (args.hexColor) labelData.hex_color = args.hexColor;
 
-            const label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'PUT', '/labels', labelData);
+            const label = await vikunjaRestRequest<VikunjaLabel>(
+              authManager,
+              'PUT',
+              '/labels',
+              labelData,
+            );
 
             const response = createStandardResponse(
               'create-label',
               `Label "${label.title}" created successfully`,
               { label },
-              { affectedFields: Object.keys(labelData).filter(key => typeof key === 'string') },
+              { affectedFields: Object.keys(labelData).filter((key) => typeof key === 'string') },
             );
 
             return {
@@ -219,7 +251,12 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
 
             let label: VikunjaLabel;
             try {
-              label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'PUT', `/labels/${args.id}`, updates);
+              label = await vikunjaRestRequest<VikunjaLabel>(
+                authManager,
+                'PUT',
+                `/labels/${args.id}`,
+                updates,
+              );
             } catch (error) {
               rethrowLabelNotFound(error, args.id);
             }
@@ -228,7 +265,7 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
               'update-label',
               `Label "${label.title}" updated successfully`,
               { label },
-              { affectedFields: Object.keys(updates).filter(key => typeof key === 'string') },
+              { affectedFields: Object.keys(updates).filter((key) => typeof key === 'string') },
             );
 
             return {
@@ -257,6 +294,49 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
             const response = createStandardResponse('delete-label', `Label deleted successfully`, {
               result,
             });
+
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: formatAorpAsMarkdown(response),
+                },
+              ],
+            };
+          }
+
+          case 'ensure': {
+            if (!args.title) {
+              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Title is required');
+            }
+
+            const result = await ensureLabelByTitle(authManager, args.title, {
+              ...(args.description ? { description: args.description } : {}),
+              ...(args.hexColor ? { hexColor: args.hexColor } : {}),
+            });
+
+            const response = result.created
+              ? createStandardResponse(
+                  'ensure-label',
+                  `Label "${result.label.title}" did not exist, created it`,
+                  { label: result.label },
+                  {
+                    // Mirrors the `create` subcommand's affectedFields: the
+                    // keys actually sent in the PUT body when creating.
+                    affectedFields: [
+                      'title',
+                      ...(args.description ? ['description'] : []),
+                      ...(args.hexColor ? ['hex_color'] : []),
+                    ],
+                    reused: false,
+                  },
+                )
+              : createStandardResponse(
+                  'ensure-label',
+                  `Label "${result.label.title}" already exists (reused)`,
+                  { label: result.label },
+                  { affectedFields: [], reused: true },
+                );
 
             return {
               content: [

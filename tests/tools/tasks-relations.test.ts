@@ -67,7 +67,9 @@ const mockTask = {
 // a single mocked global fetch for all of it.
 
 // Helper to create a mock server
-function createMockServer(): McpServer & { executeTool: (name: string, args: unknown) => Promise<unknown> } {
+function createMockServer(): McpServer & {
+  executeTool: (name: string, args: unknown) => Promise<unknown>;
+} {
   const registeredTools = new Map<string, any>();
 
   const mockServer = {
@@ -86,7 +88,9 @@ function createMockServer(): McpServer & { executeTool: (name: string, args: unk
     },
   };
 
-  return mockServer as unknown as McpServer & { executeTool: (name: string, args: unknown) => Promise<unknown> };
+  return mockServer as unknown as McpServer & {
+    executeTool: (name: string, args: unknown) => Promise<unknown>;
+  };
 }
 
 describe('Task Relations Tool', () => {
@@ -232,7 +236,7 @@ describe('Task Relations Tool', () => {
         const markdown = (result as any).content[0].text;
         const parsed = parseMarkdown(markdown);
         const aorpStatus = parsed.getAorpStatus();
-      expect(aorpStatus.type).toBe('success'); // New format returns success for successful operations
+        expect(aorpStatus.type).toBe('success'); // New format returns success for successful operations
         expect(markdown).toContain(kind);
       }
     });
@@ -481,7 +485,9 @@ describe('Task Relations Tool', () => {
           subcommand: 'relations',
           id: 1,
         }),
-      ).rejects.toThrow('Failed to get task relations: Vikunja REST request failed (GET /tasks/1): 12345');
+      ).rejects.toThrow(
+        'Failed to get task relations: Vikunja REST request failed (GET /tasks/1): 12345',
+      );
     });
   });
 
@@ -564,6 +570,88 @@ describe('Task Relations Tool', () => {
           authManager,
         ),
       ).rejects.toThrow('Invalid relation subcommand');
+    });
+  });
+
+  describe('sub-resource error retry behavior (#154)', () => {
+    // Deleting a relation that isn't there is the exact #154 trigger: Vikunja
+    // answers HTTP 403. relate (PUT /tasks/{id}/relations) and unrelate
+    // (DELETE /tasks/{id}/relations/{kind}/{other}) route through
+    // vikunjaRestRequest, whose defaultRestShouldRetry retries ONLY
+    // statusCode >= 500 || 429 — never a 4xx client error. These tests lock the
+    // fail-fast contract in place by counting the write attempts per HTTP
+    // method: a 4xx must be attempted EXACTLY once, so a future regression that
+    // re-introduces retry-on-4xx (the labels-tool bug from #154) is caught.
+    const callsByMethod = (method: string): unknown[] =>
+      fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === method,
+      );
+
+    const restError = (status: number, statusText: string, body = ''): Response =>
+      ({
+        ok: false,
+        status,
+        statusText,
+        text: jest.fn(async () => body),
+      }) as unknown as Response;
+
+    it('surfaces a 403 on unrelate once (nonexistent relation — the #154 trigger)', async () => {
+      fetchMock.mockResolvedValue(restError(403, 'Forbidden', 'relation does not exist'));
+
+      await expect(
+        server.executeTool('vikunja_tasks', {
+          subcommand: 'unrelate',
+          id: 1,
+          otherTaskId: 2,
+          relationKind: 'subtask',
+        }),
+      ).rejects.toThrow('HTTP 403');
+      expect(callsByMethod('DELETE')).toHaveLength(1);
+    });
+
+    it('surfaces a 401 on unrelate once, without retrying', async () => {
+      fetchMock.mockResolvedValue(restError(401, 'Unauthorized', 'token expired'));
+
+      await expect(
+        server.executeTool('vikunja_tasks', {
+          subcommand: 'unrelate',
+          id: 1,
+          otherTaskId: 2,
+          relationKind: 'subtask',
+        }),
+      ).rejects.toThrow('HTTP 401');
+      expect(callsByMethod('DELETE')).toHaveLength(1);
+    });
+
+    it('surfaces a 409 on relate once (duplicate relation), without retrying', async () => {
+      fetchMock.mockResolvedValue(restError(409, 'Conflict', 'relation already exists'));
+
+      await expect(
+        server.executeTool('vikunja_tasks', {
+          subcommand: 'relate',
+          id: 1,
+          otherTaskId: 2,
+          relationKind: 'subtask',
+        }),
+      ).rejects.toThrow('HTTP 409');
+      expect(callsByMethod('PUT')).toHaveLength(1);
+    });
+
+    it('retries a 500 on relate (PUT) then surfaces it (5xx IS retried)', async () => {
+      // DEFAULT_JSON_RETRY.maxRetries === 2 (src/utils/vikunja-rest.ts), so
+      // withRetry makes 1 initial + 2 retries = 3 PUT attempts before surfacing.
+      // The refresh GET is never reached because the write throws.
+      fetchMock.mockResolvedValue(restError(500, 'Internal Server Error', 'boom'));
+
+      await expect(
+        server.executeTool('vikunja_tasks', {
+          subcommand: 'relate',
+          id: 1,
+          otherTaskId: 2,
+          relationKind: 'subtask',
+        }),
+      ).rejects.toThrow('HTTP 500');
+      expect(callsByMethod('PUT')).toHaveLength(3);
     });
   });
 });

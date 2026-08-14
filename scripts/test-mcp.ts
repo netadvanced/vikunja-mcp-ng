@@ -1,16 +1,74 @@
 #!/usr/bin/env npx tsx
 /**
  * MCP Integration Test Suite
- * Tests vikunja-mcp tools against a real Vikunja instance
+ * Tests vikunja-mcp tools against a real Vikunja instance.
+ *
+ * SAFETY (issue #197): this harness creates, mutates, and deletes real data,
+ * so it must never be able to reach a production Vikunja. It therefore
+ * **ignores the ambient `VIKUNJA_URL`/`VIKUNJA_API_TOKEN`** that this repo's
+ * own `.envrc` exports for the owner's live instance — a bare
+ * `npm run test:mcp` used to inherit exactly that and aim a write-heavy
+ * suite at production (observed 2026-07-28; it failed at setup, which was
+ * luck, not design).
+ *
+ * Credentials come from the selected e2e target's credentials file
+ * (`docker/e2e/.env.<version>-<db>`, written by docker/e2e/bootstrap.sh),
+ * chosen with `VIKUNJA_E2E_TARGET`. The resolved host is asserted to be
+ * localhost before a single request is sent. `MCP_E2E_VIKUNJA_URL` /
+ * `MCP_E2E_VIKUNJA_API_TOKEN` remain as deliberate, harness-specific
+ * overrides — names nobody would already have exported — and are still
+ * subject to the localhost assertion.
  */
+
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { resolveTarget, DEFAULT_TARGET } from './lib/e2e-target';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const TARGET = resolveTarget(process.env.VIKUNJA_E2E_TARGET || DEFAULT_TARGET);
+
+function readTargetEnv(): Record<string, string> {
+  const file = path.join(REPO_ROOT, TARGET.envFile);
+  if (!existsSync(file)) return {};
+  return Object.fromEntries(
+    readFileSync(file, 'utf-8')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('#'))
+      .map((l) => {
+        const i = l.indexOf('=');
+        return [l.slice(0, i), l.slice(i + 1)] as const;
+      }),
+  );
+}
+
+const TARGET_ENV = readTargetEnv();
+
+/** Aborts unless `url` resolves to loopback — mirrors scripts/mcp-e2e.ts. */
+function assertLocalUrl(url: string): void {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    throw new Error(`Resolved Vikunja URL is not a valid URL: ${url}`);
+  }
+  if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
+    throw new Error(
+      `Refusing to run: target host "${host}" (from ${url}) is not localhost/127.0.0.1. ` +
+        'This suite writes and deletes real data and only ever runs against the disposable ' +
+        'local e2e stack — see docs/LOCAL-TESTING.md.',
+    );
+  }
+}
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
 const CONFIG = {
-  apiUrl: process.env.VIKUNJA_URL || '',
-  apiToken: process.env.VIKUNJA_API_TOKEN || '',
+  apiUrl: process.env.MCP_E2E_VIKUNJA_URL || TARGET_ENV.VIKUNJA_URL || TARGET.apiUrl,
+  apiToken: process.env.MCP_E2E_VIKUNJA_API_TOKEN || TARGET_ENV.VIKUNJA_API_TOKEN || '',
   testProjectName: 'MCP-Test',
 };
 
@@ -82,7 +140,7 @@ async function api<T>(
   }
 
   const text = await res.text();
-  return text ? JSON.parse(text) : null;
+  return (text ? JSON.parse(text) : null) as T;
 }
 
 // ============================================================================
@@ -99,9 +157,11 @@ function validateMCPResponse(response: unknown, testName: string): boolean {
     if (!r.content) throw new Error('Missing content array');
     if (!Array.isArray(r.content)) throw new Error('content is not array');
     if (r.content.length === 0) throw new Error('content array is empty');
-    if (r.content[0].type !== 'text') throw new Error(`type is "${r.content[0].type}" not "text"`);
-    if (typeof r.content[0].text !== 'string') throw new Error('text is not string');
-    if (r.content[0].text.length === 0) throw new Error('text is empty');
+    const first = r.content[0];
+    if (!first) throw new Error('content array is empty');
+    if (first.type !== 'text') throw new Error(`type is "${first.type}" not "text"`);
+    if (typeof first.text !== 'string') throw new Error('text is not string');
+    if (first.text.length === 0) throw new Error('text is empty');
     return true;
   } catch (e) {
     fail(`${testName} [MCP format]`, (e as Error).message);
@@ -118,10 +178,23 @@ async function setup(): Promise<boolean> {
 
   // Validate config
   if (!CONFIG.apiUrl || !CONFIG.apiToken) {
-    log('ERROR: Set VIKUNJA_URL and VIKUNJA_API_TOKEN environment variables');
+    log(
+      `ERROR: no credentials for target ${TARGET.id}. Expected ${TARGET.envFile} ` +
+        `(run 'npm run e2e:up'), or an explicit MCP_E2E_VIKUNJA_URL/MCP_E2E_VIKUNJA_API_TOKEN.`,
+    );
     return false;
   }
 
+  // Before any request: this suite writes and deletes, so it must be aimed
+  // at the disposable local stack and nothing else (issue #197).
+  try {
+    assertLocalUrl(CONFIG.apiUrl);
+  } catch (e) {
+    log(`ERROR: ${(e as Error).message}`);
+    return false;
+  }
+
+  log(`Target: ${TARGET.id} (Vikunja ${TARGET.version}, ${TARGET.db})`);
   log(`API: ${CONFIG.apiUrl}`);
 
   // Find or create test project
@@ -396,7 +469,7 @@ async function testTaskLabels(): Promise<void> {
     const labels = task.labels || [];
     if (labels.length !== 1) {
       fail('list task labels', `expected 1 label, got ${labels.length}`);
-    } else if (labels[0].id !== labelId2) {
+    } else if (labels[0]?.id !== labelId2) {
       fail('list task labels', 'wrong label remained');
     } else {
       pass('list task labels');

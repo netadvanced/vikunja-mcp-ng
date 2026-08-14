@@ -1,6 +1,6 @@
 {
   "name": "vikunja-mcp-ng",
-  "version": "0.5.1",
+  "version": "0.6.2",
   "description": "Model Context Protocol server for Vikunja task management - direct-REST, composite-first tools, enterprise-grade security and reliability",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,11 +17,12 @@
   ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "prebuild": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc",
-    "test": "jest --silent",
-    "test:watch": "jest --watch --silent",
-    "test:coverage": "jest --coverage --silent",
-    "typecheck": "tsc --noEmit",
+    "test": "NODE_OPTIONS=\"--require ./tests/setup/suppress-webstorage-warning.js\" jest --silent",
+    "test:watch": "NODE_OPTIONS=\"--require ./tests/setup/suppress-webstorage-warning.js\" jest --watch --silent",
+    "test:coverage": "NODE_OPTIONS=\"--require ./tests/setup/suppress-webstorage-warning.js\" jest --coverage --silent",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
     "lint": "eslint src --ext .ts --config eslint.config.mjs",
     "format:src": "prettier --write 'src/**/*.ts'",
     "format:tests": "prettier --write 'tests/**/*.ts'",
@@ -38,10 +39,17 @@
     "battle": "tsx scripts/battle/run-scenario.ts",
     "capture:samples": "tsx scripts/capture-sample-screenshots.ts",
     "fetch:api-spec": "curl -sS https://try.vikunja.io/api/v1/docs.json -o docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json > /dev/null",
+    "fetch:api-spec:container": "curl -sS http://localhost:8240/api/v1/docs.json -o docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json > /dev/null",
+    "fetch:api-spec:v2:container": "curl -sS http://localhost:8240/api/v2/openapi.json -o docs/vikunja-openapi-v2.json && jq -e . docs/vikunja-openapi-v2.json > /dev/null",
     "generate:api-types": "node scripts/generate-api-types.mjs",
+    "generate:api-types:v2": "node scripts/generate-api-types-v2.mjs",
     "e2e:up": "docker/e2e/bootstrap.sh",
-    "e2e:down": "docker compose -f docker/e2e/docker-compose.yml --profile postgres --profile sqlite down -v",
+    "e2e:up:all": "docker/e2e/stacks.sh up",
+    "e2e:down": "docker/e2e/stacks.sh down",
+    "e2e:reset": "docker/e2e/stacks.sh reset",
+    "e2e:status": "docker/e2e/stacks.sh status",
     "release:prepare": "scripts/release-prepare.sh",
+    "test:release-prepare": "bash scripts/lib/changelog-draft.test.sh && bash scripts/lib/sync-server-json.test.sh",
     "release:tag": "scripts/release-tag.sh",
     "release:publish": "scripts/release-publish.sh"
   },
@@ -55,7 +63,10 @@
     "productivity",
     "automation"
   ],
-  "author": "Jeremy Green",
+  "author": "Pierre Christen",
+  "contributors": [
+    "Jeremy Green (original author, democratize-technology/vikunja-mcp)"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -83,8 +94,8 @@
     "zod": "^3.25.28"
   },
   "devDependencies": {
-    "@babel/core": "^8.0.1",
-    "@babel/plugin-transform-modules-commonjs": "^8.0.1",
+    "@babel/core": "^7.28.0",
+    "@babel/plugin-transform-modules-commonjs": "^7.27.1",
     "@types/jest": "^30.0.0",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^24.3.0",
@@ -107,56 +118,19 @@
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   },
-  "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
-    "roots": [
-      "<rootDir>/src",
-      "<rootDir>/tests"
-    ],
-    "testMatch": [
-      "**/__tests__/**/*.ts",
-      "**/?(*.)+(spec|test).ts"
-    ],
-    "collectCoverageFrom": [
-      "src/**/*.ts",
-      "!src/**/*.d.ts",
-      "!src/**/__tests__/**"
-    ],
-    "transform": {
-      "^.+\\.tsx?$": "ts-jest",
-      "^.+\\.jsx?$": [
-        "babel-jest",
-        {
-          "plugins": [
-            "@babel/plugin-transform-modules-commonjs"
-          ]
-        }
-      ]
-    },
-    "transformIgnorePatterns": [
-      "/node_modules/(?!(jose)/)"
-    ],
-    "coverageThreshold": {
-      "global": {
-        "branches": 80,
-        "functions": 78,
-        "lines": 89,
-        "statements": 89
-      }
-    }
-  },
   "overrides": {
     "zod": "^3.25.28",
     "qs": "^6.15.3",
-    "fast-uri": "^3.1.3",
+    "fast-uri": "^3.1.5",
     "path-to-regexp": "^8.4.2",
     "body-parser": "^2.3.0",
     "@modelcontextprotocol/sdk": {
       "ajv": "^8.20.0"
-    }
+    },
+    "js-yaml": "^4.3.1",
+    "@hono/node-server": "^2.0.5"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   }
 }

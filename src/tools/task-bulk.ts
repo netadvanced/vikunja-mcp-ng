@@ -20,7 +20,7 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 export function registerTaskBulkTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_task_bulk',
@@ -33,8 +33,22 @@ export function registerTaskBulkTool(
       operation: z.enum(['bulk-create', 'bulk-update', 'bulk-delete', 'bulk-set-bucket']),
       // Bulk operation fields
       taskIds: z.array(z.number()).optional(),
-      field: z.string().optional(),
-      value: z.unknown().optional(),
+      field: z
+        .string()
+        .optional()
+        .describe(
+          "The task field to bulk-update, e.g. 'due_date', 'start_date', 'end_date', " +
+            "'priority', 'done', 'project_id', 'assignees', 'labels', 'repeat_after', " +
+            "'repeat_mode'.",
+        ),
+      value: z
+        .unknown()
+        .optional()
+        .describe(
+          "The new value for 'field'. For due_date/start_date/end_date, a RFC3339/ISO 8601 " +
+            'date-time (e.g., 2024-05-24T10:00:00Z) or a date-only value (e.g., 2024-05-24), ' +
+            'which is normalized to midnight UTC before being sent to Vikunja.',
+        ),
       projectId: z.number().optional(), // Add projectId for bulk-create; also optional override for bulk-set-bucket
       // bulk-set-bucket fields
       bucketId: z.coerce.number().optional(),
@@ -44,7 +58,30 @@ export function registerTaskBulkTool(
           z.object({
             title: z.string(),
             description: z.string().optional(),
-            dueDate: z.string().optional(),
+            dueDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
+                  '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
+                  'being sent to Vikunja.',
+              ),
+            startDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
+                  '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
+                  'being sent to Vikunja.',
+              ),
+            endDate: z
+              .string()
+              .optional()
+              .describe(
+                'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
+                  '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
+                  'being sent to Vikunja.',
+              ),
             priority: z.number().min(0).max(5).optional(),
             labels: z.array(z.number()).optional(),
             assignees: z.array(z.number()).optional(),
@@ -57,7 +94,10 @@ export function registerTaskBulkTool(
     getToolAnnotations('vikunja_task_bulk'),
     async (args) => {
       try {
-        logger.debug('Executing task bulk operations tool', { operation: args.operation, taskCount: args.tasks?.length || args.taskIds?.length });
+        logger.debug('Executing task bulk operations tool', {
+          operation: args.operation,
+          taskCount: args.tasks?.length || args.taskIds?.length,
+        });
 
         // Check authentication (closure-gate precedence fix: defer to the
         // per-request context when bound — see hasRequestContext's doc
@@ -83,13 +123,29 @@ export function registerTaskBulkTool(
             const { bulkCreateTasks } = await import('./tasks/bulk-operations.js');
             // Filter out undefined values for type safety
             if (!args.projectId) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'projectId is required for bulk create operations');
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'projectId is required for bulk create operations',
+              );
             }
             // Filter out undefined values from tasks to satisfy exactOptionalPropertyTypes
-            const filteredTasks = (args.tasks || []).map(task => {
-              const filteredTask: { title: string; description?: string; due_date?: string; priority?: number; labels?: number[]; assignees?: number[]; repeat_after?: number; repeat_mode?: 'day' | 'week' | 'month' | 'year' } = { title: task.title };
+            const filteredTasks = (args.tasks || []).map((task) => {
+              const filteredTask: {
+                title: string;
+                description?: string;
+                due_date?: string;
+                startDate?: string;
+                endDate?: string;
+                priority?: number;
+                labels?: number[];
+                assignees?: number[];
+                repeat_after?: number;
+                repeat_mode?: 'day' | 'week' | 'month' | 'year';
+              } = { title: task.title };
               if (task.description !== undefined) filteredTask.description = task.description;
               if (task.dueDate !== undefined) filteredTask.due_date = task.dueDate;
+              if (task.startDate !== undefined) filteredTask.startDate = task.startDate;
+              if (task.endDate !== undefined) filteredTask.endDate = task.endDate;
               if (task.priority !== undefined) filteredTask.priority = task.priority;
               if (task.labels !== undefined) filteredTask.labels = task.labels;
               if (task.assignees !== undefined) filteredTask.assignees = task.assignees;
@@ -100,7 +156,7 @@ export function registerTaskBulkTool(
 
             const filteredArgs = {
               projectId: args.projectId,
-              tasks: filteredTasks
+              tasks: filteredTasks,
             };
             return bulkCreateTasks(filteredArgs, authManager);
           }
@@ -109,12 +165,15 @@ export function registerTaskBulkTool(
             const { bulkUpdateTasks } = await import('./tasks/bulk-operations.js');
             // Filter out undefined values for type safety
             if (!args.field) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'field is required for bulk update operations');
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'field is required for bulk update operations',
+              );
             }
             const filteredArgs = {
               taskIds: args.taskIds || [],
               field: args.field,
-              value: args.value
+              value: args.value,
             };
             return bulkUpdateTasks(filteredArgs, authManager);
           }
@@ -123,7 +182,7 @@ export function registerTaskBulkTool(
             const { bulkDeleteTasks } = await import('./tasks/bulk-operations.js');
             // Filter out undefined values for type safety
             const filteredArgs = {
-              taskIds: args.taskIds || []
+              taskIds: args.taskIds || [],
             };
             return bulkDeleteTasks(filteredArgs, authManager);
           }
@@ -131,7 +190,10 @@ export function registerTaskBulkTool(
           case 'bulk-set-bucket': {
             const { bulkSetTaskBucket } = await import('./tasks/buckets.js');
             if (args.bucketId === undefined || args.bucketId === null) {
-              throw new MCPError(ErrorCode.VALIDATION_ERROR, 'bucketId is required for bulk-set-bucket operation');
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'bucketId is required for bulk-set-bucket operation',
+              );
             }
             const filteredArgs = {
               taskIds: args.taskIds || [],

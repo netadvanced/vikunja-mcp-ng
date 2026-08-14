@@ -9,31 +9,37 @@
 # so it cannot collide with anything else the machine happens to be running
 # — including another Vikunja instance, or a *production* Vikunja.
 #
-# Version pin: vikunja/vikunja:2.3.0 (the go-vikunja/vikunja v2.3.0 GitHub
-# release). This is the latest *stable* tagged image on Docker Hub at the
-# time this stack was written, and it matches the base version of the
-# vendored OpenAPI spec at docs/vikunja-openapi.json, whose reported
-# `info.version` is `v2.3.0-1019-g95b7e673` — i.e. the spec was captured
-# from an `unstable` build 1019 commits *ahead* of the v2.3.0 tag (that's
-# what try.vikunja.io, the source of that spec, always runs). There is no
-# published "2.3.0-1019-g95b7e673" image to pin to; 2.3.0 is the closest
-# reproducible stable baseline. Practically: any endpoint/field that
-# landed in those 1019 post-2.3.0 commits will be present in the vendored
-# spec/docs but *absent* from this stack. If a real-server run against
-# this stack fails on something that looks brand new, check whether it's
-# one of those not-yet-released commits before treating it as drift.
+# Version pin: vikunja/vikunja:2.4.0 (the go-vikunja/vikunja v2.4.0 GitHub
+# release). Aligned 2026-07-20 (tracking issue #28, item A1) after a full
+# test:matrix pass on both DB backends confirmed it green with zero
+# tolerated drifts (see e2e-verdicts/ and the PR that bumped this pin).
+# This is also the version the vendored OpenAPI spec at
+# docs/vikunja-openapi.json is captured from — fetched directly from this
+# same pinned container's own /api/v1/docs.json (via `npm run
+# fetch:api-spec:container`, see docs/API-SPEC.md), not try.vikunja.io
+# (which always runs `unstable`, ahead of any tag — that's the drift class
+# the previous 2.3.0 pin's vendored spec had, e.g. `v2.3.0-1019-g95b7e673`).
+# Fetching from the pinned container itself instead means the vendored spec
+# and this pin are byte-for-byte in sync by construction.
 #
-# The tag is env-driven (`VIKUNJA_VERSION`, default `2.3.0` below) so the
+# Policy: **minimum supported Vikunja is 2.3.0** (the v1-floor — some
+# workarounds in src/ target upstream bugs still present at 2.3.0, e.g. the
+# by-id share GET bug fixed upstream only in 2.4.0; see
+# src/tools/sharing.ts / docs/API-COVERAGE.md), while **2.4.0 is the
+# aligned/tested default** everything in this repo is validated against
+# day to day. Both are worth running (see docs/LOCAL-TESTING.md).
+#
+# The tag is env-driven (`VIKUNJA_VERSION`, default `2.4.0` below) so the
 # version-matrix runner (`npm run test:matrix`, see
 # scripts/test-matrix.ts and docs/LOCAL-TESTING.md) can bring this stack
 # up against a different Vikunja release without editing this file:
 #
-#   VIKUNJA_VERSION=2.4.0 npm run e2e:up
+#   VIKUNJA_VERSION=2.3.0 npm run e2e:up   # the v1-floor regression check
 #
-# Plain `npm run e2e:up` (no override) still uses the `2.3.0` default.
-# Re-pin the *default* by bumping the fallback value below (see
-# docs/LOCAL-TESTING.md's version-refresh note) once a newer stable
-# release ships and becomes the new baseline everyone gets by default.
+# Plain `npm run e2e:up` (no override) uses the `2.4.0` default. Re-pin the
+# *default* by bumping the fallback value below (see docs/LOCAL-TESTING.md's
+# version-refresh note) once a newer stable release ships and becomes the
+# new baseline everyone gets by default.
 #
 # DB BACKEND VARIANT (`VIKUNJA_DB=postgres|sqlite`, default `postgres`):
 # item F2 (tracking issue #28) adds a SQLite-backed variant of this stack so
@@ -52,14 +58,24 @@
 # `depends_on` entry per-profile in a single service — and referencing a
 # profile-excluded service from `depends_on` is a hard error — so this is
 # the cleaner of the two options the item called out (profiles vs. a second
-# overlay file). Both variants publish the same host port (33456); only one
-# is ever active at a time because a caller always selects exactly one
-# profile via `docker/e2e/bootstrap.sh` (`VIKUNJA_DB` env var, defaulting to
-# `postgres` -- unset/default behavior is byte-for-byte what this stack did
-# before this variant existed). `npm run e2e:down` always activates *both*
-# profiles so `-v` reliably removes all three named volumes regardless of
-# which variant was last up -- see package.json.
-name: vikunja-mcp-e2e
+# overlay file). A caller always selects exactly one profile via
+# `docker/e2e/bootstrap.sh` (`VIKUNJA_DB` env var, defaulting to `postgres`).
+#
+# ONE PERSISTENT STACK PER TARGET (issue #205). The project name and every
+# published port are interpolated from the environment, so each
+# `<version>-<db>` target is a wholly separate Compose project with its own
+# volumes and its own ports and they all run at once:
+#
+#   2.4.0-postgres -> project vikunja-e2e-2.4.0-postgres, API on 8240
+#   2.3.0-postgres -> project vikunja-e2e-2.3.0-postgres, API on 8230
+#
+# Ports are DERIVED from the version, never hand-assigned -- the formula and
+# the target ids live in scripts/lib/e2e-target.ts, which bootstrap.sh
+# evaluates to set these variables. Do not hardcode a port here or in a
+# harness; ask the resolver. The defaults below only exist so a bare
+# `docker compose -f docker/e2e/docker-compose.yml ...` (no bootstrap) still
+# resolves to the aligned target rather than failing on unset variables.
+name: ${E2E_PROJECT:-vikunja-e2e-2.4.0-postgres}
 
 services:
   db:
@@ -73,9 +89,9 @@ services:
     volumes:
       - vikunja-mcp-e2e-db:/var/lib/postgresql/data
     # Exposed on an unusual host port purely for ad-hoc debugging
-    # (psql -h localhost -p 33457 -U vikunja). Not required by the stack.
+    # (psql -h localhost -p "$E2E_DB_PORT" -U vikunja). Not required by the stack.
     ports:
-      - '33457:5432'
+      - '${E2E_DB_PORT:-18240}:5432'
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U vikunja -d vikunja']
       interval: 3s
@@ -107,7 +123,7 @@ services:
 
   # Postgres-backed variant (default; `VIKUNJA_DB=postgres`, `profiles: [postgres]`).
   vikunja:
-    image: vikunja/vikunja:${VIKUNJA_VERSION:-2.3.0}
+    image: vikunja/vikunja:${VIKUNJA_VERSION:-2.4.0}
     restart: unless-stopped
     profiles: [postgres]
     depends_on:
@@ -125,12 +141,12 @@ services:
       # real data or be reachable from anywhere but localhost; do not
       # reuse this value for anything real.
       VIKUNJA_SERVICE_SECRET: 'e2e-local-only-not-for-production-use'
-      VIKUNJA_SERVICE_PUBLICURL: 'http://localhost:33456'
+      VIKUNJA_SERVICE_PUBLICURL: 'http://localhost:${E2E_PORT:-8240}'
       # No self-service signups in this stack — the bootstrap script
       # creates the single test user directly via the container CLI.
       VIKUNJA_SERVICE_ENABLEREGISTRATION: 'false'
     ports:
-      - '33456:3456'
+      - '${E2E_PORT:-8240}:3456'
     volumes:
       - vikunja-mcp-e2e-files:/app/vikunja/files
     healthcheck:
@@ -149,7 +165,7 @@ services:
   # lives in the `vikunja-mcp-e2e-sqlite-db` named volume so `e2e:down -v`
   # cleans it up exactly like the Postgres variant's own volume.
   vikunja-sqlite:
-    image: vikunja/vikunja:${VIKUNJA_VERSION:-2.3.0}
+    image: vikunja/vikunja:${VIKUNJA_VERSION:-2.4.0}
     restart: unless-stopped
     profiles: [sqlite]
     depends_on:
@@ -164,10 +180,10 @@ services:
       # see the comment there. Kept identical so bootstrap.sh/harnesses
       # don't need per-variant secrets.
       VIKUNJA_SERVICE_SECRET: 'e2e-local-only-not-for-production-use'
-      VIKUNJA_SERVICE_PUBLICURL: 'http://localhost:33456'
+      VIKUNJA_SERVICE_PUBLICURL: 'http://localhost:${E2E_PORT:-8240}'
       VIKUNJA_SERVICE_ENABLEREGISTRATION: 'false'
     ports:
-      - '33456:3456'
+      - '${E2E_PORT:-8240}:3456'
     volumes:
       - vikunja-mcp-e2e-files:/app/vikunja/files
       - vikunja-mcp-e2e-sqlite-db:/db

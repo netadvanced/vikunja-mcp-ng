@@ -5,7 +5,11 @@
 
 import type { components } from '../../../types/generated/vikunja-openapi';
 import type { FilterExpression, FilterGroup, ParseResult } from '../../../types/filters';
-import type { TaskListingArgs, TaskFilterValidationConfig, TaskFilterStorage } from '../types/filters';
+import type {
+  TaskListingArgs,
+  TaskFilterValidationConfig,
+  TaskFilterStorage,
+} from '../types/filters';
 import { MCPError, ErrorCode } from '../../../types';
 import { parseFilterString, expressionToString } from '../../../utils/filters';
 import { validateTaskCountLimit } from '../../../utils/memory';
@@ -50,7 +54,7 @@ export const FilterValidator = {
    */
   async validateAndParseFilter(
     args: TaskListingArgs,
-    storage: TaskFilterStorage
+    storage: TaskFilterStorage,
   ): Promise<{
     filterExpression: FilterExpression | null;
     filterString: string | undefined;
@@ -69,7 +73,7 @@ export const FilterValidator = {
         if (!savedFilter) {
           throw new MCPError(
             ErrorCode.VALIDATION_ERROR,
-            `Filter with id ${args.filterId} not found`
+            `Filter with id ${args.filterId} not found`,
           );
         }
         userFilter = savedFilter.filter;
@@ -83,7 +87,7 @@ export const FilterValidator = {
         if (parseResult.error) {
           throw new MCPError(
             ErrorCode.VALIDATION_ERROR,
-            `Invalid filter syntax: ${parseResult.error.message}${parseResult.error.context ? `\n${parseResult.error.context}` : ''}`
+            `Invalid filter syntax: ${parseResult.error.message}${parseResult.error.context ? `\n${parseResult.error.context}` : ''}`,
           );
         }
         filterExpression = parseResult.expression;
@@ -115,20 +119,32 @@ export const FilterValidator = {
       }
 
       // Serialise the final expression for Vikunja's server-side `filter`
-      // query param. When `done` was not folded in, keep the user's original
-      // string verbatim - tasks-filter-sql-syntax.test.ts pins this as a
-      // deliberate contract (raw filter syntax, quoting, and spacing pass
-      // through to the API unmodified) that a full expressionToString
-      // round-trip would disturb (added parens, always-double-quoted `like`
-      // values, normalized array spacing). This is a separate, narrower
-      // concern from `vikunja_filters build`'s output casing (this item's
-      // scope): a caller-supplied camelCase field name in a raw filter
-      // string still reaches the server untranslated in this branch,
-      // matching the battle-testing report's secondary finding (noted, not
-      // fixed, in this item's PR).
+      // query param. ALWAYS re-serialise through expressionToString, rather
+      // than passing a raw user-supplied filter string straight through: a
+      // caller-supplied camelCase field name (e.g. `dueDate`) is only
+      // translated to the API's snake_case Task field (`due_date`) by this
+      // serialisation step (via FILTER_FIELD_TO_API_FIELD). Passing the raw
+      // string verbatim - the previous behaviour when `done` was undefined -
+      // sent untranslated camelCase field names straight to Vikunja, which
+      // doesn't recognize them as Task columns; the server then either
+      // errors (tripping HybridFilteringStrategy's client-side fallback -
+      // correct results, but silently paying the client-side-filtering cost
+      // on every such call) or ignores the condition outright. Re-serialising
+      // unconditionally closes that gap so server-side filtering actually
+      // works for the fields it should.
+      //
+      // This does change the exact surface syntax of what reaches the API
+      // in some cases versus the caller's original string: `expressionToString`
+      // parenthesises any group with more than one condition (even if the
+      // caller didn't write parens), always double-quotes `like` values
+      // (even if the caller single-quoted or left them bare), and normalizes
+      // `in`/`not in` array spacing (`1,2` -> `1, 2`). All three are
+      // semantics-preserving re-formattings of the same SQL-like grammar the
+      // API already accepts (see tests/tools/tasks-filter-sql-syntax.test.ts
+      // and the round-trip property tests in tests/utils/filters.test.ts),
+      // so this is a safe, deliberate behavior change, not a regression.
       if (filterExpression) {
-        filterString =
-          args.done === undefined ? userFilter : expressionToString(filterExpression);
+        filterString = expressionToString(filterExpression);
       }
 
       if (filterString) {
@@ -145,7 +161,7 @@ export const FilterValidator = {
       }
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
-        `Filter validation failed: ${error instanceof Error ? error.message : String(error)}`
+        `Filter validation failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   },
@@ -155,7 +171,7 @@ export const FilterValidator = {
    */
   validateMemoryConstraints(
     args: TaskListingArgs,
-    requestedPageSize: number
+    requestedPageSize: number,
   ): {
     isValid: boolean;
     warnings: string[];
@@ -167,24 +183,28 @@ export const FilterValidator = {
     const taskCountValidation = validateTaskCountLimit(
       requestedPageSize,
       undefined,
-      args.filter ? {
-        filterExpression: args.filter,
-        operationType: 'list'
-      } : undefined
+      args.filter
+        ? {
+            filterExpression: args.filter,
+            operationType: 'list',
+          }
+        : undefined,
     );
 
     if (!taskCountValidation.allowed) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
         `Task count limit exceeded. Requested: ${requestedPageSize}, Max allowed: ${taskCountValidation.maxAllowed}. ` +
-        `Estimated memory usage: ${taskCountValidation.estimatedMemoryMB}MB (risk: ${taskCountValidation.riskLevel}). ` +
-        'Reduce the perPage parameter, use pagination with smaller page sizes, or apply more specific filters.'
+          `Estimated memory usage: ${taskCountValidation.estimatedMemoryMB}MB (risk: ${taskCountValidation.riskLevel}). ` +
+          'Reduce the perPage parameter, use pagination with smaller page sizes, or apply more specific filters.',
       );
     }
 
     // Add warnings for large page sizes
     if (requestedPageSize > 500) {
-      warnings.push(`Large page size (${requestedPageSize}) may impact performance. Consider using smaller pages or more specific filters.`);
+      warnings.push(
+        `Large page size (${requestedPageSize}) may impact performance. Consider using smaller pages or more specific filters.`,
+      );
     }
 
     // Include enhanced memory validation warnings
@@ -195,20 +215,17 @@ export const FilterValidator = {
     return {
       isValid: true,
       warnings,
-      maxAllowed: taskCountValidation.maxAllowed
-    } as {
-      isValid: boolean;
-      warnings: string[];
-      maxAllowed?: number;
-      riskLevel?: 'low' | 'medium' | 'high';
-      estimatedMemoryMB?: number;
+      maxAllowed: taskCountValidation.maxAllowed,
     };
   },
 
   /**
    * Validates the actual loaded task count against limits
    */
-  validateLoadedTasks(actualTaskCount: number, sampleTask?: Task): {
+  validateLoadedTasks(
+    actualTaskCount: number,
+    sampleTask?: Task,
+  ): {
     isValid: boolean;
     warnings: string[];
     shouldThrow: boolean;
@@ -224,12 +241,12 @@ export const FilterValidator = {
         actualCount: actualTaskCount,
         maxRecommended: finalTaskCountValidation.maxAllowed,
         estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
-        riskLevel: finalTaskCountValidation.riskLevel
+        riskLevel: finalTaskCountValidation.riskLevel,
       });
 
       warnings.push(
         `Loaded ${actualTaskCount} tasks, which exceeds recommended limit of ${finalTaskCountValidation.maxAllowed}. ` +
-        `Estimated memory usage: ${finalTaskCountValidation.estimatedMemoryMB}MB (risk: ${finalTaskCountValidation.riskLevel}).`
+          `Estimated memory usage: ${finalTaskCountValidation.estimatedMemoryMB}MB (risk: ${finalTaskCountValidation.riskLevel}).`,
       );
 
       // For extremely large datasets, still enforce hard limits
@@ -239,7 +256,7 @@ export const FilterValidator = {
           warnings,
           shouldThrow: true,
           riskLevel: finalTaskCountValidation.riskLevel,
-          estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB
+          estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
         };
       }
     }
@@ -254,7 +271,7 @@ export const FilterValidator = {
       warnings,
       shouldThrow: false,
       riskLevel: finalTaskCountValidation.riskLevel,
-      estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB
+      estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
     };
   },
 
@@ -321,7 +338,7 @@ export const FilterValidator = {
   async validateTaskFiltering(
     args: TaskListingArgs,
     storage: TaskFilterStorage,
-    _config: TaskFilterValidationConfig = {}
+    _config: TaskFilterValidationConfig = {},
   ): Promise<{
     filterExpression: FilterExpression | null;
     filterString: string | undefined;
@@ -339,7 +356,7 @@ export const FilterValidator = {
     if (argValidationErrors.length > 0) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
-        `Invalid task listing arguments: ${argValidationErrors.join(', ')}`
+        `Invalid task listing arguments: ${argValidationErrors.join(', ')}`,
       );
     }
 
@@ -356,7 +373,7 @@ export const FilterValidator = {
       filterExpression: filterValidation.filterExpression,
       filterString: filterValidation.filterString,
       validationWarnings: allWarnings,
-      memoryValidation
+      memoryValidation,
     };
   },
 };

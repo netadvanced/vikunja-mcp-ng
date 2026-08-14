@@ -29,7 +29,12 @@ global.fetch = mockFetch as any;
 const SECRET_PASSWORD = 'super-secret-password-1';
 const SECRET_TOKEN = 'super-secret-email-token-1';
 
-function mockResponse(opts: { ok?: boolean; status?: number; statusText?: string; body?: unknown }): Response {
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  body?: unknown;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', body } = opts;
   const text = body === undefined ? '' : JSON.stringify(body);
   return {
@@ -118,9 +123,9 @@ describe('User Deletion Tool', () => {
     });
 
     it('should require password even when confirm is true', async () => {
-      await expect(
-        mockHandler({ subcommand: 'request', confirm: true }),
-      ).rejects.toThrow('password is required');
+      await expect(mockHandler({ subcommand: 'request', confirm: true })).rejects.toThrow(
+        'password is required',
+      );
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
@@ -133,11 +138,14 @@ describe('User Deletion Tool', () => {
         confirm: true,
       });
 
-      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/api/v1/user/deletion/request', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: SECRET_PASSWORD }),
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/user/deletion/request',
+        {
+          method: 'POST',
+          headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: SECRET_PASSWORD }),
+        },
+      );
       expect(result.content[0].text).toContain('Account deletion requested');
       expect(result.content[0].text).not.toContain(SECRET_PASSWORD);
     });
@@ -161,16 +169,16 @@ describe('User Deletion Tool', () => {
 
   describe('confirm', () => {
     it('should require confirm: true', async () => {
-      await expect(
-        mockHandler({ subcommand: 'confirm', token: SECRET_TOKEN }),
-      ).rejects.toThrow('Pass confirm: true to proceed');
+      await expect(mockHandler({ subcommand: 'confirm', token: SECRET_TOKEN })).rejects.toThrow(
+        'Pass confirm: true to proceed',
+      );
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('should require token even when confirm is true', async () => {
-      await expect(
-        mockHandler({ subcommand: 'confirm', confirm: true }),
-      ).rejects.toThrow('token is required');
+      await expect(mockHandler({ subcommand: 'confirm', confirm: true })).rejects.toThrow(
+        'token is required',
+      );
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
@@ -183,11 +191,14 @@ describe('User Deletion Tool', () => {
         confirm: true,
       });
 
-      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/api/v1/user/deletion/confirm', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: SECRET_TOKEN }),
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/user/deletion/confirm',
+        {
+          method: 'POST',
+          headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: SECRET_TOKEN }),
+        },
+      );
       expect(result.content[0].text).toContain('Account deletion confirmed');
       expect(result.content[0].text).toContain('irreversible');
       expect(result.content[0].text).not.toContain(SECRET_TOKEN);
@@ -200,11 +211,14 @@ describe('User Deletion Tool', () => {
 
       const result = await mockHandler({ subcommand: 'cancel', password: SECRET_PASSWORD });
 
-      expect(mockFetch).toHaveBeenCalledWith('https://api.vikunja.test/api/v1/user/deletion/cancel', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: SECRET_PASSWORD }),
-      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/user/deletion/cancel',
+        {
+          method: 'POST',
+          headers: { Authorization: 'Bearer test-jwt-token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: SECRET_PASSWORD }),
+        },
+      );
       expect(result.content[0].text).toContain('canceled');
       expect(result.content[0].text).not.toContain(SECRET_PASSWORD);
     });
@@ -272,12 +286,19 @@ describe('User Deletion Tool', () => {
 
   describe('error handling', () => {
     it('should throw a validation error for an unknown subcommand', async () => {
-      await expect(mockHandler({ subcommand: 'bogus' })).rejects.toThrow('Unknown subcommand: bogus');
+      await expect(mockHandler({ subcommand: 'bogus' })).rejects.toThrow(
+        'Unknown subcommand: bogus',
+      );
     });
 
     it('should wrap non-MCP errors as API_ERROR', async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', body: { message: 'boom' } }),
+        mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Internal Server Error',
+          body: { message: 'boom' },
+        }),
       );
 
       await expect(
@@ -335,7 +356,11 @@ describe('User Deletion Tool', () => {
       ).toBe(true);
       expect(
         isReadOnlyRejection(
-          await callAndCatch(mockHandler, { subcommand: 'confirm', token: SECRET_TOKEN, confirm: true }),
+          await callAndCatch(mockHandler, {
+            subcommand: 'confirm',
+            token: SECRET_TOKEN,
+            confirm: true,
+          }),
         ),
       ).toBe(true);
     });

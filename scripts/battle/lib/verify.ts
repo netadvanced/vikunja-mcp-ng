@@ -94,6 +94,22 @@ async function runCheck(client: VikunjaRestClient, check: VerifyCheck): Promise<
       };
     }
 
+    case 'buckets-with-tasks-count': {
+      const project = await findProject(client, check.projectTitleContains);
+      if (!project) {
+        return { check, passed: false, detail: `no project with title containing "${check.projectTitleContains}"` };
+      }
+      const buckets = await client.listBuckets(project.id);
+      const nonEmpty = buckets.filter((b) => (b.count ?? 0) > 0);
+      return {
+        check,
+        passed: nonEmpty.length >= check.min,
+        detail:
+          `${nonEmpty.length}/${buckets.length} bucket(s) in "${project.title}" hold at least one task ` +
+          `(${buckets.map((b) => `${b.title}: ${b.count ?? 0}`).join(', ') || 'none'}), need >= ${check.min}`,
+      };
+    }
+
     case 'tasks-field-match-count': {
       const project = await findProject(client, check.projectTitleContains);
       if (!project) {
@@ -195,6 +211,32 @@ async function runCheck(client: VikunjaRestClient, check: VerifyCheck): Promise<
         check,
         passed: shares.length >= 1,
         detail: `project "${project.title}" has ${shares.length} link share(s)`,
+      };
+    }
+
+    case 'buckets-in-order': {
+      const project = await findProject(client, check.projectTitleContains);
+      if (!project) {
+        return { check, passed: false, detail: `no project with title containing "${check.projectTitleContains}"` };
+      }
+      const buckets = await client.listBuckets(project.id);
+      const actualNames = buckets.map((b) => b.title);
+      // Ignore any bucket not named in `order` (e.g. a leftover default
+      // bucket in an existing-project reuse case) -- only the RELATIVE order
+      // of the named columns among themselves is asserted, case-insensitive
+      // to match setup-kanban's own bucket-title matching.
+      const matched = actualNames.filter((name) =>
+        check.order.some((expected) => expected.toLowerCase() === name.toLowerCase()),
+      );
+      const passed =
+        matched.length === check.order.length &&
+        matched.every((name, i) => name.toLowerCase() === (check.order[i] as string).toLowerCase());
+      return {
+        check,
+        passed,
+        detail:
+          `bucket order in "${project.title}": [${actualNames.join(', ') || 'none'}], ` +
+          `expected relative order [${check.order.join(', ')}]`,
       };
     }
   }

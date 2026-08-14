@@ -26,7 +26,7 @@ import {
 export function registerTaskCommentsTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_task_comments',
@@ -44,7 +44,10 @@ export function registerTaskCommentsTool(
     getToolAnnotations('vikunja_task_comments'),
     async (args) => {
       try {
-        logger.debug('Executing task comments tool', { operation: args.operation, taskId: args.id });
+        logger.debug('Executing task comments tool', {
+          operation: args.operation,
+          taskId: args.id,
+        });
 
         // Check authentication (closure-gate precedence fix: defer to the
         // per-request context when bound — see hasRequestContext's doc

@@ -1,30 +1,49 @@
 # Vikunja API Implementation Notes
 
-This document captures important implementation details and API quirks discovered during development and testing.
+Implementation details and API quirks discovered while building and testing
+against real Vikunja servers — the "why it's written that way" companion to
+[docs/API-COVERAGE.md](API-COVERAGE.md)'s per-endpoint status. Read this before
+touching endpoint code; the procedure itself is in
+[docs/ENDPOINT-PLAYBOOK.md](ENDPOINT-PLAYBOOK.md).
 
 ## Known API Issues
 
 ### User Endpoint Authentication
-The `/user` endpoint fails with authentication errors despite using a valid token that works for all other endpoints. This appears to be a server-side issue with the Vikunja API where the user endpoints have different authentication requirements or middleware.
+
+The `/user` endpoint fails with authentication errors despite using a token that works for every other endpoint.
 
 **Symptoms:**
 - Error: "missing, malformed, expired or otherwise invalid token provided"
-- Occurs only on user-related endpoints (`/user`, `/users`)
-- Same token works perfectly for projects, tasks, teams, etc.
+- Occurs only on user-scoped endpoints (`/user`, `/users`, `/user/settings`, …)
+- The same token works for projects, tasks, teams, and the rest
 
-**Current Workaround:**
-- The MCP server detects this specific error and provides a helpful message
-- Users should contact their Vikunja server administrator to resolve the issue
+**Root cause:** user-scoped endpoints accept JWT session tokens, not `tk_*`
+API tokens — see [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #2 for the
+full write-up. It is not a per-instance misconfiguration or a server bug to
+report to the operator.
+
+**Current workaround:**
+- Connect with a JWT (`eyJ…`) instead of a `tk_*` token; `vikunja_auth connect`
+  auto-detects the token type and registers the JWT-only tools accordingly
+- The MCP server detects a 401/403 on these endpoints structurally
+  (`details.statusCode` in `src/tools/users.ts`) and returns an actionable
+  "reconnect with a JWT" message rather than a raw API error
 
 ## API Quirks and Gotchas
 
 ### Task Object Properties
 
-1. **Dual ID Properties**: Task objects contain both `project_id` and `projectId`
-   - Both refer to the same value
-   - API returns both for backwards compatibility
-   - Use `project_id` when sending data to API
-   - Both properties appear in responses
+1. **`project_id` (wire) vs `projectId` (tool argument)**: the API itself is
+   snake_case only — `models.Task` in the vendored spec
+   (`docs/vikunja-openapi.json`) has `project_id` and **no** `projectId`
+   property, in either direction. The camelCase `projectId` you see in this
+   server is purely the MCP tool-argument name (`src/tools/tasks/index.ts`),
+   mapped to the wire field where it has to be (`SORT_FIELD_ALIASES` in
+   `src/tools/tasks/constants.ts`, `FILTER_FIELD_TO_API_FIELD` in
+   `src/utils/filters.ts`). The older claim that "the API returns both for
+   backwards compatibility" came from the removed `node-vikunja` client's own
+   types and was never true of the server: always read `project_id` off a
+   response.
 
 2. **Priority Range**: Tasks support priority values from 0-5 (inclusive)
    - Not 0-10 as might be expected
@@ -68,11 +87,13 @@ The `/user` endpoint fails with authentication errors despite using a valid toke
    untouched like the other fields.
 
 2. **List Pagination Has No Total Count**: `GET /projects` returns a bare
-   array — there is no `{data, total}` envelope, and node-vikunja's own
-   `getProjects()` type reflects this (`Promise<Project[]>`). Total item and
-   page counts are not knowable from the response body, so `vikunja_projects
-   list` reports `hasMore` (derived from whether a full page came back)
-   instead of a fabricated `totalPages`/`totalItems`.
+   array (`models.Project[]` in the vendored spec) — there is no
+   `{data, total}` envelope on the v1 API. Total item and page counts are not
+   knowable from the response body, so `vikunja_projects list` reports
+   `hasMore` (derived from whether a full page came back) instead of a
+   fabricated `totalPages`/`totalItems`. (Vikunja's **v2** list endpoints do
+   wrap results in `{items, total, ...}`, but no call site routes to `/api/v2`
+   — see "Session Capability Detection" below.)
 
 3. **Kanban "Done" Bucket**: `models.Bucket` has no `is_done_bucket` field —
    the done bucket is designated by `done_bucket_id` on the `ProjectView`
@@ -108,8 +129,9 @@ Project sharing allows creating public or private links to share projects with e
      is also called `name` (not `label`)
    - `project_id` is taken from the URL path, not the body
    - There is **no** `expires`, `password_enabled`, or `shares` field on
-     `models.LinkSharing` — node-vikunja's bundled type includes them, but
-     the real API (and the tool's `CreateShareRequest`) does not. `expires`
+     `models.LinkSharing` — the removed `node-vikunja` client's bundled type
+     included them, but the real API (and the tool's `CreateShareRequest`)
+     does not. `expires`
      as a per-share expiration and `shares` as a share count are not
      supported by the API at all. Whether a share is password-protected
      (`sharing_type`) is derived server-side from whether `password` was set.
@@ -128,7 +150,7 @@ Project sharing allows creating public or private links to share projects with e
    - Passwords cannot be retrieved after creation
    - Share permissions are fixed at creation time
 
-### Project Views (Wave D)
+### Project Views
 
 1. **Full-Model-Replace Update Endpoint**: `POST /projects/{project}/views/{id}`
    replaces the entire `models.ProjectView`, the same convention as the
@@ -158,7 +180,7 @@ Project sharing allows creating public or private links to share projects with e
    coercing it — callers should check for a `tasks` field on each returned
    item to tell which shape they got back.
 
-### Kanban Buckets (Wave D: create/update/delete)
+### Kanban Buckets
 
 1. **Full-Model-Replace Update Endpoint**: `POST
    /projects/{projectID}/views/{view}/buckets/{bucketID}` replaces the
@@ -205,10 +227,16 @@ Project sharing allows creating public or private links to share projects with e
 The update operation uses diff-based logic for efficiency:
 1. Get current assignees
 2. Calculate additions and removals
-3. Remove users no longer assigned
-4. Add new users via bulk operation
+3. Remove users no longer assigned — one `DELETE /tasks/{taskID}/assignees/{userID}` each
+4. Add new users — one `PUT /tasks/{taskID}/assignees` (body `{user_id}`) each
 
-This minimizes API calls compared to replacing all assignees.
+This minimizes work compared to replacing the whole list. Note the adds are
+deliberately **not** batched through `POST /tasks/{taskID}/assignees/bulk`:
+that endpoint has *replace* semantics and would silently unassign everyone
+else (upstream issue #15). Both loops run sequentially on purpose
+(`src/tools/tasks/assignees/AssigneeOperationsService.ts`). The one place the
+bulk endpoint *is* used is restoring a complete assignee snapshot after a
+`POST /tasks/bulk` update, where replacing the whole list is exactly the intent.
 
 ### Multi-Step Operations
 
@@ -221,16 +249,33 @@ This creates a race condition in task creation.
 
 ## MCP-Specific Limitations
 
-1. **File Attachments**: Cannot be implemented due to MCP protocol limitations
-   - The `attach` subcommand returns NOT_IMPLEMENTED error
-   - This is a permanent limitation of the MCP context
+1. **File Attachments — upload works, download can't return bytes**:
+   - **Uploading is implemented.** `vikunja_tasks attach`
+     (`src/tools/tasks/attach.ts`) posts `multipart/form-data` to
+     `PUT /tasks/{id}/attachments` via `vikunjaRestMultipartRequest`, taking
+     either a server-readable `filePath` or base64 `fileContent`.
+     `list-attachments`, `get-attachment-info` and `delete-attachment`
+     (`src/tools/tasks/attachments.ts`) are implemented too.
+   - **Downloading the bytes is not, and won't be.** MCP has no binary/file
+     delivery channel, so `download-attachment` returns the direct download
+     URL plus the auth header the caller needs to fetch it themselves —
+     the same honest shape as `vikunja_download_user_export`. The same
+     limitation is why avatar/background *image* endpoints stay parked
+     ([docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md)).
+   - Historical note: this section previously claimed `attach` returned
+     `NOT_IMPLEMENTED`. It hasn't since the multipart upload path landed;
+     `ErrorCode.NOT_IMPLEMENTED` now appears at exactly one site in `src/`
+     (an unknown-action guard in `src/tools/filters.ts`).
 
 2. **Response Format Inconsistency**: Different operations return data in slightly different formats
-   - Future work needed for standardization
+   - Largely addressed by the shared AORP response factory
+     (`src/utils/response-factory.ts`, `createStandardResponse`), which newer
+     surfaces go through; older handlers still hand-build their payloads.
 
 ## Error Handling Patterns
 
 ### Error Types
+
 - `AUTH_REQUIRED`: User needs to authenticate first
 - `VALIDATION_ERROR`: Input validation failed
 - `API_ERROR`: Vikunja API returned an error
@@ -238,14 +283,20 @@ This creates a race condition in task creation.
 - `INTERNAL_ERROR`: Unexpected errors
 
 ### Network Errors
+
 - Rate limiting returns status 429
 - Connection errors have code ECONNREFUSED
 - Always wrap in meaningful error messages
 
 ## Testing Discoveries
 
-1. **Mock Isolation**: All tests must mock the node-vikunja client completely
-2. **Type Safety**: Current tests use `any` for mocks, but typed mocks would be better
+1. **Mock Isolation**: all HTTP goes through `vikunjaRestRequest` /
+   `vikunjaRestMultipartRequest` (`src/utils/vikunja-rest.ts`), so that module
+   is what tests mock. No test mocks `node-vikunja` any more — the dependency
+   is gone from `package.json`; the remaining mentions in `tests/` are
+   migration comments only.
+2. **Type Safety**: some tests use `any` for mocks; typed mocks derived from
+   `src/types/generated/vikunja-openapi.d.ts` are preferred for new tests
 3. **Edge Cases**: Empty arrays and undefined fields must be handled gracefully
 
 ## Bulk Operations
@@ -259,10 +310,18 @@ This creates a race condition in task creation.
    - Automatic cleanup if label/assignee assignment fails
 
 2. **Bulk Update**: Updates the same field across multiple tasks
-   - Fetches each task to get current state
-   - Applies updates individually
-   - Returns all updated tasks
-   - Performance: O(n) API calls where n = number of tasks
+   - **Scalar fields go through Vikunja's native `POST /tasks/bulk`**
+     (`models.BulkTask` — `{task_ids, fields, values}`) as **one** request
+     (landed in PR #89). Allowlist: `done`, `priority`, `due_date`,
+     `start_date`, `end_date`, `project_id`, `repeat_after`, `repeat_mode`.
+   - The server wipes assignees on a bulk update regardless of `fields`, so
+     the tool snapshots and restores them around the call; restore failures
+     are surfaced as `assigneeRestoreFailures`, not swallowed.
+   - `assignees` / `labels` as the bulk field, and the fallback for servers
+     that don't honor `fields`/`values`, still use the per-task
+     `GET`+merge+`POST` path — O(n) API calls there.
+   - See [docs/API-COVERAGE.md](API-COVERAGE.md)'s `POST /tasks/bulk` row for the full
+     verified contract.
 
 3. **Bulk Delete**: Deletes multiple tasks
    - Fetches task details before deletion for response
@@ -272,22 +331,54 @@ This creates a race condition in task creation.
 
 ### Implementation Notes
 
-- No native bulk API endpoints in Vikunja
-- All bulk operations are client-side implementations
-- Consider rate limiting when processing large batches
-- Each operation makes individual API calls
+- Vikunja exposes exactly three native bulk endpoints: `POST /tasks/bulk`
+  (used by `bulk-update` for scalar fields), `POST /tasks/{id}/labels/bulk`
+  (used by create/update via `setTaskLabels`) and
+  `POST /tasks/{id}/assignees/bulk` (replace-semantics — used *only* for the
+  post-bulk-update assignee restore, never for a general assign flow).
+- There is **no** native bulk *create* or bulk *delete*; those two remain
+  client-side loops making individual API calls.
+- `bulk-create` runs **sequentially** on purpose (`maxConcurrency: 1`):
+  concurrent creates 500 with "database is locked" on SQLite-backed servers
+  at the 2.3.0 floor. Vikunja 2.4.0 advertises `concurrent_writes: true`, but
+  sequential is retained as defense-in-depth for the supported floor.
+- Consider rate limiting when processing large batches.
 
 ## Future Considerations
 
 1. **Transaction Support**: Consider implementing rollback mechanisms for multi-step operations
-2. **Native Batch Operations**: Future Vikunja API versions may support native bulk endpoints
+2. **Native Batch Operations**: bulk *update* is already native (`POST /tasks/bulk`); a native bulk *create* / *delete* would remove the remaining per-task loops
 3. **Caching**: Authentication tokens could be cached more efficiently
 4. **Response Streaming**: Large result sets might benefit from streaming
 5. **Parallel Processing**: Bulk operations could be parallelized with rate limiting
 
+## Session Capability Detection (v2 Groundwork)
+
+Tracked as netadvanced/vikunja-mcp#28, "api-version-detect".
+
+`src/utils/capabilities.ts` caches a per-session `VikunjaCapabilities` snapshot
+(`{ serverVersion, features, hasV2Api }`) — the `GET /info` payload already
+fetched by `vikunja_auth.connect`'s verification step, plus a one-time
+best-effort `GET /api/v2/openapi.json` probe — surfaced read-only via
+`vikunja_auth`'s `status` and `info` subcommands. **No tool currently branches
+on `hasV2Api` or issues any `/api/v2/*` request** — this is only a seam future
+v2 fast-paths can consult without an extra round trip.
+
+Ground truth confirmed live against the e2e harness's `2.4.0` Vikunja stack
+(`npm run e2e:up`, `VIKUNJA_VERSION=2.4.0` default): `GET /api/v2/openapi.json`
+already returns `200` with a real OpenAPI schema on that version —
+`curl http://localhost:33456/api/v2/openapi.json` — so `hasV2Api: true` is the
+*correct* detection result there, not "v2 doesn't exist yet." A v2 schema
+being publishable does not mean this server's v1 request paths are ready to
+be replaced by it; do not treat `hasV2Api: true` as a green light to start
+routing calls at `/api/v2/*` without separately verifying each endpoint's
+shape against the vendored v2 OpenAPI spec, the same way `docs/API_NOTES.md`
+already requires for v1.
+
 ## Filter Implementation Notes
 
-### SQL-like Filter Syntax
+### SQL-Like Filter Syntax
+
 The Vikunja API supports SQL-like filter syntax as documented. Filters should be passed using the `filter` parameter (not `filter_by`).
 
 **Supported Features:**
@@ -298,12 +389,40 @@ The Vikunja API supports SQL-like filter syntax as documented. Filters should be
 - In operator: `IN`, `NOT IN`
 
 **Implementation:**
-- Filters are passed directly to the API via the `filter` parameter
-- No conversion or preprocessing is performed on filter strings
-- The API handles all filter parsing and validation
+- Filters are passed to the API via the `filter` parameter
+- **Update (2026-07-20):** the caller-supplied filter string is no longer
+  passed through verbatim. `FilterValidator.validateAndParseFilter` parses
+  every filter string with `parseFilterString` and always re-serializes the
+  resulting expression through `expressionToString` before it reaches the
+  API - this is what translates the filter DSL's canonical camelCase field
+  names (`dueDate`, `percentDone`, `startDate`, `endDate`, `doneAt`,
+  `project`) to the API's snake_case Task JSON fields (`due_date`,
+  `percent_done`, `start_date`, `end_date`, `done_at`, `project_id`) via
+  `FILTER_FIELD_TO_API_FIELD`. Previously this translation only happened
+  when the `done` argument was also supplied (folded into the same
+  expression); a bare camelCase filter string with no `done` argument
+  reached the server untranslated, which the server either rejected
+  (silently tripping `HybridFilteringStrategy`'s client-side fallback) or
+  ignored outright.
+- Re-serializing can change the filter string's surface syntax versus what
+  the caller wrote - it always parenthesizes any group with more than one
+  condition, always double-quotes `like` values (accepting single- or
+  double-quoted input), and normalizes `in`/`not in` array spacing
+  (`1,2` -> `1, 2`) - but never its semantics. See
+  `tests/tools/tasks-filter-sql-syntax.test.ts` and the round-trip property
+  tests in `tests/utils/filters.test.ts`.
+- The API still handles all filter parsing and validation of the
+  (now-translated) string; this MCP server does not evaluate filters beyond
+  what's needed to parse and re-serialize them, except as an explicit
+  client-side fallback when server-side filtering fails.
 
-## Related Issues
+## Related Documents
+
+- [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) — upstream API bugs/quirks worth reporting, with per-issue status.
+- [docs/API-COVERAGE.md](API-COVERAGE.md) — authoritative per-endpoint implementation status and the verified request/response contracts.
+- [docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md) — why the remaining 44 unimplemented operations are parked or ruled out, each with a reopening trigger.
+- [docs/ENDPOINT-PLAYBOOK.md](ENDPOINT-PLAYBOOK.md) — the procedure to follow before touching endpoint code.
 
 ---
 
-*Last updated: 2025-05-26 - Added filter implementation notes*
+*Last updated: 2026-08-03 — re-verified against current `src/` and the vendored `v2.4.0` spec: corrected the `project_id`/`projectId` note, the file-attachment limitation (upload ships; only byte delivery is blocked), and the bulk-operations section (`POST /tasks/bulk` is native and used); removed `node-vikunja` framing left over from the direct-REST migration.*

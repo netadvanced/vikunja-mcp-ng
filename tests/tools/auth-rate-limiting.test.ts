@@ -8,7 +8,7 @@ import { AuthManager } from '../../src/auth/AuthManager';
 import { registerAuthTool } from '../../src/tools/auth';
 import {
   SimplifiedRateLimitMiddleware,
-  RateLimitingMiddleware  // Backward compatibility
+  RateLimitingMiddleware, // Backward compatibility
 } from '../../src/middleware/simplified-rate-limit';
 import { MCPError, ErrorCode } from '../../src/types/errors';
 
@@ -19,7 +19,7 @@ jest.mock('../../src/utils/logger', () => ({
     info: jest.fn(),
     warn: jest.fn(),
     error: jest.fn(),
-  }
+  },
 }));
 
 // Mock the client
@@ -95,7 +95,7 @@ describe('Auth Tool Rate Limiting Integration', () => {
       await expect(rateLimitedHandler({ subcommand: 'status' })).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.RATE_LIMIT_EXCEEDED,
-        })
+        }),
       );
     });
 
@@ -116,15 +116,15 @@ describe('Auth Tool Rate Limiting Integration', () => {
       await expect(rateLimitedHandler(largeRequest)).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.REQUEST_TOO_LARGE,
-        })
+        }),
       );
     });
 
     it('should enforce response size limits', async () => {
       const testHandler = async (args: any) => {
-        return { 
-          success: true, 
-          largeData: 'x'.repeat(2000) // Over 1000 byte limit
+        return {
+          success: true,
+          largeData: 'x'.repeat(2000), // Over 1000 byte limit
         };
       };
 
@@ -134,13 +134,13 @@ describe('Auth Tool Rate Limiting Integration', () => {
         expect.objectContaining({
           code: ErrorCode.REQUEST_TOO_LARGE,
           message: expect.stringContaining('Response size'),
-        })
+        }),
       );
     });
 
     it('should enforce timeouts', async () => {
       const slowHandler = async (args: any) => {
-        await new Promise(resolve => setTimeout(resolve, 1500)); // Over 1000ms limit
+        await new Promise((resolve) => setTimeout(resolve, 1500)); // Over 1000ms limit
         return { success: true };
       };
 
@@ -149,7 +149,7 @@ describe('Auth Tool Rate Limiting Integration', () => {
       await expect(rateLimitedHandler({ subcommand: 'status' })).rejects.toThrow(
         expect.objectContaining({
           code: ErrorCode.TIMEOUT_ERROR,
-        })
+        }),
       );
     });
   });
@@ -175,9 +175,9 @@ describe('Auth Tool Rate Limiting Integration', () => {
 
       // Should work even with very strict limits when disabled
       for (let i = 0; i < 3; i++) {
-        const result = await rateLimitedHandler({ 
-          subcommand: 'status', 
-          largeData: 'x'.repeat(50) 
+        const result = await rateLimitedHandler({
+          subcommand: 'status',
+          largeData: 'x'.repeat(50),
         });
         expect(result.success).toBe(true);
       }

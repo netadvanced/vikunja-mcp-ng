@@ -21,21 +21,57 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 export function registerTaskLabelsTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_task_labels',
-    withReadOnlyNote('vikunja_task_labels', 'Manage task labels: apply, remove, list labels'),
+    withReadOnlyNote(
+      'vikunja_task_labels',
+      'Manage task labels: apply, remove, list labels. remove-label/list-labels take label IDs. ' +
+        'apply-label takes label IDs (`labels`) AND/OR label titles (`labelTitles`) — to attach a ' +
+        'label by name, just pass `labelTitles`: each title is get-or-created and attached in ONE ' +
+        'call, no separate lookup needed. ' +
+        'apply-label and remove-label both operate on MULTIPLE tasks in one call via `taskIds` ' +
+        '(instead of `id`) — label titles are resolved ONCE for the whole call and reused across ' +
+        'every task, and results are reported per-task (a partial failure is never reported as a ' +
+        'clean success). Provide exactly one of `id` (single task) or `taskIds` (multiple tasks); ' +
+        'supplying both is rejected.',
+    ),
     {
       operation: z.enum(['apply-label', 'remove-label', 'list-labels']),
-      // Task and label identification
-      id: z.number(),
+      // Task and label identification. Exactly one of `id`/`taskIds` is
+      // required by apply-label/remove-label (list-labels uses `id` only).
+      id: z
+        .number()
+        .optional()
+        .describe(
+          'The task id, for a single-task apply-label/remove-label/list-labels call. ' +
+            'apply-label/remove-label also accept `taskIds` (an array) to operate on multiple ' +
+            'tasks in one call instead — provide exactly one of `id` or `taskIds`.',
+        ),
+      taskIds: z
+        .array(z.number())
+        .optional()
+        .describe(
+          'apply-label/remove-label only: task ids to apply/remove the same label(s) to/from ' +
+            'in ONE call. Use this instead of `id` when targeting more than one task — label ' +
+            'titles (`labelTitles`) are resolved once and reused across every task. Provide ' +
+            'exactly one of `id` or `taskIds`; supplying both is rejected.',
+        ),
       labels: z.array(z.number()).optional(),
+      // apply-label only: label titles to get-or-create-then-attach, merged
+      // with `labels` (deduped) — see src/utils/label-ensure.ts.
+      labelTitles: z.array(z.string().min(1)).optional(),
     },
     getToolAnnotations('vikunja_task_labels'),
     async (args) => {
       try {
-        logger.debug('Executing task labels tool', { operation: args.operation, taskId: args.id, labelCount: args.labels?.length });
+        logger.debug('Executing task labels tool', {
+          operation: args.operation,
+          taskId: args.id,
+          taskIdCount: args.taskIds?.length,
+          labelCount: args.labels?.length,
+        });
 
         // Check authentication (closure-gate precedence fix: defer to the
         // per-request context when bound — see hasRequestContext's doc
@@ -61,7 +97,9 @@ export function registerTaskLabelsTool(
             return applyLabels(
               {
                 id: args.id,
-                labels: args.labels || []
+                taskIds: args.taskIds,
+                labels: args.labels || [],
+                labelTitles: args.labelTitles || [],
               },
               authManager,
             );
@@ -70,7 +108,8 @@ export function registerTaskLabelsTool(
             return removeLabels(
               {
                 id: args.id,
-                labels: args.labels || []
+                taskIds: args.taskIds,
+                labels: args.labels || [],
               },
               authManager,
             );

@@ -18,7 +18,12 @@ import { circuitBreakerRegistry } from '../../../src/utils/retry';
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
-function mockResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
   return {
     ok,
@@ -49,16 +54,16 @@ describe('bulkCreateSubtasks', () => {
 
   describe('validation', () => {
     it('requires parentTaskId before making any request', async () => {
-      await expect(
-        bulkCreateSubtasks({ subtasks: [{ title: 'A' }] }, authManager),
-      ).rejects.toThrow('parentTaskId is required to create subtasks');
+      await expect(bulkCreateSubtasks({ subtasks: [{ title: 'A' }] }, authManager)).rejects.toThrow(
+        'parentTaskId is required to create subtasks',
+      );
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('requires a non-empty subtasks array', async () => {
-      await expect(
-        bulkCreateSubtasks({ parentTaskId: 1 }, authManager),
-      ).rejects.toThrow('subtasks array is required and must contain at least one subtask');
+      await expect(bulkCreateSubtasks({ parentTaskId: 1 }, authManager)).rejects.toThrow(
+        'subtasks array is required and must contain at least one subtask',
+      );
       await expect(
         bulkCreateSubtasks({ parentTaskId: 1, subtasks: [] }, authManager),
       ).rejects.toThrow('subtasks array is required and must contain at least one subtask');
@@ -67,9 +72,9 @@ describe('bulkCreateSubtasks', () => {
 
     it('rejects a batch larger than MAX_BULK_OPERATION_TASKS', async () => {
       const subtasks = Array.from({ length: 101 }, (_, i) => ({ title: `Task ${i}` }));
-      await expect(
-        bulkCreateSubtasks({ parentTaskId: 1, subtasks }, authManager),
-      ).rejects.toThrow(/Too many subtasks for bulk operation/);
+      await expect(bulkCreateSubtasks({ parentTaskId: 1, subtasks }, authManager)).rejects.toThrow(
+        /Too many subtasks for bulk operation/,
+      );
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
@@ -103,7 +108,9 @@ describe('bulkCreateSubtasks', () => {
     });
 
     it('surfaces a friendly NOT_FOUND when the parent task does not exist', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ ok: false, status: 404, statusText: 'Not Found' }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 404, statusText: 'Not Found' }),
+      );
 
       await expect(
         bulkCreateSubtasks({ parentTaskId: 999, subtasks: [{ title: 'A' }] }, authManager),
@@ -118,17 +125,27 @@ describe('bulkCreateSubtasks', () => {
         // 1) resolve-parent (once for the whole batch)
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) }))
         // Subtask A: create -> relate -> verify
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }))
         .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }) }),
+          mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+          }),
         )
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChildren([42])) }))
         // Subtask B: create -> relate -> verify
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 43, title: 'B', project_id: 5 }) }))
         .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ task_id: 1, other_task_id: 43, relation_kind: 'subtask' }) }),
+          mockResponse({ text: JSON.stringify({ id: 43, title: 'B', project_id: 5 }) }),
         )
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChildren([42, 43])) }));
+        .mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({ task_id: 1, other_task_id: 43, relation_kind: 'subtask' }),
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify(parentTaskWithChildren([42, 43])) }),
+        );
 
       const result = await bulkCreateSubtasks(
         { parentTaskId: 1, subtasks: [{ title: 'A' }, { title: 'B' }] },
@@ -156,18 +173,26 @@ describe('bulkCreateSubtasks', () => {
     it('applies labels/assignees and places the subtask into a Kanban bucket, in order', async () => {
       mockFetch
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) })) // create-task
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }),
+        ) // create-task
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-labels: label 7
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-assignees: user 3
         .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }) }),
+          mockResponse({
+            text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+          }),
         ) // create-relation
         // set-bucket internals: resolveKanbanViewId -> GET /projects/5/views
         .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify([{ id: 11, title: 'Kanban', project_id: 5, view_kind: 'kanban' }]) }),
+          mockResponse({
+            text: JSON.stringify([{ id: 11, title: 'Kanban', project_id: 5, view_kind: 'kanban' }]),
+          }),
         )
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // set-bucket POST
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChildren([42])) })); // verify
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify(parentTaskWithChildren([42])) }),
+        ); // verify
 
       await bulkCreateSubtasks(
         { parentTaskId: 1, subtasks: [{ title: 'A', labels: [7], assignees: [3], bucketId: 9 }] },
@@ -189,14 +214,22 @@ describe('bulkCreateSubtasks', () => {
       mockFetch
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
         // Subtask A: create -> relate FAILS
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }),
+        )
         .mockResolvedValueOnce(mockResponse({ ok: false, status: 400, statusText: 'Bad Request' }))
         // Subtask B: create -> relate -> verify all succeed
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 43, title: 'B', project_id: 5 }) }))
         .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ task_id: 1, other_task_id: 43, relation_kind: 'subtask' }) }),
+          mockResponse({ text: JSON.stringify({ id: 43, title: 'B', project_id: 5 }) }),
         )
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChildren([43])) }));
+        .mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({ task_id: 1, other_task_id: 43, relation_kind: 'subtask' }),
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify(parentTaskWithChildren([43])) }),
+        );
 
       const result = await bulkCreateSubtasks(
         { parentTaskId: 1, subtasks: [{ title: 'A' }, { title: 'B' }] },
@@ -204,7 +237,9 @@ describe('bulkCreateSubtasks', () => {
       );
 
       // best-effort: no DELETE compensation call for subtask A's orphaned task.
-      expect(mockFetch.mock.calls.some((call) => (call[1] as RequestInit)?.method === 'DELETE')).toBe(false);
+      expect(
+        mockFetch.mock.calls.some((call) => (call[1] as RequestInit)?.method === 'DELETE'),
+      ).toBe(false);
       expect(mockFetch).toHaveBeenCalledTimes(6);
 
       const text = result.content[0].text;
@@ -217,13 +252,19 @@ describe('bulkCreateSubtasks', () => {
       mockFetch
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
         // Subtask A succeeds fully.
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }))
         .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }) }),
+          mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+          }),
         )
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChildren([42])) }))
         // Subtask B: create -> relate FAILS -> atomic compensation deletes task 43.
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 43, title: 'B', project_id: 5 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ id: 43, title: 'B', project_id: 5 }) }),
+        )
         .mockResolvedValueOnce(mockResponse({ ok: false, status: 400, statusText: 'Bad Request' }))
         .mockResolvedValueOnce(mockResponse({ text: '{}' })); // DELETE /tasks/43
 
@@ -249,8 +290,13 @@ describe('bulkCreateSubtasks', () => {
         .mockResolvedValueOnce(mockResponse({ ok: false, status: 400, statusText: 'Bad Request' })); // B: create fails
 
       await expect(
-        bulkCreateSubtasks({ parentTaskId: 1, subtasks: [{ title: 'A' }, { title: 'B' }] }, authManager),
-      ).rejects.toThrow(/Bulk create-subtasks failed\. Could not create any subtasks under parent 1/);
+        bulkCreateSubtasks(
+          { parentTaskId: 1, subtasks: [{ title: 'A' }, { title: 'B' }] },
+          authManager,
+        ),
+      ).rejects.toThrow(
+        /Bulk create-subtasks failed\. Could not create any subtasks under parent 1/,
+      );
       expect(mockFetch).toHaveBeenCalledTimes(3);
     });
   });

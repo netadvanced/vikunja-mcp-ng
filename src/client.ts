@@ -191,6 +191,8 @@ export { ClientContext };
  * callers, even though construction is now synchronous (there is no longer a
  * dynamic client-library import to await).
  */
-export function createVikunjaClientFactory(authManager: AuthManager): Promise<VikunjaClientFactory> {
+export function createVikunjaClientFactory(
+  authManager: AuthManager,
+): Promise<VikunjaClientFactory> {
   return Promise.resolve(new VikunjaClientFactory(authManager));
 }

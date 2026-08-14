@@ -1,0 +1,13 @@
+{
+  "id": "bulk-set-bucket",
+  "title": "Bulk edit ergonomics: distribute tasks across Kanban buckets",
+  "description": "Probes whether the agent discovers vikunja_task_bulk's bulk-set-bucket operation (src/tools/tasks/buckets.ts's bulkSetTaskBucket, one call moves a whole group of task ids into a single bucket) rather than moving each task into its column one at a time via vikunja_tasks set-bucket. RE-BASELINED 2026-07-25 (netadvanced/vikunja-mcp#28 C1): this scenario's own prompt (new project, N-column Kanban board, tasks distributed across those columns by name) is now a verbatim match for vikunja_projects' setup-kanban composite (PR #175, src/tools/projects/kanban-setup.ts) -- ONE call creates the project, the three named buckets in order, all 9 tasks (each carrying its target `column`), and places every task, superseding the hand-rolled create-project(1) + create-bucket(x3) + bulk-create(1) + bulk-set-bucket(x3-9) path this scenario used to measure. optimalCallCount: setup-kanban (1). A controlled haiku sweep (main @ 8c49b68) already measured actual=1 here, confirming the composite genuinely reaches this floor -- the stale optimal of 9 was letting the agent beat its own 'optimum', which made the friction ratio meaningless.",
+  "promptTemplate": "Create a project called \"{{prefix}}Sprint Board\" with a kanban board with three columns: \"{{prefix}}To Do\", \"{{prefix}}Doing\", and \"{{prefix}}Done\". Add 9 tasks named \"{{prefix}}task-1\" through \"{{prefix}}task-9\". Then, in bulk (not one task at a time), distribute the tasks evenly across the three columns: \"{{prefix}}task-1\" through \"{{prefix}}task-3\" into \"{{prefix}}To Do\", \"{{prefix}}task-4\" through \"{{prefix}}task-6\" into \"{{prefix}}Doing\", and \"{{prefix}}task-7\" through \"{{prefix}}task-9\" into \"{{prefix}}Done\".",
+  "optimalCallCount": 1,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Sprint Board" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Sprint Board", "min": 9 },
+    { "type": "min-buckets-in-project", "projectTitleContains": "{{prefix}}Sprint Board", "min": 3 },
+    { "type": "buckets-with-tasks-count", "projectTitleContains": "{{prefix}}Sprint Board", "min": 3 }
+  ]
+}

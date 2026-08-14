@@ -126,7 +126,9 @@ describe('Projects Tool', () => {
     } as MockAuthManager;
 
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     registerProjectsTool(mockServer, mockAuthManager as unknown as AuthManager);
@@ -230,7 +232,12 @@ describe('Projects Tool', () => {
 
     it('should handle API errors', async () => {
       routeFetch({
-        'GET /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+        'GET /projects': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API Error',
+        }),
       });
 
       await expect(callTool('list')).rejects.toThrow('HTTP 500');
@@ -285,7 +292,12 @@ describe('Projects Tool', () => {
 
     it('should handle 404 errors', async () => {
       routeFetch({
-        'GET /projects/999': mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+        'GET /projects/999': mockResponse({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: 'Not found',
+        }),
       });
 
       await expect(callTool('get', { id: 999 })).rejects.toThrow('Project with ID 999 not found');
@@ -293,7 +305,12 @@ describe('Projects Tool', () => {
 
     it('should handle other API errors', async () => {
       routeFetch({
-        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+        'GET /projects/1': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API Error',
+        }),
       });
 
       await expect(callTool('get', { id: 1 })).rejects.toThrow('HTTP 500');
@@ -355,7 +372,12 @@ describe('Projects Tool', () => {
 
     it('should handle API errors', async () => {
       routeFetch({
-        'PUT /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+        'PUT /projects': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API Error',
+        }),
       });
 
       await expect(callTool('create', { title: 'New Project' })).rejects.toThrow('HTTP 500');
@@ -498,7 +520,9 @@ describe('Projects Tool', () => {
       const rootProject: Project = { ...mockProject, id: 5, parent_project_id: 0 };
       routeFetch({
         'GET /projects/5': mockResponse({ body: rootProject }),
-        'POST /projects/5': mockResponse({ body: { ...rootProject, description: 'updated description' } }),
+        'POST /projects/5': mockResponse({
+          body: { ...rootProject, description: 'updated description' },
+        }),
       });
 
       await callTool('update', {
@@ -518,7 +542,9 @@ describe('Projects Tool', () => {
     it('should preserve existing title when title is omitted (issue #44)', async () => {
       routeFetch({
         'GET /projects/1': mockResponse({ body: mockProject }),
-        'POST /projects/1': mockResponse({ body: { ...mockProject, description: 'new description' } }),
+        'POST /projects/1': mockResponse({
+          body: { ...mockProject, description: 'new description' },
+        }),
       });
 
       // Title intentionally omitted — Vikunja rejects updates without a title
@@ -607,7 +633,12 @@ describe('Projects Tool', () => {
 
     it('should handle 404 errors', async () => {
       routeFetch({
-        'GET /projects/999': mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+        'GET /projects/999': mockResponse({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: 'Not found',
+        }),
       });
 
       await expect(callTool('update', { id: 999, title: 'New Title' })).rejects.toThrow(
@@ -617,7 +648,12 @@ describe('Projects Tool', () => {
 
     it('should handle API errors', async () => {
       routeFetch({
-        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+        'GET /projects/1': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API Error',
+        }),
       });
 
       await expect(callTool('update', { id: 1, title: 'New Title' })).rejects.toThrow('HTTP 500');
@@ -707,7 +743,12 @@ describe('Projects Tool', () => {
 
     it('should handle 404 errors', async () => {
       routeFetch({
-        'GET /projects/999': mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+        'GET /projects/999': mockResponse({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: 'Not found',
+        }),
       });
 
       await expect(callTool('delete', { id: 999 })).rejects.toThrow(
@@ -717,7 +758,12 @@ describe('Projects Tool', () => {
 
     it('should handle API errors', async () => {
       routeFetch({
-        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+        'GET /projects/1': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API Error',
+        }),
       });
 
       await expect(callTool('delete', { id: 1 })).rejects.toThrow('HTTP 500');
@@ -775,7 +821,12 @@ describe('Projects Tool', () => {
 
     it('should handle 404 errors', async () => {
       routeFetch({
-        'GET /projects/999': mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+        'GET /projects/999': mockResponse({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: 'Not found',
+        }),
       });
 
       await expect(callTool('archive', { id: 999 })).rejects.toThrow(
@@ -785,7 +836,12 @@ describe('Projects Tool', () => {
 
     it('should handle API errors', async () => {
       routeFetch({
-        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+        'GET /projects/1': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API Error',
+        }),
       });
 
       await expect(callTool('archive', { id: 1 })).rejects.toThrow('HTTP 500');
@@ -843,7 +899,12 @@ describe('Projects Tool', () => {
 
     it('should handle 404 errors', async () => {
       routeFetch({
-        'GET /projects/999': mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Not found' }),
+        'GET /projects/999': mockResponse({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: 'Not found',
+        }),
       });
 
       await expect(callTool('unarchive', { id: 999 })).rejects.toThrow(
@@ -853,7 +914,12 @@ describe('Projects Tool', () => {
 
     it('should handle API errors', async () => {
       routeFetch({
-        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
+        'GET /projects/1': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API Error',
+        }),
       });
 
       await expect(callTool('unarchive', { id: 1 })).rejects.toThrow('HTTP 500');
@@ -869,7 +935,12 @@ describe('Projects Tool', () => {
   describe('error handling', () => {
     it('should handle unexpected errors', async () => {
       routeFetch({
-        'GET /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'String error' }),
+        'GET /projects': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'String error',
+        }),
       });
 
       await expect(callTool('list')).rejects.toThrow('HTTP 500');
@@ -920,12 +991,19 @@ describe('Projects Tool', () => {
     });
 
     it('should validate project ID', async () => {
-      await expect(callTool('get-children', { id: -1 })).rejects.toThrow('id must be a positive integer');
+      await expect(callTool('get-children', { id: -1 })).rejects.toThrow(
+        'id must be a positive integer',
+      );
     });
 
     it('should handle API errors', async () => {
       routeFetch({
-        'GET /projects/1': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API error' }),
+        'GET /projects/1': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API error',
+        }),
       });
       await expect(callTool('get-children', { id: 1 })).rejects.toThrow('HTTP 500');
     });
@@ -953,7 +1031,12 @@ describe('Projects Tool', () => {
         id: 100 + i,
         title: `Filler ${i}`,
       }));
-      const childOnSecondPage = { ...mockProject, id: 9999, title: 'Late Child', parent_project_id: 1 };
+      const childOnSecondPage = {
+        ...mockProject,
+        id: 9999,
+        title: 'Late Child',
+        parent_project_id: 1,
+      };
       const secondPage = [mockProject, childOnSecondPage];
 
       routeFetch({
@@ -1021,17 +1104,26 @@ describe('Projects Tool', () => {
     });
 
     it('should validate project ID', async () => {
-      await expect(callTool('get-tree', { id: 0 })).rejects.toThrow('id must be a positive integer');
+      await expect(callTool('get-tree', { id: 0 })).rejects.toThrow(
+        'id must be a positive integer',
+      );
     });
 
     it('should handle project not found', async () => {
       routeFetch({ 'GET /projects': mockResponse({ body: [] }) });
-      await expect(callTool('get-tree', { id: 999 })).rejects.toThrow('Project with ID 999 not found');
+      await expect(callTool('get-tree', { id: 999 })).rejects.toThrow(
+        'Project with ID 999 not found',
+      );
     });
 
     it('should handle API errors', async () => {
       routeFetch({
-        'GET /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API error' }),
+        'GET /projects': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API error',
+        }),
       });
       await expect(callTool('get-tree', { id: 1 })).rejects.toThrow('HTTP 500');
     });
@@ -1108,7 +1200,9 @@ describe('Projects Tool', () => {
       ];
       routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
-      await expect(callTool('get-breadcrumb', { id: 1 })).rejects.toThrow('Circular reference detected');
+      await expect(callTool('get-breadcrumb', { id: 1 })).rejects.toThrow(
+        'Circular reference detected',
+      );
     });
 
     it('should handle orphaned projects', async () => {
@@ -1130,17 +1224,26 @@ describe('Projects Tool', () => {
     });
 
     it('should validate project ID', async () => {
-      await expect(callTool('get-breadcrumb', { id: -5 })).rejects.toThrow('id must be a positive integer');
+      await expect(callTool('get-breadcrumb', { id: -5 })).rejects.toThrow(
+        'id must be a positive integer',
+      );
     });
 
     it('should handle project not found', async () => {
       routeFetch({ 'GET /projects': mockResponse({ body: [] }) });
-      await expect(callTool('get-breadcrumb', { id: 999 })).rejects.toThrow('Project with ID 999 not found');
+      await expect(callTool('get-breadcrumb', { id: 999 })).rejects.toThrow(
+        'Project with ID 999 not found',
+      );
     });
 
     it('should handle API errors', async () => {
       routeFetch({
-        'GET /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API error' }),
+        'GET /projects': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API error',
+        }),
       });
       await expect(callTool('get-breadcrumb', { id: 1 })).rejects.toThrow('HTTP 500');
     });
@@ -1178,7 +1281,9 @@ describe('Projects Tool', () => {
       const projects = [{ ...mockProject, id: 1, title: 'Project', parent_project_id: 2 }];
       routeFetch({
         'GET /projects': mockResponse({ body: projects }),
-        'POST /projects/1': mockResponse({ body: { ...projects[0], parent_project_id: undefined } }),
+        'POST /projects/1': mockResponse({
+          body: { ...projects[0], parent_project_id: undefined },
+        }),
       });
 
       const result = await callTool('move', { id: 1, parentProjectId: undefined });
@@ -1197,7 +1302,9 @@ describe('Projects Tool', () => {
       const projects = [{ ...mockProject, id: 1, title: 'Project', parent_project_id: undefined }];
       routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
-      await expect(callTool('move', { id: 1, parentProjectId: 1 })).rejects.toThrow('Cannot move a project to be its own parent');
+      await expect(callTool('move', { id: 1, parentProjectId: 1 })).rejects.toThrow(
+        'Cannot move a project to be its own parent',
+      );
     });
 
     it('should prevent circular references', async () => {
@@ -1208,7 +1315,9 @@ describe('Projects Tool', () => {
       ];
       routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
-      await expect(callTool('move', { id: 1, parentProjectId: 3 })).rejects.toThrow('Move would create a circular reference in project hierarchy');
+      await expect(callTool('move', { id: 1, parentProjectId: 3 })).rejects.toThrow(
+        'Move would create a circular reference in project hierarchy',
+      );
     });
 
     it('should prevent exceeding max depth', async () => {
@@ -1244,7 +1353,9 @@ describe('Projects Tool', () => {
 
       routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
-      await expect(callTool('move', { id: 10, parentProjectId: 9 })).rejects.toThrow('exceed the maximum depth');
+      await expect(callTool('move', { id: 10, parentProjectId: 9 })).rejects.toThrow(
+        'exceed the maximum depth',
+      );
     });
 
     it('should require project ID', async () => {
@@ -1257,7 +1368,9 @@ describe('Projects Tool', () => {
 
     it('should validate parent project ID', async () => {
       routeFetch({ 'GET /projects': mockResponse({ body: [mockProject] }) });
-      await expect(callTool('move', { id: 1, parentProjectId: -1 })).rejects.toThrow('parentProjectId must be a positive integer');
+      await expect(callTool('move', { id: 1, parentProjectId: -1 })).rejects.toThrow(
+        'parentProjectId must be a positive integer',
+      );
     });
 
     it('should handle project not found', async () => {
@@ -1268,12 +1381,19 @@ describe('Projects Tool', () => {
     it('should handle parent project not found', async () => {
       const projects = [{ ...mockProject, id: 1, title: 'Project', parent_project_id: undefined }];
       routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
-      await expect(callTool('move', { id: 1, parentProjectId: 999 })).rejects.toThrow('Parent project with ID 999 not found');
+      await expect(callTool('move', { id: 1, parentProjectId: 999 })).rejects.toThrow(
+        'Parent project with ID 999 not found',
+      );
     });
 
     it('should handle API errors', async () => {
       routeFetch({
-        'GET /projects': mockResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API error' }),
+        'GET /projects': mockResponse({
+          ok: false,
+          status: 500,
+          statusText: 'Server Error',
+          text: 'API error',
+        }),
       });
       await expect(callTool('move', { id: 1 })).rejects.toThrow('HTTP 500');
     });
@@ -1288,7 +1408,9 @@ describe('Projects Tool', () => {
       ];
       routeFetch({ 'GET /projects': mockResponse({ body: circularProjects }) });
 
-      await expect(callTool('create', { title: 'New Project', parentProjectId: 1 })).rejects.toThrow('Circular reference detected');
+      await expect(
+        callTool('create', { title: 'New Project', parentProjectId: 1 }),
+      ).rejects.toThrow('Circular reference detected');
     });
 
     it('should handle edge case where project has multiple children with same ID', async () => {
@@ -1324,7 +1446,12 @@ describe('Projects Tool', () => {
     it('should handle projects without IDs in getMaxSubtreeDepth', async () => {
       // Create projects where some don't have IDs
       const projects = [
-        { ...mockProject, id: 1, title: 'Project with mixed children', parent_project_id: undefined },
+        {
+          ...mockProject,
+          id: 1,
+          title: 'Project with mixed children',
+          parent_project_id: undefined,
+        },
         { ...mockProject, id: undefined, title: 'Child without ID', parent_project_id: 1 },
         { ...mockProject, id: 3, title: 'Child with ID', parent_project_id: 1 },
         // Add a target parent
@@ -1334,7 +1461,12 @@ describe('Projects Tool', () => {
       routeFetch({
         'GET /projects': mockResponse({ body: projects }),
         'POST /projects/1': mockResponse({
-          body: { ...mockProject, id: 1, title: 'Project with mixed children', parent_project_id: 4 },
+          body: {
+            ...mockProject,
+            id: 1,
+            title: 'Project with mixed children',
+            parent_project_id: 4,
+          },
         }),
       });
 
@@ -1378,7 +1510,9 @@ describe('Projects Tool', () => {
       }
       routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
 
-      await expect(callTool('create', { title: 'Too Deep', parentProjectId: 10 })).rejects.toThrow('Maximum allowed depth is 10 levels');
+      await expect(callTool('create', { title: 'Too Deep', parentProjectId: 10 })).rejects.toThrow(
+        'Maximum allowed depth is 10 levels',
+      );
     });
 
     it('should enforce max depth on update', async () => {
@@ -1404,7 +1538,9 @@ describe('Projects Tool', () => {
         'GET /projects': mockResponse({ body: projects }),
       });
 
-      await expect(callTool('update', { id: 11, parentProjectId: 10 })).rejects.toThrow('Maximum allowed depth is 10 levels');
+      await expect(callTool('update', { id: 11, parentProjectId: 10 })).rejects.toThrow(
+        'Maximum allowed depth is 10 levels',
+      );
     });
 
     it('should move a project under a sibling that is not its descendant', async () => {
@@ -1481,9 +1617,9 @@ describe('Projects Tool', () => {
       expect(
         isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'get', id: 1 })),
       ).toBe(false);
-      expect(
-        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'get-tree' })),
-      ).toBe(false);
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'get-tree' }))).toBe(
+        false,
+      );
     });
 
     it('does not raise the read-only error for create when readOnly is off', async () => {

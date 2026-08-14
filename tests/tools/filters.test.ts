@@ -28,7 +28,12 @@ const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
 /** Minimal Response-like object matching what vikunjaRestRequest reads. */
-function mockResponse(opts: { ok?: boolean; status?: number; statusText?: string; body?: unknown }): Response {
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  body?: unknown;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', body } = opts;
   const text = body === undefined ? '' : JSON.stringify(body);
   return {
@@ -87,7 +92,9 @@ describe('vikunja_filters tool', () => {
       const handler = call[call.length - 1];
 
       for (const action of ['list', 'get', 'create', 'update', 'delete']) {
-        await expect(handler({ action, parameters: {} })).rejects.toThrow('Authentication required');
+        await expect(handler({ action, parameters: {} })).rejects.toThrow(
+          'Authentication required',
+        );
       }
     });
 
@@ -104,7 +111,10 @@ describe('vikunja_filters tool', () => {
       });
       expect(buildResult.content[0].text).toContain('Filter built successfully');
 
-      const validateResult = await handler({ action: 'validate', parameters: { filter: 'done = false' } });
+      const validateResult = await handler({
+        action: 'validate',
+        parameters: { filter: 'done = false' },
+      });
       expect(validateResult.content[0].text).toContain('Filter is valid');
     });
   });
@@ -112,12 +122,20 @@ describe('vikunja_filters tool', () => {
   describe('create action', () => {
     it('sends a PUT /filters payload with the translated filter string', async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse({ status: 201, body: savedFilter({ title: 'Due soon', filters: { filter: 'due_date < now' } }) }),
+        mockResponse({
+          status: 201,
+          body: savedFilter({ title: 'Due soon', filters: { filter: 'due_date < now' } }),
+        }),
       );
 
       const result = await toolHandler({
         action: 'create',
-        parameters: { title: 'Due soon', description: 'Urgent stuff', filter: 'dueDate < now', isFavorite: true },
+        parameters: {
+          title: 'Due soon',
+          description: 'Urgent stuff',
+          filter: 'dueDate < now',
+          isFavorite: true,
+        },
       });
 
       expect(mockFetch).toHaveBeenCalledWith(
@@ -242,7 +260,9 @@ describe('vikunja_filters tool', () => {
     });
 
     it('maps a 404 to a NOT_FOUND error', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ ok: false, status: 404, statusText: 'Not Found' }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 404, statusText: 'Not Found' }),
+      );
 
       const result = await toolHandler({ action: 'get', parameters: { id: 999 } });
       const markdown = result.content[0].text;
@@ -251,7 +271,9 @@ describe('vikunja_filters tool', () => {
     });
 
     it('maps a 403 (no access) to the same NOT_FOUND message as a 404', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ ok: false, status: 403, statusText: 'Forbidden' }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 403, statusText: 'Forbidden' }),
+      );
 
       const result = await toolHandler({ action: 'get', parameters: { id: 5 } });
       const markdown = result.content[0].text;
@@ -336,7 +358,9 @@ describe('vikunja_filters tool', () => {
 
     it('translates a replacement filter string to snake_case', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ body: savedFilter({ id: 4, filters: { filter: 'done = false' } }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ body: savedFilter({ id: 4, filters: { filter: 'done = false' } }) }),
+        )
         .mockResolvedValueOnce(mockResponse({ body: savedFilter({ id: 4 }) }));
 
       await toolHandler({
@@ -350,7 +374,9 @@ describe('vikunja_filters tool', () => {
     });
 
     it('maps a 404 on the initial fetch to NOT_FOUND without POSTing', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ ok: false, status: 404, statusText: 'Not Found' }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 404, statusText: 'Not Found' }),
+      );
 
       const result = await toolHandler({ action: 'update', parameters: { id: 404, title: 'X' } });
       const markdown = result.content[0].text;
@@ -375,7 +401,9 @@ describe('vikunja_filters tool', () => {
 
     it('rebuilds the filter from structured conditions when supplied instead of a string', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ body: savedFilter({ id: 4, filters: { filter: 'done = false' } }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ body: savedFilter({ id: 4, filters: { filter: 'done = false' } }) }),
+        )
         .mockResolvedValueOnce(mockResponse({ body: savedFilter({ id: 4 }) }));
 
       await toolHandler({
@@ -400,7 +428,10 @@ describe('vikunja_filters tool', () => {
         .mockResolvedValueOnce(mockResponse({ body: savedFilter({ id: 4 }) }))
         .mockResolvedValueOnce(mockResponse({ ok: false, status: 404, statusText: 'Not Found' }));
 
-      const result = await toolHandler({ action: 'update', parameters: { id: 4, title: 'Renamed' } });
+      const result = await toolHandler({
+        action: 'update',
+        parameters: { id: 4, title: 'Renamed' },
+      });
       const markdown = result.content[0].text;
       expect(parseMarkdown(markdown).hasHeading(2, /Error/)).toBe(true);
       expect(markdown).toContain('not found');
@@ -442,7 +473,9 @@ describe('vikunja_filters tool', () => {
     });
 
     it('maps a 404 to NOT_FOUND without attempting the delete call', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ ok: false, status: 404, statusText: 'Not Found' }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 404, statusText: 'Not Found' }),
+      );
 
       const result = await toolHandler({ action: 'delete', parameters: { id: 999 } });
       const markdown = result.content[0].text;
@@ -464,7 +497,13 @@ describe('vikunja_filters tool', () => {
           }),
         )
         .mockResolvedValueOnce(
-          mockResponse({ body: savedFilter({ id: 3, title: 'High priority', filters: { filter: 'priority >= 4' } }) }),
+          mockResponse({
+            body: savedFilter({
+              id: 3,
+              title: 'High priority',
+              filters: { filter: 'priority >= 4' },
+            }),
+          }),
         );
 
       const result = await toolHandler({ action: 'list', parameters: {} });
@@ -494,7 +533,12 @@ describe('vikunja_filters tool', () => {
 
     it('excludes real (positive-id) projects from the derived list', async () => {
       mockFetch.mockResolvedValueOnce(
-        mockResponse({ body: [{ id: 1, title: 'Real project' }, { id: 2, title: 'Another real project' }] }),
+        mockResponse({
+          body: [
+            { id: 1, title: 'Real project' },
+            { id: 2, title: 'Another real project' },
+          ],
+        }),
       );
 
       const result = await toolHandler({ action: 'list', parameters: {} });
@@ -505,7 +549,14 @@ describe('vikunja_filters tool', () => {
 
     it('filters by favorite when requested', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ body: [{ id: -1, title: 'A' }, { id: -2, title: 'B' }] }))
+        .mockResolvedValueOnce(
+          mockResponse({
+            body: [
+              { id: -1, title: 'A' },
+              { id: -2, title: 'B' },
+            ],
+          }),
+        )
         .mockResolvedValueOnce(mockResponse({ body: savedFilter({ id: 0, is_favorite: true }) }))
         .mockResolvedValueOnce(mockResponse({ body: savedFilter({ id: 1, is_favorite: false }) }));
 
@@ -585,7 +636,10 @@ describe('vikunja_filters tool', () => {
       expect(filterMatch).not.toBeNull();
       const builtFilter = (filterMatch as RegExpExecArray)[1]?.trim() as string;
 
-      const validateResult = await toolHandler({ action: 'validate', parameters: { filter: builtFilter } });
+      const validateResult = await toolHandler({
+        action: 'validate',
+        parameters: { filter: builtFilter },
+      });
       const validateMarkdown = validateResult.content[0].text;
       expect(parseMarkdown(validateMarkdown).hasHeading(2, /Success/)).toBe(true);
       expect(validateMarkdown).toContain('Filter is valid');
@@ -624,12 +678,18 @@ describe('vikunja_filters tool', () => {
       ];
 
       for (const condition of fields) {
-        const buildResult = await toolHandler({ action: 'build', parameters: { conditions: [condition] } });
+        const buildResult = await toolHandler({
+          action: 'build',
+          parameters: { conditions: [condition] },
+        });
         const filterMatch = /\*\*filter:\*\*\s*(.+)/.exec(buildResult.content[0].text);
         expect(filterMatch).not.toBeNull();
         const builtFilter = (filterMatch as RegExpExecArray)[1]?.trim() as string;
 
-        const validateResult = await toolHandler({ action: 'validate', parameters: { filter: builtFilter } });
+        const validateResult = await toolHandler({
+          action: 'validate',
+          parameters: { filter: builtFilter },
+        });
         const validateMarkdown = validateResult.content[0].text;
         expect(parseMarkdown(validateMarkdown).hasHeading(2, /Success/)).toBe(true);
       }

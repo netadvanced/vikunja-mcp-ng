@@ -131,7 +131,7 @@ Not a list item
       expect(items).toEqual([
         'Review the implementation',
         'Run tests to verify functionality',
-        'Deploy to production'
+        'Deploy to production',
       ]);
     });
 
@@ -155,7 +155,7 @@ Not list items
       expect(items).toEqual([
         'Consider using TypeScript',
         'Add comprehensive tests',
-        'Document the API'
+        'Document the API',
       ]);
     });
 
@@ -193,7 +193,7 @@ Not list items
         'Unordered item',
         'Second ordered item',
         'Nested unordered item',
-        'Third ordered item'
+        'Third ordered item',
       ]);
     });
   });
@@ -215,7 +215,7 @@ Some additional content that should be ignored.
         operation: 'tasks-create',
         status: 'success',
         duration: '2.3s',
-        'items_processed': '42'
+        items_processed: '42',
       });
     });
 
@@ -245,8 +245,8 @@ Just regular paragraphs.
       expect(metadata).toEqual({
         operation: 'projects-update',
         confidence: '95%',
-        'session_id': 'sess_abc123',
-        urgency: 'high'
+        session_id: 'sess_abc123',
+        urgency: 'high',
       });
     });
 
@@ -264,7 +264,7 @@ This is not a metadata line
       expect(metadata).toEqual({
         operation: 'tasks-create',
         status: 'success',
-        'valid_metadata': 'value'
+        valid_metadata: 'value',
       });
     });
   });
@@ -327,11 +327,11 @@ The task has been successfully created and is now available in your project. You
         operation: 'tasks-create',
         status: 'success',
         duration: '1.2s',
-        'task_id': '12345'
+        task_id: '12345',
       };
 
       // The actual metadata may include additional keys from the H2 heading
-      Object.keys(expectedMetadata).forEach(key => {
+      Object.keys(expectedMetadata).forEach((key) => {
         expect(metadata[key]).toBe(expectedMetadata[key]);
       });
     });

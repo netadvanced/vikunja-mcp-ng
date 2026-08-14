@@ -1,0 +1,26 @@
+{
+  "id": "setup-kanban-composite",
+  "title": "Kanban board setup via the setup-kanban composite (issue #173)",
+  "description": "A q3-offsite-kanban-style prompt (new project, a multi-column Kanban board, tasks distributed across those columns, priorities, due dates) added specifically to probe whether the agent discovers and uses vikunja_projects' setup-kanban composite -- ONE call that creates the project, ensures the Kanban view, creates the ordered buckets, bulk-creates the tasks, and places each into its column -- instead of hand-rolling create -> create-bucket (xN) -> vikunja_task_bulk bulk-create -> vikunja_tasks set-bucket / bulk-set-bucket (xN), the ~38-call path that motivated issue #173. RE-VERIFIED 2026-07-25 (netadvanced/vikunja-mcp#28 C1): optimalCallCount reasoning -- setup-kanban (PR #175), ONE call: project + 4 named columns + 8 tasks each carrying `column`/`priority`/`dueDate` = 1. Genuinely 1, not padded; PR #178 (label taskIds) is orthogonal (no label dimension here).",
+  "promptTemplate": "Set up a project called \"{{prefix}}Product Launch\" with a kanban board with four columns: \"Backlog\", \"In Progress\", \"Review\", and \"Done\". Add eight tasks distributed across those columns, each task given a priority, and due dates spread across October 2026.",
+  "optimalCallCount": 1,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Product Launch" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Product Launch", "min": 8 },
+    { "type": "min-buckets-in-project", "projectTitleContains": "{{prefix}}Product Launch", "min": 4 },
+    { "type": "buckets-with-tasks-count", "projectTitleContains": "{{prefix}}Product Launch", "min": 4 },
+    {
+      "type": "buckets-in-order",
+      "projectTitleContains": "{{prefix}}Product Launch",
+      "order": ["Backlog", "In Progress", "Review", "Done"]
+    },
+    { "type": "tasks-field-match-count", "projectTitleContains": "{{prefix}}Product Launch", "field": "priority", "op": "set", "min": 6 },
+    {
+      "type": "tasks-due-date-in-range",
+      "projectTitleContains": "{{prefix}}Product Launch",
+      "startDate": "2026-10-01T00:00:00Z",
+      "endDate": "2026-10-31T23:59:59Z",
+      "min": 6
+    }
+  ]
+}

@@ -31,7 +31,8 @@ const ALLOWED_CHARS = /^[\t\n\r\u0020-\u007D\u00C0-\u017F\u4E00-\u9FFF]*$/;
  */
 const DATE_PATTERNS = {
   // Combined pattern with atomic groups to prevent backtracking
-  QUICK_DATE_CHECK: /^(?:(?:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)|now(?:[+-]\d{1,4}[smhdwMy])?|now\/[smhdwMy])$/,
+  QUICK_DATE_CHECK:
+    /^(?:(?:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2})?)|now(?:[+-]\d{1,4}[smhdwMy])?|now\/[smhdwMy])$/,
 
   // Individual optimized patterns for specific validation
   ISO_DATE: /^\d{4}-\d{2}-\d{2}$/,
@@ -42,14 +43,14 @@ const DATE_PATTERNS = {
 
   // Fast rejection patterns - optimized for performance
   SECURITY_REJECTION: [
-    /\s/,                           // Any spaces
-    /now\+\d+day/,                  // "day" instead of "d"
-    /now\/day/,                     // "day" instead of "d"
-    /\d{4}\/\d{1}\/\d{1}/,          // Missing leading zeros in YYYY/M/D
-    /\d{1}-\d{2}-\d{4}/,            // Wrong order D-MM-YYYY
-    /now\+\d+\.\d+[a-z]/,           // Decimal numbers
-    /now\+\+/,                      // Double operator
-    /now\+-/,                       // Conflicting operators
+    /\s/, // Any spaces
+    /now\+\d+day/, // "day" instead of "d"
+    /now\/day/, // "day" instead of "d"
+    /\d{4}\/\d{1}\/\d{1}/, // Missing leading zeros in YYYY/M/D
+    /\d{1}-\d{2}-\d{4}/, // Wrong order D-MM-YYYY
+    /now\+\d+\.\d+[a-z]/, // Decimal numbers
+    /now\+\+/, // Double operator
+    /now\+-/, // Conflicting operators
   ],
 } as const;
 
@@ -60,13 +61,33 @@ const REPEATED_CHAR_PATTERN = /(.)\1{20,}/;
  * Zod schemas for validation
  */
 const FilterFieldSchema = z.enum([
-  'done', 'priority', 'percentDone', 'dueDate', 'startDate', 'endDate',
-  'doneAt', 'project', 'assignees',
-  'labels', 'created', 'updated', 'title', 'description'
+  'done',
+  'priority',
+  'percentDone',
+  'dueDate',
+  'startDate',
+  'endDate',
+  'doneAt',
+  'project',
+  'assignees',
+  'labels',
+  'created',
+  'updated',
+  'title',
+  'description',
 ]);
 
 const FilterOperatorSchema = z.enum([
-  '=', '!=', '>', '>=', '<', '<=', 'like', 'LIKE', 'in', 'not in'
+  '=',
+  '!=',
+  '>',
+  '>=',
+  '<',
+  '<=',
+  'like',
+  'LIKE',
+  'in',
+  'not in',
 ]);
 
 const LogicalOperatorSchema = z.enum(['&&', '||']);
@@ -76,24 +97,30 @@ const FilterValueSchema = z.union([
   z.number(),
   z.boolean(),
   z.array(z.string()),
-  z.array(z.number())
+  z.array(z.number()),
 ]);
 
-const FilterConditionSchema = z.object({
-  field: FilterFieldSchema,
-  operator: FilterOperatorSchema,
-  value: FilterValueSchema,
-}).strict();
+const FilterConditionSchema = z
+  .object({
+    field: FilterFieldSchema,
+    operator: FilterOperatorSchema,
+    value: FilterValueSchema,
+  })
+  .strict();
 
-const FilterGroupSchema = z.object({
-  conditions: z.array(FilterConditionSchema).min(1, 'Group must contain at least one condition'),
-  operator: LogicalOperatorSchema.default('&&'),
-}).strict();
+const FilterGroupSchema = z
+  .object({
+    conditions: z.array(FilterConditionSchema).min(1, 'Group must contain at least one condition'),
+    operator: LogicalOperatorSchema.default('&&'),
+  })
+  .strict();
 
-const FilterExpressionSchema = z.object({
-  groups: z.array(FilterGroupSchema).min(1, 'Expression must contain at least one group'),
-  operator: LogicalOperatorSchema.optional(),
-}).strict();
+const FilterExpressionSchema = z
+  .object({
+    groups: z.array(FilterGroupSchema).min(1, 'Expression must contain at least one group'),
+    operator: LogicalOperatorSchema.optional(),
+  })
+  .strict();
 
 /**
  * Security validation functions
@@ -113,7 +140,7 @@ export const SecurityValidator = {
     if (input.length > MAX_FILTER_LENGTH) {
       return {
         isValid: false,
-        error: `Filter string too long. Maximum length is ${MAX_FILTER_LENGTH} characters, got ${input.length}`
+        error: `Filter string too long. Maximum length is ${MAX_FILTER_LENGTH} characters, got ${input.length}`,
       };
     }
     return { isValid: true };
@@ -126,11 +153,11 @@ export const SecurityValidator = {
     if (value.length > MAX_VALUE_LENGTH) {
       return {
         isValid: false,
-        error: `Value too long. Maximum length is ${MAX_VALUE_LENGTH} characters`
+        error: `Value too long. Maximum length is ${MAX_VALUE_LENGTH} characters`,
       };
     }
     return { isValid: true };
-  }
+  },
 };
 
 /**
@@ -157,7 +184,7 @@ function createParseError(message: string, state: ParseState, contextLength = 20
   return {
     message,
     position: state.position,
-    context: `${prefix}${context}${suffix}\n${marker}`
+    context: `${prefix}${context}${suffix}\n${marker}`,
   };
 }
 
@@ -176,22 +203,46 @@ function skipWhitespace(state: ParseState): void {
 }
 
 /**
- * Parse quoted string value
+ * Parse quoted string value. Accepts either `"` or `'` as the quote
+ * character (SQL-like filter grammars commonly accept both for string
+ * literals) - whichever opens the value is also what closes it; the two
+ * are never mixed within a single value. Recognizing `'` as a quote
+ * character (not just `"`) matters for round-tripping: without it, a
+ * caller-supplied value like `'urgent'` isn't treated as a quoted string at
+ * all (single quotes aren't excluded from `parseUnquotedValue`'s character
+ * class), so the literal quote characters end up baked into the parsed
+ * value - and re-serializing through `conditionToString`/`expressionToString`
+ * (which always emits double-quoted `like` values) would then wrap an
+ * *already-quoted-looking* string in a second layer of quotes
+ * (`"'urgent'"`), corrupting the value instead of just reformatting it.
+ *
+ * Recognizes two escape sequences: `\<quoteChar>` (a literal quote
+ * character of whichever kind opened this value) and `\\` (a literal
+ * backslash) - both are the escape-side counterpart of
+ * `escapeDoubleQuotedValue`'s `\\` -> `\\\\` / `"` -> `\"` substitutions, so
+ * a value round-tripped through `conditionToString`/`conditionToDslString`
+ * and back through this function comes out byte-for-byte identical. Any
+ * other backslash (not followed by the quote char or another backslash) is
+ * kept as a literal backslash.
  */
 function parseQuotedString(state: ParseState): string | null {
-  if (state.position >= state.length || state.input[state.position] !== '"') {
+  const quoteChar = state.input[state.position];
+  if (state.position >= state.length || (quoteChar !== '"' && quoteChar !== "'")) {
     return null;
   }
 
   state.position++; // Skip opening quote
 
   let value = '';
-  while (state.position < state.length && state.input[state.position] !== '"') {
+  while (state.position < state.length && state.input[state.position] !== quoteChar) {
     const char = state.input[state.position];
+    const nextChar =
+      state.position + 1 < state.length ? state.input[state.position + 1] : undefined;
 
-    // Handle escaped quotes
-    if (char === '\\' && state.position + 1 < state.length && state.input[state.position + 1] === '"') {
-      value += '"';
+    // Handle escaped quotes/backslashes (of the same quote character that
+    // opened this value, or a literal backslash).
+    if (char === '\\' && (nextChar === quoteChar || nextChar === '\\')) {
+      value += nextChar;
       state.position += 2;
     } else if (char !== undefined) {
       value += char;
@@ -218,10 +269,7 @@ function parseQuotedString(state: ParseState): string | null {
 function parseUnquotedValue(state: ParseState): string | null {
   const start = state.position;
 
-  while (
-    state.position < state.length &&
-    state.input[state.position] !== undefined
-  ) {
+  while (state.position < state.length && state.input[state.position] !== undefined) {
     const char = state.input[state.position];
     if (char && /[^\s(),=!<>&|]/.test(char)) {
       state.position++;
@@ -302,7 +350,10 @@ export const FILTER_FIELD_ALIASES: Readonly<Record<string, FilterField>> = {
  * load rather than per-call.
  */
 const FIELD_TOKEN_CANDIDATES: ReadonlyArray<{ token: string; field: FilterField }> = [
-  ...(Object.keys(FIELD_TYPES) as FilterField[]).map((field) => ({ token: field as string, field })),
+  ...(Object.keys(FIELD_TYPES) as FilterField[]).map((field) => ({
+    token: field,
+    field,
+  })),
   ...Object.entries(FILTER_FIELD_ALIASES).map(([token, field]) => ({ token, field })),
 ].sort((a, b) => b.token.length - a.token.length);
 
@@ -330,9 +381,11 @@ function parseField(state: ParseState): FilterField | null {
   // boundary, never a second internal representation.
   for (const { token, field } of FIELD_TOKEN_CANDIDATES) {
     const substr = state.input.substring(state.position, state.position + token.length);
-    if (substr === token &&
-        (state.position + token.length >= state.length ||
-         /[\s=!<>]/.test(state.input[state.position + token.length] || ''))) {
+    if (
+      substr === token &&
+      (state.position + token.length >= state.length ||
+        /[\s=!<>]/.test(state.input[state.position + token.length] || ''))
+    ) {
       state.position += token.length;
       return field;
     }
@@ -391,9 +444,13 @@ function parseArrayValues(state: ParseState): string[] | null {
 /**
  * Convert string value to appropriate type based on field
  */
-function convertValue(value: string, field: FilterField, operator: FilterOperator): string | number | boolean | string[] {
+function convertValue(
+  value: string,
+  field: FilterField,
+  operator: FilterOperator,
+): string | number | boolean | string[] {
   if (operator === 'in' || operator === 'not in') {
-    return value.split(',').map(v => v.trim());
+    return value.split(',').map((v) => v.trim());
   }
 
   const fieldType = {
@@ -558,8 +615,8 @@ function parseExpression(state: ParseState): FilterExpression {
   }
 
   const expression = groupOperator
-    ? { groups, operator: groupOperator } as FilterExpression
-    : { groups } as FilterExpression;
+    ? ({ groups, operator: groupOperator } as FilterExpression)
+    : ({ groups } as FilterExpression);
 
   return expression;
 }
@@ -597,7 +654,8 @@ export function parseFilterString(filterStr: string): ParseResult {
       error: {
         message: 'Filter string contains invalid characters',
         position: 0,
-        context: 'Only alphanumeric characters, common punctuation, and international characters are allowed'
+        context:
+          'Only alphanumeric characters, common punctuation, and international characters are allowed',
       },
     };
   }
@@ -617,7 +675,7 @@ export function parseFilterString(filterStr: string): ParseResult {
   const state: ParseState = {
     input: filterStr.trim(),
     position: 0,
-    length: filterStr.trim().length
+    length: filterStr.trim().length,
   };
 
   try {
@@ -628,21 +686,32 @@ export function parseFilterString(filterStr: string): ParseResult {
     if (state.position < state.length) {
       const remainingChar = state.input[state.position];
       // Handle specific cases that should return "Invalid filter syntax"
-      if (remainingChar === '&' || remainingChar === '|' || remainingChar === '!' ||
-          remainingChar === '(' || remainingChar === ')') {
+      if (
+        remainingChar === '&' ||
+        remainingChar === '|' ||
+        remainingChar === '!' ||
+        remainingChar === '(' ||
+        remainingChar === ')'
+      ) {
         return {
           expression: null,
           error: {
             message: 'Invalid filter syntax',
             position: state.position,
-            context: state.input.substring(state.position, Math.min(state.position + 40, state.length))
-          }
+            context: state.input.substring(
+              state.position,
+              Math.min(state.position + 40, state.length),
+            ),
+          },
         };
       }
 
       return {
         expression: null,
-        error: createParseError(`Unexpected token: ${state.input.substring(state.position, Math.min(state.position + 20, state.length))}`, state)
+        error: createParseError(
+          `Unexpected token: ${state.input.substring(state.position, Math.min(state.position + 20, state.length))}`,
+          state,
+        ),
       };
     }
 
@@ -654,8 +723,8 @@ export function parseFilterString(filterStr: string): ParseResult {
         error: {
           message: 'Invalid filter structure',
           position: 0,
-          context: validationResult.error.errors.map(e => e.message).join(', ')
-        }
+          context: validationResult.error.errors.map((e) => e.message).join(', '),
+        },
       };
     }
 
@@ -670,14 +739,17 @@ export function parseFilterString(filterStr: string): ParseResult {
         error: {
           message: 'Invalid filter syntax',
           position: state.position,
-          context: state.input.substring(Math.max(0, state.position - 20), Math.min(state.position + 20, state.length))
-        }
+          context: state.input.substring(
+            Math.max(0, state.position - 20),
+            Math.min(state.position + 20, state.length),
+          ),
+        },
       };
     }
 
     return {
       expression: null,
-      error: createParseError(message, state)
+      error: createParseError(message, state),
     };
   }
 }
@@ -685,7 +757,11 @@ export function parseFilterString(filterStr: string): ParseResult {
 /**
  * Enhanced validation with field type checking and value validation
  */
-function validateFieldTypeAndValue(field: FilterField, operator: FilterOperator, value: unknown): string[] {
+function validateFieldTypeAndValue(
+  field: FilterField,
+  operator: FilterOperator,
+  value: unknown,
+): string[] {
   const errors: string[] = [];
   const FIELD_TYPE_MAP: Record<string, string> = {
     done: 'boolean',
@@ -712,11 +788,15 @@ function validateFieldTypeAndValue(field: FilterField, operator: FilterOperator,
 
   // Operator validation for field types
   if (fieldType === 'boolean' && !['=', '!='].includes(operator)) {
-    errors.push(`Invalid operator '${operator}' for boolean field '${field}'. Only = and != are allowed.`);
+    errors.push(
+      `Invalid operator '${operator}' for boolean field '${field}'. Only = and != are allowed.`,
+    );
   }
 
   if (fieldType === 'array' && !['=', '!=', 'in', 'not in'].includes(operator)) {
-    errors.push(`Invalid operator '${operator}' for array field '${field}'. Only =, !=, in, and not in are allowed.`);
+    errors.push(
+      `Invalid operator '${operator}' for array field '${field}'. Only =, !=, in, and not in are allowed.`,
+    );
   }
 
   // Value type validation
@@ -783,7 +863,11 @@ function validateFieldTypeAndValue(field: FilterField, operator: FilterOperator,
         const date = new Date(year, month - 1, day);
 
         // Check if the date is valid (month and day within bounds)
-        if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+        if (
+          date.getFullYear() !== year ||
+          date.getMonth() !== month - 1 ||
+          date.getDate() !== day
+        ) {
           errors.push(`Field "${field}" requires a valid date value`);
           return errors;
         }
@@ -802,10 +886,10 @@ export function validateCondition(condition: FilterCondition): string[] {
   // Check if condition has valid structure first
   const result = FilterConditionSchema.safeParse(condition);
   if (!result.success) {
-    const errors = result.error.errors.map(e => e.message);
+    const errors = result.error.errors.map((e) => e.message);
 
     // Convert Zod enum error to more user-friendly message
-    if (errors.some(e => e.includes('enum value'))) {
+    if (errors.some((e) => e.includes('enum value'))) {
       return ['Invalid field name'];
     }
 
@@ -833,7 +917,7 @@ export function validateFilterExpression(
   // Zod schema validation
   const schemaResult = FilterExpressionSchema.safeParse(expression);
   if (!schemaResult.success) {
-    errors.push(...schemaResult.error.errors.map(e => e.message));
+    errors.push(...schemaResult.error.errors.map((e) => e.message));
   }
 
   // Custom validation
@@ -845,7 +929,7 @@ export function validateFilterExpression(
 
       group.conditions.forEach((condition, conditionIndex) => {
         const conditionErrors = validateCondition(condition);
-        conditionErrors.forEach(errorMessage => {
+        conditionErrors.forEach((errorMessage) => {
           errors.push(`Group ${groupIndex + 1}, Condition ${conditionIndex + 1}: ${errorMessage}`);
         });
       });
@@ -900,6 +984,20 @@ const FILTER_FIELD_TO_API_FIELD: Partial<Record<FilterField, string>> = {
 };
 
 /**
+ * Escapes backslashes and double quotes in a `like` value before it is
+ * wrapped in double quotes for the server-side `filter` string (or the DSL
+ * string handed back to a caller). Without this, a value that itself
+ * contains a literal `"` (e.g. `she said "hi"`) would produce
+ * `"she said "hi""` - a string `parseQuotedString` re-parses as ending at
+ * the *first* embedded quote, silently truncating the value. Escaping
+ * (`\"`) round-trips correctly because `parseQuotedString` already
+ * recognizes and unescapes `\"` when reading a quoted value back in.
+ */
+function escapeDoubleQuotedValue(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
  * Convert condition to string representation
  */
 export function conditionToString(condition: FilterCondition): string {
@@ -910,7 +1008,7 @@ export function conditionToString(condition: FilterCondition): string {
   if (Array.isArray(value)) {
     valueStr = value.join(', ');
   } else if (typeof value === 'string' && operator === 'like') {
-    valueStr = `"${value}"`;
+    valueStr = `"${escapeDoubleQuotedValue(value)}"`;
   } else if (typeof value === 'boolean') {
     valueStr = value.toString();
   } else {
@@ -962,7 +1060,7 @@ export function conditionToDslString(condition: FilterCondition): string {
   if (Array.isArray(value)) {
     valueStr = value.join(', ');
   } else if (typeof value === 'string' && operator === 'like') {
-    valueStr = `"${value}"`;
+    valueStr = `"${escapeDoubleQuotedValue(value)}"`;
   } else if (typeof value === 'boolean') {
     valueStr = value.toString();
   } else {

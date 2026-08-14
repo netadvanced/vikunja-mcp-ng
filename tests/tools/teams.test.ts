@@ -82,7 +82,9 @@ describe('Teams Tool', () => {
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     // Register the tool
@@ -131,8 +133,8 @@ describe('Teams Tool', () => {
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** list-teams");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** list-teams');
       expect(markdown).toContain('Retrieved 2 teams');
     });
 
@@ -159,9 +161,16 @@ describe('Teams Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
-        mockFetchResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'API Error' }),
-      ) as any;
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          mockFetchResponse({
+            ok: false,
+            status: 500,
+            statusText: 'Server Error',
+            text: 'API Error',
+          }),
+        ) as any;
 
       await expect(callTool('list')).rejects.toThrow('HTTP 500');
     });
@@ -187,8 +196,8 @@ describe('Teams Tool', () => {
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** create-team");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** create-team');
       expect(markdown).toContain('Team "Test Team" created successfully');
     });
 
@@ -197,9 +206,16 @@ describe('Teams Tool', () => {
     });
 
     it('should handle API errors', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
-        mockFetchResponse({ ok: false, status: 500, statusText: 'Server Error', text: 'Creation failed' }),
-      ) as any;
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          mockFetchResponse({
+            ok: false,
+            status: 500,
+            statusText: 'Server Error',
+            text: 'Creation failed',
+          }),
+        ) as any;
 
       await expect(callTool('create', { name: 'New Team' })).rejects.toThrow('HTTP 500');
     });
@@ -233,15 +249,22 @@ describe('Teams Tool', () => {
       });
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** get-team");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** get-team');
       expect(markdown).toContain('Retrieved team "Test Team"');
     });
 
     it('should handle API errors when getting team', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
-        mockFetchResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Team not found' }),
-      ) as any;
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          mockFetchResponse({
+            ok: false,
+            status: 404,
+            statusText: 'Not Found',
+            text: 'Team not found',
+          }),
+        ) as any;
 
       await expect(callTool('get', { id: 999 })).rejects.toThrow(
         'Vikunja REST request failed (GET /teams/999): HTTP 404 Not Found — Team not found',
@@ -282,8 +305,8 @@ describe('Teams Tool', () => {
       });
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** update-team");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** update-team');
       expect(markdown).toContain('Team "Updated Team Name" updated successfully');
     });
 
@@ -303,8 +326,8 @@ describe('Teams Tool', () => {
       });
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** update-team");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** update-team');
     });
 
     it('should update both name and description', async () => {
@@ -324,9 +347,16 @@ describe('Teams Tool', () => {
     });
 
     it('should handle API errors when updating team', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
-        mockFetchResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Team not found' }),
-      ) as any;
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          mockFetchResponse({
+            ok: false,
+            status: 404,
+            statusText: 'Not Found',
+            text: 'Team not found',
+          }),
+        ) as any;
 
       await expect(callTool('update', { id: 999, name: 'New Name' })).rejects.toThrow(
         'Vikunja REST request failed (POST /teams/999): HTTP 404 Not Found — Team not found',
@@ -358,8 +388,8 @@ describe('Teams Tool', () => {
       });
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** delete-team");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** delete-team');
       expect(markdown).toContain('Team deleted successfully');
     });
 
@@ -375,14 +405,21 @@ describe('Teams Tool', () => {
       );
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** delete-team");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** delete-team');
     });
 
     it('should handle team not found error', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
-        mockFetchResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Team not found' }),
-      ) as any;
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          mockFetchResponse({
+            ok: false,
+            status: 404,
+            statusText: 'Not Found',
+            text: 'Team not found',
+          }),
+        ) as any;
 
       await expect(callTool('delete', { id: 999 })).rejects.toThrow('HTTP 404');
     });
@@ -390,8 +427,20 @@ describe('Teams Tool', () => {
 
   describe('members subcommand', () => {
     const mockMembers = [
-      { id: 1, username: 'user1', admin: true, email: 'user1@example.com', created: '2025-01-01T00:00:00Z' },
-      { id: 2, username: 'user2', admin: false, email: 'user2@example.com', created: '2025-01-01T00:00:00Z' },
+      {
+        id: 1,
+        username: 'user1',
+        admin: true,
+        email: 'user1@example.com',
+        created: '2025-01-01T00:00:00Z',
+      },
+      {
+        id: 2,
+        username: 'user2',
+        admin: false,
+        email: 'user2@example.com',
+        created: '2025-01-01T00:00:00Z',
+      },
     ];
 
     it('should require team ID', async () => {
@@ -408,9 +457,11 @@ describe('Teams Tool', () => {
       // Vikunja has no GET /teams/{id}/members endpoint - members are
       // embedded in the team resource itself.
       it('should list team members by default by fetching the team', async () => {
-        global.fetch = jest.fn().mockResolvedValue(
-          mockFetchResponse({ body: { ...mockTeam, members: mockMembers } }),
-        ) as any;
+        global.fetch = jest
+          .fn()
+          .mockResolvedValue(
+            mockFetchResponse({ body: { ...mockTeam, members: mockMembers } }),
+          ) as any;
 
         const result = await callTool('members', { id: 1 });
 
@@ -423,15 +474,17 @@ describe('Teams Tool', () => {
         });
 
         const markdown = result.content[0].text;
-        expect(markdown).toContain("## ✅ Success");
-        expect(markdown).toContain("**Operation:** list-team-members");
+        expect(markdown).toContain('## ✅ Success');
+        expect(markdown).toContain('**Operation:** list-team-members');
         expect(markdown).toContain('Retrieved 2 members');
       });
 
       it('should list team members explicitly', async () => {
-        global.fetch = jest.fn().mockResolvedValue(
-          mockFetchResponse({ body: { ...mockTeam, members: mockMembers } }),
-        ) as any;
+        global.fetch = jest
+          .fn()
+          .mockResolvedValue(
+            mockFetchResponse({ body: { ...mockTeam, members: mockMembers } }),
+          ) as any;
 
         const result = await callTool('members', { id: 1, memberSubcommand: 'list' });
 
@@ -449,9 +502,11 @@ describe('Teams Tool', () => {
       });
 
       it('should handle a single member', async () => {
-        global.fetch = jest.fn().mockResolvedValue(
-          mockFetchResponse({ body: { ...mockTeam, members: [mockMembers[0]] } }),
-        ) as any;
+        global.fetch = jest
+          .fn()
+          .mockResolvedValue(
+            mockFetchResponse({ body: { ...mockTeam, members: [mockMembers[0]] } }),
+          ) as any;
 
         const result = await callTool('members', { id: 1, memberSubcommand: 'list' });
 
@@ -460,9 +515,16 @@ describe('Teams Tool', () => {
       });
 
       it('should handle API errors when listing members', async () => {
-        global.fetch = jest.fn().mockResolvedValue(
-          mockFetchResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Team not found' }),
-        ) as any;
+        global.fetch = jest
+          .fn()
+          .mockResolvedValue(
+            mockFetchResponse({
+              ok: false,
+              status: 404,
+              statusText: 'Not Found',
+              text: 'Team not found',
+            }),
+          ) as any;
 
         await expect(callTool('members', { id: 999, memberSubcommand: 'list' })).rejects.toThrow(
           'Vikunja REST request failed (GET /teams/999): HTTP 404 Not Found — Team not found',
@@ -478,28 +540,45 @@ describe('Teams Tool', () => {
       });
 
       it('should add a member to team by username', async () => {
-        const newMember = { id: 3, username: 'newuser', admin: false, created: '2025-01-01T00:00:00Z' };
+        const newMember = {
+          id: 3,
+          username: 'newuser',
+          admin: false,
+          created: '2025-01-01T00:00:00Z',
+        };
         global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: newMember })) as any;
 
-        const result = await callTool('members', { id: 1, memberSubcommand: 'add', username: 'newuser' });
-
-        expect(global.fetch).toHaveBeenCalledWith('https://vikunja.example.com/api/v1/teams/1/members', {
-          method: 'PUT',
-          headers: {
-            Authorization: 'Bearer test-token',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ username: 'newuser' }),
+        const result = await callTool('members', {
+          id: 1,
+          memberSubcommand: 'add',
+          username: 'newuser',
         });
 
+        expect(global.fetch).toHaveBeenCalledWith(
+          'https://vikunja.example.com/api/v1/teams/1/members',
+          {
+            method: 'PUT',
+            headers: {
+              Authorization: 'Bearer test-token',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ username: 'newuser' }),
+          },
+        );
+
         const markdown = result.content[0].text;
-        expect(markdown).toContain("## ✅ Success");
-        expect(markdown).toContain("**Operation:** add-team-member");
+        expect(markdown).toContain('## ✅ Success');
+        expect(markdown).toContain('**Operation:** add-team-member');
         expect(markdown).toContain('User "newuser" added to team successfully');
       });
 
       it('should add a member as admin', async () => {
-        const newMember = { id: 3, username: 'newuser', admin: true, created: '2025-01-01T00:00:00Z' };
+        const newMember = {
+          id: 3,
+          username: 'newuser',
+          admin: true,
+          created: '2025-01-01T00:00:00Z',
+        };
         global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: newMember })) as any;
 
         const result = await callTool('members', {
@@ -509,23 +588,33 @@ describe('Teams Tool', () => {
           admin: true,
         });
 
-        expect(global.fetch).toHaveBeenCalledWith('https://vikunja.example.com/api/v1/teams/1/members', {
-          method: 'PUT',
-          headers: {
-            Authorization: 'Bearer test-token',
-            'Content-Type': 'application/json',
+        expect(global.fetch).toHaveBeenCalledWith(
+          'https://vikunja.example.com/api/v1/teams/1/members',
+          {
+            method: 'PUT',
+            headers: {
+              Authorization: 'Bearer test-token',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ username: 'newuser', admin: true }),
           },
-          body: JSON.stringify({ username: 'newuser', admin: true }),
-        });
+        );
 
         const markdown = result.content[0].text;
         expect(markdown).toContain('User "newuser" added to team successfully');
       });
 
       it('should handle API errors when adding member', async () => {
-        global.fetch = jest.fn().mockResolvedValue(
-          mockFetchResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'User not found' }),
-        ) as any;
+        global.fetch = jest
+          .fn()
+          .mockResolvedValue(
+            mockFetchResponse({
+              ok: false,
+              status: 404,
+              statusText: 'Not Found',
+              text: 'User not found',
+            }),
+          ) as any;
 
         await expect(
           callTool('members', { id: 1, memberSubcommand: 'add', username: 'ghost' }),
@@ -544,9 +633,15 @@ describe('Teams Tool', () => {
 
       it('should remove a member from team by username', async () => {
         const deleteResult = { message: 'The team member was successfully deleted.' };
-        global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: deleteResult })) as any;
+        global.fetch = jest
+          .fn()
+          .mockResolvedValue(mockFetchResponse({ body: deleteResult })) as any;
 
-        const result = await callTool('members', { id: 1, memberSubcommand: 'remove', username: 'user2' });
+        const result = await callTool('members', {
+          id: 1,
+          memberSubcommand: 'remove',
+          username: 'user2',
+        });
 
         expect(global.fetch).toHaveBeenCalledWith(
           'https://vikunja.example.com/api/v1/teams/1/members/user2',
@@ -560,15 +655,22 @@ describe('Teams Tool', () => {
         );
 
         const markdown = result.content[0].text;
-        expect(markdown).toContain("## ✅ Success");
-        expect(markdown).toContain("**Operation:** remove-team-member");
+        expect(markdown).toContain('## ✅ Success');
+        expect(markdown).toContain('**Operation:** remove-team-member');
         expect(markdown).toContain('User "user2" removed from team successfully');
       });
 
       it('should handle API errors when removing member', async () => {
-        global.fetch = jest.fn().mockResolvedValue(
-          mockFetchResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Member not found' }),
-        ) as any;
+        global.fetch = jest
+          .fn()
+          .mockResolvedValue(
+            mockFetchResponse({
+              ok: false,
+              status: 404,
+              statusText: 'Not Found',
+              text: 'Member not found',
+            }),
+          ) as any;
 
         await expect(
           callTool('members', { id: 1, memberSubcommand: 'remove', username: 'ghost' }),
@@ -580,14 +682,21 @@ describe('Teams Tool', () => {
 
     describe('members toggleAdmin subcommand', () => {
       it('should require username', async () => {
-        await expect(callTool('members', { id: 1, memberSubcommand: 'toggleAdmin' })).rejects.toThrow(
-          'Username is required',
-        );
+        await expect(
+          callTool('members', { id: 1, memberSubcommand: 'toggleAdmin' }),
+        ).rejects.toThrow('Username is required');
       });
 
       it('should toggle a member admin status via the dedicated /admin endpoint with no body', async () => {
-        const toggledMember = { id: 2, username: 'user2', admin: true, created: '2025-01-01T00:00:00Z' };
-        global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: toggledMember })) as any;
+        const toggledMember = {
+          id: 2,
+          username: 'user2',
+          admin: true,
+          created: '2025-01-01T00:00:00Z',
+        };
+        global.fetch = jest
+          .fn()
+          .mockResolvedValue(mockFetchResponse({ body: toggledMember })) as any;
 
         const result = await callTool('members', {
           id: 1,
@@ -607,14 +716,21 @@ describe('Teams Tool', () => {
         );
 
         const markdown = result.content[0].text;
-        expect(markdown).toContain("## ✅ Success");
-        expect(markdown).toContain("**Operation:** toggle-team-member-admin");
+        expect(markdown).toContain('## ✅ Success');
+        expect(markdown).toContain('**Operation:** toggle-team-member-admin');
         expect(markdown).toContain('Admin status toggled for user "user2"');
       });
 
       it('should ignore a supplied admin flag (the endpoint always toggles)', async () => {
-        const toggledMember = { id: 1, username: 'user1', admin: false, created: '2025-01-01T00:00:00Z' };
-        global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: toggledMember })) as any;
+        const toggledMember = {
+          id: 1,
+          username: 'user1',
+          admin: false,
+          created: '2025-01-01T00:00:00Z',
+        };
+        global.fetch = jest
+          .fn()
+          .mockResolvedValue(mockFetchResponse({ body: toggledMember })) as any;
 
         await callTool('members', {
           id: 1,
@@ -630,9 +746,16 @@ describe('Teams Tool', () => {
       });
 
       it('should handle API errors when toggling admin status', async () => {
-        global.fetch = jest.fn().mockResolvedValue(
-          mockFetchResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'Member not found' }),
-        ) as any;
+        global.fetch = jest
+          .fn()
+          .mockResolvedValue(
+            mockFetchResponse({
+              ok: false,
+              status: 404,
+              statusText: 'Not Found',
+              text: 'Member not found',
+            }),
+          ) as any;
 
         await expect(
           callTool('members', { id: 1, memberSubcommand: 'toggleAdmin', username: 'ghost' }),
@@ -644,9 +767,9 @@ describe('Teams Tool', () => {
 
     describe('members invalid subcommand', () => {
       it('should reject invalid member subcommands', async () => {
-        await expect(
-          callTool('members', { id: 1, memberSubcommand: 'invalid' }),
-        ).rejects.toThrow('Invalid member subcommand: invalid');
+        await expect(callTool('members', { id: 1, memberSubcommand: 'invalid' })).rejects.toThrow(
+          'Invalid member subcommand: invalid',
+        );
       });
     });
   });
@@ -662,7 +785,9 @@ describe('Teams Tool', () => {
       // vikunjaRestRequest always throws MCPError, so a fetch-level failure
       // ends up here as an MCPError already — wrapToolError returns it
       // unchanged (see src/utils/error-handler.ts's `wrap()`).
-      global.fetch = jest.fn().mockRejectedValue(new MCPError(ErrorCode.API_ERROR, 'Custom error')) as any;
+      global.fetch = jest
+        .fn()
+        .mockRejectedValue(new MCPError(ErrorCode.API_ERROR, 'Custom error')) as any;
 
       await expect(callTool('list')).rejects.toThrow('Custom error');
     });
@@ -722,16 +847,30 @@ describe('Teams Tool', () => {
       ConfigurationManager.reset();
       ConfigurationManager.getInstance({ sources: { readOnly: true } });
 
-      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'create', name: 'x' }))).toBe(true);
-      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'delete', id: 1 }))).toBe(true);
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'create', name: 'x' })),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'delete', id: 1 })),
+      ).toBe(true);
       expect(
         isReadOnlyRejection(
-          await callAndCatch(toolHandler, { subcommand: 'members', id: 1, memberSubcommand: 'add', username: 'bob' }),
+          await callAndCatch(toolHandler, {
+            subcommand: 'members',
+            id: 1,
+            memberSubcommand: 'add',
+            username: 'bob',
+          }),
         ),
       ).toBe(true);
       expect(
         isReadOnlyRejection(
-          await callAndCatch(toolHandler, { subcommand: 'members', id: 1, memberSubcommand: 'remove', username: 'bob' }),
+          await callAndCatch(toolHandler, {
+            subcommand: 'members',
+            id: 1,
+            memberSubcommand: 'remove',
+            username: 'bob',
+          }),
         ),
       ).toBe(true);
     });
@@ -740,11 +879,19 @@ describe('Teams Tool', () => {
       ConfigurationManager.reset();
       ConfigurationManager.getInstance({ sources: { readOnly: true } });
 
-      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'list' }))).toBe(false);
-      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'get', id: 1 }))).toBe(false);
+      expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'list' }))).toBe(
+        false,
+      );
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'get', id: 1 })),
+      ).toBe(false);
       expect(
         isReadOnlyRejection(
-          await callAndCatch(toolHandler, { subcommand: 'members', id: 1, memberSubcommand: 'list' }),
+          await callAndCatch(toolHandler, {
+            subcommand: 'members',
+            id: 1,
+            memberSubcommand: 'list',
+          }),
         ),
       ).toBe(false);
     });

@@ -1,12 +1,13 @@
 import { assertLocalUrl, runPrefixFor, generateRunId } from '../../scripts/battle/lib/config';
 
 describe('assertLocalUrl (safety gate)', () => {
-  it.each(['http://localhost:33456/api/v1', 'http://127.0.0.1:33456/api/v1', 'http://[::1]:33456/api/v1'])(
-    'accepts %s',
-    (url) => {
-      expect(() => assertLocalUrl(url)).not.toThrow();
-    },
-  );
+  it.each([
+    'http://localhost:33456/api/v1',
+    'http://127.0.0.1:33456/api/v1',
+    'http://[::1]:33456/api/v1',
+  ])('accepts %s', (url) => {
+    expect(() => assertLocalUrl(url)).not.toThrow();
+  });
 
   it.each([
     'https://try.vikunja.io/api/v1',

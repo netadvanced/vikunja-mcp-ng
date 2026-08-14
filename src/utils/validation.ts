@@ -15,7 +15,12 @@
  */
 
 import { z } from 'zod';
-import type { FilterExpression, FilterField, FilterOperator, LogicalOperator } from '../types/filters';
+import type {
+  FilterExpression,
+  FilterField,
+  FilterOperator,
+  LogicalOperator,
+} from '../types/filters';
 import { MCPError, ErrorCode } from '../types/errors';
 
 /**
@@ -37,13 +42,32 @@ const MAX_STRING_LENGTH = 1000;
  * Zod schemas for type-safe validation
  */
 const FieldSchema: z.ZodType<FilterField> = z.enum([
-  'done', 'priority', 'percentDone', 'dueDate', 'startDate', 'endDate',
-  'doneAt', 'project', 'assignees',
-  'labels', 'created', 'updated', 'title', 'description'
+  'done',
+  'priority',
+  'percentDone',
+  'dueDate',
+  'startDate',
+  'endDate',
+  'doneAt',
+  'project',
+  'assignees',
+  'labels',
+  'created',
+  'updated',
+  'title',
+  'description',
 ]);
 
 const OperatorSchema: z.ZodType<FilterOperator> = z.enum([
-  '=', '!=', '>', '>=', '<', '<=', 'like', 'in', 'not in'
+  '=',
+  '!=',
+  '>',
+  '>=',
+  '<',
+  '<=',
+  'like',
+  'in',
+  'not in',
 ]);
 
 const LogicalOperatorSchema: z.ZodType<LogicalOperator> = z.enum(['&&', '||']);
@@ -67,7 +91,10 @@ export function sanitizeString(value: string): string {
   }
 
   if (value.length > MAX_STRING_LENGTH) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, `String value exceeds maximum length of ${MAX_STRING_LENGTH}`);
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `String value exceeds maximum length of ${MAX_STRING_LENGTH}`,
+    );
   }
 
   // Step 1: Check for dangerous HTML/JavaScript patterns and REJECT them (don't sanitize)
@@ -164,7 +191,7 @@ export function sanitizeString(value: string): string {
 
     // SQL injection patterns (narrow: only flag time-delay/blind injection, not plain English words)
     /(\b(WAITFOR\s+DELAY|SLEEP\s*\(|BENCHMARK\s*\(|DBMS_PIPE\.RECEIVE_MESSAGE)\b)/gi,
-    /(\b(XP_|SP_)\w+)/gi,  // SQL Server extended procedures
+    /(\b(XP_|SP_)\w+)/gi, // SQL Server extended procedures
     // Boolean-based blind SQL injection (e.g. `' OR '1'='1`). Requires a quote immediately
     // after OR/AND plus an `=` comparison, so it doesn't false-positive on ordinary English
     // like "Fix bug or issue" or "Cost or budget = 500" (no quote follows OR/AND there).
@@ -184,13 +211,13 @@ export function sanitizeString(value: string): string {
     /(\b(wget|curl|nc|netcat|telnet|ssh|ftp|sftp)\b)/gi,
     /(rm\s+-rf|del\s+\/s|format|fdisk|mkfs)/gi,
     /(>\s*\/dev\/null|2>&1|\|\|)/gi,
-    /(\$\([^)]*\)|`[^`]*`)/gi,  // Command substitution
+    /(\$\([^)]*\)|`[^`]*`)/gi, // Command substitution
 
     // Path traversal patterns
     /(\.\.[/\\])/gi,
     /(%2e%2e[/\\])/gi,
-    /(%2e%2e%2f)/gi,  // URL-encoded ../
-    /(%2e%2e%5c)/gi,  // URL-encoded ..\
+    /(%2e%2e%2f)/gi, // URL-encoded ../
+    /(%2e%2e%5c)/gi, // URL-encoded ..\
     /(\/etc\/passwd|\/etc\/shadow|\/proc\/)/gi,
     /(c:\\\\windows\\\\system32|\\\\..\\\\)/gi,
 
@@ -202,7 +229,7 @@ export function sanitizeString(value: string): string {
 
     // NoSQL injection patterns. The optional `["']?` before the colon covers both the raw
     // `$gt:` form and the quoted-JSON-key form (`"$gt":`) produced by e.g. JSON.stringify.
-    /(\$\w+\s*["']?\s*:)/gi,  // MongoDB operators like $gt, $lt, $where
+    /(\$\w+\s*["']?\s*:)/gi, // MongoDB operators like $gt, $lt, $where
     /(\{\s*["']?\$where\s*["']?\s*:)/gi,
     /(\{\s*["']?\$ne\s*["']?\s*:)/gi,
     /(\{\s*["']?\$gt\s*["']?\s*:)/gi,
@@ -218,10 +245,10 @@ export function sanitizeString(value: string): string {
     /muted\s*=/gi,
 
     // Unicode and encoding bypass attempts
-    /[\u200b-\u200f\u2060\u180e\ufeff]/g,  // Zero-width and invisible characters
-    /[\uFE00-\uFE0F]/g,  // Variation selectors
-    /\\u[0-9a-fA-F]{4}/g,  // Unicode escapes
-    /\\x[0-9a-fA-F]{2}/g,  // Hex escapes
+    /[\u200b-\u200f\u2060\u180e\ufeff]/g, // Zero-width and invisible characters
+    /[\uFE00-\uFE0F]/g, // Variation selectors
+    /\\u[0-9a-fA-F]{4}/g, // Unicode escapes
+    /\\x[0-9a-fA-F]{2}/g, // Hex escapes
 
     // Prototype pollution patterns
     /(__proto__|constructor|prototype)/gi,
@@ -245,14 +272,17 @@ export function sanitizeString(value: string): string {
     /&lt;form[^&]*on[^&]*&gt;/gi,
     /javascript:[^&]*/gi,
     /on\w+[^&]*=/gi,
-    /&lt;!--.*?--&gt;/gis,  // HTML-encoded comments
+    /&lt;!--.*?--&gt;/gis, // HTML-encoded comments
   ];
 
   for (const pattern of dangerousPatterns) {
     // Reset regex lastIndex to avoid state issues with global flags
     pattern.lastIndex = 0;
     if (pattern.test(lowerValue)) {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'String contains potentially dangerous content');
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'String contains potentially dangerous content',
+      );
     }
   }
 
@@ -283,9 +313,20 @@ export function validateField(field: string): FilterField {
   }
 
   // Check for prototype pollution attempts first
-  const pollutionPatterns = ['__proto__', 'constructor', 'prototype', '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__'];
+  const pollutionPatterns = [
+    '__proto__',
+    'constructor',
+    'prototype',
+    '__defineGetter__',
+    '__defineSetter__',
+    '__lookupGetter__',
+    '__lookupSetter__',
+  ];
   if (pollutionPatterns.includes(field)) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Invalid field name: potential prototype pollution');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'Invalid field name: potential prototype pollution',
+    );
   }
 
   try {
@@ -293,7 +334,10 @@ export function validateField(field: string): FilterField {
     return result;
   } catch (error) {
     if (error instanceof z.ZodError) {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, `Invalid field: ${error.issues[0]?.message || 'Unknown validation error'}`);
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `Invalid field: ${error.issues[0]?.message || 'Unknown validation error'}`,
+      );
     }
     throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Invalid field: Validation failed');
   }
@@ -312,7 +356,10 @@ export function validateOperator(operator: string): FilterOperator {
     return result;
   } catch (error) {
     if (error instanceof z.ZodError) {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, `Invalid operator: ${error.issues[0]?.message || 'Unknown validation error'}`);
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `Invalid operator: ${error.issues[0]?.message || 'Unknown validation error'}`,
+      );
     }
     throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Invalid operator: Validation failed');
   }
@@ -331,7 +378,10 @@ export function validateLogicalOperator(operator: string): LogicalOperator {
     return result;
   } catch (error) {
     if (error instanceof z.ZodError) {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, `Invalid logical operator: ${error.issues[0]?.message || 'Unknown validation error'}`);
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `Invalid logical operator: ${error.issues[0]?.message || 'Unknown validation error'}`,
+      );
     }
     throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Invalid logical operator: Validation failed');
   }
@@ -359,7 +409,10 @@ export function validateValue(value: unknown): string | number | boolean | strin
   // Handle number values with infinite/NaN checks
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Numeric values must be finite, not infinite or NaN');
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'Numeric values must be finite, not infinite or NaN',
+      );
     }
     return value;
   }
@@ -377,7 +430,10 @@ export function validateValue(value: unknown): string | number | boolean | strin
     // Check array type consistency with proper type guards
     const firstElementType = typeof value[0];
     if (firstElementType !== 'string' && firstElementType !== 'number') {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Array elements must be all strings or all finite numbers, not mixed');
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'Array elements must be all strings or all finite numbers, not mixed',
+      );
     }
 
     // Validate all elements are of the same type and valid
@@ -387,17 +443,26 @@ export function validateValue(value: unknown): string | number | boolean | strin
 
       // Additional safety: reject null/undefined/object elements
       if (element === null || element === undefined || typeof element === 'object') {
-        throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Array elements must be strings, numbers, or booleans, not objects');
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          'Array elements must be strings, numbers, or booleans, not objects',
+        );
       }
 
       if (elementType !== firstElementType) {
-        throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Array elements must be all strings or all finite numbers, not mixed');
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          'Array elements must be all strings or all finite numbers, not mixed',
+        );
       }
 
       if (firstElementType === 'number') {
         // Type-safe numeric validation without casting
         if (typeof element !== 'number' || !Number.isFinite(element)) {
-          throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Array numeric values must be finite, not infinite or NaN');
+          throw new MCPError(
+            ErrorCode.VALIDATION_ERROR,
+            'Array numeric values must be finite, not infinite or NaN',
+          );
         }
       }
 
@@ -412,7 +477,10 @@ export function validateValue(value: unknown): string | number | boolean | strin
         try {
           (value as string[])[i] = sanitizeString(element);
         } catch (sanitizationError) {
-          throw new MCPError(ErrorCode.VALIDATION_ERROR, `Array element ${i} contains potentially dangerous content: ${sanitizationError instanceof Error ? sanitizationError.message : 'Unknown error'}`);
+          throw new MCPError(
+            ErrorCode.VALIDATION_ERROR,
+            `Array element ${i} contains potentially dangerous content: ${sanitizationError instanceof Error ? sanitizationError.message : 'Unknown error'}`,
+          );
         }
       }
     }
@@ -446,7 +514,7 @@ const ConditionSchema = z.object({
     z.boolean(),
     z.array(z.string()),
     z.array(z.number()),
-    z.null()
+    z.null(),
   ]),
 });
 
@@ -463,7 +531,10 @@ export function validateCondition(condition: unknown): {
     return result;
   } catch (error) {
     if (error instanceof z.ZodError) {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, `Invalid condition: ${error.issues[0]?.message || 'Condition validation failed'}`);
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `Invalid condition: ${error.issues[0]?.message || 'Condition validation failed'}`,
+      );
     }
     throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Invalid condition: Validation failed');
   }
@@ -474,25 +545,27 @@ export function validateCondition(condition: unknown): {
  */
 const FilterGroupSchema = z.object({
   operator: LogicalOperatorSchema,
-  conditions: z.array(ConditionSchema).min(1).max(MAX_CONDITIONS)
+  conditions: z.array(ConditionSchema).min(1).max(MAX_CONDITIONS),
 });
 
 /**
  * Zod schema for filter expressions
  */
-const FilterExpressionSchema = z.object({
-  groups: z.array(FilterGroupSchema).min(1).max(MAX_NESTING_DEPTH),
-  operator: LogicalOperatorSchema.optional()
-}).refine(
-  (expr) => {
-    // Check total conditions across all groups
-    const totalConditions = expr.groups.reduce((sum, group) => sum + group.conditions.length, 0);
-    return totalConditions <= MAX_CONDITIONS;
-  },
-  {
-    message: `Filter expression cannot exceed ${MAX_CONDITIONS} total conditions`
-  }
-);
+const FilterExpressionSchema = z
+  .object({
+    groups: z.array(FilterGroupSchema).min(1).max(MAX_NESTING_DEPTH),
+    operator: LogicalOperatorSchema.optional(),
+  })
+  .refine(
+    (expr) => {
+      // Check total conditions across all groups
+      const totalConditions = expr.groups.reduce((sum, group) => sum + group.conditions.length, 0);
+      return totalConditions <= MAX_CONDITIONS;
+    },
+    {
+      message: `Filter expression cannot exceed ${MAX_CONDITIONS} total conditions`,
+    },
+  );
 
 /**
  * Validate a filter expression using Zod schema with comprehensive type safety
@@ -504,7 +577,10 @@ export function validateFilterExpression(expression: unknown): FilterExpression 
 
     // Additional runtime checks for edge cases Zod might not catch
     if (result.groups.length === 0) {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Filter expression must have at least one group');
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'Filter expression must have at least one group',
+      );
     }
 
     // Validate each condition individually for additional safety
@@ -521,7 +597,10 @@ export function validateFilterExpression(expression: unknown): FilterExpression 
       try {
         validateLogicalOperator(group.operator);
       } catch (error) {
-        throw new MCPError(ErrorCode.VALIDATION_ERROR, `Group ${i} has invalid operator: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          `Group ${i} has invalid operator: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        );
       }
 
       // Validate each condition individually
@@ -530,7 +609,10 @@ export function validateFilterExpression(expression: unknown): FilterExpression 
         try {
           validateCondition(condition);
         } catch (error) {
-          throw new MCPError(ErrorCode.VALIDATION_ERROR, `Group ${i}, condition ${j}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          throw new MCPError(
+            ErrorCode.VALIDATION_ERROR,
+            `Group ${i}, condition ${j}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          );
         }
         totalConditions++;
       }
@@ -538,7 +620,10 @@ export function validateFilterExpression(expression: unknown): FilterExpression 
 
     // Final check for total conditions
     if (totalConditions > MAX_CONDITIONS) {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, `Filter expression cannot exceed ${MAX_CONDITIONS} total conditions`);
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `Filter expression cannot exceed ${MAX_CONDITIONS} total conditions`,
+      );
     }
 
     // Type-safe return - Zod has validated the structure
@@ -549,43 +634,75 @@ export function validateFilterExpression(expression: unknown): FilterExpression 
       const firstIssue = error.issues[0];
       if (firstIssue) {
         // Handle empty groups array
-        if (firstIssue.code === 'too_small' && firstIssue.path.length > 0 && firstIssue.path[firstIssue.path.length - 1] === 'groups') {
-          throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Filter expression must have at least one group');
+        if (
+          firstIssue.code === 'too_small' &&
+          firstIssue.path.length > 0 &&
+          firstIssue.path[firstIssue.path.length - 1] === 'groups'
+        ) {
+          throw new MCPError(
+            ErrorCode.VALIDATION_ERROR,
+            'Filter expression must have at least one group',
+          );
         }
         // Handle exceed maximum nesting depth or array size
         if (firstIssue.code === 'too_big') {
           if (firstIssue.message.includes('Array must contain at most 10 element(s)')) {
-            throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Filter expression exceeds maximum nesting depth of 10');
+            throw new MCPError(
+              ErrorCode.VALIDATION_ERROR,
+              'Filter expression exceeds maximum nesting depth of 10',
+            );
           }
-          if (firstIssue.message.includes('conditions') || firstIssue.message.includes('50') || firstIssue.message.includes('Array must contain at most 50')) {
-            throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Filter expression cannot exceed 50 total conditions');
+          if (
+            firstIssue.message.includes('conditions') ||
+            firstIssue.message.includes('50') ||
+            firstIssue.message.includes('Array must contain at most 50')
+          ) {
+            throw new MCPError(
+              ErrorCode.VALIDATION_ERROR,
+              'Filter expression cannot exceed 50 total conditions',
+            );
           }
           // Generic too_big error for filter expressions
-          throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Filter expression exceeds maximum nesting depth of 10');
+          throw new MCPError(
+            ErrorCode.VALIDATION_ERROR,
+            'Filter expression exceeds maximum nesting depth of 10',
+          );
         }
 
         // Handle "Required" errors which might indicate missing required fields in deeply nested structures
         if (firstIssue.code === 'invalid_type' && firstIssue.message === 'Required') {
-          throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Filter expression exceeds maximum nesting depth of 10');
+          throw new MCPError(
+            ErrorCode.VALIDATION_ERROR,
+            'Filter expression exceeds maximum nesting depth of 10',
+          );
         }
 
         // Check if any issue mentions conditions or 50
-        if (error.issues.some(issue =>
-          issue.message.includes('conditions') ||
-          issue.message.includes('50') ||
-          issue.message.includes('Array must contain at most 50')
-        )) {
-          throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Filter expression cannot exceed 50 total conditions');
+        if (
+          error.issues.some(
+            (issue) =>
+              issue.message.includes('conditions') ||
+              issue.message.includes('50') ||
+              issue.message.includes('Array must contain at most 50'),
+          )
+        ) {
+          throw new MCPError(
+            ErrorCode.VALIDATION_ERROR,
+            'Filter expression cannot exceed 50 total conditions',
+          );
         }
       }
 
-      const errorDetails = error.issues.map(issue => issue.message).join('; ');
+      const errorDetails = error.issues.map((issue) => issue.message).join('; ');
       throw new MCPError(ErrorCode.VALIDATION_ERROR, `Invalid filter expression: ${errorDetails}`);
     }
     if (error instanceof MCPError) {
       throw error; // Re-throw MCPError as-is
     }
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, `Filter expression validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `Filter expression validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    );
   }
 }
 
@@ -615,7 +732,10 @@ export function safeJsonStringify(obj: unknown): string {
     if (error instanceof MCPError) {
       throw error; // Re-throw MCPError as-is
     }
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, `Failed to stringify object: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `Failed to stringify object: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    );
   }
 }
 
@@ -635,7 +755,10 @@ export function safeJsonParse(jsonString: string): FilterExpression {
 
   // Check for prototype pollution patterns before parsing
   if (containsPrototypePollution(jsonString)) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'JSON contains potentially dangerous prototype pollution patterns');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'JSON contains potentially dangerous prototype pollution patterns',
+    );
   }
 
   try {
@@ -653,7 +776,10 @@ export function safeJsonParse(jsonString: string): FilterExpression {
     if (error instanceof MCPError) {
       throw error; // Re-throw our validation errors
     }
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, `Failed to parse JSON: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `Failed to parse JSON: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    );
   }
 }
 
@@ -693,7 +819,10 @@ export function validateAndConvertId(id: unknown, fieldName: string): number {
     return id;
   }
 
-  throw new MCPError(ErrorCode.VALIDATION_ERROR, `${fieldName} must be a number or positive integer string`);
+  throw new MCPError(
+    ErrorCode.VALIDATION_ERROR,
+    `${fieldName} must be a number or positive integer string`,
+  );
 }
 
 /**
@@ -720,10 +849,10 @@ function containsPrototypePollution(jsonString: string): boolean {
     '__defineGetter__',
     '__defineSetter__',
     '__lookupGetter__',
-    '__lookupSetter__'
+    '__lookupSetter__',
   ];
 
-  return pollutionPatterns.some(pattern => lowerJson.includes(pattern));
+  return pollutionPatterns.some((pattern) => lowerJson.includes(pattern));
 }
 
 /**
@@ -743,7 +872,7 @@ function createSafeObjectCopy(obj: unknown, visited = new WeakSet()): unknown {
 
   // Handle arrays
   if (Array.isArray(obj)) {
-    return obj.map(item => createSafeObjectCopy(item, visited));
+    return obj.map((item) => createSafeObjectCopy(item, visited));
   }
 
   // Handle Date objects
@@ -787,7 +916,7 @@ function isSafeProperty(key: string): boolean {
     'propertyIsEnumerable',
     'toLocaleString',
     'toString',
-    'valueOf'
+    'valueOf',
   ];
 
   return !dangerousKeys.includes(key) && typeof key === 'string';
@@ -797,7 +926,11 @@ function isSafeProperty(key: string): boolean {
  * Recursively sanitizes all string values in an object
  * Skips known operator values to avoid HTML entity encoding
  */
-function sanitizeObjectStrings(obj: unknown, visited = new WeakSet(), key: string | null = null): unknown {
+function sanitizeObjectStrings(
+  obj: unknown,
+  visited = new WeakSet(),
+  key: string | null = null,
+): unknown {
   // Handle null and primitive types
   if (obj === null || typeof obj !== 'object') {
     if (typeof obj === 'string') {
@@ -819,7 +952,7 @@ function sanitizeObjectStrings(obj: unknown, visited = new WeakSet(), key: strin
 
   // Handle arrays
   if (Array.isArray(obj)) {
-    return obj.map(item => sanitizeObjectStrings(item, visited, key));
+    return obj.map((item) => sanitizeObjectStrings(item, visited, key));
   }
 
   // Handle Date objects (don't modify)

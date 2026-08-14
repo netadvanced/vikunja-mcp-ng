@@ -51,15 +51,15 @@ const SENSITIVE_KEY_PATTERNS = [
   // Enhanced patterns for camelCase and embedded sensitive keywords
   /apiToken/i, // Direct match for apiToken
   /jwtToken/i, // Direct match for jwtToken
-  /authKey/i,  // Direct match for authKey
-  /apiKey/i,  // Direct match for apiKey
+  /authKey/i, // Direct match for authKey
+  /apiKey/i, // Direct match for apiKey
 
   // Contains patterns for embedded sensitive words
   /(api|auth|token|key|secret|credential|pass|refresh)/i,
 
   // Direct matches for common sensitive keys (fallbacks)
   /^(token|key|secret|auth|credential|pass)$/i,
-  /\b(token|key|secret|auth|credential|pass)\b/i
+  /\b(token|key|secret|auth|credential|pass)\b/i,
 ];
 
 // Regex patterns for detecting credential formats in string values
@@ -98,7 +98,7 @@ const CREDENTIAL_FORMAT_PATTERNS = [
   /^[A-Za-z0-9+/]{30,}={0,2}$/, // Reduced minimum for practical testing
 
   // Request/Trace ID patterns
-  /^(req|trace|span|correlation)_[a-zA-Z0-9]{16,}$/
+  /^(req|trace|span|correlation)_[a-zA-Z0-9]{16,}$/,
 ];
 
 // Unicode normalization patterns to detect bypass attempts
@@ -134,7 +134,7 @@ function normalizeSecurityKey(key: string): string {
   let normalized = key.toLowerCase();
 
   // Remove Unicode bypass characters
-  UNICODE_NORMALIZATION_PATTERNS.forEach(pattern => {
+  UNICODE_NORMALIZATION_PATTERNS.forEach((pattern) => {
     normalized = normalized.replace(pattern, '');
   });
 
@@ -161,7 +161,7 @@ function normalizeSecurityKey(key: string): string {
 function isSensitiveKey(key: string): boolean {
   const normalizedKey = normalizeSecurityKey(key);
 
-  return SENSITIVE_KEY_PATTERNS.some(pattern => {
+  return SENSITIVE_KEY_PATTERNS.some((pattern) => {
     // Test both original and normalized key against patterns
     return pattern.test(key) || pattern.test(normalizedKey);
   });
@@ -180,7 +180,7 @@ function isCredentialFormat(value: string): boolean {
   }
 
   // Check against credential format patterns
-  return CREDENTIAL_FORMAT_PATTERNS.some(pattern => pattern.test(value));
+  return CREDENTIAL_FORMAT_PATTERNS.some((pattern) => pattern.test(value));
 }
 
 /**
@@ -198,7 +198,7 @@ export function maskCredential(credential: string | undefined | null): string {
 
   // Normalize credential by removing Unicode bypass characters
   let normalizedCredential = credential;
-  UNICODE_NORMALIZATION_PATTERNS.forEach(pattern => {
+  UNICODE_NORMALIZATION_PATTERNS.forEach((pattern) => {
     normalizedCredential = normalizedCredential.replace(pattern, '');
   });
 
@@ -229,11 +229,11 @@ export function maskUrl(url: string | undefined | null): string {
       /\/api\/v\d+\/(token|auth|login|key|session)/i,
       /(auth|login|logout|signin|signout|token|key|session)/i,
       /\/oauth\/(authorize|token|callback)/i,
-      /(admin|dashboard|control)/i
+      /(admin|dashboard|control)/i,
     ];
 
     const pathname = urlObj.pathname.toLowerCase();
-    if (sensitivePathPatterns.some(pattern => pattern.test(pathname))) {
+    if (sensitivePathPatterns.some((pattern) => pattern.test(pathname))) {
       // Mask the last path component
       urlObj.pathname = urlObj.pathname.replace(/\/[^/]*$/, '/[REDACTED]');
     }
@@ -310,7 +310,7 @@ function sanitizeLogDataInternal(data: unknown, visited: WeakSet<object>): unkno
       return '[Circular Reference]';
     }
     visited.add(data);
-    return data.map(item => sanitizeLogDataInternal(item, visited));
+    return data.map((item) => sanitizeLogDataInternal(item, visited));
   }
 
   // Handle objects with recursion protection
@@ -375,7 +375,7 @@ export function createSecureLogConfig(config: Record<string, unknown>): Record<s
 export function createSecureConnectionMessage(
   url: string | undefined,
   token: string | undefined,
-  authType?: string
+  authType?: string,
 ): string {
   const maskedUrl = maskUrl(url);
   const maskedToken = maskCredential(token);
@@ -403,6 +403,6 @@ export function clearSecurityCache(): void {
 export function getSecurityCacheStats(): { size: number; maxSize: number } {
   return {
     size: normalizedKeyCache.size,
-    maxSize: 10000 // Configurable maximum cache size
+    maxSize: 10000, // Configurable maximum cache size
   };
 }

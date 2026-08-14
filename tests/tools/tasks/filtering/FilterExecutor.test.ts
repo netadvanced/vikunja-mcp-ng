@@ -27,7 +27,9 @@ jest.mock('../../../../src/utils/filtering', () => ({
 }));
 
 jest.mock('../../../../src/utils/memory', () => ({
-  validateTaskCountLimit: jest.fn().mockReturnValue({ allowed: true, maxAllowed: 1000, estimatedMemoryMB: 1 }),
+  validateTaskCountLimit: jest
+    .fn()
+    .mockReturnValue({ allowed: true, maxAllowed: 1000, estimatedMemoryMB: 1 }),
   createTaskLimitExceededMessage: jest.fn().mockReturnValue('exceeded'),
   logMemoryUsage: jest.fn(),
 }));
@@ -62,15 +64,17 @@ describe('FilterExecutor.executeFiltering — strategy selection wiring', () => 
   });
 
   it('passes authManager through to the filtering params when provided', async () => {
-    const mockContextInstance = { execute: jest.fn().mockResolvedValue({
-      tasks: [],
-      metadata: {
-        serverSideFilteringUsed: false,
-        serverSideFilteringAttempted: false,
-        clientSideFiltering: false,
-        filteringNote: 'stub',
-      },
-    }) };
+    const mockContextInstance = {
+      execute: jest.fn().mockResolvedValue({
+        tasks: [],
+        metadata: {
+          serverSideFilteringUsed: false,
+          serverSideFilteringAttempted: false,
+          clientSideFiltering: false,
+          filteringNote: 'stub',
+        },
+      }),
+    };
     (FilteringContext as jest.Mock).mockImplementation(() => mockContextInstance);
 
     await FilterExecutor.executeFiltering({}, null, undefined, {}, storage, mockAuthManager);
@@ -81,15 +85,17 @@ describe('FilterExecutor.executeFiltering — strategy selection wiring', () => 
   });
 
   it('omits authManager from the filtering params when not provided', async () => {
-    const mockContextInstance = { execute: jest.fn().mockResolvedValue({
-      tasks: [],
-      metadata: {
-        serverSideFilteringUsed: false,
-        serverSideFilteringAttempted: false,
-        clientSideFiltering: false,
-        filteringNote: 'stub',
-      },
-    }) };
+    const mockContextInstance = {
+      execute: jest.fn().mockResolvedValue({
+        tasks: [],
+        metadata: {
+          serverSideFilteringUsed: false,
+          serverSideFilteringAttempted: false,
+          clientSideFiltering: false,
+          filteringNote: 'stub',
+        },
+      }),
+    };
     (FilteringContext as jest.Mock).mockImplementation(() => mockContextInstance);
 
     await FilterExecutor.executeFiltering({}, null, undefined, {}, storage);

@@ -1,8 +1,8 @@
 # Design: OIDC resource-server mode (behind IBM MCP Context Forge + Keycloak)
 
-**Status:** IMPLEMENTED (2026-07-21) — waves H1 + H2 landed on `feat/oidc-mode` and are feature-complete (see the Wave plan, §7, for the per-item DONE marks); pending owner testing + merge-back decision (tracking issue #28). Design was locked 2026-07-20 (owner review complete). Target release was **0.6.0** at lock time; 0.6.0 ultimately shipped the v2-API work instead, and this feature ships as the **0.7.0 public beta**. Where this document's design prose and the shipped code diverge, see the as-shipped amendment in §2.1 — the operator-facing truth lives in [`docs/OIDC-SETUP.md`](OIDC-SETUP.md).
+**Status:** IMPLEMENTED (2026-07-21) — waves H1 + H2 landed on `feat/oidc-mode` and are feature-complete (see the Wave plan, §7, for the per-item DONE marks); field-tested in a production-cluster PoC (real Keycloak + IBM Context Forge, per-user isolation verified, 2026-08); merged to main 2026-08-14. Design was locked 2026-07-20 (owner review complete). Target release **0.7.0-beta.1** (originally slated 0.6.0). Where this document's design prose and the shipped code diverge, see the as-shipped amendment in §2.1 — the operator-facing truth lives in [`docs/OIDC-SETUP.md`](OIDC-SETUP.md).
 **Author:** coordinator (design pass, 2026-07-19); decisions locked by the owner, 2026-07-20.
-**Companion docs:** [docs/ROADMAP.md](../ROADMAP.md) (decision-log tone this doc follows; see its §3 for the append-only entry recording this epic's approval), [docs/CONFIGURATION.md](../CONFIGURATION.md), [docs/ARCHITECTURE.md](../ARCHITECTURE.md).
+**Companion docs:** [docs/ROADMAP.md](ROADMAP.md) (decision-log tone this doc follows; see its §3 for the append-only entry recording this epic's approval), [docs/CONFIGURATION.md](CONFIGURATION.md), [docs/ARCHITECTURE.md](ARCHITECTURE.md).
 
 This document proposes making `vikunja-mcp-ng` deployable as a **multi-user HTTP MCP server** sitting behind IBM MCP Context Forge, where Context Forge runs per-user OAuth against Keycloak and injects a per-user OIDC access token on every request. It is written to be **generic across OIDC providers** — Keycloak is the reference deployment, nothing org-specific lands in code.
 
@@ -116,6 +116,7 @@ The existing config engine (`src/config/ConfigurationManager.ts`) already does l
 | Port | `VIKUNJA_MCP_HTTP_PORT` | `http.port` | default `8765` |
 | Allowed Host headers | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` | `http.allowedHosts` | comma list → SDK `allowedHosts` |
 | Path | `VIKUNJA_MCP_HTTP_PATH` | `http.path` | default `/mcp` |
+| Public URL (opt) | `VIKUNJA_MCP_HTTP_PUBLIC_URL` | `http.publicUrl` | canonical public MCP URL, e.g. `https://mcp-vikunja.example.ch/mcp` — the RFC 9728 `resource` value (§3e); recommended behind a reverse proxy, derived from the request `Host` header when unset |
 | OIDC issuer | `VIKUNJA_MCP_OIDC_ISSUER` | `oidc.issuer` | e.g. `https://iam.example.org/realms/foo` — **generic**; single-issuer scalar (D11) |
 | OIDC audience | `VIKUNJA_MCP_OIDC_AUDIENCE` | `oidc.audience` | required `aud` value(s); comma list allowed |
 | JWKS URI | `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | **required as shipped** — issuer-discovery was designed but not implemented; see the as-shipped amendment below |
@@ -247,7 +248,7 @@ Today essentially all session state is **process-global**, built on the assumpti
 | 3 | Tasks-tool session storage id | `src/tools/tasks/index.ts` `getSessionStorage()` → `storageManager.getStorage(sessionId,...)` | Session id = `(issuer,sub)` (via ALS, `getEffectiveSessionId`), not the credential-derived `${apiUrl}:${apiToken.substring(0,8)}` string. |
 | 4 | Templates storage session id (`${apiUrl}:${apiToken.substring(0,8)}` or `anonymous`) | `src/tools/templates.ts` | Session id = `(issuer,sub)`. Persistence key becomes `${persistPath}:${issuer}:${sub}` (already `${persistPath}:${sessionId}` shaped). |
 | 5 | `FilterStorageManager` instance map + 1h cleanup | `src/storage/SimpleFilterStorage.ts` | Unchanged mechanism; correctness follows automatically once the **key** is `(issuer,sub)` (#3/#4). Cleanup TTL now also bounds idle-user memory. |
-| 6 | Circuit-breaker registry (per-endpoint-path, process-global) | `src/utils/retry.ts` `circuitBreakerRegistry`, `deriveRestBreakerName` | **Kept shared (D3)** — breakers track the *shared upstream Vikunja's* health, not a user. This is a deliberate, accepted cross-user coupling: one user's pathological requests can trip a breaker for all (§4). Per-sub rate limits (#2) are the mitigation for noisy neighbors; breaker isolation is out of scope unless D3's revisit condition (multi-Vikunja-instance support) fires. |
+| 6 | Circuit-breaker registry (per-endpoint-path, process-global) | `circuitBreakerRegistry` (`src/utils/retry.ts`), `deriveRestBreakerName` (`src/utils/vikunja-rest.ts`) | **Kept shared (D3)** — breakers track the *shared upstream Vikunja's* health, not a user. This is a deliberate, accepted cross-user coupling: one user's pathological requests can trip a breaker for all (§4). Per-sub rate limits (#2) are the mitigation for noisy neighbors; breaker isolation is out of scope unless D3's revisit condition (multi-Vikunja-instance support) fires. |
 | 7 | `ConfigurationManager` singleton | `src/config/*` | Shared and correct — it is server config, identical for all users. No change. |
 | 8 | `normalizedKeyCache` (masking) | `src/utils/security.ts` | Shared and safe — caches normalized *key names*, not secret values. No change. |
 | 9 | The vault itself | new | Shared JSON file, **record-scoped by `"<issuer>|<sub>"` key** (§3c); every lookup MUST use the ALS `sub`, never an argument. |
@@ -300,6 +301,28 @@ Today essentially all session state is **process-global**, built on the assumpti
 | Log masking under multi-user | Force errors for A and B | No raw token for either in logs; `sub` masked |
 
 The **ALS context-integrity** test is the load-bearing one: it must run genuinely concurrent, interleaved requests and assert no bleed — the classic failure mode of an ALS/global-singleton hybrid.
+
+### 3(e). Authorization-server discovery (RFC 9728 protected-resource metadata)
+
+Implements the discovery half of the **MCP authorization spec (2025-06-18 revision)**: browser-based MCP clients that connect *directly* to vikunja-mcp — **this is what claude.ai custom connectors use to find the IdP** — fetch a well-known document instead of being hand-configured with the issuer.
+
+**Endpoint** (`src/transport/httpTransport.ts`, helpers in `src/transport/resourceMetadata.ts`): `GET /.well-known/oauth-protected-resource`, plus the path-suffixed variant `GET /.well-known/oauth-protected-resource/mcp` for path-aware clients (our MCP endpoint lives at `http.path`, default `/mcp`). Unauthenticated (a client fetches it precisely because it has no token yet), GET-only (`405` otherwise), read-only and side-effect-free — same stance as `/healthz`. Served only when an OIDC issuer is configured (`404` otherwise — nothing truthful to advertise). Response:
+
+```json
+{
+  "resource": "https://mcp-vikunja.example.ch/mcp",
+  "authorization_servers": ["https://iam.example.org/realms/foo"],
+  "bearer_methods_supported": ["header"]
+}
+```
+
+`authorization_servers` is the configured `oidc.issuer` (`VIKUNJA_MCP_OIDC_ISSUER`); the client continues discovery at the issuer's own `/.well-known/openid-configuration`.
+
+**Canonical resource URL — `VIKUNJA_MCP_HTTP_PUBLIC_URL` / `http.publicUrl` (optional).** When set (e.g. `https://mcp-vikunja.example.ch/mcp`), it is served verbatim as `resource`. When unset, the URL is derived per-request from the `Host` header (scheme from `X-Forwarded-Proto`, default `http`) plus `http.path`. **Setting it explicitly is recommended behind a reverse proxy** — the bind host/port say nothing about the public origin, and a derived value is only as good as the proxy's forwarded headers.
+
+**401 challenge pointer (RFC 9728 §5.1).** Every `401`/`403` from the OIDC middleware (`src/transport/oidcHttpAuth.ts`) appends `resource_metadata="<origin>/.well-known/oauth-protected-resource"` to the existing `WWW-Authenticate: Bearer error=..., error_description=...` challenge, so a client that hits the MCP endpoint first (no token) is redirected into the discovery flow. The origin comes from `http.publicUrl` when configured, otherwise from the failing request's own `Host` header; if no valid URL can be formed, the parameter is omitted rather than advertising garbage.
+
+Covered by `tests/transport/resourceMetadata.test.ts`, the discovery cases in `tests/transport/httpTransport.test.ts` / `tests/transport/oidcHttpAuth.test.ts`, and live in the e2e lane (`scripts/oidc-e2e.ts`, steps a0/a2).
 
 ---
 

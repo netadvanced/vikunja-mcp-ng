@@ -17,51 +17,66 @@ Module gating, auth-type restrictions (JWT vs. API token), and deny-by-default
 tools are explained in [CONFIGURATION.md#module-gating](CONFIGURATION.md#module-gating) —
 this page notes *which* tools are affected, not the mechanism itself.
 
-## Response format
+**27 tools in total.** 18 register for any authenticated session under the
+default config (`vikunja_auth`, `vikunja_tasks` plus its six granular
+`vikunja_task_*` counterparts, `vikunja_projects`, `vikunja_labels`,
+`vikunja_teams`, `vikunja_filters`, `vikunja_templates`, `vikunja_webhooks`,
+`vikunja_batch_import`, `vikunja_notifications`, `vikunja_subscriptions`,
+`vikunja_reactions`). The other 9 are JWT-only and/or deny-by-default:
+`vikunja_users` and the four export tools (JWT-only), plus `vikunja_tokens`,
+`vikunja_caldav_tokens`, `vikunja_admin`, and `vikunja_user_deletion`
+(module opt-in required; all but `vikunja_tokens` also JWT-only).
 
-Every tool returns a standardized envelope:
+## Response Format
 
-```typescript
-interface StandardResponse {
-  success: boolean;
-  operation: string;      // The operation performed (e.g., 'create', 'update', 'list')
-  message?: string;       // Human-readable description of the result
-  data?: any;             // The primary data returned (task, project, label, etc.)
-  metadata?: {
-    timestamp: string;    // ISO 8601 timestamp of the operation
-    [key: string]: any;   // Additional operation-specific metadata
-  };
-}
+Every tool returns MCP text content: a markdown document built by
+`src/utils/simple-response.ts`, not a JSON envelope. Success responses open
+with a `## ✅ Success` heading, then the human-readable message, an
+`**Operation:** <name>` line, any operation metadata, and the returned data
+(a formatted list for collections, a detail block for a single resource):
+
+```markdown
+## ✅ Success
+
+Task created successfully
+
+**Operation:** create-task
+
+### 1. **Complete documentation** (ID: 123)
+- **Status:** ❌ Not Done
 ```
 
-**Success:**
-```json
-{
-  "success": true,
-  "operation": "create",
-  "message": "Task created successfully",
-  "data": { "id": 123, "title": "Complete documentation" },
-  "metadata": { "timestamp": "2025-05-25T12:00:00Z" }
-}
+Failures open with `## ❌ Error` and carry an `**Error Code:**` line plus any
+partial-failure metadata (`**FailedIds**`, `**FailedCount**`, `**Failures**`,
+`**count:**`) — this is how bulk and composite subcommands report partial
+success honestly:
+
+```markdown
+## ❌ Error
+
+Updated 3 of 5 tasks
+
+**Error Code:** OPERATION_FAILED
+
+**FailedIds**:
+[4,5]
 ```
 
-**Error:**
-```json
-{
-  "success": false,
-  "operation": "update",
-  "message": "Task not found",
-  "error": { "code": "TASK_NOT_FOUND", "details": "No task exists with ID 999" }
-}
-```
+Validation and auth problems are raised as `MCPError`s and surfaced by the
+MCP SDK as protocol-level tool errors rather than as this markdown body.
+
+List responses render at most 50 items individually and append an explicit
+truncation notice beyond that (`LIST_ITEM_RENDER_CAP`) — page further with
+`page`/`perPage` rather than assuming the list was complete.
 
 ## Authentication
 
 - `vikunja_auth` - Authentication management
-  - `connect` - Initialize connection with API token. Performs a verification round trip before reporting success: an unauthenticated `GET /info` call validates the URL is reachable and returns the server version (surfaced as `serverVersion` in the response), then a cheap authenticated call validates the credential itself (`GET /user` for JWT sessions, `GET /projects?per_page=1` for API-token sessions, since `tk_*` tokens cannot use `/user` — see docs/VIKUNJA_API_ISSUES.md #2). If either step fails, the session is rolled back and a clear error is thrown instead of silently "succeeding" with a bad URL or token.
+  - `connect` - Initialize connection with API token. Performs a verification round trip before reporting success: an unauthenticated `GET /info` call validates the URL is reachable and returns the server version (surfaced as `serverVersion` in the response), then a cheap authenticated call validates the credential itself (`GET /user` for JWT sessions, `GET /projects?per_page=1` for API-token sessions, since `tk_*` tokens cannot use `/user` — see [VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #2). If either step fails, the session is rolled back and a clear error is thrown instead of silently "succeeding" with a bad URL or token.
   - `status` - Check authentication status
   - `refresh` - Report token-refresh status: API tokens (`tk_*`) are long-lived and need no refresh; JWTs expire and must be replaced by reconnecting with a new token (Vikunja's token-refresh endpoint relies on a login cookie this server does not hold)
   - `info` - Fetch the connected Vikunja server's `GET /info` payload (version, frontend URL, motd, enabled features, ...). Requires an active session.
+  - `disconnect` - Clear the in-memory session and the cached client factory. Local only — nothing is revoked server-side.
 
 ## Task Management
 
@@ -99,8 +114,8 @@ interface StandardResponse {
     - Optional: `search` (username search, `s` query param), `page`, `perPage`
   - `comment` - List or add comments to tasks
   - `bulk-create` / `bulk-update` / `bulk-delete` - Bulk task operations (same underlying handlers as the standalone `vikunja_task_bulk` tool below)
-    - `bulk-update` required: taskIds array, field name, value. Supported fields: done, priority, due_date, project_id, assignees, labels. Uses per-task fetch+merge+update (does not call Vikunja's native bulk API, which can wipe omitted fields). ⚠️ O(n) get+update calls.
-    - `bulk-delete` required: taskIds array. Returns deleted task details for confirmation; handles partial failures gracefully. ⚠️ Makes individual delete calls per task — batch in groups of 20 or fewer.
+    - `bulk-update` required: taskIds array, field name, value. Supported fields: done, priority, due_date, project_id, assignees, labels. Uses per-task fetch+merge+update (does not call Vikunja's native bulk API, which can wipe omitted fields). **Cost:** O(n) get+update calls.
+    - `bulk-delete` required: taskIds array. Returns deleted task details for confirmation; handles partial failures gracefully. **Cost:** one delete call per task — batch in groups of 20 or fewer.
   - `attach` - Upload a file attachment to a task (`filePath` or base64 `fileContent`)
   - `list-attachments` - List a task's attachments (file name, size, mime, created, author), with optional `page`/`perPage`
   - `get-attachment-info` - Get metadata for one attachment by `attachmentId` (derived from the list response — there is no dedicated single-attachment metadata endpoint)
@@ -108,7 +123,7 @@ interface StandardResponse {
   - `download-attachment` - **Cannot deliver the file itself** — MCP has no binary content channel. Returns the direct download URL (optionally with a `previewSize` of `sm`/`md`/`lg`/`xl`) plus the `Authorization: Bearer <token>` header guidance needed to fetch it yourself.
   - `relate` / `unrelate` / `relations` - Manage task-to-task relations (subtask, blocking, duplicateof, ...) — same underlying handlers as the standalone `vikunja_task_relations` tool below
   - `add-reminder` / `remove-reminder` / `list-reminders` - Manage task reminders — same underlying handlers as the standalone `vikunja_task_reminders` tool below
-  - `apply-label` / `remove-label` / `list-labels` - Apply/remove/list a task's labels — same underlying handlers as the standalone `vikunja_task_labels` tool below
+  - `apply-label` / `remove-label` / `list-labels` - Apply/remove/list a task's labels — same underlying handlers as the standalone `vikunja_task_labels` tool below. `apply-label` accepts label ids (`labels`) and/or label **titles** (`labelTitles`) — each title is get-or-created (case-insensitive exact-title match, else created) and attached in the same call, so "attach a label by name" is one call instead of a separate `vikunja_labels ensure` lookup followed by a second `apply-label`. `apply-label`/`remove-label` also accept `taskIds` (an array) as an alternative to `id`, applying/removing the same label(s) to/from MULTIPLE tasks in one call — `labelTitles` is resolved ONCE for the whole call and the resolved id reused across every task, and results are reported per-task (a partial failure is never reported as a clean success). Provide exactly one of `id` or `taskIds`; supplying both is rejected
   - `set-bucket` - Move a task into a Kanban bucket; `projectId`/`viewId` auto-resolve when omitted
   - `bulk-set-bucket` - Move several tasks into the same Kanban bucket in one call (`taskIds`, `bucketId`, optional `projectId`/`viewId` overrides). Resolves the project (from `projectId`, or from the first task in `taskIds` when omitted) and the Kanban view once, then applies each move sequentially (SQLite lock discipline). Reports the count from confirmed per-task successes; `failedIds` on a partial result. Same underlying handler as `vikunja_task_bulk`'s `bulk-set-bucket` operation below
   - `set-position` - Update a task's ordering within a project view (`position` is a float — see the Vikunja docs on inserting between two existing positions)
@@ -116,8 +131,8 @@ interface StandardResponse {
   - `get-by-index` - Look up a task by its human-facing per-project index (e.g. the `42` in `PROJ-42`)
     - Required: `projectId`, `index`
     - Task indexes are reassigned when a task moves between projects — use the returned task's `id` for long-lived references
-  - `create-subtask` - Composite: create a new task as a subtask of an existing task (`parentTaskId`, `title`, optional `description`/`dueDate`/`priority`/`labels`/`assignees`/`bucketId`). Resolves the parent to inherit its project, creates the task, optionally attaches labels/assignees and places it in a Kanban bucket (reuses the `set-bucket` path), relates it to the parent (Vikunja's `subtask`/`parenttask` relation kinds — the parent is always the "base" task of the relation), then re-reads the parent to verify the relation landed. Best-effort by default: a failure after the task was created is reported honestly (including the orphaned task id) rather than silently rolled back; `atomic: true` opts into best-effort rollback (deletes the created task) per `CompositeOperation`'s design — see [ENDPOINT-PLAYBOOK.md §5](ENDPOINT-PLAYBOOK.md)
-  - `bulk-create-subtasks` - Composite: create several subtasks under the same parent in one call (`parentTaskId`, `subtasks` array of `{title, description?, dueDate?, priority?, labels?, assignees?, bucketId?}` — same per-item shape as `create-subtask`). Resolves the parent's project ONCE, then runs `create-subtask`'s own create -> label -> assign -> relate -> bucket -> verify sequence per subtask, sequentially, each with its own independent rollback scope — one subtask failing never blocks the rest of the batch. `atomic: true` opts into per-subtask best-effort rollback (never across subtasks). Response lists which subtasks were created/related/failed, with the reported success count derived from confirmed per-subtask successes
+  - `create-subtask` - Composite: create a new task as a subtask of an existing task (`parentTaskId`, `title`, optional `description`/`dueDate`/`priority`/`labels`/`assignees`/`bucketId`). Resolves the parent to inherit its project, creates the task, optionally attaches labels/assignees and places it in a Kanban bucket (reuses the `set-bucket` path), relates it to the parent (Vikunja's `subtask`/`parenttask` relation kinds — the parent is always the "base" task of the relation), then re-reads the parent to verify the relation landed. Best-effort by default: a failure after the task was created is reported honestly (including the orphaned task id) rather than silently rolled back; `atomic: true` opts into best-effort rollback (deletes the created task) per `CompositeOperation`'s design — see [ENDPOINT-PLAYBOOK.md §5](ENDPOINT-PLAYBOOK.md). `id` is accepted as an alias for `parentTaskId` (supplying both with different values is rejected as a validation error)
+  - `bulk-create-subtasks` - Composite: create several subtasks under the same parent in one call (`parentTaskId`, `subtasks` array of `{title, description?, dueDate?, priority?, labels?, assignees?, bucketId?}` — same per-item shape as `create-subtask`). Resolves the parent's project ONCE, then runs `create-subtask`'s own create -> label -> assign -> relate -> bucket -> verify sequence per subtask, sequentially, each with its own independent rollback scope — one subtask failing never blocks the rest of the batch. `atomic: true` opts into per-subtask best-effort rollback (never across subtasks). Response lists which subtasks were created/related/failed, with the reported success count derived from confirmed per-subtask successes. `id` is accepted as an alias for `parentTaskId` here too, same precedence rule as `create-subtask`
   - `list-subtasks` - Read composite: summarizes a task's subtasks (id/title/done/assignees) from the `"subtask"` slice of its `related_tasks`, in one call (`id`)
   - `duplicate` - Copy a task (labels, assignees, attachments, reminders) into the same project via `PUT /tasks/{taskID}/duplicate` (no request body). Creates a "copied from" relation between the new and original task. Direct parallel to `vikunja_projects`' `duplicate`
     - Required: `id` (the task to duplicate)
@@ -131,7 +146,9 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 (`operation`: `assign`/`unassign`/`list-assignees`), `vikunja_task_comments`
 (`operation`: `comment`/`list`/`get`/`update`/`delete`),
 `vikunja_task_reminders` (`operation`: `add-reminder`/`remove-reminder`/`list-reminders`),
-`vikunja_task_labels` (`operation`: `apply-label`/`remove-label`/`list-labels`),
+`vikunja_task_labels` (`operation`: `apply-label`/`remove-label`/`list-labels`; `apply-label`
+takes `labels` and/or `labelTitles`, and both `apply-label`/`remove-label` accept `taskIds` as
+a multi-task alternative to `id`, see above),
 `vikunja_task_relations` (`operation`: `relate`/`unrelate`/`relations`, plus
 `relationKind`: one of `subtask`, `parenttask`, `related`, `duplicateof`,
 `duplicates`, `blocking`, `blocked`, `precedes`, `follows`, `copiedfrom`,
@@ -186,7 +203,17 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
   - **Project Views**
     - `list-views` / `get-view` / `create-view` / `update-view` / `delete-view`
     - `set-done-bucket` - Composite: set a Kanban view's done bucket (resolves the view, updates it, and verifies the change took effect)
-  - **Kanban Buckets**
+  - **Project + tasks setup, Kanban optional (composite)**
+    - `setup-kanban` - Provisions a project and its tasks in ONE call (issue #173), optionally as a whole Kanban board: creates the project (or reuses an existing one via `id`) and bulk-creates `tasks`; when `columns` is supplied it also ensures the Kanban view, creates/renames/reuses buckets to match the ordered `columns` array, and places each task into its named column. Prefer this over hand-rolling `create` → `vikunja_task_bulk bulk-create` (project + tasks only), or `create` → `create-bucket` (xN) → `vikunja_task_bulk bulk-create` → `vikunja_tasks set-bucket` / `vikunja_task_bulk bulk-set-bucket` (xN) — the ~38-call path a weak agent otherwise falls into for a "new project + Kanban board + N tasks across columns" prompt, against an optimal ~15 by hand or 1 via this composite
+      - Required: either `id` (an existing project to reuse) or `title` (to create a new one)
+      - Optional `columns` (issue #185): an ordered, non-empty array of column/bucket names, e.g. `["To Do", "Doing", "Done"]`. **Omit it entirely** for the plain project+tasks path — no Kanban view, bucket, or placement step runs at all, and it costs strictly fewer API calls than the columns form. Supplying `columns: []` is a validation error (omit it instead)
+      - Optional on a new project: `description`, `parentProjectId`
+      - Optional `tasks` array: each task's normal fields (`title` required; `description`, `priority`, `dueDate`/`startDate`/`endDate` — date-only values normalize to midnight UTC the same as `vikunja_task_bulk bulk-create` — `labels` (titles, get-or-created the same way `apply-label` does), `assignees` (numeric user ids)) plus an optional `column` naming which requested column to place it in
+      - Ordering guarantee: every bucket touched — reused, renamed, or newly created — has its `position` pinned from its index in the requested `columns` array (`(index + 1) * 65536`), so the resulting board order always matches the request regardless of any pre-existing bucket order
+      - Existing-project reuse (`id` instead of `title`) is idempotent-ish: requested columns are matched against existing bucket titles (case-insensitive) and reused; an unmatched column repurposes (renames) the first still-unclaimed existing bucket before falling back to creating a new one — calling it twice with the same columns does not pile up duplicates. Buckets not claimed by any requested column are left untouched, never deleted
+      - Honest, bulk-style per-item reporting: resolving each column and creating+placing each task are independent operations — a failure in one does not abort the rest. The response reports every column's (`reused`/`renamed`/`created`/`failed`) and every task's (`placed`/`created`/`created-not-placed`/`failed`) actual outcome, with failure detail in both the message and a `failures` list; the whole call only hard-fails when NO column could be established at all. A partial-failure response still embeds the project id in the same `(ID: N)`-extractable format the success path uses, so a caller can recover the project handle and retry
+      - Fail fast on an unknown column name: a task's `column` (when given) is validated case-insensitively against the requested `columns` list UP FRONT, with zero API calls, before the project/view/bucket/task are touched. A mismatch — or a task carrying a `column` when no `columns` array was supplied at all — rejects the WHOLE call with a validation error naming the offending column, the task's title, and the valid column names (or the fact that none were given) — nothing is created, so re-running is cheap. A task with no `column` is never an error; it is simply created unplaced
+  - **Kanban Buckets** (manual primitives — prefer `setup-kanban` above when provisioning a whole board)
     - `list-buckets` - List the Kanban buckets (columns) of a project (`id` is the project id; `projectId` is accepted as an alias for `id` — see note below)
     - `create-bucket` - Create a new bucket (`id`, `title`, optional `limit`, optional `position`)
     - `update-bucket` - Rename/reconfigure/reposition a bucket (`title`, `limit`, `position`), referenced by `bucketId` or `bucketTitle`
@@ -194,7 +221,7 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
     - `delete-bucket` - Delete a bucket (dissociates its tasks, does not delete them), referenced by `bucketId` or `bucketTitle`
     - `list-view-tasks` - List a view's tasks in real server-side (Kanban card) order, with pagination
     - All Kanban operations auto-resolve `viewId` to the project's Kanban view when omitted
-  - **`id` vs `projectId`**: every CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds subcommand (`get`, `update`, `delete`, `archive`, `unarchive`, `get-children`, `get-tree`, `get-breadcrumb`, `move`, `list-buckets`, `create-bucket`, `update-bucket`, `delete-bucket`, `list-view-tasks`, `list-views`, `get-view`, `create-view`, `update-view`, `delete-view`, `set-done-bucket`, `duplicate`, and the backgrounds subcommands) identifies its target project via `id`, with `projectId` accepted as an alias when `id` is omitted. The sharing-domain subcommands (`create-share`, `share-with-user`, `list-project-users`, etc.) use `projectId` directly instead — both fields are flat siblings on the same schema, so this alias avoids a first-guess footgun (an agent reaching for whichever field it used most recently)
+  - **`id` vs `projectId`**: every CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds subcommand (`get`, `update`, `delete`, `archive`, `unarchive`, `get-children`, `get-tree`, `get-breadcrumb`, `move`, `list-buckets`, `create-bucket`, `update-bucket`, `delete-bucket`, `list-view-tasks`, `list-views`, `get-view`, `create-view`, `update-view`, `delete-view`, `set-done-bucket`, `duplicate`, `setup-kanban`, and the backgrounds subcommands) identifies its target project via `id`, with `projectId` accepted as an alias when `id` is omitted. The sharing-domain subcommands (`create-share`, `share-with-user`, `list-project-users`, etc.) use `projectId` directly instead — both fields are flat siblings on the same schema, so this alias avoids a first-guess footgun (an agent reaching for whichever field it used most recently)
   - **Duplicate**
     - `duplicate` - Duplicate a project (`id`, optional `parentProjectId`, optional `duplicateShares`). Tasks, files, Kanban data, assignees, comments, attachments, labels, relations, and backgrounds are copied; shares only when `duplicateShares: true` (Vikunja's own default is `false` — shares are access grants, so copying them silently would be a security-relevant surprise)
   - **Sharing — direct user & team access**
@@ -206,17 +233,12 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
     - `list-project-teams` - List teams with direct access
     - `add-project-team` / `update-project-team-permission` / `remove-project-team` - Primitives for fine-grained control (`projectId`, `teamId`, `right`)
     - `right` accepts `'read' | 'write' | 'admin'` or the numeric `0 | 1 | 2`
-  - **Backgrounds (opt-in `backgrounds` module, disabled by default — see [docs/CONFIGURATION.md#module-gating](CONFIGURATION.md#module-gating))**
-    - > These three subcommands only exist on `vikunja_projects` when the `backgrounds`
-      > module is explicitly enabled (`{"modules": {"backgrounds": true}}` or
-      > `VIKUNJA_MCP_MODULE_BACKGROUNDS=true`) — deliberately the opposite of every
-      > other domain module here, which defaults ON. Disabled (the default), calling
-      > them fails MCP schema validation (unrecognized subcommand), not just a runtime
-      > rejection — they are genuinely absent from the tool's schema.
+  - **Backgrounds (opt-in `backgrounds` module, disabled by default — see [CONFIGURATION.md#module-gating](CONFIGURATION.md#module-gating))**
+    - **Opt-in, unlike every other domain module here.** These three subcommands only exist on `vikunja_projects` when the `backgrounds` module is explicitly enabled (`{"modules": {"backgrounds": true}}` or `VIKUNJA_MCP_MODULE_BACKGROUNDS=true`) — every other domain module defaults ON. Disabled (the default), calling them fails MCP schema validation (unrecognized subcommand), not just a runtime rejection: they are genuinely absent from the tool's schema
     - `remove-background` - Remove a project's background, regardless of which provider set it (`id`). No-op (not an error) if the project has no background.
     - `set-unsplash-background` - Set an unsplash photo as a project's background (`id`, `unsplashImageId` — the photo id from `search-unsplash`)
     - `search-unsplash` - Search unsplash for candidate background photos (optional `unsplashQuery`, optional `page`). Only works when the connected Vikunja server has an Unsplash provider configured server-side; when it doesn't, the error is rewritten into a friendly explanation rather than the server's raw error text
-    - The binary image bytes themselves (upload, and fetching the actual image/thumbnail) stay parked — no MCP content channel for them; see [docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md) item G7
+    - The binary image bytes themselves (upload, and fetching the actual image/thumbnail) stay parked — no MCP content channel for them; see [ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md) item G7
 
 ## Label Management
 
@@ -226,20 +248,23 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
   - `create` - Create new label (required: title; optional: description, hexColor)
   - `update` - Update existing label (partial updates)
   - `delete` - Delete a label by ID
-  - `apply-label` / `remove-label` - Apply or remove one or more labels on a task (task id + labels array; bulk supported)
-  - `list-labels` - List all labels assigned to a task
+  - `ensure` - Get-or-create a label by title (case-insensitive exact-title match via `GET /labels?s=`, else creates it), idempotent — use this when you want the label's id WITHOUT attaching it to a task. To attach a label by name in one call, prefer `vikunja_task_labels apply-label`'s `labelTitles` field instead (see [Task Management](#task-management) above) — it does the same get-or-create AND attaches, so it's one call instead of `ensure` followed by a separate `apply-label`
+
+Applying/removing/listing a task's labels lives on `vikunja_task_labels`
+(`apply-label`/`remove-label`/`list-labels`) and the equivalent `vikunja_tasks`
+subcommands — see [Task Management](#task-management) above.
 
 ## Project Templates
 
-> **⚠️ Never persisted to Vikunja itself; session-only by default:**
-> Templates are stored in memory on the MCP server process by default and
-> are lost when the server restarts. Set the `templates.persistPath` config
-> key (or `VIKUNJA_MCP_TEMPLATES_FILE` env var, which wins) to make them
-> durable across restarts via a JSON file — see
-> [docs/CONFIGURATION.md#templates-persistence](CONFIGURATION.md#templates-persistence).
-> `create`/`update` responses also carry a `persisted` boolean and a matching
-> note in their message, so this isn't only a one-time warning in the tool
-> description.
+**Never persisted to Vikunja itself; session-only by default.** Templates are
+stored in memory on the MCP server process and are lost when the server
+restarts. Set the `templates.persistPath` config key (or the
+`VIKUNJA_MCP_TEMPLATES_FILE` env var, which wins) to make them durable across
+restarts via a JSON file — see
+[CONFIGURATION.md#templates-persistence](CONFIGURATION.md#templates-persistence).
+`create`/`update` responses also carry a `persisted` boolean and a matching
+note in their message, so this isn't only a one-time warning in the tool
+description.
 
 - `vikunja_templates` - Template operations (session-only by default, opt-in file persistence — see note above)
   - `create` - Create a template from an existing project (required: projectId, name; optional: description, tags)
@@ -314,31 +339,29 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 
 ## Filter Management
 
-> **Real, server-side saved filters:** `create`/`get`/`update`/`delete` call
-> Vikunja's actual `/filters` API (`PUT /filters`, `GET`/`POST`/`DELETE
-> /filters/{id}`) — filters persist on the server, survive an MCP restart,
-> and are visible in the Vikunja UI and to other clients. Saved filters are
-> **not** project-scoped (the API has no `project_id` field on a saved
-> filter); Vikunja instead exposes each one as a *pseudo-project* with a
-> negative id, and `isFavorite` controls whether it also shows in the
-> favorites parent alongside favorite projects. There is no dedicated
-> list-all-saved-filters endpoint, so `list` derives its results from `GET
-> /projects`' pseudo-project entries and verifies each one against `GET
-> /filters/{id}`; entries it could not verify are still returned (title
-> only) with `hydrated: false` rather than silently dropped. `build` and
-> `validate` remain pure local utilities — they construct or check a filter
-> query string without contacting the server.
->
-> **Field casing:** filter fields are camelCase (`dueDate`, `percentDone`,
-> `startDate`, `endDate`, `doneAt`, `project`, plus `done`/`priority`/
-> `assignees`/`labels`/`created`/`updated`/`title`/`description`, which are
-> spelled the same either way) — this is the casing `build` emits and the
-> casing `vikunja_tasks list`'s own `filter` argument accepts as canonical.
-> Snake_case aliases (`due_date`, `percent_done`, `project_id`, etc. — the
-> underlying Vikunja Task JSON's own field spelling) are also accepted
-> everywhere a field name is given (the `filter` string, `build`/`create`/
-> `update`'s `conditions` array) and are normalized to camelCase
-> automatically, so either spelling works.
+**Real, server-side saved filters.** `create`/`get`/`update`/`delete` call
+Vikunja's actual `/filters` API (`PUT /filters`, `GET`/`POST`/`DELETE
+/filters/{id}`) — filters persist on the server, survive an MCP restart, and
+are visible in the Vikunja UI and to other clients. Saved filters are **not**
+project-scoped (the API has no `project_id` field on a saved filter); Vikunja
+instead exposes each one as a *pseudo-project* with a negative id, and
+`isFavorite` controls whether it also shows in the favorites parent alongside
+favorite projects. There is no dedicated list-all-saved-filters endpoint, so
+`list` derives its results from `GET /projects`' pseudo-project entries and
+verifies each one against `GET /filters/{id}`; entries it could not verify are
+still returned (title only) with `hydrated: false` rather than silently
+dropped. `build` and `validate` remain pure local utilities — they construct
+or check a filter query string without contacting the server.
+
+**Field casing.** Filter fields are camelCase (`dueDate`, `percentDone`,
+`startDate`, `endDate`, `doneAt`, `project`, plus `done`/`priority`/
+`assignees`/`labels`/`created`/`updated`/`title`/`description`, which are
+spelled the same either way) — this is the casing `build` emits and the casing
+`vikunja_tasks list`'s own `filter` argument accepts as canonical. Snake_case
+aliases (`due_date`, `percent_done`, `project_id`, etc. — the underlying
+Vikunja Task JSON's own field spelling) are also accepted everywhere a field
+name is given (the `filter` string, `build`/`create`/`update`'s `conditions`
+array) and are normalized to camelCase automatically, so either spelling works.
 
 - `vikunja_filters` - Advanced filtering for tasks, backed by Vikunja's real saved filters. Uses `action` instead of `subcommand`.
   - `list` - Derive the list of saved filters from `GET /projects`' pseudo-project entries (optional: page, perPage, favorite)
@@ -351,10 +374,10 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 
 ## Data Export
 
-> **⚠️ Memory usage:** Export operations load entire project hierarchies
-> into memory. For very large projects with thousands of tasks or deeply
-> nested structures, this may consume significant memory. Consider
-> exporting smaller projects individually.
+**Memory usage.** Export operations load entire project hierarchies into
+memory. For very large projects with thousands of tasks or deeply nested
+structures this may consume significant memory — consider exporting smaller
+projects individually.
 
 - `vikunja_export_project` - Export project data **[Requires JWT authentication]**
   - Required: `projectId`. Optional: `includeChildren` (recursive, default false)
@@ -366,27 +389,26 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 
 ## API Token Management — deny-by-default
 
-> **Reserved/disabled by default.** `vikunja_tokens` is only registered when
-> the `tokenManagement` module config key is explicitly set to `true` (see
-> [CONFIGURATION.md#module-gating](CONFIGURATION.md#module-gating)) — it
-> does not appear to the AI client out of the box, since it is
-> credential-adjacent.
+**Reserved/disabled by default.** `vikunja_tokens` is only registered when the
+`tokenManagement` module config key is explicitly set to `true` (see
+[CONFIGURATION.md#module-gating](CONFIGURATION.md#module-gating)) — it does not
+appear to the AI client out of the box, since it is credential-adjacent.
 
 - `vikunja_tokens` - Manage the current user's Vikunja API tokens
   - `list` - List existing tokens (`GET /tokens`) (optional: page, perPage, search)
   - `create` - Create a new API token (`PUT /tokens`) (required: title, permissions — a map of resource group → allowed actions, e.g. `{"tasks":["read_all","update"]}`, valid keys/values come from the server's `GET /routes`; optional: expiresAt (ISO 8601), ownerId). The token's secret value is only ever returned in this response — it cannot be retrieved again afterwards.
   - `delete` - Delete a token by id (`DELETE /tokens/{tokenID}`) (required: tokenId)
-  - **Note:** `/tokens` shares its authentication scheme with other user-scoped endpoints that have historically rejected `tk_*` API tokens (see docs/VIKUNJA_API_ISSUES.md #2) — a call made with an API-token session may be rejected server-side even though the tool itself is registered for both session types.
+  - **Note:** `/tokens` shares its authentication scheme with other user-scoped endpoints that have historically rejected `tk_*` API tokens (see [VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #2) — a call made with an API-token session may be rejected server-side even though the tool itself is registered for both session types.
 
 ## CalDAV Token Management — deny-by-default + JWT-only
 
-> **Reserved/disabled by default, and JWT-only.** `vikunja_caldav_tokens`
-> requires BOTH the `caldavTokens` module config key to be explicitly set to
-> `true` AND an active JWT session (see
-> [CONFIGURATION.md#module-gating](CONFIGURATION.md#module-gating)) — unlike
-> `vikunja_tokens`, the underlying `/user/settings/token/caldav*` endpoints
-> are JWT-only per the vendored OpenAPI spec, so module config can only
-> narrow this JWT-only gate, never expand it.
+**Reserved/disabled by default, and JWT-only.** `vikunja_caldav_tokens`
+requires BOTH the `caldavTokens` module config key to be explicitly set to
+`true` AND an active JWT session (see
+[CONFIGURATION.md#module-gating](CONFIGURATION.md#module-gating)) — unlike
+`vikunja_tokens`, the underlying `/user/settings/token/caldav*` endpoints are
+JWT-only per the vendored OpenAPI spec, so module config can only narrow this
+JWT-only gate, never expand it.
 
 - `vikunja_caldav_tokens` - Manage the current user's Vikunja CalDAV tokens **[Requires JWT authentication]** — separate credentials from API tokens (`vikunja_tokens`), used to authenticate third-party CalDAV clients against Vikunja's CalDAV interface
   - `list` - List existing CalDAV tokens (`GET /user/settings/token/caldav`) — returns each token's id and created date only (the secret is never re-shown after creation)
@@ -395,11 +417,11 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 
 ## Instance Admin — deny-by-default + JWT-only
 
-> **Reserved/disabled by default, and JWT-only.** `vikunja_admin` requires
-> BOTH the `admin` module config key to be explicitly set to `true` AND an
-> active JWT session — module config can only narrow what authentication
-> already allows, never expand it, so API-token sessions never see this
-> tool regardless of config.
+**Reserved/disabled by default, and JWT-only.** `vikunja_admin` requires BOTH
+the `admin` module config key to be explicitly set to `true` AND an active JWT
+session — module config can only narrow what authentication already allows,
+never expand it, so API-token sessions never see this tool regardless of
+config.
 
 - `vikunja_admin` - Instance-administrator operations **[Requires JWT authentication]**
   - `overview` - Instance-wide counts (users, projects, tasks, teams, shares) plus license info (`GET /admin/overview`)
@@ -413,14 +435,15 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
 
 ## User Self-Deletion — deny-by-default + JWT-only
 
-> **Reserved/disabled by default, and JWT-only.** `vikunja_user_deletion` requires
-> BOTH the `userDeletion` module config key to be explicitly set to `true` AND an
-> active JWT session — module config can only narrow what authentication already
-> allows, never expand it, so API-token sessions never see this tool regardless of
-> config. This is the reserved `DANGEROUS_MODULE_KEYS` slot (`src/config/types.ts`)
-> finally getting a tool. **Read [CONFIGURATION.md's `userDeletion` row](CONFIGURATION.md#known-modules)
-> before enabling this module** — it lets an AI assistant delete the connected
-> Vikunja account.
+**Reserved/disabled by default, and JWT-only.** `vikunja_user_deletion`
+requires BOTH the `userDeletion` module config key to be explicitly set to
+`true` AND an active JWT session — module config can only narrow what
+authentication already allows, never expand it, so API-token sessions never
+see this tool regardless of config. This is the reserved
+`DANGEROUS_MODULE_KEYS` slot (`src/config/types.ts`) filled by a real tool.
+**Read [CONFIGURATION.md's `userDeletion` row](CONFIGURATION.md#known-modules)
+before enabling this module** — it lets an AI assistant delete the connected
+Vikunja account.
 
 - `vikunja_user_deletion` - Request, confirm, or cancel deletion of the **currently authenticated account** **[Requires JWT authentication]**
   - `request` - Start the deletion process (`POST /user/deletion/request`) (required: password, **`confirm: true`**). Triggers a confirmation email; the account is not deleted until `confirm` is called with the emailed token. **Irreversible once confirmed** — the tool refuses to run without an explicit `confirm: true` argument.
@@ -428,14 +451,14 @@ narrower tool surface exposed to a client): `vikunja_task_bulk` (`operation`:
   - `cancel` - Abort an in-progress deletion request (`POST /user/deletion/cancel`) (required: password). The safe "undo" leg — does **not** require `confirm: true`.
   - **Secrets:** `password` and `token` are never echoed back in tool responses or error messages, and are never written to logs (see `src/utils/security.ts`'s masking conventions).
 
-## Known limitations
+## Known Limitations
 
 1. **File attachments**: upload (`attach`), list (`list-attachments`), metadata (`get-attachment-info`), and delete (`delete-attachment`) are implemented. `download-attachment` cannot deliver the file's bytes — the Vikunja API returns raw `application/octet-stream` for downloads, and MCP has no binary content channel — so it returns the direct download URL and auth guidance for the caller to fetch it themselves instead.
-2. **Team operations**: `get`/`update`/`members` go through direct REST calls (`src/utils/vikunja-rest.ts`) rather than a generic client method, since the underlying API doesn't offer them as a single convenient call. The admin-toggle member operation is a true toggle server-side — it cannot set an explicit admin value in one call.
+2. **Team operations**: `members list` has no dedicated endpoint — it reads the team's embedded `members` array. The admin-toggle member operation is a true toggle server-side — it cannot set an explicit admin value in one call. (Every tool on this page issues its HTTP calls through `vikunjaRestRequest` in `src/utils/vikunja-rest.ts`; the old typed client library has been removed.)
 3. **Pagination**: some endpoints may not fully support pagination parameters due to upstream API limitations.
-4. **Authentication quirks**: a handful of Vikunja API endpoints have known auth-related rough edges (user endpoints rejecting valid `tk_*` tokens on some server versions, bulk/label/assignee operations occasionally erroring on certain server configurations) — see [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) for the full, current list. Tools surface a clear error message when these occur.
+4. **Authentication quirks**: a handful of Vikunja API endpoints have known auth-related rough edges (user endpoints rejecting valid `tk_*` tokens on some server versions, bulk/label/assignee operations occasionally erroring on certain server configurations) — see [VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) for the full, current list. Tools surface a clear error message when these occur.
 
-## Security & performance
+## Security & Performance
 
 - **Zod schema validation**: enterprise-grade input validation with comprehensive type checking
 - **DoS protection**: input sanitization, length limits, and character allowlisting

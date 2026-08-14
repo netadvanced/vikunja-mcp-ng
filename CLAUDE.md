@@ -64,7 +64,7 @@ server.tool('vikunja_tasks', {
    - Replaced custom tokenizer/parser/validator with secure Zod schemas
    - Enhanced security with DoS protection and input validation
    - Production-ready parsing with comprehensive error handling
-   - Located in `src/utils/filters-zod.ts`
+   - Located in `src/utils/filters.ts`
    - Backward compatible filter syntax with improved reliability
 
 3. **Production-Ready Retry System (580+ Lines Replaced)**
@@ -103,10 +103,10 @@ server.tool('vikunja_tasks', {
 ```json
 "coverageThreshold": {
   "global": {
-    "branches": 80,        // Current honest coverage: 81.06%
-    "functions": 78,       // Current honest coverage: 78.62%
-    "lines": 89,           // Current honest coverage: 90.25%
-    "statements": 89       // Current honest coverage: 89.96%
+    "branches": 83,        // Current honest coverage: 84.19%
+    "functions": 82,       // Current honest coverage: 83.09%
+    "lines": 92,           // Current honest coverage: 93.14%
+    "statements": 92       // Current honest coverage: 92.80%
   }
 }
 ```
@@ -133,7 +133,7 @@ tests/
 ```
 
 ### Mock Strategy
-- **External Dependencies**: All node-vikunja API calls mocked
+- **External Dependencies**: All Vikunja REST calls (`vikunjaRestRequest`/`fetch`) mocked
 - **Edge Cases**: Test malformed API responses, auth failures, network errors
 - **Race Conditions**: Dedicated test files for concurrent operations
 
@@ -150,7 +150,6 @@ For manual testing with Claude, see `docs/MCP-TEST-CHECKLIST.md`.
 
 ### Core Dependencies
 - **@modelcontextprotocol/sdk**: MCP server framework and transport layer
-- **node-vikunja**: Vikunja API client (dynamically imported for testability)
 - **zod**: Runtime validation for MCP tool arguments and responses
 - **jest + ts-jest**: Testing with TypeScript support and coverage
 - **opossum**: Battle-tested circuit breaker for production resilience
@@ -163,8 +162,8 @@ For manual testing with Claude, see `docs/MCP-TEST-CHECKLIST.md`.
 - **Security Layer**: Credential masking in logs, secure session management with `src/auth/AuthManager.ts`
 
 ### Security Architecture
-- **Zod Validation**: `src/utils/filters-zod.ts` - Enterprise-grade input validation with DoS protection
-- **Rate Limiting**: `src/middleware/rate-limiting.ts` - Configurable DoS protection
+- **Zod Validation**: `src/utils/filters.ts` - Enterprise-grade input validation with DoS protection
+- **Rate Limiting**: `src/middleware/simplified-rate-limit.ts` - Configurable DoS protection
 - **Input Validation**: `src/utils/security.ts` - Sanitization and allowlist validation
 - **Memory Protection**: `src/utils/memory.ts` - Enhanced V8-specific memory estimation with risk analysis and 93%+ test coverage
 - **Thread Safety**: `src/storage/SimpleFilterStorage.ts` - Concurrent access protection with AsyncMutex
@@ -214,7 +213,6 @@ try {
 
 1. **Vikunja API Limitations**: 
    - Hybrid filtering implemented to handle server-side inconsistencies
-   - Team operations incomplete in node-vikunja library
    - Some user endpoints have authentication issues
 
 2. **MCP Protocol Constraints**:
@@ -233,9 +231,9 @@ try {
 
 ## Version Requirements
 
-- **Node.js**: 20+ LTS only (no EOL versions)
+- **Node.js**: 22+ LTS only (no EOL versions — Node 20 reached EOL April 2026)
 - **TypeScript**: Strict mode enabled
-- **Vikunja**: Compatible with v0.22.1+ (with known API filter limitation)
+- **Vikunja**: 2.3.0+ required (v1 API floor); 2.4.0 is the aligned/tested default — see `docker/e2e/docker-compose.yml`'s pin comment
 
 ## Repository Configuration
 

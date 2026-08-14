@@ -181,11 +181,7 @@ export async function deleteAttachment(
   const taskId = requireTaskId(args, 'delete-attachment operation');
   const attachmentId = requireAttachmentId(args, 'delete-attachment operation');
 
-  await vikunjaRestRequest(
-    authManager,
-    'DELETE',
-    `/tasks/${taskId}/attachments/${attachmentId}`,
-  );
+  await vikunjaRestRequest(authManager, 'DELETE', `/tasks/${taskId}/attachments/${attachmentId}`);
 
   const response = createStandardResponse(
     'delete-attachment',

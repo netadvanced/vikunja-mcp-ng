@@ -4,7 +4,11 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import { parseFilterString, validateCondition, validateFilterExpression } from '../../src/utils/filters';
+import {
+  parseFilterString,
+  validateCondition,
+  validateFilterExpression,
+} from '../../src/utils/filters';
 import type { FilterCondition } from '../../src/types/filters';
 
 describe('ReDoS Vulnerability Fix Tests', () => {
@@ -21,7 +25,7 @@ describe('ReDoS Vulnerability Fix Tests', () => {
         'now+' + '1'.repeat(100) + 'z'.repeat(100), // Complex pattern to trigger backtracking
       ];
 
-      maliciousDateInputs.forEach(maliciousInput => {
+      maliciousDateInputs.forEach((maliciousInput) => {
         const condition: FilterCondition = {
           field: 'dueDate',
           operator: '=',
@@ -34,7 +38,7 @@ describe('ReDoS Vulnerability Fix Tests', () => {
 
         // Security check: validation should complete quickly (< 10ms)
         expect(validationTime).toBeLessThan(10);
-        
+
         // Security check: malicious input should be rejected
         expect(errors).toHaveLength(1);
         expect(errors[0]).toContain('valid date value');
@@ -48,7 +52,7 @@ describe('ReDoS Vulnerability Fix Tests', () => {
         'now/' + 'd'.repeat(100), // Repeated units
       ];
 
-      longDateInputs.forEach(longInput => {
+      longDateInputs.forEach((longInput) => {
         const condition: FilterCondition = {
           field: 'created',
           operator: '<',
@@ -81,7 +85,7 @@ describe('ReDoS Vulnerability Fix Tests', () => {
         'now+99999999999999999999d', // Very large number
       ];
 
-      edgeCases.forEach(edgeCase => {
+      edgeCases.forEach((edgeCase) => {
         const condition: FilterCondition = {
           field: 'updated',
           operator: '>=',
@@ -103,21 +107,42 @@ describe('ReDoS Vulnerability Fix Tests', () => {
     it('should accept all valid date formats without performance issues', () => {
       const validDateFormats = [
         'now',
-        'now+1s', 'now+30s', 'now+999s',
-        'now+1m', 'now+59m', 'now+999m',
-        'now+1h', 'now+23h', 'now+999h',
-        'now+1d', 'now+30d', 'now+365d',
-        'now+1w', 'now+52w', 'now+999w',
-        'now+1M', 'now+12M', 'now+120M',
-        'now+1y', 'now+10y', 'now+999y',
-        'now-1s', 'now-30d', 'now-52w',
-        'now/d', 'now/w', 'now/M', 'now/y',
-        '2023-01-01', '2023-12-31',
-        '1990-01-01', '2099-12-31',
+        'now+1s',
+        'now+30s',
+        'now+999s',
+        'now+1m',
+        'now+59m',
+        'now+999m',
+        'now+1h',
+        'now+23h',
+        'now+999h',
+        'now+1d',
+        'now+30d',
+        'now+365d',
+        'now+1w',
+        'now+52w',
+        'now+999w',
+        'now+1M',
+        'now+12M',
+        'now+120M',
+        'now+1y',
+        'now+10y',
+        'now+999y',
+        'now-1s',
+        'now-30d',
+        'now-52w',
+        'now/d',
+        'now/w',
+        'now/M',
+        'now/y',
+        '2023-01-01',
+        '2023-12-31',
+        '1990-01-01',
+        '2099-12-31',
         '2024-02-29', // Leap year
       ];
 
-      validDateFormats.forEach(validDate => {
+      validDateFormats.forEach((validDate) => {
         const condition: FilterCondition = {
           field: 'dueDate',
           operator: '=',
@@ -130,7 +155,7 @@ describe('ReDoS Vulnerability Fix Tests', () => {
 
         // Should be fast (increased from 5ms to 50ms for CI stability)
         expect(validationTime).toBeLessThan(50);
-        
+
         // Should be valid
         expect(errors).toHaveLength(0);
       });
@@ -155,7 +180,7 @@ describe('ReDoS Vulnerability Fix Tests', () => {
         'now+-1d', // Conflicting operators
       ];
 
-      invalidDateFormats.forEach(invalidDate => {
+      invalidDateFormats.forEach((invalidDate) => {
         const condition: FilterCondition = {
           field: 'created',
           operator: '>',
@@ -168,7 +193,7 @@ describe('ReDoS Vulnerability Fix Tests', () => {
 
         // Should be fast even when rejecting (increased from 5ms to 50ms for CI stability)
         expect(validationTime).toBeLessThan(50);
-        
+
         // Should be invalid
         expect(errors).toHaveLength(1);
         expect(errors[0]).toContain('valid date value');
@@ -184,14 +209,14 @@ describe('ReDoS Vulnerability Fix Tests', () => {
         `updated != now+${'1'.repeat(50)}d`,
       ];
 
-      maliciousFilterStrings.forEach(filterStr => {
+      maliciousFilterStrings.forEach((filterStr) => {
         const startTime = Date.now();
         const result = parseFilterString(filterStr);
         const parseTime = Date.now() - startTime;
 
         // Should complete quickly
         expect(parseTime).toBeLessThan(100);
-        
+
         // If parsing succeeds, validation should catch the malicious date
         if (result.expression) {
           const validation = validateFilterExpression(result.expression);
@@ -212,14 +237,14 @@ describe('ReDoS Vulnerability Fix Tests', () => {
         'created > now-1w && dueDate < 2023-99-99',
       ];
 
-      complexFilters.forEach(filterStr => {
+      complexFilters.forEach((filterStr) => {
         const startTime = Date.now();
         const result = parseFilterString(filterStr);
         const parseTime = Date.now() - startTime;
 
         // Should complete quickly
         expect(parseTime).toBeLessThan(100);
-        
+
         // Results may vary, but should not hang
         expect(result).toBeDefined();
       });
@@ -235,7 +260,7 @@ describe('ReDoS Vulnerability Fix Tests', () => {
         'now' + 'x'.repeat(20), // Potentially problematic
       ];
 
-      testDates.forEach(testDate => {
+      testDates.forEach((testDate) => {
         const condition: FilterCondition = {
           field: 'dueDate',
           operator: '<',
@@ -245,11 +270,11 @@ describe('ReDoS Vulnerability Fix Tests', () => {
         // Benchmark the new implementation
         const iterations = 1000;
         const startTime = Date.now();
-        
+
         for (let i = 0; i < iterations; i++) {
           validateCondition(condition);
         }
-        
+
         const totalTime = Date.now() - startTime;
         const avgTime = totalTime / iterations;
 
@@ -266,7 +291,7 @@ describe('ReDoS Vulnerability Fix Tests', () => {
         '2023' + '-'.repeat(100) + '01-01',
       ];
 
-      worstCaseInputs.forEach(worstCase => {
+      worstCaseInputs.forEach((worstCase) => {
         const condition: FilterCondition = {
           field: 'updated',
           operator: '=',
@@ -294,7 +319,7 @@ describe('ReDoS Vulnerability Fix Tests', () => {
         { value: 'invalid-date', shouldBeValid: false },
       ];
 
-      regressionTestCases.forEach(testCase => {
+      regressionTestCases.forEach((testCase) => {
         const condition: FilterCondition = {
           field: 'dueDate',
           operator: '<',
@@ -302,7 +327,7 @@ describe('ReDoS Vulnerability Fix Tests', () => {
         };
 
         const errors = validateCondition(condition);
-        
+
         if (testCase.shouldBeValid) {
           expect(errors).toHaveLength(0);
         } else {

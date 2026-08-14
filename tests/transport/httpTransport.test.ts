@@ -174,6 +174,17 @@ describe('httpTransport', () => {
       expect(JSON.parse(res.body)).toEqual({ status: 'ok' });
     });
 
+    it('ignores a query string when matching routes', async () => {
+      setOidcAuthMiddleware(async () => false);
+      handle = await startHttpTransport(newServer, baseHttpConfig());
+      const port = getPort(handle);
+
+      const res = await request(port, { path: '/healthz?probe=1' });
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ status: 'ok' });
+    });
+
     it('404s on a path other than the configured MCP path', async () => {
       setOidcAuthMiddleware(async () => true);
       handle = await startHttpTransport(newServer, baseHttpConfig());
@@ -253,6 +264,82 @@ describe('httpTransport', () => {
       });
 
       expect(res.statusCode).toBe(403);
+    });
+
+    describe('RFC 9728 protected resource metadata discovery', () => {
+      const ISSUER = 'https://idp.example.test/realms/e2e';
+
+      it('serves GET /.well-known/oauth-protected-resource unauthenticated', async () => {
+        // Middleware rejects everything — discovery must still work, since a
+        // client fetches it precisely because it has no token yet.
+        setOidcAuthMiddleware(async () => false);
+        handle = await startHttpTransport(newServer, baseHttpConfig(), { issuer: ISSUER });
+        const port = getPort(handle);
+
+        const res = await request(port, { path: '/.well-known/oauth-protected-resource' });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.headers['content-type']).toContain('application/json');
+        expect(JSON.parse(res.body)).toEqual({
+          resource: `http://127.0.0.1:${port}/mcp`,
+          authorization_servers: [ISSUER],
+          bearer_methods_supported: ['header'],
+        });
+      });
+
+      it('serves the path-suffixed variant /.well-known/oauth-protected-resource/mcp', async () => {
+        setOidcAuthMiddleware(async () => false);
+        handle = await startHttpTransport(newServer, baseHttpConfig(), { issuer: ISSUER });
+        const port = getPort(handle);
+
+        const res = await request(port, { path: '/.well-known/oauth-protected-resource/mcp' });
+
+        expect(res.statusCode).toBe(200);
+        expect(JSON.parse(res.body)).toEqual({
+          resource: `http://127.0.0.1:${port}/mcp`,
+          authorization_servers: [ISSUER],
+          bearer_methods_supported: ['header'],
+        });
+      });
+
+      it('uses the configured publicUrl verbatim as the canonical resource', async () => {
+        setOidcAuthMiddleware(async () => false);
+        handle = await startHttpTransport(
+          newServer,
+          baseHttpConfig({ publicUrl: 'https://mcp-vikunja.example.ch/mcp' }),
+          { issuer: ISSUER }
+        );
+        const port = getPort(handle);
+
+        const res = await request(port, { path: '/.well-known/oauth-protected-resource' });
+
+        expect(res.statusCode).toBe(200);
+        expect(JSON.parse(res.body).resource).toBe('https://mcp-vikunja.example.ch/mcp');
+      });
+
+      it('is GET-only: a POST gets 405 with an Allow: GET header', async () => {
+        setOidcAuthMiddleware(async () => false);
+        handle = await startHttpTransport(newServer, baseHttpConfig(), { issuer: ISSUER });
+        const port = getPort(handle);
+
+        const res = await request(port, {
+          method: 'POST',
+          path: '/.well-known/oauth-protected-resource',
+        });
+
+        expect(res.statusCode).toBe(405);
+        expect(res.headers['allow']).toBe('GET');
+      });
+
+      it('404s on the well-known path when no OIDC issuer is configured', async () => {
+        setOidcAuthMiddleware(async () => false);
+        handle = await startHttpTransport(newServer, baseHttpConfig());
+        const port = getPort(handle);
+
+        const res = await request(port, { path: '/.well-known/oauth-protected-resource' });
+
+        expect(res.statusCode).toBe(404);
+      });
     });
 
     it('close() shuts the listener down', async () => {

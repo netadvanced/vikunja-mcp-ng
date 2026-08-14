@@ -1,7 +1,7 @@
 {
   "id": "share-project-by-user",
   "title": "Share a project via a public link",
-  "description": "Ergonomics probe for project-sharing discoverability: a project needs to exist and get a link share, exercising the create-share composite (src/tools/projects/sharing.ts).",
+  "description": "Ergonomics probe for project-sharing discoverability: a project needs to exist and get a link share, exercising the create-share composite (src/tools/projects/sharing.ts). RE-VERIFIED 2026-07-25 (netadvanced/vikunja-mcp#28 C1): optimalCallCount reasoning unchanged -- create-project (1) + create-task (1, the single \"kickoff\" task) + create-share (1) = 3. Unrelated to both PR #178 (label taskIds) and PR #175 (setup-kanban, which has no create-share step).",
   "promptTemplate": "Create a project called \"{{prefix}}Shared Roadmap\" with one task called \"{{prefix}}kickoff\", then share the project via a read-only public link so it can be sent to a client.",
   "optimalCallCount": 3,
   "verify": [

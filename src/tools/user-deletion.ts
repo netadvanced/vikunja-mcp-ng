@@ -216,7 +216,10 @@ export function registerUserDeletionTool(
           throw error;
         }
         if (error instanceof Error) {
-          throw new MCPError(ErrorCode.API_ERROR, `User deletion operation failed: ${error.message}`);
+          throw new MCPError(
+            ErrorCode.API_ERROR,
+            `User deletion operation failed: ${error.message}`,
+          );
         }
         throw new MCPError(
           ErrorCode.INTERNAL_ERROR,

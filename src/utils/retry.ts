@@ -6,6 +6,7 @@
 import CircuitBreaker from 'opossum';
 import { logger } from './logger';
 import { isAuthenticationError } from './auth-error-handler';
+import { extractHttpStatus } from './http-error-detail';
 
 /**
  * Simple circuit breaker registry for tracking and managing circuit breakers
@@ -35,7 +36,7 @@ class CircuitBreakerRegistry {
   }
 
   async resetAll(): Promise<void> {
-    const promises = Array.from(this.breakers.values()).map(breaker => {
+    const promises = Array.from(this.breakers.values()).map((breaker) => {
       return new Promise<void>((resolve) => {
         if (breaker.opened) {
           breaker.close();
@@ -111,6 +112,93 @@ interface ErrorWithCode extends Error {
 }
 
 /**
+ * opossum's own code for a fast-failed call while the breaker is open
+ * (`buildError('Breaker is open', 'EOPENBREAKER')` in `opossum/lib/circuit.js`).
+ */
+const OPEN_BREAKER_CODE = 'EOPENBREAKER';
+
+/**
+ * opossum `errorFilter` predicate (issue #163): decides which rejections
+ * from the wrapped operation must NOT count toward tripping the circuit
+ * breaker open.
+ *
+ * Root cause of #163: an intermittent bulk-create HTTP 400 ("Invalid model
+ * provided", Vikunja error code 2004) tripped the `vikunja-rest-*` breaker
+ * OPEN, after which every later create in the same session failed instantly
+ * with "Breaker is open" — one client-side validation error poisoned the
+ * whole session (a failing run logged ~19 such rejections; a clean run
+ * logged 0).
+ *
+ * A CLIENT-SIDE 4xx (bad request body, forbidden, not found, conflict,
+ * unprocessable entity, ...) reflects a problem with THIS call's data or
+ * permissions, not the health of the Vikunja service — so it must never
+ * count as a breaker "failure". Per opossum's `handleError` (`lib/circuit.js`),
+ * an `errorFilter` match does not swallow the error: the caller still sees
+ * the real rejection, it is just recorded as a 'success' for the breaker's
+ * rolling stats instead of a 'failure'.
+ *
+ * 401 is deliberately EXCLUDED from this filter — i.e. it still counts
+ * toward opening the breaker, unchanged from before this fix. Auth errors
+ * already have dedicated handling one layer up (`isAuthenticationError` /
+ * `RETRY_CONFIG.AUTH_ERRORS`), and a storm of 401s across otherwise-unrelated
+ * calls (e.g. a revoked/expired session) is arguably still a "stop hammering
+ * the service" signal worth tripping the breaker for. #163's evidence is
+ * specifically about a data-validation 400, not auth — widening the
+ * exclusion to 401 as well was deliberately left out of scope here.
+ *
+ * Errors with no discoverable HTTP status (network failures, timeouts,
+ * `ECONNRESET`/`ETIMEDOUT`, opossum's own `ETIMEDOUT`/`ESHUTDOWN`/
+ * `ESEMLOCKED`) are NOT filtered — they keep counting toward opening the
+ * breaker, which is exactly the "service looks unhealthy" signal the
+ * breaker exists to catch.
+ */
+export function isClientErrorExcludedFromBreaker(error: unknown): boolean {
+  const status = extractHttpStatus(error);
+  if (status === null) return false;
+  if (status === 401) return false;
+  return status >= 400 && status < 500;
+}
+
+/**
+ * Rewords opossum's open-circuit rejection ("Breaker is open", code
+ * `EOPENBREAKER`) so an agent understands it as a TRANSIENT, self-recovering
+ * server-load condition rather than a hard/permanent failure.
+ *
+ * A live battle transcript showed an agent responding to the raw "Breaker is
+ * open" message by calling `vikunja_auth disconnect` — self-sabotaging its
+ * own session over a condition that resolves itself once `resetTimeout`
+ * elapses and has nothing to do with authentication. The reworded message
+ * explicitly tells the caller to back off and retry, and explicitly NOT to
+ * re-authenticate or disconnect.
+ *
+ * Non-`EOPENBREAKER` errors (including opossum's other internal errors like
+ * `ESHUTDOWN`/`ETIMEDOUT`/`ESEMLOCKED`, and ordinary operation failures) pass
+ * through unchanged.
+ */
+export function rewordBreakerOpenError(error: unknown): unknown {
+  if (!(error instanceof Error) || (error as ErrorWithCode).code !== OPEN_BREAKER_CODE) {
+    return error;
+  }
+
+  // NOTE: deliberately avoids the substrings 'timeout', 'connection',
+  // 'network', and 'rate limit' — `isRetryableError` (below) treats any of
+  // those as grounds to retry, and an open breaker must NOT be retried
+  // immediately (it will still be open; retrying just burns the backoff
+  // delay for nothing). The original opossum message ("Breaker is open")
+  // was already non-retryable for the same reason; this rewording preserves
+  // that property.
+  const reworded = new Error(
+    'Vikunja API calls are temporarily paused after repeated recent failures ' +
+      '(circuit breaker open). This is a TRANSIENT, self-recovering server-load ' +
+      'condition, not an authentication or session problem — wait a bit, then ' +
+      'retry the same request again. Do NOT re-authenticate, reconnect, or ' +
+      'disconnect in response to this error.',
+  );
+  (reworded as ErrorWithCode).code = OPEN_BREAKER_CODE;
+  return reworded;
+}
+
+/**
  * Simple retry configuration using opossum's built-in capabilities
  */
 export interface RetryOptions {
@@ -134,7 +222,7 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'shouldRetry'>> = {
   volumeThreshold: 5,
   initialDelay: 1000,
   backoffFactor: 2,
-  maxDelay: 30000
+  maxDelay: 30000,
 };
 
 /**
@@ -155,30 +243,59 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'shouldRetry'>> = {
 export function createCircuitBreaker<TArgs extends unknown[], TR>(
   operation: (...args: TArgs) => Promise<TR>,
   name: string,
-  options: RetryOptions = {}
+  options: RetryOptions = {},
 ): CircuitBreaker<TArgs, TR> {
-  // Check if a circuit breaker with this name already exists
-  const existingBreaker = circuitBreakerRegistry.get(name);
+  // Check if a circuit breaker with this name already exists. A cached
+  // breaker is only reusable if it wraps the SAME operation — see #199: the
+  // JSON and multipart REST helpers derived the same breaker name for
+  // `/user/settings/avatar` vs `/user/settings/avatar/upload`, so whichever
+  // ran first defined what that name executed for the rest of the session,
+  // and multipart uploads were silently fired through the JSON helper
+  // (`Content-Type: application/json`, `FormData` JSON.stringify'd to `{}`,
+  // server 500). Rather than hand back a breaker that runs the wrong code,
+  // register the mismatched operation under a disambiguated name and say so
+  // loudly — a collision is a programming error, but failing a live upload
+  // is a worse way to learn about it than a log line.
+  let registryKey = name;
+  const existingBreaker = circuitBreakerRegistry.get(registryKey);
   if (existingBreaker) {
-    return existingBreaker as unknown as CircuitBreaker<TArgs, TR>;
+    if ((existingBreaker as unknown as { action?: unknown }).action === operation) {
+      return existingBreaker as unknown as CircuitBreaker<TArgs, TR>;
+    }
+    registryKey = `${name}#${operation.name || 'anonymous'}`;
+    const existingForOperation = circuitBreakerRegistry.get(registryKey);
+    if (existingForOperation) {
+      return existingForOperation as unknown as CircuitBreaker<TArgs, TR>;
+    }
+    logger.error(
+      `Circuit breaker name collision: "${name}" is already registered for a different operation. ` +
+        `Registering "${operation.name || 'anonymous'}" under "${registryKey}" instead — give the two ` +
+        'call sites distinct breaker names (see deriveRestBreakerName / VikunjaRestRequestOptions.breakerName).',
+    );
   }
 
   const opts = { ...DEFAULT_OPTIONS, ...options };
 
   const breaker = new CircuitBreaker<TArgs, TR>(operation, {
-    name,
+    name: registryKey,
     timeout: opts.timeout,
     resetTimeout: opts.resetTimeout,
     errorThresholdPercentage: opts.errorThresholdPercentage,
-    volumeThreshold: opts.volumeThreshold
+    volumeThreshold: opts.volumeThreshold,
+    // #163: client-side 4xx responses (bad data, not found, conflict, ...)
+    // must not count toward tripping this breaker — see
+    // `isClientErrorExcludedFromBreaker` for the full rationale. The
+    // rejection itself is unaffected; only the breaker's failure/success
+    // bookkeeping changes.
+    errorFilter: isClientErrorExcludedFromBreaker,
   });
 
   // Register with the global registry
-  circuitBreakerRegistry.register(name, breaker as unknown as CircuitBreaker);
+  circuitBreakerRegistry.register(registryKey, breaker);
 
   // Essential logging only
-  breaker.on('open', () => logger.warn(`Circuit breaker ${name} opened`));
-  breaker.on('close', () => logger.info(`Circuit breaker ${name} closed`));
+  breaker.on('open', () => logger.warn(`Circuit breaker ${registryKey} opened`));
+  breaker.on('close', () => logger.info(`Circuit breaker ${registryKey} closed`));
 
   return breaker;
 }
@@ -188,7 +305,7 @@ export function createCircuitBreaker<TArgs extends unknown[], TR>(
  */
 export async function withRetry<T>(
   operation: () => Promise<T>,
-  options: RetryOptions = {}
+  options: RetryOptions = {},
 ): Promise<T> {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   let lastError: unknown;
@@ -213,7 +330,7 @@ export async function withRetry<T>(
       // Check if we should retry this error
       const shouldRetry = opts.shouldRetry
         ? opts.shouldRetry(error as Error)
-        : isRetryableError(error as Error);
+        : isRetryableError(error);
 
       // If this is the last attempt or error is not retryable, throw
       if (attempt === maxRetries || !shouldRetry) {
@@ -238,10 +355,34 @@ export async function withRetry<T>(
 export async function withNamedRetry<T>(
   operation: () => Promise<T>,
   name: string,
-  options: RetryOptions = {}
+  options: RetryOptions = {},
 ): Promise<T> {
-  const breaker = createCircuitBreaker(operation, name, options);
-  return breaker.fire();
+  // Register a STABLE action and pass the per-call operation as a fire()
+  // argument, exactly as `createCircuitBreaker`'s doc comment prescribes.
+  // Registering `operation` itself would mean every caller of a shared name
+  // (e.g. `withTaskRetry(..., 'create')`, which deliberately pools all task
+  // creates behind one breaker) hands in a different closure: before #199's
+  // fix that silently re-fired whichever closure was registered FIRST — two
+  // different creates, the first one executed twice — and after it, each
+  // closure would get its own breaker, defeating the pooling these helpers
+  // exist for. Threading the operation through `fire()` keeps both
+  // properties: one shared breaker per name, and the right code runs.
+  const breaker = createCircuitBreaker(invokeOperation, name, options);
+  try {
+    return (await breaker.fire(operation)) as T;
+  } catch (error) {
+    throw rewordBreakerOpenError(error);
+  }
+}
+
+/**
+ * The stable breaker action used by {@link withNamedRetry}: invokes whatever
+ * operation it is fired with. Must stay a single top-level reference — that
+ * is what makes every `withNamedRetry` call under one name resolve to the
+ * same registered breaker.
+ */
+function invokeOperation(operation: () => Promise<unknown>): Promise<unknown> {
+  return operation();
 }
 
 /**
@@ -267,12 +408,14 @@ export function isRetryableError(error: unknown): error is ErrorWithCode {
     }
 
     const message = error.message.toLowerCase();
-    return message.includes('timeout') ||
-           message.includes('connection') ||
-           message.includes('network') ||
-           message.includes('rate limit') ||
-           (error as ErrorWithCode).code === 'ECONNRESET' ||
-           (error as ErrorWithCode).code === 'ETIMEDOUT';
+    return (
+      message.includes('timeout') ||
+      message.includes('connection') ||
+      message.includes('network') ||
+      message.includes('rate limit') ||
+      (error as ErrorWithCode).code === 'ECONNRESET' ||
+      (error as ErrorWithCode).code === 'ETIMEDOUT'
+    );
   }
   return false;
 }
@@ -283,19 +426,21 @@ export function isRetryableError(error: unknown): error is ErrorWithCode {
 export function isTransientError(error: unknown): error is ErrorWithCode {
   if (error instanceof Error) {
     const message = error.message.toLowerCase();
-    return message.includes('timeout') ||
-           message.includes('timed out') ||
-           message.includes('connection') ||
-           message.includes('network') ||
-           message.includes('rate limit') ||
-           message.includes('socket') ||
-           message.includes('hang up') ||
-           message.includes('econnreset') ||
-           message.includes('etimedout') ||
-           message.includes('reset by peer') ||
-           message.includes('closed unexpectedly') ||
-           (error as ErrorWithCode).code === 'ECONNRESET' ||
-           (error as ErrorWithCode).code === 'ETIMEDOUT';
+    return (
+      message.includes('timeout') ||
+      message.includes('timed out') ||
+      message.includes('connection') ||
+      message.includes('network') ||
+      message.includes('rate limit') ||
+      message.includes('socket') ||
+      message.includes('hang up') ||
+      message.includes('econnreset') ||
+      message.includes('etimedout') ||
+      message.includes('reset by peer') ||
+      message.includes('closed unexpectedly') ||
+      (error as ErrorWithCode).code === 'ECONNRESET' ||
+      (error as ErrorWithCode).code === 'ETIMEDOUT'
+    );
   }
   return false;
 }
@@ -310,7 +455,7 @@ export const RETRY_CONFIG = {
     maxDelay: 10000,
     backoffFactor: 2,
     enableCircuitBreaker: true,
-    circuitBreakerName: 'vikunja-auth-connect'
+    circuitBreakerName: 'vikunja-auth-connect',
   },
   NETWORK_ERRORS: {
     maxRetries: 5,
@@ -318,7 +463,7 @@ export const RETRY_CONFIG = {
     maxDelay: 30000,
     backoffFactor: 1.5,
     enableCircuitBreaker: true,
-    circuitBreakerName: 'vikunja-api-operations'
+    circuitBreakerName: 'vikunja-api-operations',
   },
   TASK_OPERATIONS: {
     maxRetries: 3,
@@ -326,7 +471,7 @@ export const RETRY_CONFIG = {
     maxDelay: 15000,
     backoffFactor: 2,
     enableCircuitBreaker: true,
-    circuitBreakerName: 'vikunja-task-create'
+    circuitBreakerName: 'vikunja-task-create',
   },
   BULK_OPERATIONS: {
     maxRetries: 2,
@@ -334,8 +479,8 @@ export const RETRY_CONFIG = {
     maxDelay: 20000,
     backoffFactor: 1.5,
     enableCircuitBreaker: true,
-    circuitBreakerName: 'vikunja-bulk-operations'
-  }
+    circuitBreakerName: 'vikunja-bulk-operations',
+  },
 } as const;
 
 /**
@@ -361,7 +506,7 @@ export const CIRCUIT_BREAKER_NAMES = {
   PROJECT_SHARING: 'vikunja-project-sharing',
   BULK_OPERATIONS: 'vikunja-bulk-operations',
   BULK_IMPORT: 'vikunja-bulk-import',
-  BULK_EXPORT: 'vikunja-bulk-export'
+  BULK_EXPORT: 'vikunja-bulk-export',
 } as const;
 
 /**
@@ -370,7 +515,7 @@ export const CIRCUIT_BREAKER_NAMES = {
 export async function withTaskRetry<T>(
   operation: () => Promise<T>,
   operationType: 'create' | 'update' | 'delete' | 'get',
-  options: RetryOptions = {}
+  options: RetryOptions = {},
 ): Promise<T> {
   const name = `vikunja-task-${operationType}`;
   return withNamedRetry(operation, name, options);
@@ -382,7 +527,7 @@ export async function withTaskRetry<T>(
 export async function withBulkRetry<T>(
   operation: () => Promise<T>,
   operationType: 'import' | 'export',
-  options: RetryOptions = {}
+  options: RetryOptions = {},
 ): Promise<T> {
   const name = `vikunja-bulk-${operationType}`;
   return withNamedRetry(operation, name, options);

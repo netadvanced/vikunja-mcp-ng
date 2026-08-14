@@ -151,7 +151,8 @@ async function exportProjectRecursive(
     // Fetch the full catalog once per export (not once per recursion level
     // — see this function's doc comment) and thread it through recursive
     // calls.
-    const projects = allProjects ?? (await vikunjaRestRequest<VikunjaProject[]>(authManager, 'GET', '/projects'));
+    const projects =
+      allProjects ?? (await vikunjaRestRequest<VikunjaProject[]>(authManager, 'GET', '/projects'));
     const childProjects = projects.filter(
       (p: VikunjaProject) => p.parent_project_id === project.id,
     );
@@ -178,7 +179,11 @@ async function exportProjectRecursive(
 
 // Schema definitions
 
-export function registerExportTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerExportTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   // Export project data
   server.tool(
     'vikunja_export_project',
@@ -221,11 +226,7 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
         validateSharedId(projectId, 'projectId');
 
         // Export the project data
-        const exportData = await exportProjectRecursive(
-          authManager,
-          projectId,
-          includeChildren,
-        );
+        const exportData = await exportProjectRecursive(authManager, projectId, includeChildren);
 
         // Format the output as JSON
         const formattedData = JSON.stringify(exportData, null, 2);

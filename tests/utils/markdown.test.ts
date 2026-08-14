@@ -94,7 +94,7 @@ describe('Markdown Test Utility', () => {
         'Unordered 1',
         'Unordered 2',
         'Ordered 1',
-        'Ordered 2'
+        'Ordered 2',
       ]);
     });
   });
@@ -210,7 +210,7 @@ describe('Markdown Test Utility', () => {
     it('should contain valid markdown-it tokens', () => {
       const markdown = '## Heading';
       const result = parseMarkdown(markdown);
-      const headingToken = result.tokens.find(t => t.type === 'heading_open');
+      const headingToken = result.tokens.find((t) => t.type === 'heading_open');
       expect(headingToken).toBeDefined();
       expect(headingToken?.tag).toBe('h2');
     });

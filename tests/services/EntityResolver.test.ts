@@ -258,7 +258,10 @@ describe('EntityResolver', () => {
       expect(result.userMap.size).toBe(3);
       expect(result.projectLabels).toEqual([]);
       expect(result.projectUsers).toEqual(expect.arrayContaining(mockUsers));
-      expect(logger.warn).toHaveBeenCalledWith('Labels response is not an array', expect.any(Object));
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Labels response is not an array',
+        expect.any(Object),
+      );
     });
 
     it('should handle authentication error for users', async () => {
@@ -281,7 +284,7 @@ describe('EntityResolver', () => {
       expect(result.projectUsers).toEqual([]);
       expect(logger.warn).toHaveBeenCalledWith(
         'Cannot fetch users due to known Vikunja API authentication issue. Assignees will be skipped.',
-        expect.any(Object)
+        expect.any(Object),
       );
     });
 
@@ -330,7 +333,7 @@ describe('EntityResolver', () => {
         'Failed to fetch labels',
         expect.objectContaining({
           error: expect.stringContaining('Label service unavailable'),
-        })
+        }),
       );
     });
 
@@ -349,13 +352,10 @@ describe('EntityResolver', () => {
       expect(result.userFetchFailedDueToAuth).toBe(true);
       expect(result.projectLabels).toEqual([]);
       expect(result.projectUsers).toEqual([]);
-      expect(logger.error).toHaveBeenCalledWith(
-        'Failed to fetch labels',
-        expect.any(Object)
-      );
+      expect(logger.error).toHaveBeenCalledWith('Failed to fetch labels', expect.any(Object));
       expect(logger.warn).toHaveBeenCalledWith(
         'Cannot fetch users due to known Vikunja API authentication issue. Assignees will be skipped.',
-        expect.any(Object)
+        expect.any(Object),
       );
     });
 

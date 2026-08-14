@@ -10,21 +10,26 @@ describe('Security Integration Tests', () => {
     it('should properly mask Vikunja API token in connection message', () => {
       const url = 'https://vikunja.example.com/api/v1';
       const token = 'tk_abc123def456ghi789jkl012mno345pqr';
-      
+
       const message = createSecureConnectionMessage(url, token, 'API');
-      
-      expect(message).toBe('Connecting to https://vikunja.example.com/api/v1 with API token tk_a...');
+
+      expect(message).toBe(
+        'Connecting to https://vikunja.example.com/api/v1 with API token tk_a...',
+      );
       expect(message).not.toContain('abc123def456ghi789jkl012mno345pqr');
       expect(message).not.toContain(token);
     });
 
     it('should properly mask JWT token in connection message', () => {
       const url = 'https://vikunja.example.com/api/v1';
-      const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
-      
+      const jwt =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+
       const message = createSecureConnectionMessage(url, jwt, 'JWT');
-      
-      expect(message).toBe('Connecting to https://vikunja.example.com/api/v1 with JWT token eyJh...');
+
+      expect(message).toBe(
+        'Connecting to https://vikunja.example.com/api/v1 with JWT token eyJh...',
+      );
       expect(message).not.toContain('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
       expect(message).not.toContain(jwt);
     });
@@ -37,7 +42,7 @@ describe('Security Integration Tests', () => {
         url: 'https://vikunja.example.com/api/v1',
         token: 'tk_supersecretapitoken123456789',
         database_password: 'db_secret_password_123',
-        jwt_secret: 'very_long_jwt_secret_key_for_signing_tokens'
+        jwt_secret: 'very_long_jwt_secret_key_for_signing_tokens',
       };
 
       const secureConfig = createSecureLogConfig(mockEnvConfig);
@@ -56,14 +61,19 @@ describe('Security Integration Tests', () => {
       // Verify original sensitive values are not present
       expect(JSON.stringify(secureConfig)).not.toContain('supersecretapitoken123456789');
       expect(JSON.stringify(secureConfig)).not.toContain('db_secret_password_123');
-      expect(JSON.stringify(secureConfig)).not.toContain('very_long_jwt_secret_key_for_signing_tokens');
+      expect(JSON.stringify(secureConfig)).not.toContain(
+        'very_long_jwt_secret_key_for_signing_tokens',
+      );
     });
 
     it('should handle URLs with authentication parameters', () => {
-      const sensitiveUrl = 'https://vikunja.example.com/auth/login?token=secret123&redirect=/dashboard';
+      const sensitiveUrl =
+        'https://vikunja.example.com/auth/login?token=secret123&redirect=/dashboard';
       const message = createSecureConnectionMessage(sensitiveUrl, 'tk_token123', 'API');
-      
-      expect(message).toBe('Connecting to https://vikunja.example.com/auth/[REDACTED]?[REDACTED] with API token tk_t...');
+
+      expect(message).toBe(
+        'Connecting to https://vikunja.example.com/auth/[REDACTED]?[REDACTED] with API token tk_t...',
+      );
       expect(message).not.toContain('secret123');
       expect(message).not.toContain('redirect=/dashboard');
     });
@@ -75,25 +85,25 @@ describe('Security Integration Tests', () => {
         'tk_abc123def456ghi789',
         'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature',
         'very_secret_password_123',
-        'api_key_abcdef123456789'
+        'api_key_abcdef123456789',
       ];
 
-      credentials.forEach(credential => {
+      credentials.forEach((credential) => {
         const message = createSecureConnectionMessage('https://example.com', credential);
         expect(message).not.toContain(credential);
-        expect(message).toMatch(/\w{4}\.\.\./ ); // Should contain masked format
+        expect(message).toMatch(/\w{4}\.\.\./); // Should contain masked format
       });
     });
 
     it('should never log sensitive URL components', () => {
       const sensitiveUrls = [
         'https://api.com/auth/secret123',
-        'https://api.com/login/user456', 
+        'https://api.com/login/user456',
         'https://api.com/key/private789',
-        'https://api.com/api/v1/token/abc123'
+        'https://api.com/api/v1/token/abc123',
       ];
 
-      sensitiveUrls.forEach(url => {
+      sensitiveUrls.forEach((url) => {
         const message = createSecureConnectionMessage(url, 'tk_test');
         expect(message).toContain('[REDACTED]');
         expect(message).not.toContain('secret123');
@@ -109,7 +119,7 @@ describe('Security Integration Tests', () => {
         server_port: 3000,
         api_token: 'tk_secret123456789',
         features: ['auth', 'projects', 'tasks'],
-        limits: { maxTasks: 1000, maxProjects: 50 }
+        limits: { maxTasks: 1000, maxProjects: 50 },
       };
 
       const secureConfig = createSecureLogConfig(config);

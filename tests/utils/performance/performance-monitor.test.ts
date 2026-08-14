@@ -97,12 +97,12 @@ describe('PerformanceMonitor', () => {
     });
 
     it('should update operation metrics', () => {
-      monitor.updateOperation('op1', { 
-        successCount: 5, 
-        failureCount: 2, 
+      monitor.updateOperation('op1', {
+        successCount: 5,
+        failureCount: 2,
         apiCallCount: 7,
         cacheHits: 3,
-        cacheMisses: 1
+        cacheMisses: 1,
       });
 
       const result = monitor.completeOperation('op1');
@@ -153,7 +153,7 @@ describe('PerformanceMonitor', () => {
   describe('Performance Statistics', () => {
     it('should return empty stats when no operations', () => {
       const stats = monitor.getStats();
-      
+
       expect(stats.totalOperations).toBe(0);
       expect(stats.totalDuration).toBe(0);
       expect(stats.totalItems).toBe(0);
@@ -170,17 +170,31 @@ describe('PerformanceMonitor', () => {
 
     it('should calculate comprehensive stats for multiple operations', () => {
       mockDateNow
-        .mockReturnValueOnce(1000).mockReturnValueOnce(3000) // op1: 2000ms
-        .mockReturnValueOnce(2000).mockReturnValueOnce(5000); // op2: 3000ms
+        .mockReturnValueOnce(1000)
+        .mockReturnValueOnce(3000) // op1: 2000ms
+        .mockReturnValueOnce(2000)
+        .mockReturnValueOnce(5000); // op2: 3000ms
 
       // Operation 1: successful
       monitor.startOperation('op1', 'create-task', 10, 2);
-      monitor.updateOperation('op1', { successCount: 8, failureCount: 2, apiCallCount: 5, cacheHits: 3, cacheMisses: 1 });
+      monitor.updateOperation('op1', {
+        successCount: 8,
+        failureCount: 2,
+        apiCallCount: 5,
+        cacheHits: 3,
+        cacheMisses: 1,
+      });
       monitor.completeOperation('op1');
 
       // Operation 2: mixed results
       monitor.startOperation('op2', 'update-task', 5, 3);
-      monitor.updateOperation('op2', { successCount: 4, failureCount: 1, apiCallCount: 3, cacheHits: 2, cacheMisses: 2 });
+      monitor.updateOperation('op2', {
+        successCount: 4,
+        failureCount: 1,
+        apiCallCount: 3,
+        cacheHits: 2,
+        cacheMisses: 2,
+      });
       monitor.completeOperation('op2');
 
       const stats = monitor.getStats();
@@ -270,7 +284,7 @@ describe('PerformanceMonitor', () => {
 
       const alerts = monitor.getAlerts();
       expect(alerts.length).toBeGreaterThanOrEqual(1);
-      const throughputAlert = alerts.find(a => a.type === 'low_throughput');
+      const throughputAlert = alerts.find((a) => a.type === 'low_throughput');
       expect(throughputAlert).toBeDefined();
       expect(throughputAlert?.severity).toBe('warning');
       expect(throughputAlert?.message).toContain('1.00 items/sec');
@@ -283,7 +297,7 @@ describe('PerformanceMonitor', () => {
       monitor.completeOperation('op1');
 
       const alerts = monitor.getAlerts();
-      const throughputAlerts = alerts.filter(a => a.type === 'low_throughput');
+      const throughputAlerts = alerts.filter((a) => a.type === 'low_throughput');
       expect(throughputAlerts).toHaveLength(0);
     });
 
@@ -296,7 +310,7 @@ describe('PerformanceMonitor', () => {
 
       const alerts = monitor.getAlerts();
       expect(alerts.length).toBeGreaterThanOrEqual(1);
-      const failureAlert = alerts.find(a => a.type === 'high_failure_rate');
+      const failureAlert = alerts.find((a) => a.type === 'high_failure_rate');
       expect(failureAlert).toBeDefined();
       expect(failureAlert?.severity).toBe('critical');
       expect(failureAlert?.message).toContain('50.0%');
@@ -320,7 +334,7 @@ describe('PerformanceMonitor', () => {
 
       const alerts = monitor.getAlerts();
       expect(alerts.length).toBeGreaterThanOrEqual(1);
-      const cacheAlert = alerts.find(a => a.type === 'cache_inefficiency');
+      const cacheAlert = alerts.find((a) => a.type === 'cache_inefficiency');
       expect(cacheAlert).toBeDefined();
       expect(cacheAlert?.severity).toBe('warning');
       expect(cacheAlert?.message).toContain('10.0%');
@@ -338,7 +352,7 @@ describe('PerformanceMonitor', () => {
     it('should handle operation without duration for analysis', () => {
       monitor.startOperation('op1', 'test', 5);
       const operation = monitor.completeOperation('op1');
-      
+
       // Manually remove duration to test the guard condition
       if (operation) {
         operation.duration = undefined;
@@ -354,18 +368,18 @@ describe('PerformanceMonitor', () => {
       mockDateNow.mockReturnValueOnce(1000).mockReturnValueOnce(7000); // High latency
 
       monitor.startOperation('op1', 'problematic-operation', 10);
-      monitor.updateOperation('op1', { 
-        successCount: 2, 
+      monitor.updateOperation('op1', {
+        successCount: 2,
         failureCount: 8, // High failure rate
-        cacheHits: 1, 
-        cacheMisses: 9 // Poor cache performance
+        cacheHits: 1,
+        cacheMisses: 9, // Poor cache performance
       });
       monitor.completeOperation('op1');
 
       const alerts = monitor.getAlerts();
       expect(alerts.length).toBeGreaterThan(1);
-      
-      const alertTypes = alerts.map(a => a.type);
+
+      const alertTypes = alerts.map((a) => a.type);
       expect(alertTypes).toContain('high_latency');
       expect(alertTypes).toContain('high_failure_rate');
       expect(alertTypes).toContain('cache_inefficiency');
@@ -397,9 +411,9 @@ describe('PerformanceMonitor', () => {
 
     it('should clear all alerts', () => {
       expect(monitor.getAlerts()).toHaveLength(1);
-      
+
       monitor.clearAlerts();
-      
+
       expect(monitor.getAlerts()).toHaveLength(0);
     });
 
@@ -468,12 +482,12 @@ describe('PerformanceMonitor', () => {
     describe('monitorBulkOperation', () => {
       it('should monitor successful operation', async () => {
         const operation = jest.fn().mockResolvedValue('success');
-        
+
         const result = await monitorBulkOperation('test-operation', 10, operation, 5);
 
         expect(result).toBe('success');
         expect(operation).toHaveBeenCalled();
-        
+
         // Check that operation was monitored
         const stats = performanceMonitor.getStats();
         expect(stats.totalOperations).toBeGreaterThan(0);
@@ -481,10 +495,10 @@ describe('PerformanceMonitor', () => {
 
       it('should monitor failed operation and record failure', async () => {
         const operation = jest.fn().mockRejectedValue(new Error('Test error'));
-        
-        await expect(
-          monitorBulkOperation('test-operation', 10, operation)
-        ).rejects.toThrow('Test error');
+
+        await expect(monitorBulkOperation('test-operation', 10, operation)).rejects.toThrow(
+          'Test error',
+        );
 
         // Check that failure was recorded
         const stats = performanceMonitor.getStats();
@@ -493,7 +507,7 @@ describe('PerformanceMonitor', () => {
 
       it('should use default concurrency level', async () => {
         const operation = jest.fn().mockResolvedValue('success');
-        
+
         await monitorBulkOperation('test-operation', 5, operation);
 
         expect(operation).toHaveBeenCalled();
@@ -504,9 +518,9 @@ describe('PerformanceMonitor', () => {
       it('should update operation metrics', () => {
         performanceMonitor.startOperation('op1', 'test', 10);
 
-        recordPerformanceMetrics('op1', { 
-          successCount: 7, 
-          apiCallCount: 3 
+        recordPerformanceMetrics('op1', {
+          successCount: 7,
+          apiCallCount: 3,
         });
 
         const result = performanceMonitor.completeOperation('op1');
@@ -565,7 +579,7 @@ describe('PerformanceMonitor', () => {
       monitor.completeOperation('op1');
 
       const alerts = monitor.getAlerts();
-      expect(alerts.filter(a => a.type === 'cache_inefficiency')).toHaveLength(0);
+      expect(alerts.filter((a) => a.type === 'cache_inefficiency')).toHaveLength(0);
     });
 
     it('should handle alert timestamp filtering edge cases', () => {

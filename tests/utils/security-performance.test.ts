@@ -8,7 +8,7 @@ import {
   maskCredential,
   maskUrl,
   clearSecurityCache,
-  getSecurityCacheStats
+  getSecurityCacheStats,
 } from '../../src/utils/security';
 
 describe('Security Performance Tests', () => {
@@ -24,7 +24,8 @@ describe('Security Performance Tests', () => {
       for (let i = 0; i < 10000; i++) {
         // Mix of sensitive and non-sensitive fields
         if (i % 10 === 0) {
-          largeObject[`token_${i}`] = `secret_token_value_${i}_with_long_content_that_should_be_masked`;
+          largeObject[`token_${i}`] =
+            `secret_token_value_${i}_with_long_content_that_should_be_masked`;
           largeObject[`api_key_${i}`] = `api_key_value_${i}_with_more_content_here`;
           largeObject[`password_${i}`] = `password_${i}`;
         } else {
@@ -65,8 +66,8 @@ describe('Security Performance Tests', () => {
         sensitive_token: 'token_at_level_0',
         credentials: {
           username: 'user_0',
-          password: 'password_0'
-        }
+          password: 'password_0',
+        },
       };
 
       for (let i = 1; i < 10; i++) {
@@ -76,12 +77,12 @@ describe('Security Performance Tests', () => {
           credentials: {
             username: `user_${i}`,
             password: `password_${i}`,
-            api_key: `key_${i}_with_long_content`
+            api_key: `key_${i}_with_long_content`,
           },
           metadata: {
             created: new Date().toISOString(),
-            auth_token: `auth_token_${i}_with_sensitive_data`
-          }
+            auth_token: `auth_token_${i}_with_sensitive_data`,
+          },
         };
       }
 
@@ -95,7 +96,8 @@ describe('Security Performance Tests', () => {
 
       // Check that sensitive objects are entirely masked (enhanced security)
       let current = sanitized as any;
-      for (let i = 9; i >= 1; i--) { // Start from 9, since we created levels 1-9 in loop
+      for (let i = 9; i >= 1; i--) {
+        // Start from 9, since we created levels 1-9 in loop
         expect(current.credentials).toBe('[REDACTED]'); // Entire credentials object masked
         expect(current.metadata.auth_token).toMatch(/(\.\.\.|\[REDACTED\])/); // Individual field masked
         current = current.parent;
@@ -117,13 +119,13 @@ describe('Security Performance Tests', () => {
             api_key: `key_${i}_with_long_content`,
             credentials: {
               username: `user_${i}`,
-              password: `pass_${i}`
-            }
+              password: `pass_${i}`,
+            },
           },
           normal_data: {
             description: `Description for item ${i}`,
-            category: `Category ${i % 10}`
-          }
+            category: `Category ${i % 10}`,
+          },
         });
       }
 
@@ -162,15 +164,15 @@ describe('Security Performance Tests', () => {
           user_auth: `auth_${i}_with_content`,
           secret_key: `key_${i}_with_content`,
           config_data: {
-            sensitive_setting: `setting_${i}`
-          }
+            sensitive_setting: `setting_${i}`,
+          },
         });
       }
 
       const startTime = performance.now();
 
       // Process all objects
-      const results = testObjects.map(obj => sanitizeLogData(obj));
+      const results = testObjects.map((obj) => sanitizeLogData(obj));
 
       const endTime = performance.now();
       const processingTime = endTime - startTime;
@@ -184,7 +186,7 @@ describe('Security Performance Tests', () => {
       expect(cacheStats.size).toBeLessThan(100); // Many keys should be cached
 
       // Verify all results are properly sanitized (enhanced security)
-      results.forEach(result => {
+      results.forEach((result) => {
         expect(result.api_token).toMatch(/(\.\.\.|\[REDACTED\])/);
         expect(result.user_auth).toMatch(/(\.\.\.|\[REDACTED\])/);
         expect(result.secret_key).toMatch(/(\.\.\.|\[REDACTED\])/);
@@ -200,7 +202,7 @@ describe('Security Performance Tests', () => {
       for (let i = 0; i < 5000; i++) {
         const obj = {
           [`unique_key_${i}`]: `value_${i}_with_sensitive_content`,
-          [`another_field_${i}`]: `data_${i}_here`
+          [`another_field_${i}`]: `data_${i}_here`,
         };
         sanitizeLogData(obj);
       }
@@ -230,18 +232,18 @@ describe('Security Performance Tests', () => {
         'https://api.example.com/v1/tokens?access_token=secret123&api_key=key456&user=admin',
         'mongodb://username:password@cluster0.mongodb.net:27017/mydb?ssl=true',
         'postgresql://user:pass@localhost:5432/database?sslmode=require',
-        'redis://:password@redis.example.com:6379/0?timeout=5000'
+        'redis://:password@redis.example.com:6379/0?timeout=5000',
       ];
 
       const startTime = performance.now();
-      const masked = complexUrls.map(url => maskUrl(url));
+      const masked = complexUrls.map((url) => maskUrl(url));
       const endTime = performance.now();
 
       expect(endTime - startTime).toBeLessThan(50); // Should be fast
       expect(masked).toHaveLength(4);
 
       // All should be masked appropriately
-      masked.forEach(url => {
+      masked.forEach((url) => {
         expect(url).toContain('[REDACTED]');
       });
     });
@@ -257,10 +259,10 @@ describe('Security Performance Tests', () => {
           database: {
             password: 'db_password',
             credentials: {
-              auth: 'auth_token'
-            }
-          }
-        }
+              auth: 'auth_token',
+            },
+          },
+        },
       };
 
       // Perform many operations
@@ -270,7 +272,7 @@ describe('Security Performance Tests', () => {
       }
 
       // All results should be properly sanitized
-      results.forEach(result => {
+      results.forEach((result) => {
         expect(result.token).toMatch(/(\.\.\.|\[REDACTED\])/);
         expect(result.config).toBe('[REDACTED]');
       });

@@ -29,58 +29,81 @@ export function createTestableAuthManager(credentials?: string): TestableAuthMan
   const testableAuth = authManager as any;
 
   // Add testing API methods to the instance
-  testableAuth.setTestUserId = function(userId: string): void {
+  testableAuth.setTestUserId = function (userId: string): void {
     const { MCPError, ErrorCode } = require('../../src/types');
 
     if (!this.session) {
-      throw new MCPError(ErrorCode.AUTH_REQUIRED, 'Authentication required. Please use vikunja_auth.connect first.');
+      throw new MCPError(
+        ErrorCode.AUTH_REQUIRED,
+        'Authentication required. Please use vikunja_auth.connect first.',
+      );
     }
 
     // Directly set userId for testing
     this.session.userId = userId;
   };
 
-  testableAuth.setTestTokenExpiry = function(expiry: Date): void {
+  testableAuth.setTestTokenExpiry = function (expiry: Date): void {
     const { MCPError, ErrorCode } = require('../../src/types');
 
     if (!this.session) {
-      throw new MCPError(ErrorCode.AUTH_REQUIRED, 'Authentication required. Please use vikunja_auth.connect first.');
+      throw new MCPError(
+        ErrorCode.AUTH_REQUIRED,
+        'Authentication required. Please use vikunja_auth.connect first.',
+      );
     }
 
     // Directly set token expiry for testing
     this.session.tokenExpiry = expiry;
   };
 
-  testableAuth.getTestUserId = function(): string | undefined {
+  testableAuth.getTestUserId = function (): string | undefined {
     const { MCPError, ErrorCode } = require('../../src/types');
 
     if (!this.session) {
-      throw new MCPError(ErrorCode.AUTH_REQUIRED, 'Authentication required. Please use vikunja_auth.connect first.');
+      throw new MCPError(
+        ErrorCode.AUTH_REQUIRED,
+        'Authentication required. Please use vikunja_auth.connect first.',
+      );
     }
 
     return this.session.userId;
   };
 
-  testableAuth.getTestTokenExpiry = function(): Date | undefined {
+  testableAuth.getTestTokenExpiry = function (): Date | undefined {
     const { MCPError, ErrorCode } = require('../../src/types');
 
     if (!this.session) {
-      throw new MCPError(ErrorCode.AUTH_REQUIRED, 'Authentication required. Please use vikunja_auth.connect first.');
+      throw new MCPError(
+        ErrorCode.AUTH_REQUIRED,
+        'Authentication required. Please use vikunja_auth.connect first.',
+      );
     }
 
     return this.session.tokenExpiry;
   };
 
-  testableAuth.updateSessionProperty = function(properties: { userId?: string; tokenExpiry?: Date }): void {
+  testableAuth.updateSessionProperty = function (properties: {
+    userId?: string;
+    tokenExpiry?: Date;
+  }): void {
     const { MCPError, ErrorCode } = require('../../src/types');
 
     if (!this.session) {
-      throw new MCPError(ErrorCode.AUTH_REQUIRED, 'Authentication required. Please use vikunja_auth.connect first.');
+      throw new MCPError(
+        ErrorCode.AUTH_REQUIRED,
+        'Authentication required. Please use vikunja_auth.connect first.',
+      );
     }
 
-    const invalidKeys = Object.keys(properties).filter(key => !['userId', 'tokenExpiry'].includes(key));
+    const invalidKeys = Object.keys(properties).filter(
+      (key) => !['userId', 'tokenExpiry'].includes(key),
+    );
     if (invalidKeys.length > 0) {
-      throw new MCPError(ErrorCode.VALIDATION_ERROR, `Invalid session properties: ${invalidKeys.join(', ')}. Only userId and tokenExpiry are allowed.`);
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `Invalid session properties: ${invalidKeys.join(', ')}. Only userId and tokenExpiry are allowed.`,
+      );
     }
 
     // Update valid properties
@@ -93,7 +116,10 @@ export function createTestableAuthManager(credentials?: string): TestableAuthMan
 /**
  * Creates a mock AuthManager for testing with controllable behavior
  */
-export function createMockTestableAuthManager(authenticated: boolean = true, token: string = 'test-token'): jest.Mocked<TestableAuthManager> {
+export function createMockTestableAuthManager(
+  authenticated: boolean = true,
+  token: string = 'test-token',
+): jest.Mocked<TestableAuthManager> {
   const mockAuthManager = {
     isAuthenticated: jest.fn().mockReturnValue(authenticated),
     getCredentials: jest.fn().mockReturnValue(token),

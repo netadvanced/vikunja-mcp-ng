@@ -7,13 +7,13 @@
     "url": "https://github.com/netadvanced/vikunja-mcp-ng",
     "source": "github"
   },
-  "version": "0.3.0",
+  "version": "0.6.2",
   "packages": [
     {
       "registry_type": "npm",
       "registry_base_url": "https://registry.npmjs.org",
       "identifier": "vikunja-mcp-ng",
-      "version": "0.3.0",
+      "version": "0.6.2",
       "transport": {
         "type": "stdio"
       },

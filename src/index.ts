@@ -13,17 +13,22 @@ import { AuthManager } from './auth/AuthManager';
 import { registerTools } from './tools';
 import { logger } from './utils/logger';
 import { createSecureConnectionMessage, createSecureLogConfig } from './utils/security';
-import { createVikunjaClientFactory, setGlobalClientFactory, type VikunjaClientFactory } from './client';
+import {
+  createVikunjaClientFactory,
+  setGlobalClientFactory,
+  type VikunjaClientFactory,
+} from './client';
 import { readSecretEnv } from './config/secrets';
 import { ConfigurationManager } from './config/ConfigurationManager';
 import { startHttpTransport } from './transport/httpTransport';
 import { setupOidcHttpAuth } from './transport/oidcHttpAuth';
+import { resolvePackageVersion } from './utils/version';
 
 dotenv.config({ quiet: true });
 
 const server = new McpServer({
   name: 'vikunja-mcp-ng',
-  version: '0.3.0',
+  version: resolvePackageVersion(__dirname),
 });
 
 const authManager = new AuthManager();
@@ -75,10 +80,7 @@ try {
 }
 
 if (process.env.VIKUNJA_URL && vikunjaApiToken) {
-  const connectionMessage = createSecureConnectionMessage(
-    process.env.VIKUNJA_URL,
-    vikunjaApiToken
-  );
+  const connectionMessage = createSecureConnectionMessage(process.env.VIKUNJA_URL, vikunjaApiToken);
   logger.info(`Auto-authenticating: ${connectionMessage}`);
   authManager.connect(process.env.VIKUNJA_URL, vikunjaApiToken);
   const detectedAuthType = authManager.getAuthType();
@@ -117,7 +119,7 @@ async function main(): Promise<void> {
     // `startHttpTransport` then refuses to start rather than serve
     // unauthenticated HTTP (deny-mixed-mode, §2 "Selection rule").
     if (appConfig.oidc) {
-      await setupOidcHttpAuth(appConfig.oidc, appConfig.vault);
+      await setupOidcHttpAuth(appConfig.oidc, appConfig.vault, appConfig.http);
     }
     // Stateless HTTP mode builds a fresh, fully-registered `McpServer` per
     // request (the SDK's stateless transport cannot be reused across
@@ -125,10 +127,13 @@ async function main(): Promise<void> {
     // transports — see src/transport/httpTransport.ts). The module-level
     // `server` above stays the stdio-mode server and is left unconnected here.
     await startHttpTransport(() => {
-      const requestServer = new McpServer({ name: 'vikunja-mcp-ng', version: '0.3.0' });
+      const requestServer = new McpServer({
+        name: 'vikunja-mcp-ng',
+        version: resolvePackageVersion(__dirname),
+      });
       registerTools(requestServer, authManager, clientFactory ?? undefined);
       return requestServer;
-    }, appConfig.http);
+    }, appConfig.http, appConfig.oidc);
     logger.info('Vikunja MCP server started (http transport)');
     return;
   }
@@ -178,7 +183,10 @@ export { withRetry, RETRY_CONFIG } from './utils/retry';
 export { transformApiError, handleFetchError, handleStatusCodeError } from './utils/error-handler';
 export { parseFilterString } from './utils/filters';
 export { validateTaskCountLimit } from './utils/memory';
-export { createStandardResponse, createAorpErrorResponse as createErrorResponse } from './utils/response-factory';
+export {
+  createStandardResponse,
+  createAorpErrorResponse as createErrorResponse,
+} from './utils/response-factory';
 
 // Additional exports for task modules
 export type { SimpleResponse } from './utils/simple-response';

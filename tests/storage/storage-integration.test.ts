@@ -2,7 +2,16 @@
  * Integration tests for storage module
  */
 
-import { describe, it, expect, beforeEach, afterEach, jest, beforeAll, afterAll } from '@jest/globals';
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+  beforeAll,
+  afterAll,
+} from '@jest/globals';
 import { join } from 'path';
 import { rm, mkdir } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -34,7 +43,8 @@ describe('Timer Hygiene (N3-templates-persistence)', () => {
   it('unrefs the interval on any FilterStorageManager instance, not just the shared singleton', () => {
     const manager = new FilterStorageManager();
     try {
-      const interval = (manager as unknown as { cleanupInterval: NodeJS.Timeout | null }).cleanupInterval;
+      const interval = (manager as unknown as { cleanupInterval: NodeJS.Timeout | null })
+        .cleanupInterval;
       expect(interval).not.toBeNull();
       expect(interval?.hasRef?.()).toBe(false);
     } finally {
@@ -45,7 +55,8 @@ describe('Timer Hygiene (N3-templates-persistence)', () => {
   it('stopCleanupTimer() (the dispose hook) clears the interval', () => {
     const manager = new FilterStorageManager();
     manager.stopCleanupTimer();
-    const interval = (manager as unknown as { cleanupInterval: NodeJS.Timeout | null }).cleanupInterval;
+    const interval = (manager as unknown as { cleanupInterval: NodeJS.Timeout | null })
+      .cleanupInterval;
     expect(interval).toBeNull();
   });
 });
@@ -99,7 +110,7 @@ describe('Storage Integration', () => {
   describe('createFilterStorage', () => {
     it('should create memory storage by default', async () => {
       delete process.env.VIKUNJA_MCP_STORAGE_TYPE;
-      
+
       const storage = await createFilterStorage('test-session-1');
       expect(storage).toBeDefined();
 
@@ -111,7 +122,7 @@ describe('Storage Integration', () => {
       });
 
       expect(filter.id).toBeDefined();
-      
+
       const retrieved = await storage.get(filter.id);
       expect(retrieved).not.toBeNull();
       expect(retrieved!.name).toBe('Test Filter');
@@ -164,7 +175,7 @@ describe('Storage Integration', () => {
 
     it('should force persistent storage when requested', async () => {
       const testDbPath = join(testDir, `force-persistent-${randomUUID()}.db`);
-      
+
       process.env.VIKUNJA_MCP_STORAGE_TYPE = 'memory';
       process.env.VIKUNJA_MCP_STORAGE_DATABASE_PATH = testDbPath;
 
@@ -223,14 +234,14 @@ describe('Storage Integration', () => {
       expect(stats.persistentSessions.length).toBe(0); // No persistent storage in simplified version
 
       // Verify memory sessions (all sessions are memory-based in simplified version)
-      const memoryFilterCounts = stats.memorySessions.map(s => s.filterCount);
-      expect(memoryFilterCounts.filter(count => count === 1)).toHaveLength(3);
+      const memoryFilterCounts = stats.memorySessions.map((s) => s.filterCount);
+      expect(memoryFilterCounts.filter((count) => count === 1)).toHaveLength(3);
       expect(stats.persistentSessions).toEqual([]); // No persistent storage
     });
 
     it('should handle empty storage gracefully', async () => {
       const stats = await getAllStorageStats();
-      
+
       expect(stats.totalSessions).toBeGreaterThanOrEqual(0);
       expect(stats.totalFilters).toBeGreaterThanOrEqual(0);
       expect(Array.isArray(stats.memorySessions)).toBe(true);
@@ -242,11 +253,11 @@ describe('Storage Integration', () => {
     it('should report healthy status for working storage', async () => {
       // Create some storage instances
       const memoryStorage = await createFilterStorage('health-memory-session');
-      
+
       const testDbPath = join(testDir, `health-test-${randomUUID()}.db`);
       process.env.VIKUNJA_MCP_STORAGE_TYPE = 'sqlite';
       process.env.VIKUNJA_MCP_STORAGE_DATABASE_PATH = testDbPath;
-      
+
       const persistentStorage = await createFilterStorage('health-persistent-session');
 
       const healthCheck = await healthCheckAllStorage();
@@ -334,7 +345,7 @@ describe('Storage Integration', () => {
       expect(filters1).toHaveLength(2);
       expect(filters2).toHaveLength(1);
 
-      const filter1Names = filters1.map(f => f.name);
+      const filter1Names = filters1.map((f) => f.name);
       expect(filter1Names).toContain('Memory Filter 1');
       expect(filter1Names).toContain('Memory Filter 2');
 
@@ -372,19 +383,21 @@ describe('Storage Integration', () => {
 
     it('should preserve filter metadata during migration', async () => {
       const metadataStorage = await storageManager.getStorage('metadata-session');
-      
+
       const originalFilter = await metadataStorage.create({
         name: 'Complex Filter',
         description: 'A filter with all metadata',
         filter: 'priority > 1 && done = false',
         expression: {
-          groups: [{
-            conditions: [
-              { field: 'priority', operator: '>', value: 1 },
-              { field: 'done', operator: '=', value: false },
-            ],
-            operator: '&&',
-          }],
+          groups: [
+            {
+              conditions: [
+                { field: 'priority', operator: '>', value: 1 },
+                { field: 'done', operator: '=', value: false },
+              ],
+              operator: '&&',
+            },
+          ],
         },
         projectId: 456,
         isGlobal: false,
@@ -415,7 +428,7 @@ describe('Storage Integration', () => {
   describe('Cross-storage Compatibility', () => {
     it('should maintain API compatibility between storage types', async () => {
       const testDbPath = join(testDir, `compatibility-${randomUUID()}.db`);
-      
+
       // Test with memory storage
       delete process.env.VIKUNJA_MCP_STORAGE_TYPE;
       const memoryStorage = await createFilterStorage('compatibility-session');
@@ -471,7 +484,7 @@ describe('Storage Integration', () => {
 
     it('should handle session isolation across storage types', async () => {
       const testDbPath = join(testDir, `isolation-${randomUUID()}.db`);
-      
+
       // Create memory storage
       const memoryStorage1 = await createFilterStorage('isolation-memory-1');
       const memoryStorage2 = await createFilterStorage('isolation-memory-2');
@@ -485,8 +498,16 @@ describe('Storage Integration', () => {
       // Create filters in each storage
       await memoryStorage1.create({ name: 'Memory 1', filter: 'test = 1', isGlobal: false });
       await memoryStorage2.create({ name: 'Memory 2', filter: 'test = 2', isGlobal: false });
-      await persistentStorage1.create({ name: 'Persistent 1', filter: 'test = 3', isGlobal: false });
-      await persistentStorage2.create({ name: 'Persistent 2', filter: 'test = 4', isGlobal: false });
+      await persistentStorage1.create({
+        name: 'Persistent 1',
+        filter: 'test = 3',
+        isGlobal: false,
+      });
+      await persistentStorage2.create({
+        name: 'Persistent 2',
+        filter: 'test = 4',
+        isGlobal: false,
+      });
 
       // Verify isolation
       const memory1Filters = await memoryStorage1.list();

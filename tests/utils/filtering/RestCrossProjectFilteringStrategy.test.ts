@@ -72,9 +72,9 @@ describe('RestCrossProjectFilteringStrategy', () => {
     strategy = new RestCrossProjectFilteringStrategy();
     mockAuthManager = {} as AuthManager;
     mockClientStrategy = { execute: jest.fn() };
-    (ClientSideFilteringStrategy as jest.MockedClass<typeof ClientSideFilteringStrategy>).mockImplementation(
-      () => mockClientStrategy as unknown as ClientSideFilteringStrategy,
-    );
+    (
+      ClientSideFilteringStrategy as jest.MockedClass<typeof ClientSideFilteringStrategy>
+    ).mockImplementation(() => mockClientStrategy as unknown as ClientSideFilteringStrategy);
   });
 
   describe('buildTasksListQuery', () => {
@@ -98,16 +98,12 @@ describe('RestCrossProjectFilteringStrategy', () => {
     });
 
     it('includes order_by, filter_timezone, filter_include_nulls and expand from args', () => {
-      const query = buildTasksListQuery(
-        {},
-        undefined,
-        {
-          orderBy: 'desc',
-          filterTimezone: 'Europe/Zurich',
-          filterIncludeNulls: true,
-          expand: ['subtasks', 'comments'],
-        },
-      );
+      const query = buildTasksListQuery({}, undefined, {
+        orderBy: 'desc',
+        filterTimezone: 'Europe/Zurich',
+        filterIncludeNulls: true,
+        expand: ['subtasks', 'comments'],
+      });
       expect(query).toBe(
         'order_by=desc&filter_timezone=Europe%2FZurich&filter_include_nulls=true&expand=subtasks&expand=comments',
       );

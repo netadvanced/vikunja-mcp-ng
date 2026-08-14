@@ -28,7 +28,11 @@ export async function assignUsers(
 
     // Verify the assignees actually persisted (defense-in-depth against silent
     // API failures — adapted from upstream PR #43). Fails open on fetch errors.
-    const missingIds = await AssigneeOperationsService.verifyAssignees(authManager, taskId, assigneeIds);
+    const missingIds = await AssigneeOperationsService.verifyAssignees(
+      authManager,
+      taskId,
+      assigneeIds,
+    );
 
     // Fetch updated task data
     const task = await AssigneeOperationsService.fetchTaskWithAssignees(authManager, taskId);
@@ -42,7 +46,6 @@ export async function assignUsers(
         `This is a known Vikunja API limitation with API token auth. Try using JWT authentication instead.`;
     }
     return AssigneeResponseFormatter.formatMcpResponse(response);
-
   } catch (error) {
     throw new MCPError(
       ErrorCode.API_ERROR,
@@ -73,7 +76,6 @@ export async function unassignUsers(
     // Format and return response
     const response = AssigneeResponseFormatter.formatUnassignResponse(task);
     return AssigneeResponseFormatter.formatMcpResponse(response);
-
   } catch (error) {
     throw new MCPError(
       ErrorCode.API_ERROR,
