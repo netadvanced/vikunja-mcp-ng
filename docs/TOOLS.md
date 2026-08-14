@@ -77,6 +77,7 @@ truncation notice beyond that (`LIST_ITEM_RENDER_CAP`) — page further with
   - `refresh` - Report token-refresh status: API tokens (`tk_*`) are long-lived and need no refresh; JWTs expire and must be replaced by reconnecting with a new token (Vikunja's token-refresh endpoint relies on a login cookie this server does not hold)
   - `info` - Fetch the connected Vikunja server's `GET /info` payload (version, frontend URL, motd, enabled features, ...). Requires an active session.
   - `disconnect` - Clear the in-memory session and the cached client factory. Local only — nothing is revoked server-side.
+  - `provision` / `deprovision` (oidc-http mode only) - Link/unlink your own Vikunja API token in the server's encrypted per-identity credential vault (`connect` is refused in that mode; `disconnect` aliases `deprovision`). With SSO enrollment enabled (`VIKUNJA_MCP_ENROLL_ENABLED`), calling `provision` **without** a token returns a one-click enrollment URL instead — the browser flow mints and vaults the token automatically via Vikunja's native OpenID login (see [OIDC-SETUP.md](OIDC-SETUP.md) §9a).
 
 ## Task Management
 
