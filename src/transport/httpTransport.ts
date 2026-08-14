@@ -53,8 +53,12 @@ import * as http from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import type { HttpConfig } from '../config/types';
+import type { HttpConfig, OidcConfig } from '../config/types';
 import { ConfigurationError } from '../config/types';
+import {
+  buildProtectedResourceMetadata,
+  isProtectedResourceMetadataPath,
+} from './resourceMetadata';
 import { getOidcAuthMiddleware, type HttpRequestWithAuth } from './oidcMiddlewareSeam';
 import { runWithRequestContext, takeAttachedRequestContext } from '../context/requestContext';
 import { logger } from '../utils/logger';
@@ -87,7 +91,12 @@ export function resolveAllowedHosts(httpConfig: HttpConfig): string[] {
   return [`${httpConfig.host}:${httpConfig.port}`];
 }
 
-function sendJson(res: http.ServerResponse, statusCode: number, body: unknown): void {
+function sendJson(
+  res: http.ServerResponse,
+  statusCode: number,
+  body: unknown,
+  extraHeaders: Record<string, string> = {}
+): void {
   if (res.headersSent) {
     return;
   }
@@ -95,6 +104,7 @@ function sendJson(res: http.ServerResponse, statusCode: number, body: unknown): 
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(payload),
+    ...extraHeaders,
   });
   res.end(payload);
 }
@@ -111,7 +121,8 @@ function sendJson(res: http.ServerResponse, statusCode: number, body: unknown): 
  */
 export async function startHttpTransport(
   createMcpServer: McpServerFactory,
-  httpConfig: HttpConfig
+  httpConfig: HttpConfig,
+  oidc?: Pick<OidcConfig, 'issuer'>
 ): Promise<HttpTransportHandle> {
   const authMiddleware = getOidcAuthMiddleware();
   if (!authMiddleware) {
@@ -135,6 +146,8 @@ export async function startHttpTransport(
       allowedHosts,
       authMiddleware,
       requestPath,
+      httpConfig,
+      oidcIssuer: oidc?.issuer,
     }).catch(error => {
       logger.error('Unhandled error while handling HTTP MCP request:', error);
       sendJson(res, 500, { error: 'internal_error' });
@@ -177,6 +190,8 @@ interface RequestHandlerContext {
   allowedHosts: string[];
   authMiddleware: NonNullable<ReturnType<typeof getOidcAuthMiddleware>>;
   requestPath: string;
+  httpConfig: HttpConfig;
+  oidcIssuer: string | undefined;
 }
 
 async function handleIncomingRequest(
@@ -185,7 +200,8 @@ async function handleIncomingRequest(
   ctx: RequestHandlerContext
 ): Promise<void> {
   const rawUrl = req.url ?? '/';
-  const pathname = rawUrl.split('?')[0];
+  const queryIndex = rawUrl.indexOf('?');
+  const pathname = queryIndex === -1 ? rawUrl : rawUrl.slice(0, queryIndex);
 
   // Health/readiness sit outside the MCP path and the JWT middleware
   // entirely (§3a "Health/readiness") — liveness never touches the vault or
@@ -199,6 +215,22 @@ async function handleIncomingRequest(
     // once the vault exists (§3a "Health/readiness" describes the full
     // contract).
     sendJson(res, 200, { status: 'ok' });
+    return;
+  }
+
+  // RFC 9728 Protected Resource Metadata (MCP authorization spec, 2025-06-18
+  // revision): unauthenticated, GET-only, read-only, side-effect-free — like
+  // /healthz, it sits before the MCP path and the JWT middleware, because a
+  // client fetches it precisely when it does NOT have a token yet. Both the
+  // bare well-known path and the path-suffixed variant (`.../mcp` for our
+  // `/mcp` resource) are served. Only available when an OIDC issuer is
+  // configured — there is nothing truthful to advertise otherwise.
+  if (ctx.oidcIssuer !== undefined && isProtectedResourceMetadataPath(pathname, ctx.requestPath)) {
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: 'method_not_allowed' }, { Allow: 'GET' });
+      return;
+    }
+    sendJson(res, 200, buildProtectedResourceMetadata(ctx.httpConfig, ctx.oidcIssuer, req));
     return;
   }
 

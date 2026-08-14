@@ -544,6 +544,10 @@ export class ConfigurationManager {
     this.assignEnvValue(http, 'host', process.env.VIKUNJA_MCP_HTTP_HOST, false);
     this.assignEnvValue(http, 'port', process.env.VIKUNJA_MCP_HTTP_PORT, true);
     this.assignEnvValue(http, 'path', process.env.VIKUNJA_MCP_HTTP_PATH, false);
+    // Canonical public MCP URL for RFC 9728 discovery (`http.publicUrl`) —
+    // recommended behind a reverse proxy; derived from the request's Host
+    // header when unset. See src/transport/resourceMetadata.ts.
+    this.assignEnvValue(http, 'publicUrl', process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL, false);
     const allowedHostsRaw = process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS;
     if (allowedHostsRaw !== undefined) {
       http.allowedHosts = allowedHostsRaw

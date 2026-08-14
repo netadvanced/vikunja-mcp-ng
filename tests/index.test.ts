@@ -519,7 +519,10 @@ describe('Main Server Entry Point (index.ts)', () => {
       // builds a fresh server per request), not a single server instance.
       expect(mockStartHttpTransport).toHaveBeenCalledWith(
         expect.any(Function),
-        expect.objectContaining({ host: '0.0.0.0', port: 9999, path: '/mcp' })
+        expect.objectContaining({ host: '0.0.0.0', port: 9999, path: '/mcp' }),
+        // Third arg: the oidc config (RFC 9728 discovery) — undefined here
+        // since no OIDC env vars are set in this test.
+        undefined
       );
       expect(MockStdioServerTransport).not.toHaveBeenCalled();
       expect(mockMcpServer.connect).not.toHaveBeenCalledWith(mockStdioServerTransport);
@@ -560,7 +563,10 @@ describe('Main Server Entry Point (index.ts)', () => {
         // unconditionally regardless of whether vault env vars are set;
         // setupOidcHttpAuth itself is responsible for failing loud if it's
         // incomplete.
-        expect.anything()
+        expect.anything(),
+        // Third arg: the http config section, so the middleware can build the
+        // RFC 9728 resource_metadata URL for 401 challenges.
+        expect.objectContaining({ path: '/mcp' })
       );
       expect(mockStartHttpTransport).toHaveBeenCalledTimes(1);
       // Ordering: middleware registered before the listener starts.

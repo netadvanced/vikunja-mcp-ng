@@ -23,7 +23,8 @@
 
 import type { ServerResponse } from 'node:http';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import type { OidcConfig, VaultConfig } from '../config/types';
+import type { HttpConfig, OidcConfig, VaultConfig } from '../config/types';
+import { resolveResourceMetadataUrl } from './resourceMetadata';
 import { createOidcJwtValidator, type OidcJwtValidator } from '../auth/oidc/jwtValidator';
 import { loadJose } from '../auth/oidc/joseLoader';
 import type { JoseDeps, OidcJwtValidatorConfig } from '../auth/oidc/types';
@@ -55,6 +56,15 @@ export interface OidcHttpAuthDeps {
   validator: Pick<OidcJwtValidator, 'validate'>;
   /** H1c credential source: verified identity -> Vikunja credential, or `null`. */
   credentialSource: VikunjaCredentialSource;
+  /**
+   * Optional RFC 9728 §5.1 resolver: the `resource_metadata` URL to advertise
+   * on 401/403 `WWW-Authenticate` challenges, resolved from the failing
+   * request (Host-header derivation when no `http.publicUrl` is configured —
+   * see src/transport/resourceMetadata.ts). When absent, or when the resolver
+   * throws (an unparsable `Host` header), the parameter is omitted and the
+   * plain RFC 6750 challenge is kept.
+   */
+  resourceMetadataUrl?: (req: HttpRequestWithAuth) => string;
 }
 
 /**
@@ -74,7 +84,11 @@ function readAuthorizationHeader(req: HttpRequestWithAuth): string | undefined {
  * bearer token. Never echoes the token; the body/`WWW-Authenticate` header
  * carry only the safe, generic message + error code the validator produced.
  */
-function writeAuthFailure(res: ServerResponse, error: unknown): void {
+function writeAuthFailure(
+  res: ServerResponse,
+  error: unknown,
+  resourceMetadataUrl?: string
+): void {
   let statusCode = 401;
   let wwwError: 'invalid_token' | 'insufficient_scope' = 'invalid_token';
   let message = 'Invalid or expired token';
@@ -94,12 +108,20 @@ function writeAuthFailure(res: ServerResponse, error: unknown): void {
   }
 
   const payload = JSON.stringify({ error: wwwError, error_description: message });
+  // RFC 6750 §3: a bearer-token challenge. `error`/`error_description` repeat
+  // the (generic) failure so a spec-compliant client can surface it. The
+  // optional `resource_metadata` parameter (RFC 9728 §5.1, MCP authorization
+  // spec 2025-06-18) points auto-discovering clients (claude.ai custom
+  // connectors) at the protected-resource metadata document, from which they
+  // find the IdP.
+  let challenge = `Bearer error="${wwwError}", error_description="${message}"`;
+  if (resourceMetadataUrl !== undefined) {
+    challenge += `, resource_metadata="${resourceMetadataUrl}"`;
+  }
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(payload),
-    // RFC 6750 §3: a bearer-token challenge. `error`/`error_description`
-    // repeat the (generic) failure so a spec-compliant client can surface it.
-    'WWW-Authenticate': `Bearer error="${wwwError}", error_description="${message}"`,
+    'WWW-Authenticate': challenge,
   });
   res.end(payload);
 }
@@ -123,7 +145,7 @@ function writeAuthFailure(res: ServerResponse, error: unknown): void {
  * prompt for provisioning (docs/OIDC-RESOURCE-SERVER.md §3c).
  */
 export function createOidcHttpAuthMiddleware(deps: OidcHttpAuthDeps): OidcAuthMiddleware {
-  const { validator, credentialSource } = deps;
+  const { validator, credentialSource, resourceMetadataUrl } = deps;
 
   return async (req: HttpRequestWithAuth, res: ServerResponse): Promise<boolean> => {
     let identity: Identity;
@@ -134,7 +156,7 @@ export function createOidcHttpAuthMiddleware(deps: OidcHttpAuthDeps): OidcAuthMi
       // preferredUsername); narrow to the tenancy pair the context keys on.
       identity = { issuer: validated.issuer, sub: validated.sub };
     } catch (error) {
-      writeAuthFailure(res, error);
+      writeAuthFailure(res, error, safeResourceMetadataUrl(resourceMetadataUrl, req));
       return false;
     }
 
@@ -155,6 +177,26 @@ export function createOidcHttpAuthMiddleware(deps: OidcHttpAuthDeps): OidcAuthMi
 
     return true;
   };
+}
+
+/**
+ * Resolve the RFC 9728 `resource_metadata` URL for a failing request, or
+ * `undefined` when no resolver is configured or the resolver throws (e.g. an
+ * unparsable `Host` header cannot form a valid URL) — a broken challenge
+ * parameter must never turn an auth failure into a 500 or advertise garbage.
+ */
+function safeResourceMetadataUrl(
+  resolver: OidcHttpAuthDeps['resourceMetadataUrl'],
+  req: HttpRequestWithAuth
+): string | undefined {
+  if (!resolver) {
+    return undefined;
+  }
+  try {
+    return resolver(req);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Maps the loaded `OidcConfig` to the validator's config shape (1:1 field copy). */
@@ -198,6 +240,7 @@ function toValidatorConfig(oidc: OidcConfig): OidcJwtValidatorConfig {
 export async function setupOidcHttpAuth(
   oidc: OidcConfig,
   vault: VaultConfig,
+  http?: HttpConfig,
   loadDeps: () => Promise<JoseDeps> = loadJose
 ): Promise<void> {
   const deps = await loadDeps();
@@ -217,7 +260,15 @@ export async function setupOidcHttpAuth(
   setActiveVaultStore(vaultStore);
   const credentialSource = new VaultCredentialSource(vaultStore);
 
-  setOidcAuthMiddleware(createOidcHttpAuthMiddleware({ validator, credentialSource }));
+  const middlewareDeps: OidcHttpAuthDeps = { validator, credentialSource };
+  if (http) {
+    // RFC 9728 §5.1: advertise the protected-resource metadata URL on every
+    // 401/403 challenge so auto-discovering clients (claude.ai custom
+    // connectors) can find the IdP without manual configuration.
+    middlewareDeps.resourceMetadataUrl = (req: HttpRequestWithAuth): string =>
+      resolveResourceMetadataUrl(http, req);
+  }
+  setOidcAuthMiddleware(createOidcHttpAuthMiddleware(middlewareDeps));
   logger.info(
     'OIDC HTTP authentication middleware registered (resource-server mode; ' +
       'vault-backed credential provisioning via vikunja_auth provision)'

@@ -116,6 +116,7 @@ The existing config engine (`src/config/ConfigurationManager.ts`) already does l
 | Port | `VIKUNJA_MCP_HTTP_PORT` | `http.port` | default `8765` |
 | Allowed Host headers | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` | `http.allowedHosts` | comma list → SDK `allowedHosts` |
 | Path | `VIKUNJA_MCP_HTTP_PATH` | `http.path` | default `/mcp` |
+| Public URL (opt) | `VIKUNJA_MCP_HTTP_PUBLIC_URL` | `http.publicUrl` | canonical public MCP URL, e.g. `https://mcp-vikunja.example.ch/mcp` — the RFC 9728 `resource` value (§3e); recommended behind a reverse proxy, derived from the request `Host` header when unset |
 | OIDC issuer | `VIKUNJA_MCP_OIDC_ISSUER` | `oidc.issuer` | e.g. `https://iam.example.org/realms/foo` — **generic**; single-issuer scalar (D11) |
 | OIDC audience | `VIKUNJA_MCP_OIDC_AUDIENCE` | `oidc.audience` | required `aud` value(s); comma list allowed |
 | JWKS URI (override) | `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | optional; default discovered from issuer `/.well-known/openid-configuration` |
@@ -275,6 +276,28 @@ Today essentially all session state is **process-global**, built on the assumpti
 | Log masking under multi-user | Force errors for A and B | No raw token for either in logs; `sub` masked |
 
 The **ALS context-integrity** test is the load-bearing one: it must run genuinely concurrent, interleaved requests and assert no bleed — the classic failure mode of an ALS/global-singleton hybrid.
+
+### 3(e). Authorization-server discovery (RFC 9728 protected-resource metadata)
+
+Implements the discovery half of the **MCP authorization spec (2025-06-18 revision)**: browser-based MCP clients that connect *directly* to vikunja-mcp — **this is what claude.ai custom connectors use to find the IdP** — fetch a well-known document instead of being hand-configured with the issuer.
+
+**Endpoint** (`src/transport/httpTransport.ts`, helpers in `src/transport/resourceMetadata.ts`): `GET /.well-known/oauth-protected-resource`, plus the path-suffixed variant `GET /.well-known/oauth-protected-resource/mcp` for path-aware clients (our MCP endpoint lives at `http.path`, default `/mcp`). Unauthenticated (a client fetches it precisely because it has no token yet), GET-only (`405` otherwise), read-only and side-effect-free — same stance as `/healthz`. Served only when an OIDC issuer is configured (`404` otherwise — nothing truthful to advertise). Response:
+
+```json
+{
+  "resource": "https://mcp-vikunja.example.ch/mcp",
+  "authorization_servers": ["https://iam.example.org/realms/foo"],
+  "bearer_methods_supported": ["header"]
+}
+```
+
+`authorization_servers` is the configured `oidc.issuer` (`VIKUNJA_MCP_OIDC_ISSUER`); the client continues discovery at the issuer's own `/.well-known/openid-configuration`.
+
+**Canonical resource URL — `VIKUNJA_MCP_HTTP_PUBLIC_URL` / `http.publicUrl` (optional).** When set (e.g. `https://mcp-vikunja.example.ch/mcp`), it is served verbatim as `resource`. When unset, the URL is derived per-request from the `Host` header (scheme from `X-Forwarded-Proto`, default `http`) plus `http.path`. **Setting it explicitly is recommended behind a reverse proxy** — the bind host/port say nothing about the public origin, and a derived value is only as good as the proxy's forwarded headers.
+
+**401 challenge pointer (RFC 9728 §5.1).** Every `401`/`403` from the OIDC middleware (`src/transport/oidcHttpAuth.ts`) appends `resource_metadata="<origin>/.well-known/oauth-protected-resource"` to the existing `WWW-Authenticate: Bearer error=..., error_description=...` challenge, so a client that hits the MCP endpoint first (no token) is redirected into the discovery flow. The origin comes from `http.publicUrl` when configured, otherwise from the failing request's own `Host` header; if no valid URL can be formed, the parameter is omitted rather than advertising garbage.
+
+Covered by `tests/transport/resourceMetadata.test.ts`, the discovery cases in `tests/transport/httpTransport.test.ts` / `tests/transport/oidcHttpAuth.test.ts`, and live in the e2e lane (`scripts/oidc-e2e.ts`, steps a0/a2).
 
 ---
 

@@ -236,6 +236,80 @@ describe('createOidcHttpAuthMiddleware', () => {
     expect(captured.body).toBeUndefined();
   });
 
+  describe('resource_metadata on the WWW-Authenticate challenge (RFC 9728 §5.1)', () => {
+    const failingDeps = (): Pick<OidcHttpAuthDeps, 'validator' | 'credentialSource'> => ({
+      validator: validatorThrowing(
+        new MCPError(ErrorCode.AUTH_FAILED, 'Invalid or expired token', {
+          statusCode: 401,
+          wwwAuthenticateError: 'invalid_token',
+        })
+      ),
+      credentialSource: new StubCredentialSource(null),
+    });
+
+    it('appends resource_metadata to the 401 challenge when a resolver is provided', async () => {
+      const middleware = createOidcHttpAuthMiddleware({
+        ...failingDeps(),
+        resourceMetadataUrl: () =>
+          'https://mcp-vikunja.example.ch/.well-known/oauth-protected-resource',
+      });
+      const captured = fakeResponse();
+
+      await middleware(fakeRequest('Bearer bad'), captured.res);
+
+      expect(captured.headers?.['WWW-Authenticate']).toBe(
+        'Bearer error="invalid_token", error_description="Invalid or expired token", ' +
+          'resource_metadata="https://mcp-vikunja.example.ch/.well-known/oauth-protected-resource"'
+      );
+    });
+
+    it('resolves the metadata URL from the failing request itself', async () => {
+      const resolver = jest.fn(
+        (req: HttpRequestWithAuth) =>
+          `http://${String(req.headers.host)}/.well-known/oauth-protected-resource`
+      );
+      const middleware = createOidcHttpAuthMiddleware({ ...failingDeps(), resourceMetadataUrl: resolver });
+      const req = fakeRequest('Bearer bad');
+      (req.headers as Record<string, string>).host = 'gw.example:8765';
+      const captured = fakeResponse();
+
+      await middleware(req, captured.res);
+
+      expect(resolver).toHaveBeenCalledWith(req);
+      expect(captured.headers?.['WWW-Authenticate']).toContain(
+        'resource_metadata="http://gw.example:8765/.well-known/oauth-protected-resource"'
+      );
+    });
+
+    it('omits resource_metadata (keeping the plain challenge) when no resolver is provided', async () => {
+      const middleware = createOidcHttpAuthMiddleware(failingDeps());
+      const captured = fakeResponse();
+
+      await middleware(fakeRequest('Bearer bad'), captured.res);
+
+      expect(captured.headers?.['WWW-Authenticate']).toBe(
+        'Bearer error="invalid_token", error_description="Invalid or expired token"'
+      );
+    });
+
+    it('omits resource_metadata when the resolver throws (unparsable Host header)', async () => {
+      const middleware = createOidcHttpAuthMiddleware({
+        ...failingDeps(),
+        resourceMetadataUrl: () => {
+          throw new Error('Invalid URL');
+        },
+      });
+      const captured = fakeResponse();
+
+      await middleware(fakeRequest('Bearer bad'), captured.res);
+
+      expect(captured.statusCode).toBe(401);
+      expect(captured.headers?.['WWW-Authenticate']).toBe(
+        'Bearer error="invalid_token", error_description="Invalid or expired token"'
+      );
+    });
+  });
+
   it('the attached context flows through ALS to getCurrentIdentity', async () => {
     const middleware = createOidcHttpAuthMiddleware({
       validator: validatorReturning(IDENTITY),
@@ -284,6 +358,7 @@ describe('setupOidcHttpAuth', () => {
         jwksUri: 'https://idp.example.test/realms/t/certs',
       },
       { path: vaultPath },
+      undefined,
       async () => joseDeps
     );
 
@@ -301,10 +376,37 @@ describe('setupOidcHttpAuth', () => {
         requiredScope: 'vikunja',
       },
       { path: vaultPath },
+      undefined,
       async () => joseDeps
     );
 
     expect(getOidcAuthMiddleware()).toBeInstanceOf(Function);
+  });
+
+  it('wires the resource-metadata resolver when an http config is provided (RFC 9728)', async () => {
+    await setupOidcHttpAuth(
+      {
+        issuer: 'https://idp.example.test/realms/t',
+        audience: 'vikunja-mcp-ng',
+        jwksUri: 'https://idp.example.test/realms/t/certs',
+      },
+      { path: vaultPath },
+      { host: '127.0.0.1', port: 8765, path: '/mcp', publicUrl: 'https://mcp-vikunja.example.ch/mcp' },
+      async () => joseDeps
+    );
+
+    const middleware = getOidcAuthMiddleware();
+    expect(middleware).toBeInstanceOf(Function);
+
+    // A malformed bearer fails validation before any JWKS fetch, so the 401
+    // challenge is produced offline — and must advertise the metadata URL.
+    const captured = fakeResponse();
+    const ok = await middleware!(fakeRequest('Bearer not-a-jwt'), captured.res);
+    expect(ok).toBe(false);
+    expect(captured.statusCode).toBe(401);
+    expect(captured.headers?.['WWW-Authenticate']).toContain(
+      'resource_metadata="https://mcp-vikunja.example.ch/.well-known/oauth-protected-resource"'
+    );
   });
 
   it('throws a clear ConfigurationError when no vault master key is configured', async () => {
@@ -318,6 +420,7 @@ describe('setupOidcHttpAuth', () => {
           jwksUri: 'https://idp.example.test/realms/t/certs',
         },
         { path: vaultPath },
+        undefined,
         async () => joseDeps
       )
     ).rejects.toThrow(/vault master key/);
@@ -332,6 +435,7 @@ describe('setupOidcHttpAuth', () => {
           jwksUri: 'https://idp.example.test/realms/t/certs',
         },
         {},
+        undefined,
         async () => joseDeps
       )
     ).rejects.toThrow(/vault file path/);

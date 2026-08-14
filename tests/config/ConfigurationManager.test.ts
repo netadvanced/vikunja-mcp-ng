@@ -52,6 +52,7 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_HTTP_PORT;
     delete process.env.VIKUNJA_MCP_HTTP_PATH;
     delete process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS;
+    delete process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL;
     delete process.env.VIKUNJA_MCP_OIDC_ISSUER;
     delete process.env.VIKUNJA_MCP_OIDC_AUDIENCE;
     delete process.env.VIKUNJA_MCP_OIDC_JWKS_URI;
@@ -743,6 +744,36 @@ describe('ConfigurationManager', () => {
       const config = await ConfigurationManager.getInstance().getConfiguration();
       expect(config.http.host).toBe('0.0.0.0');
       expect(config.http.port).toBe(9001);
+    });
+
+    it('reads the canonical public URL from VIKUNJA_MCP_HTTP_PUBLIC_URL', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'https://mcp-vikunja.example.ch/mcp';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.publicUrl).toBe('https://mcp-vikunja.example.ch/mcp');
+    });
+
+    it('leaves publicUrl unset by default (derive-from-Host fallback)', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.publicUrl).toBeUndefined();
+    });
+
+    it('reads publicUrl from the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ http: { publicUrl: 'https://mcp.example.org/mcp' } })
+      );
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.publicUrl).toBe('https://mcp.example.org/mcp');
+    });
+
+    it('rejects a publicUrl that is not a valid URL', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
     });
 
     it('rejects a non-numeric port', async () => {

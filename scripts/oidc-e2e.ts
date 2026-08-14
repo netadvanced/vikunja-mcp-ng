@@ -308,10 +308,58 @@ async function main(): Promise<void> {
       sub: aliceSub,
     });
 
+    await step('(a0) RFC 9728 protected-resource metadata is discoverable unauthenticated', async () => {
+      // Both the bare well-known path and the path-suffixed variant a
+      // path-aware client uses for a resource at /mcp.
+      for (const wellKnownPath of [
+        '/.well-known/oauth-protected-resource',
+        '/.well-known/oauth-protected-resource/mcp',
+      ]) {
+        const res = await fetch(`http://127.0.0.1:${port}${wellKnownPath}`);
+        if (res.status !== 200) {
+          throw new Error(`GET ${wellKnownPath} expected 200, got ${res.status}`);
+        }
+        const doc = (await res.json()) as {
+          resource?: string;
+          authorization_servers?: string[];
+          bearer_methods_supported?: string[];
+        };
+        if (doc.authorization_servers?.[0] !== ISSUER) {
+          throw new Error(
+            `${wellKnownPath}: authorization_servers should be ["${ISSUER}"], got ${JSON.stringify(doc.authorization_servers)}`,
+          );
+        }
+        if (doc.resource !== `http://127.0.0.1:${port}/mcp`) {
+          throw new Error(`${wellKnownPath}: unexpected resource ${JSON.stringify(doc.resource)}`);
+        }
+        if (!doc.bearer_methods_supported?.includes('header')) {
+          throw new Error(
+            `${wellKnownPath}: bearer_methods_supported should include "header", got ${JSON.stringify(doc.bearer_methods_supported)}`,
+          );
+        }
+      }
+    });
+
     await step('(a) unauthenticated request is rejected with 401', async () => {
       const result = await callTool(port, 1, 'vikunja_auth', { subcommand: 'status' }, undefined);
       if (result.statusCode !== 401) {
         throw new Error(`expected 401, got ${result.statusCode}: ${result.text}`);
+      }
+    });
+
+    await step('(a2) the 401 challenge advertises resource_metadata (RFC 9728 §5.1)', async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 100, method: 'tools/call', params: {} }),
+      });
+      if (res.status !== 401) {
+        throw new Error(`expected 401, got ${res.status}`);
+      }
+      const challenge = res.headers.get('www-authenticate') ?? '';
+      const expected = `resource_metadata="http://127.0.0.1:${port}/.well-known/oauth-protected-resource"`;
+      if (!challenge.includes(expected)) {
+        throw new Error(`WWW-Authenticate missing ${expected}; got: ${challenge}`);
       }
     });
 

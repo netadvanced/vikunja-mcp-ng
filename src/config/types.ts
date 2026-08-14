@@ -209,6 +209,17 @@ export const HttpConfigSchema = z.object({
   port: z.number().int().positive().max(65535).default(8765),
   path: z.string().min(1).default('/mcp'),
   allowedHosts: z.array(z.string()).optional(),
+  // Canonical public URL of the MCP endpoint (`http.publicUrl` /
+  // `VIKUNJA_MCP_HTTP_PUBLIC_URL`), e.g. `https://mcp-vikunja.example.ch/mcp`.
+  // Used as the RFC 9728 `resource` value on the
+  // `/.well-known/oauth-protected-resource` discovery document and to build
+  // the `resource_metadata` URL on 401 challenges
+  // (src/transport/resourceMetadata.ts). Optional: when unset, both are
+  // derived per-request from the `Host` header (+ `X-Forwarded-Proto`) and
+  // the configured `http.path` — setting it explicitly is recommended behind
+  // a reverse proxy, where the bind host/port say nothing about the public
+  // origin.
+  publicUrl: z.string().url().optional(),
 });
 
 export type HttpConfig = z.infer<typeof HttpConfigSchema>;
