@@ -18,7 +18,12 @@ import {
   resolveAllowedHosts,
   type HttpTransportHandle,
 } from '../../src/transport/httpTransport';
-import { setOidcAuthMiddleware, type HttpRequestWithAuth } from '../../src/transport/oidcMiddlewareSeam';
+import {
+  setOidcAuthMiddleware,
+  type HttpRequestWithAuth,
+} from '../../src/transport/oidcMiddlewareSeam';
+import { EnrollmentService, setActiveEnrollmentService } from '../../src/transport/enrollment';
+import { EnrollmentTicketStore } from '../../src/transport/enrollmentTickets';
 import { ConfigurationError } from '../../src/config/types';
 import type { HttpConfig } from '../../src/config/types';
 
@@ -61,7 +66,7 @@ interface RawResponse {
 
 function request(
   port: number,
-  options: { method?: string; path?: string; headers?: Record<string, string>; body?: string } = {}
+  options: { method?: string; path?: string; headers?: Record<string, string>; body?: string } = {},
 ): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     const req = http.request(
@@ -72,9 +77,9 @@ function request(
         path: options.path ?? '/mcp',
         headers: options.headers,
       },
-      res => {
+      (res) => {
         const chunks: Buffer[] = [];
-        res.on('data', chunk => chunks.push(chunk));
+        res.on('data', (chunk) => chunks.push(chunk));
         res.on('end', () => {
           resolve({
             statusCode: res.statusCode ?? 0,
@@ -82,7 +87,7 @@ function request(
             body: Buffer.concat(chunks).toString('utf-8'),
           });
         });
-      }
+      },
     );
     req.on('error', reject);
     if (options.body !== undefined) {
@@ -106,14 +111,14 @@ describe('httpTransport', () => {
 
     it('uses the explicitly configured allowedHosts list', () => {
       expect(
-        resolveAllowedHosts(baseHttpConfig({ allowedHosts: ['gateway.example.org:8765'] }))
+        resolveAllowedHosts(baseHttpConfig({ allowedHosts: ['gateway.example.org:8765'] })),
       ).toEqual(['gateway.example.org:8765']);
     });
 
     it('falls back to the default when allowedHosts is an empty array', () => {
-      expect(resolveAllowedHosts(baseHttpConfig({ host: '0.0.0.0', port: 9000, allowedHosts: [] }))).toEqual([
-        '0.0.0.0:9000',
-      ]);
+      expect(
+        resolveAllowedHosts(baseHttpConfig({ host: '0.0.0.0', port: 9000, allowedHosts: [] })),
+      ).toEqual(['0.0.0.0:9000']);
     });
   });
 
@@ -121,14 +126,16 @@ describe('httpTransport', () => {
     it('refuses to start when no OIDC middleware is registered', async () => {
       const mcpServer = newServer();
 
-      await expect(startHttpTransport(() => mcpServer, baseHttpConfig())).rejects.toThrow(ConfigurationError);
+      await expect(startHttpTransport(() => mcpServer, baseHttpConfig())).rejects.toThrow(
+        ConfigurationError,
+      );
     });
 
     it('the refusal error references the OIDC middleware requirement and H1b', async () => {
       const mcpServer = newServer();
 
       await expect(startHttpTransport(() => mcpServer, baseHttpConfig())).rejects.toThrow(
-        /OIDC authentication middleware/i
+        /OIDC authentication middleware/i,
       );
     });
 
@@ -198,7 +205,7 @@ describe('httpTransport', () => {
 
     it('routes an authorized request through to the real SDK transport', async () => {
       let sawAuth: HttpRequestWithAuth['auth'];
-      setOidcAuthMiddleware(async req => {
+      setOidcAuthMiddleware(async (req) => {
         req.auth = { token: 'x', clientId: 'test-client', scopes: [] };
         sawAuth = req.auth;
         return true;
@@ -254,7 +261,7 @@ describe('httpTransport', () => {
       setOidcAuthMiddleware(async () => true);
       handle = await startHttpTransport(
         newServer,
-        baseHttpConfig({ allowedHosts: ['127.0.0.1:1'] }) // intentionally wrong port
+        baseHttpConfig({ allowedHosts: ['127.0.0.1:1'] }), // intentionally wrong port
       );
       const port = getPort(handle);
 
@@ -264,6 +271,81 @@ describe('httpTransport', () => {
       });
 
       expect(res.statusCode).toBe(403);
+    });
+
+    describe('SSO enrollment endpoint routing (issue #220)', () => {
+      afterEach(() => {
+        setActiveEnrollmentService(undefined);
+      });
+
+      it('404s on /enroll paths when no enrollment service is registered (feature off)', async () => {
+        setOidcAuthMiddleware(async () => false);
+        handle = await startHttpTransport(newServer, baseHttpConfig());
+        const port = getPort(handle);
+
+        for (const path of ['/enroll?ticket=x', '/enroll/callback?code=c&state=s']) {
+          const res = await request(port, { path });
+          expect(res.statusCode).toBe(404);
+        }
+      });
+
+      it('serves /enroll and /enroll/callback WITHOUT invoking the bearer-auth middleware', async () => {
+        // Middleware would reject everything — the browser hitting /enroll
+        // holds no MCP bearer token, so these paths must be routed before it.
+        let middlewareCalls = 0;
+        setOidcAuthMiddleware(async () => {
+          middlewareCalls += 1;
+          return false;
+        });
+
+        const tickets = new EnrollmentTicketStore();
+        const service = new EnrollmentService({
+          tickets,
+          vault: { provision: async () => undefined },
+          vikunjaUrl: 'http://127.0.0.1:1/api/v1',
+          publicBaseUrl: 'http://127.0.0.1:9',
+          tokenExpiryDays: 1,
+        });
+        setActiveEnrollmentService(service);
+
+        handle = await startHttpTransport(newServer, baseHttpConfig());
+        const port = getPort(handle);
+
+        // Invalid ticket -> the service's own 400 page, not the middleware's 401.
+        const res = await request(port, { path: '/enroll?ticket=bogus' });
+        expect(res.statusCode).toBe(400);
+        expect(res.headers['content-type']).toContain('text/html');
+
+        const callback = await request(port, { path: '/enroll/callback?code=c&state=bogus' });
+        expect(callback.statusCode).toBe(400);
+
+        expect(middlewareCalls).toBe(0);
+      });
+
+      it('rejects enrollment requests with a Host outside allowedHosts (finding #11, DNS-rebinding parity)', async () => {
+        setOidcAuthMiddleware(async () => false);
+        const service = new EnrollmentService({
+          tickets: new EnrollmentTicketStore(),
+          vault: { provision: async () => undefined },
+          vikunjaUrl: 'http://127.0.0.1:1/api/v1',
+          publicBaseUrl: 'http://127.0.0.1:9',
+          tokenExpiryDays: 1,
+        });
+        setActiveEnrollmentService(service);
+
+        handle = await startHttpTransport(newServer, baseHttpConfig());
+        const port = getPort(handle);
+
+        const forged = await request(port, {
+          path: '/enroll?ticket=bogus',
+          headers: { Host: 'evil.example' },
+        });
+        expect(forged.statusCode).toBe(403);
+
+        // The legitimate Host (the default allowedHosts derivation) still works.
+        const legit = await request(port, { path: '/enroll?ticket=bogus' });
+        expect(legit.statusCode).toBe(400);
+      });
     });
 
     describe('RFC 9728 protected resource metadata discovery', () => {
@@ -307,7 +389,7 @@ describe('httpTransport', () => {
         handle = await startHttpTransport(
           newServer,
           baseHttpConfig({ publicUrl: 'https://mcp-vikunja.example.ch/mcp' }),
-          { issuer: ISSUER }
+          { issuer: ISSUER },
         );
         const port = getPort(handle);
 

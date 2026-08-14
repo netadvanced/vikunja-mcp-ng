@@ -51,16 +51,29 @@ import {
   type MockJwksServer,
   type TestKey,
 } from '../tests/auth/oidc/helpers';
+import { startMockOidcIdp, type MockOidcIdp } from './lib/mock-oidc-idp';
+import { resolveTarget } from './lib/e2e-target';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DIST_ENTRY = path.join(REPO_ROOT, 'dist', 'index.js');
+const BOOTSTRAP = path.join(REPO_ROOT, 'docker', 'e2e', 'bootstrap.sh');
 
 // Deliberately NOT `process.env.VIKUNJA_URL` — same safety rationale as
 // scripts/mcp-e2e.ts: never silently point a data-mutating harness at a
-// developer's real, ambient Vikunja instance.
-const VIKUNJA_URL = process.env.MCP_E2E_VIKUNJA_URL || 'http://localhost:33456/api/v1';
+// developer's real, ambient Vikunja instance. The fallback asks the target
+// resolver (issue #205's single source of truth) for the standard target's
+// localhost URL instead of hardcoding a stale port.
+const E2E_TARGET = resolveTarget(process.env.VIKUNJA_E2E_TARGET || undefined);
+const VIKUNJA_URL = process.env.MCP_E2E_VIKUNJA_URL || E2E_TARGET.apiUrl;
+
+// One-click SSO enrollment lane (issue #220). Default ON; export
+// MCP_E2E_SKIP_ENROLL=1 to run only the classic provisioning steps (e.g. on
+// a machine where docker compose is unavailable mid-run). The client
+// id/secret constants mirror docker/e2e/docker-compose.oidc.yml.
+const RUN_ENROLLMENT = process.env.MCP_E2E_SKIP_ENROLL !== '1';
+const OIDC_IDP_PORT = E2E_TARGET.port + 4000;
 const TEST_USERNAME = 'e2e-test';
 const TEST_PASSWORD = 'VikunjaMcpE2E-2026!';
 const TOKEN_TITLE = 'vikunja-mcp-oidc-e2e-harness';
@@ -250,6 +263,79 @@ async function waitForHealthz(port: number, timeoutMs: number): Promise<void> {
 }
 
 // ----------------------------------------------------------------------------
+// Enrollment-lane plumbing (issue #220)
+// ----------------------------------------------------------------------------
+
+/**
+ * (Re)runs docker/e2e/bootstrap.sh for the resolved target, with or without
+ * the OpenID overlay (docker-compose.oidc.yml). The overlay recreates the
+ * Vikunja container with one provider pointing at the harness's mock IdP;
+ * running WITHOUT the flag afterwards restores the plain container so other
+ * lanes never depend on an issuer that no longer exists.
+ *
+ * MUST be async (`spawn`, not `spawnSync`): the mock IdP runs in THIS
+ * process, and the recreated Vikunja dials its discovery endpoint while it
+ * boots — a spawnSync here would block the event loop, the IdP could never
+ * answer, and the container would hang unhealthy until the compose wait
+ * gives up (exactly the failure mode this comment is preventing again).
+ */
+function runBootstrap(withOidcOverlay: boolean): Promise<void> {
+  log(
+    withOidcOverlay
+      ? 'Reconfiguring the e2e stack WITH the OpenID overlay (mock IdP provider)...'
+      : 'Restoring the e2e stack to its plain (no-OpenID) configuration...',
+  );
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    VIKUNJA_E2E_TARGET: E2E_TARGET.id,
+    E2E_OIDC_IDP_PORT: String(OIDC_IDP_PORT),
+  };
+  if (withOidcOverlay) {
+    env.VIKUNJA_E2E_OIDC = '1';
+  } else {
+    delete env.VIKUNJA_E2E_OIDC;
+  }
+  return new Promise<void>((resolve, reject) => {
+    const proc = spawn(BOOTSTRAP, [], { cwd: REPO_ROOT, env, stdio: 'inherit' });
+    proc.on('error', reject);
+    proc.on('exit', code => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(
+          new Error(`docker/e2e/bootstrap.sh exited ${code} (oidc overlay: ${withOidcOverlay})`),
+        );
+      }
+    });
+  });
+}
+
+/** Fetch helper that follows exactly one manual redirect hop and returns it. */
+async function expectRedirect(url: string): Promise<string> {
+  const res = await fetch(url, { redirect: 'manual' });
+  if (res.status !== 302) {
+    throw new Error(`expected 302 from ${url}, got ${res.status}: ${await res.text()}`);
+  }
+  const location = res.headers.get('location');
+  if (!location) {
+    throw new Error(`302 from ${url} had no Location header`);
+  }
+  return location;
+}
+
+/**
+ * The mock IdP is configured into Vikunja as `host.docker.internal` (what the
+ * CONTAINER resolves); the harness on the host reaches the same server on
+ * 127.0.0.1. A real browser would resolve one public hostname for both — this
+ * rewrite is the harness's stand-in for that hop.
+ */
+function toHostLocal(idpUrl: string): string {
+  const url = new URL(idpUrl);
+  url.hostname = '127.0.0.1';
+  return url.toString();
+}
+
+// ----------------------------------------------------------------------------
 // Main
 // ----------------------------------------------------------------------------
 
@@ -262,36 +348,72 @@ async function main(): Promise<void> {
     throw new Error('Build failed; aborting oidc-e2e run.');
   }
 
-  const realApiToken = await getRealVikunjaApiToken();
-
-  log('Starting the in-process mock OIDC issuer (RSA keypair + loopback JWKS server)...');
-  const key: TestKey = await generateTestKey('oidc-e2e-key-1');
-  const jwks: MockJwksServer = await startMockJwksServer([key.jwk]);
-
-  const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vikunja-oidc-e2e-vault-'));
-  const vaultPath = path.join(vaultDir, 'vault.json');
-  const vaultKey = crypto.randomBytes(32).toString('hex');
-  const port = 8877 + Math.floor(Math.random() * 500);
-
-  log(`Spawning dist/index.js in oidc-http mode on 127.0.0.1:${port}...`);
-  const childEnv: NodeJS.ProcessEnv = { ...process.env };
-  delete childEnv.VIKUNJA_API_TOKEN;
-  delete childEnv.VIKUNJA_API_TOKEN_FILE;
-  Object.assign(childEnv, {
-    VIKUNJA_URL,
-    VIKUNJA_MCP_TRANSPORT: 'http',
-    VIKUNJA_MCP_HTTP_HOST: '127.0.0.1',
-    VIKUNJA_MCP_HTTP_PORT: String(port),
-    VIKUNJA_MCP_HTTP_PATH: '/mcp',
-    VIKUNJA_MCP_OIDC_ISSUER: ISSUER,
-    VIKUNJA_MCP_OIDC_AUDIENCE: AUDIENCE,
-    VIKUNJA_MCP_OIDC_JWKS_URI: jwks.url,
-    VIKUNJA_MCP_VAULT_PATH: vaultPath,
-    VIKUNJA_MCP_VAULT_KEY: vaultKey,
-  });
-
+  // Everything after this point runs under one try/finally so a failure at
+  // ANY stage still restores the plain docker stack and closes the mock IdP
+  // — a leaked 0.0.0.0 listener would otherwise also keep the process alive
+  // forever (the hang this structure was introduced to fix).
+  let idp: MockOidcIdp | undefined;
+  let jwks: MockJwksServer | undefined;
+  let vaultDir: string | undefined;
   let child: ChildProcess | undefined;
+  const carolSub = `oidc-e2e-carol-${Date.now()}`;
   try {
+    // Enrollment lane setup happens BEFORE any Vikunja call: the overlay
+    // recreates the Vikunja container, and its OpenID provider init needs
+    // the mock IdP to already be answering discovery when first exercised.
+    if (RUN_ENROLLMENT) {
+      log(`Starting the mock OIDC IdP on 0.0.0.0:${OIDC_IDP_PORT} (issuer host.docker.internal)...`);
+      idp = await startMockOidcIdp({
+        port: OIDC_IDP_PORT,
+        issuerHost: 'host.docker.internal',
+        clientId: 'vikunja-e2e',
+        clientSecret: 'vikunja-e2e-oidc-secret',
+        user: {
+          sub: carolSub,
+          email: `${carolSub}@e2e.local`,
+          name: 'Carol Enrollment',
+          preferredUsername: carolSub,
+        },
+      });
+      await runBootstrap(true);
+    }
+
+    const realApiToken = await getRealVikunjaApiToken();
+
+    log('Starting the in-process mock OIDC issuer (RSA keypair + loopback JWKS server)...');
+    const key: TestKey = await generateTestKey('oidc-e2e-key-1');
+    jwks = await startMockJwksServer([key.jwk]);
+
+    vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vikunja-oidc-e2e-vault-'));
+    const vaultPath = path.join(vaultDir, 'vault.json');
+    const vaultKey = crypto.randomBytes(32).toString('hex');
+    const port = 8877 + Math.floor(Math.random() * 500);
+
+    log(`Spawning dist/index.js in oidc-http mode on 127.0.0.1:${port}...`);
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    delete childEnv.VIKUNJA_API_TOKEN;
+    delete childEnv.VIKUNJA_API_TOKEN_FILE;
+    Object.assign(childEnv, {
+      VIKUNJA_URL,
+      VIKUNJA_MCP_TRANSPORT: 'http',
+      VIKUNJA_MCP_HTTP_HOST: '127.0.0.1',
+      VIKUNJA_MCP_HTTP_PORT: String(port),
+      VIKUNJA_MCP_HTTP_PATH: '/mcp',
+      VIKUNJA_MCP_OIDC_ISSUER: ISSUER,
+      VIKUNJA_MCP_OIDC_AUDIENCE: AUDIENCE,
+      VIKUNJA_MCP_OIDC_JWKS_URI: jwks.url,
+      VIKUNJA_MCP_VAULT_PATH: vaultPath,
+      VIKUNJA_MCP_VAULT_KEY: vaultKey,
+    });
+    if (RUN_ENROLLMENT) {
+      // One-click SSO enrollment (issue #220): the /enroll endpoints + the
+      // provision-without-token path. Provider selection is left on auto —
+      // the overlay configures exactly one. Enrollment requires the canonical
+      // public MCP URL (finding #2 — links/redirect_uri are built from it).
+      childEnv.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      childEnv.VIKUNJA_MCP_HTTP_PUBLIC_URL = `http://127.0.0.1:${port}/mcp`;
+    }
+
     child = spawn('node', [DIST_ENTRY], { cwd: REPO_ROOT, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
     const serverLogs: string[] = [];
     child.stdout?.on('data', d => serverLogs.push(String(d)));
@@ -496,6 +618,146 @@ async function main(): Promise<void> {
       }
     });
 
+    // ---- One-click SSO enrollment lane (issue #220) --------------------
+    // The chain proven here runs against the REAL local Vikunja 2.4.0: MCP
+    // /enroll -> mock-IdP authorize (scripted browser hop) -> MCP
+    // /enroll/callback -> Vikunja POST /auth/openid/{key}/callback (real
+    // token exchange with the mock IdP, real first-login account
+    // auto-creation) -> real GET /routes -> real PUT /tokens -> vault.
+    if (RUN_ENROLLMENT) {
+      // Carol's MCP bearer token carries the SAME email/preferred_username
+      // claims her IdP session presents to Vikunja — the callback pins the
+      // enrolled account to the initiating identity through them (finding #1).
+      const carolToken = await signTestToken(key.privateKey, {
+        kid: key.kid,
+        issuer: ISSUER,
+        audience: AUDIENCE,
+        sub: carolSub,
+        extraClaims: { email: `${carolSub}@e2e.local`, preferred_username: carolSub },
+      });
+      let enrollmentUrl = '';
+      let callbackUrl = '';
+
+      await step('(f0) the reconfigured Vikunja advertises the mock OpenID provider on /info', async () => {
+        const res = await fetch(`${VIKUNJA_URL}/info`);
+        const info = (await res.json()) as {
+          auth?: { openid_connect?: { enabled?: boolean; providers?: Array<{ key?: string }> | null } };
+        };
+        const openid = info.auth?.openid_connect;
+        if (openid?.enabled !== true || !openid.providers?.length) {
+          throw new Error(`Vikunja /info has no OpenID provider: ${JSON.stringify(openid)}`);
+        }
+      });
+
+      await step('(f1) provision WITHOUT a token returns a one-click enrollment URL', async () => {
+        const result = await callTool(port, 20, 'vikunja_auth', { subcommand: 'provision' }, carolToken);
+        if (result.statusCode !== 200 || result.isError) {
+          throw new Error(`expected an enrollment URL, got HTTP ${result.statusCode}, isError=${result.isError}: ${result.text}`);
+        }
+        const match = result.text.match(/https?:\/\/[^\s"'\\)\]]+\/enroll\?ticket=[A-Za-z0-9_-]+/);
+        if (!match) {
+          throw new Error(`no enrollment URL in the provision response: ${result.text}`);
+        }
+        enrollmentUrl = match[0];
+      });
+
+      await step('(f2) GET /enroll redirects to the IdP authorize endpoint (state = ticket)', async () => {
+        const location = await expectRedirect(enrollmentUrl);
+        const authorize = new URL(location);
+        if (!authorize.host.startsWith('host.docker.internal')) {
+          throw new Error(`authorize URL not on the configured provider: ${location}`);
+        }
+        if (authorize.searchParams.get('client_id') !== 'vikunja-e2e') {
+          throw new Error(`authorize URL must carry Vikunja's client_id: ${location}`);
+        }
+        const expectedState = new URL(enrollmentUrl).searchParams.get('ticket');
+        if (authorize.searchParams.get('state') !== expectedState) {
+          throw new Error('authorize state does not match the enrollment ticket');
+        }
+        // The scripted stand-in for the browser's IdP hop (SSO session ->
+        // zero-interaction code issuance).
+        callbackUrl = await expectRedirect(toHostLocal(location));
+        if (!callbackUrl.includes('/enroll/callback?')) {
+          throw new Error(`IdP did not redirect back to the enrollment callback: ${callbackUrl}`);
+        }
+      });
+
+      await step('(f3) the callback completes the real Vikunja chain and renders the connected page', async () => {
+        const res = await fetch(callbackUrl);
+        const body = await res.text();
+        if (res.status !== 200 || !/connected/i.test(body)) {
+          throw new Error(`callback failed: HTTP ${res.status}: ${body.slice(0, 400)}`);
+        }
+        if (/tk_[0-9a-f]{10,}/.test(body)) {
+          throw new Error('the connected page leaked a token');
+        }
+      });
+
+      await step('(f4) the enrolled identity is provisioned and its auto-created account works end-to-end', async () => {
+        const status = await callTool(port, 21, 'vikunja_auth', { subcommand: 'status' }, carolToken);
+        if (!status.text.includes('Vikunja API token linked')) {
+          throw new Error(`expected a linked status after enrollment, got: ${status.text}`);
+        }
+        const projects = await callTool(port, 22, 'vikunja_projects', { subcommand: 'list' }, carolToken);
+        if (projects.statusCode !== 200 || projects.isError) {
+          throw new Error(`projects list as the enrolled user failed: HTTP ${projects.statusCode}: ${projects.text}`);
+        }
+        const tasks = await callTool(port, 23, 'vikunja_tasks', { subcommand: 'list' }, carolToken);
+        if (tasks.statusCode !== 200 || tasks.isError) {
+          throw new Error(`tasks list as the enrolled user failed: HTTP ${tasks.statusCode}: ${tasks.text}`);
+        }
+      });
+
+      await step('(f5) a replayed enrollment callback is rejected (single-use ticket)', async () => {
+        const res = await fetch(callbackUrl);
+        if (res.status !== 400) {
+          throw new Error(`expected 400 on replay, got ${res.status}`);
+        }
+      });
+
+      // Finding #1, proven live: Mallory (a different validated MCP identity)
+      // requests an enrollment link and "forwards" it — but the browser
+      // session at the IdP belongs to CAROL (the mock IdP always signs carol
+      // in). The callback must refuse to vault carol's Vikunja token under
+      // mallory's identity.
+      await step('(f6) a forwarded enrollment link opened by another account is refused (identity pinning)', async () => {
+        const mallorySub = `oidc-e2e-mallory-${Date.now()}`;
+        const malloryToken = await signTestToken(key.privateKey, {
+          kid: key.kid,
+          issuer: ISSUER,
+          audience: AUDIENCE,
+          sub: mallorySub,
+          extraClaims: { email: `${mallorySub}@e2e.local`, preferred_username: mallorySub },
+        });
+
+        const provisionRes = await callTool(
+          port,
+          24,
+          'vikunja_auth',
+          { subcommand: 'provision' },
+          malloryToken,
+        );
+        const match = provisionRes.text.match(
+          /https?:\/\/[^\s"'\\)\]]+\/enroll\?ticket=[A-Za-z0-9_-]+/,
+        );
+        if (!match) {
+          throw new Error(`no enrollment URL for mallory: ${provisionRes.text}`);
+        }
+        const authorizeUrl = await expectRedirect(match[0]);
+        // Carol's IdP session completes the hop against mallory's state.
+        const forgedCallback = await expectRedirect(toHostLocal(authorizeUrl));
+        const res = await fetch(forgedCallback);
+        const body = await res.text();
+        if (res.status !== 403) {
+          throw new Error(`expected 403 on cross-account callback, got ${res.status}: ${body.slice(0, 300)}`);
+        }
+        const status = await callTool(port, 25, 'vikunja_auth', { subcommand: 'status' }, malloryToken);
+        if (!status.text.includes('No Vikunja API token linked yet')) {
+          throw new Error(`mallory must remain unprovisioned, got: ${status.text}`);
+        }
+      });
+    }
+
     await step('(e) vikunja_auth deprovision unlinks the identity', async () => {
       const result = await callTool(port, 5, 'vikunja_auth', { subcommand: 'deprovision' }, aliceToken);
       if (result.statusCode !== 200 || result.isError) {
@@ -516,8 +778,24 @@ async function main(): Promise<void> {
     if (child && !child.killed) {
       child.kill('SIGTERM');
     }
-    await jwks.close();
-    fs.rmSync(vaultDir, { recursive: true, force: true });
+    if (jwks) {
+      await jwks.close();
+    }
+    if (vaultDir) {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    }
+    if (idp) {
+      // Restore the plain stack FIRST (the container is recreated without the
+      // OpenID provider), then stop the issuer it pointed at — other lanes
+      // must never see a provider whose IdP is gone.
+      try {
+        await runBootstrap(false);
+      } catch (error) {
+        log(`WARNING: failed to restore the plain e2e stack: ${String(error)}`);
+        failures += 1;
+      }
+      await idp.close();
+    }
   }
 
   log(`Done. ${failures === 0 ? 'All steps passed.' : `${failures} step(s) FAILED.`}`);

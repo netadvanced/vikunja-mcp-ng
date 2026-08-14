@@ -32,6 +32,14 @@ import type { AuthManager } from '../auth/AuthManager';
 export interface Identity {
   readonly issuer: string;
   readonly sub: string;
+  /**
+   * Optional claims threaded through from the validated bearer token
+   * (never a tenancy key — `identityKey` stays `(issuer, sub)`). The
+   * SSO-enrollment callback uses them to pin the enrolled Vikunja account
+   * to the initiating identity (issue #220, finding #1).
+   */
+  readonly email?: string;
+  readonly preferredUsername?: string;
 }
 
 /** Per-request context bound in ALS for the lifetime of one JSON-RPC call. */

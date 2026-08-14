@@ -552,8 +552,8 @@ export class ConfigurationManager {
     if (allowedHostsRaw !== undefined) {
       http.allowedHosts = allowedHostsRaw
         .split(',')
-        .map(host => host.trim())
-        .filter(host => host.length > 0);
+        .map((host) => host.trim())
+        .filter((host) => host.length > 0);
     }
     if (Object.keys(http).length > 0) {
       result.http = http;
@@ -570,8 +570,8 @@ export class ConfigurationManager {
     if (audienceRaw !== undefined) {
       const audiences = audienceRaw
         .split(',')
-        .map(value => value.trim())
-        .filter(value => value.length > 0);
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
       oidc.audience = audiences.length === 1 ? audiences[0] : audiences;
     }
     this.assignEnvValue(oidc, 'jwksUri', process.env.VIKUNJA_MCP_OIDC_JWKS_URI, false);
@@ -579,8 +579,8 @@ export class ConfigurationManager {
     if (allowedAlgsRaw !== undefined) {
       oidc.allowedAlgs = allowedAlgsRaw
         .split(',')
-        .map(value => value.trim())
-        .filter(value => value.length > 0);
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
     }
     this.assignEnvValue(oidc, 'clockSkewSec', process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC, true);
     this.assignEnvValue(oidc, 'requiredScope', process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE, false);
@@ -597,6 +597,28 @@ export class ConfigurationManager {
     this.assignEnvValue(vault, 'path', process.env.VIKUNJA_MCP_VAULT_PATH, false);
     if (Object.keys(vault).length > 0) {
       result.vault = vault;
+    }
+
+    // One-click SSO enrollment (issue #220, docs/OIDC-SETUP.md §"One-click
+    // SSO enrollment") — opt-in, only consulted in `oidc-http` mode.
+    const enroll: Record<string, unknown> = {};
+    this.assignEnvValue(enroll, 'enabled', process.env.VIKUNJA_MCP_ENROLL_ENABLED, true);
+    this.assignEnvValue(enroll, 'provider', process.env.VIKUNJA_MCP_ENROLL_PROVIDER, false);
+    this.assignEnvValue(enroll, 'vikunjaUrl', process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL, false);
+    this.assignEnvValue(
+      enroll,
+      'tokenExpiryDays',
+      process.env.VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS,
+      true,
+    );
+    this.assignEnvValue(
+      enroll,
+      'ticketTtlSec',
+      process.env.VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC,
+      true,
+    );
+    if (Object.keys(enroll).length > 0) {
+      result.enroll = enroll;
     }
 
     return result;

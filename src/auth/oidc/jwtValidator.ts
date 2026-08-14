@@ -114,6 +114,10 @@ export function createOidcJwtValidator(
     if (typeof preferredUsername === 'string' && preferredUsername.length > 0) {
       identity.preferredUsername = preferredUsername;
     }
+    const email = payload['email'];
+    if (typeof email === 'string' && email.length > 0) {
+      identity.email = email;
+    }
     return identity;
   }
 

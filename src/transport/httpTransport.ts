@@ -60,6 +60,7 @@ import {
   isProtectedResourceMetadataPath,
 } from './resourceMetadata';
 import { getOidcAuthMiddleware, type HttpRequestWithAuth } from './oidcMiddlewareSeam';
+import { getActiveEnrollmentService } from './enrollment';
 import { runWithRequestContext, takeAttachedRequestContext } from '../context/requestContext';
 import { logger } from '../utils/logger';
 
@@ -95,7 +96,7 @@ function sendJson(
   res: http.ServerResponse,
   statusCode: number,
   body: unknown,
-  extraHeaders: Record<string, string> = {}
+  extraHeaders: Record<string, string> = {},
 ): void {
   if (res.headersSent) {
     return;
@@ -122,7 +123,7 @@ function sendJson(
 export async function startHttpTransport(
   createMcpServer: McpServerFactory,
   httpConfig: HttpConfig,
-  oidc?: Pick<OidcConfig, 'issuer'>
+  oidc?: Pick<OidcConfig, 'issuer'>,
 ): Promise<HttpTransportHandle> {
   const authMiddleware = getOidcAuthMiddleware();
   if (!authMiddleware) {
@@ -133,7 +134,7 @@ export async function startHttpTransport(
         'to start an HTTP listener without it — this server must never ' +
         'serve unauthenticated HTTP (deny-mixed-mode rule, §2 "Selection ' +
         'rule"). Only transport=stdio is supported until that middleware is ' +
-        'configured.'
+        'configured.',
     );
   }
 
@@ -148,7 +149,7 @@ export async function startHttpTransport(
       requestPath,
       httpConfig,
       oidcIssuer: oidc?.issuer,
-    }).catch(error => {
+    }).catch((error) => {
       logger.error('Unhandled error while handling HTTP MCP request:', error);
       sendJson(res, 500, { error: 'internal_error' });
     });
@@ -166,14 +167,14 @@ export async function startHttpTransport(
   });
 
   logger.info(
-    `Vikunja MCP HTTP transport listening on ${httpConfig.host}:${httpConfig.port}${requestPath}`
+    `Vikunja MCP HTTP transport listening on ${httpConfig.host}:${httpConfig.port}${requestPath}`,
   );
 
   return {
     httpServer,
     close: async (): Promise<void> => {
       await new Promise<void>((resolve, reject) => {
-        httpServer.close(error => {
+        httpServer.close((error) => {
           if (error) {
             reject(error);
           } else {
@@ -197,7 +198,7 @@ interface RequestHandlerContext {
 async function handleIncomingRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  ctx: RequestHandlerContext
+  ctx: RequestHandlerContext,
 ): Promise<void> {
   const rawUrl = req.url ?? '/';
   const queryIndex = rawUrl.indexOf('?');
@@ -232,6 +233,32 @@ async function handleIncomingRequest(
     }
     sendJson(res, 200, buildProtectedResourceMetadata(ctx.httpConfig, ctx.oidcIssuer, req));
     return;
+  }
+
+  // One-click SSO enrollment endpoints (issue #220, docs/OIDC-SETUP.md §9a):
+  // `GET /enroll` + `GET /enroll/callback`. Like the metadata endpoints
+  // above, they sit BEFORE the bearer-token middleware by necessity — the
+  // user's browser holds no MCP bearer token; the short-lived, single-use,
+  // identity-bound enrollment ticket (minted by an *authenticated*
+  // `vikunja_auth provision` call) is the authentication on this path. Only
+  // routed when production wiring registered an enrollment service
+  // (`setActiveEnrollmentService`, src/transport/enrollment.ts) — otherwise
+  // these paths fall through to the 404 below, indistinguishable from any
+  // other unknown path.
+  const enrollmentService = getActiveEnrollmentService();
+  if (enrollmentService && enrollmentService.servesPath(pathname)) {
+    // Defense-in-depth Host allowlisting (finding #11): the SDK transport
+    // enforces `allowedHosts` on the MCP path; the enrollment endpoints get
+    // the same check so a DNS-rebinding page against a non-loopback bind
+    // cannot drive them either.
+    const hostHeader = req.headers.host;
+    if (typeof hostHeader !== 'string' || !ctx.allowedHosts.includes(hostHeader)) {
+      sendJson(res, 403, { error: 'forbidden_host' });
+      return;
+    }
+    if (await enrollmentService.handleRequest(req, res)) {
+      return;
+    }
   }
 
   if (pathname !== ctx.requestPath) {
@@ -283,7 +310,7 @@ async function handleIncomingRequest(
     const requestContext = takeAttachedRequestContext(req);
     if (requestContext) {
       await runWithRequestContext(requestContext, () =>
-        transport.handleRequest(req as HttpRequestWithAuth, res)
+        transport.handleRequest(req as HttpRequestWithAuth, res),
       );
     } else {
       await transport.handleRequest(req, res);

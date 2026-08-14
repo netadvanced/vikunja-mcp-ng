@@ -12,6 +12,7 @@ import { MCPError, ErrorCode } from '../types/errors';
 import { clearGlobalClientFactory, getAuthManagerFromContext, hasRequestContext } from '../client';
 import { getCurrentIdentity, type Identity } from '../context/requestContext';
 import { getActiveVaultStore } from '../storage/vaultFileStore';
+import { getActiveEnrollmentService } from '../transport/enrollment';
 import { logger } from '../utils/logger';
 import { applyRateLimiting } from '../middleware/direct-middleware';
 import { createSecureConnectionMessage, maskCredential } from '../utils/security';
@@ -24,7 +25,8 @@ import { getOrDetectCapabilities } from '../utils/capabilities';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 interface AuthArgs {
-  subcommand: 'connect' | 'status' | 'refresh' | 'disconnect' | 'info' | 'provision' | 'deprovision';
+  subcommand:
+    'connect' | 'status' | 'refresh' | 'disconnect' | 'info' | 'provision' | 'deprovision';
   apiUrl?: string | undefined;
   apiToken?: string | undefined;
   vikunjaUrl?: string | undefined;
@@ -151,7 +153,13 @@ async function verifyConnection(
     if (authType === 'jwt') {
       await vikunjaRestRequest(authManager, 'GET', '/user', undefined, verifyOptions);
     } else {
-      await vikunjaRestRequest(authManager, 'GET', '/projects?per_page=1', undefined, verifyOptions);
+      await vikunjaRestRequest(
+        authManager,
+        'GET',
+        '/projects?per_page=1',
+        undefined,
+        verifyOptions,
+      );
     }
   } catch (error) {
     authManager.disconnect();
@@ -179,7 +187,9 @@ export function registerAuthTool(
         'In oidc-http mode, self-service credential provisioning (provision, status, ' +
         'deprovision) additionally links your validated OIDC identity to a Vikunja API ' +
         "token in the server's encrypted credential vault — connect is not available in " +
-        'that mode (provision replaces it), and disconnect acts as an alias of deprovision.',
+        'that mode (provision replaces it), and disconnect acts as an alias of deprovision. ' +
+        'When SSO enrollment is enabled, calling provision WITHOUT a token returns a ' +
+        'one-click enrollment link instead.',
     ),
     {
       subcommand: z.enum([
@@ -429,6 +439,63 @@ export function registerAuthTool(
               throw createStdioModeProvisioningError('provision');
             }
             if (!args.apiToken) {
+              // One-click SSO enrollment (issue #220, docs/OIDC-SETUP.md
+              // §9a): when the operator enabled enrollment, a token-less
+              // provision call is the intended entry point — hand back a
+              // short-lived enrollment URL bound to the caller's validated
+              // identity instead of an error. The browser flow behind that
+              // URL mints and vaults the token; nothing is stored here.
+              const enrollment = getActiveEnrollmentService();
+              if (enrollment) {
+                const enrollIdentity = requireCurrentIdentity();
+
+                // Finding #9: an already-provisioned identity re-running a
+                // token-less provision should not silently mint ANOTHER
+                // full-permission Vikunja token (the old one would be
+                // orphaned server-side). Point at deprovision-then-re-enroll
+                // for deliberate rotation instead.
+                const vaultStatus = getActiveVaultStore()?.getStatus(enrollIdentity);
+                if (vaultStatus?.provisioned) {
+                  const response = createStandardResponse(
+                    'auth-provision',
+                    'Your Vikunja account is already linked — nothing to enroll. To rotate ' +
+                      'the credential, run vikunja_auth deprovision first, then provision again.',
+                    { linked: true, alreadyProvisioned: true },
+                    { apiUrl: vaultStatus.vikunjaUrl },
+                  );
+                  return {
+                    content: formatMcpResponse(response),
+                  };
+                }
+
+                // Finding #3: enrollment always targets the server-configured
+                // Vikunja instance. An explicit, DIFFERENT vikunjaUrl must be
+                // an error, never silently substituted.
+                if (args.vikunjaUrl !== undefined && args.vikunjaUrl !== enrollment.vikunjaUrl) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    `SSO enrollment on this server always targets ${enrollment.vikunjaUrl}; it ` +
+                      `cannot enroll against ${args.vikunjaUrl}. Omit vikunjaUrl to enroll, or ` +
+                      'provision a token for that other instance manually (provision with apiToken).',
+                  );
+                }
+
+                const enrollmentUrl = enrollment.createEnrollmentUrl(enrollIdentity);
+                const response = createStandardResponse(
+                  'auth-provision',
+                  'Open this link to connect your Vikunja account — you will be signed in ' +
+                    'through your organization login and linked automatically, no token ' +
+                    `needed: ${enrollmentUrl}`,
+                  { linked: false, enrollmentUrl },
+                  {
+                    apiUrl: enrollment.vikunjaUrl,
+                    expiresNote: 'The link is single-use and expires after a few minutes.',
+                  },
+                );
+                return {
+                  content: formatMcpResponse(response),
+                };
+              }
               throw new MCPError(
                 ErrorCode.VALIDATION_ERROR,
                 'apiToken is required for provision — create one in Vikunja → Settings → API Tokens.',
@@ -436,7 +503,8 @@ export function registerAuthTool(
             }
             const identity = requireCurrentIdentity();
             const vikunjaUrl =
-              args.vikunjaUrl ?? ConfigurationManager.getInstance().loadConfiguration().auth.vikunjaUrl;
+              args.vikunjaUrl ??
+              ConfigurationManager.getInstance().loadConfiguration().auth.vikunjaUrl;
             if (!vikunjaUrl) {
               throw new MCPError(
                 ErrorCode.VALIDATION_ERROR,

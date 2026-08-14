@@ -125,9 +125,34 @@ describe('createOidcHttpAuthMiddleware', () => {
     expect(ctx?.authManager.getSession().apiToken).toBe('tk_user1-abcdefgh');
   });
 
-  it('narrows the validator identity to (issuer, sub), dropping preferredUsername', async () => {
+  it('carries the enrollment-matching claims (email, preferredUsername) into the context identity when present', async () => {
+    // Issue #220 finding #1: the SSO-enrollment callback pins the enrolled
+    // Vikunja account to the initiating identity via these claims, so the
+    // middleware must thread them through (tenancy keying stays (issuer, sub)).
     const middleware = createOidcHttpAuthMiddleware({
-      validator: validatorReturning({ ...IDENTITY, preferredUsername: 'alice' }),
+      validator: validatorReturning({
+        ...IDENTITY,
+        preferredUsername: 'alice',
+        email: 'alice@example.test',
+      }),
+      credentialSource: new StubCredentialSource(null),
+    });
+    const req = fakeRequest('Bearer good-token');
+    const { res } = fakeResponse();
+
+    await middleware(req, res);
+
+    expect(takeAttachedRequestContext(req)?.identity).toEqual({
+      issuer: IDENTITY.issuer,
+      sub: IDENTITY.sub,
+      preferredUsername: 'alice',
+      email: 'alice@example.test',
+    });
+  });
+
+  it('omits the optional claims from the context identity when the token lacks them', async () => {
+    const middleware = createOidcHttpAuthMiddleware({
+      validator: validatorReturning({ ...IDENTITY }),
       credentialSource: new StubCredentialSource(null),
     });
     const req = fakeRequest('Bearer good-token');

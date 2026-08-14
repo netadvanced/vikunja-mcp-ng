@@ -22,6 +22,7 @@ import { readSecretEnv } from './config/secrets';
 import { ConfigurationManager } from './config/ConfigurationManager';
 import { startHttpTransport } from './transport/httpTransport';
 import { setupOidcHttpAuth } from './transport/oidcHttpAuth';
+import { setupEnrollment } from './transport/enrollment';
 import { resolvePackageVersion } from './utils/version';
 
 dotenv.config({ quiet: true });
@@ -120,20 +121,28 @@ async function main(): Promise<void> {
     // unauthenticated HTTP (deny-mixed-mode, §2 "Selection rule").
     if (appConfig.oidc) {
       await setupOidcHttpAuth(appConfig.oidc, appConfig.vault, appConfig.http);
+      // One-click SSO enrollment (issue #220): opt-in, and only meaningful
+      // once the vault exists — hence strictly after setupOidcHttpAuth. A
+      // no-op when `enroll.enabled` is false.
+      setupEnrollment(appConfig.enroll, appConfig.http, appConfig.auth.vikunjaUrl);
     }
     // Stateless HTTP mode builds a fresh, fully-registered `McpServer` per
     // request (the SDK's stateless transport cannot be reused across
     // requests; a shared server cannot back concurrent per-request
     // transports — see src/transport/httpTransport.ts). The module-level
     // `server` above stays the stdio-mode server and is left unconnected here.
-    await startHttpTransport(() => {
-      const requestServer = new McpServer({
-        name: 'vikunja-mcp-ng',
-        version: resolvePackageVersion(__dirname),
-      });
-      registerTools(requestServer, authManager, clientFactory ?? undefined);
-      return requestServer;
-    }, appConfig.http, appConfig.oidc);
+    await startHttpTransport(
+      () => {
+        const requestServer = new McpServer({
+          name: 'vikunja-mcp-ng',
+          version: resolvePackageVersion(__dirname),
+        });
+        registerTools(requestServer, authManager, clientFactory ?? undefined);
+        return requestServer;
+      },
+      appConfig.http,
+      appConfig.oidc,
+    );
     logger.info('Vikunja MCP server started (http transport)');
     return;
   }

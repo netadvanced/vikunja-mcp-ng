@@ -271,6 +271,42 @@ export const VaultConfigSchema = z.object({
 
 export type VaultConfig = z.infer<typeof VaultConfigSchema>;
 
+// SSO enrollment configuration (issue #220, docs/OIDC-SETUP.md §"One-click
+// SSO enrollment").
+//
+// Only meaningful in `oidc-http` mode, and opt-in (`enabled` defaults to
+// false): when enabled, an unprovisioned identity's `vikunja_auth provision`
+// call (with no token) returns a short-lived enrollment URL instead of an
+// error, and the HTTP transport serves the browser half of the flow
+// (`GET /enroll` + `GET /enroll/callback`) that turns one IdP authorization
+// hop into a vaulted per-user Vikunja `tk_*` token — no token pasting.
+// Requires the Vikunja backend itself to have an OpenID provider configured
+// for the SAME IdP (Vikunja's native `auth.openid.providers`).
+export const EnrollConfigSchema = z.object({
+  // Master switch (`VIKUNJA_MCP_ENROLL_ENABLED`). Off by default — manual
+  // token provisioning keeps working either way.
+  enabled: z.boolean().default(false),
+  // The Vikunja OpenID provider to enroll through, matched against the
+  // provider `key` (or `name`) reported by Vikunja's `GET /info`
+  // (`VIKUNJA_MCP_ENROLL_PROVIDER`). Optional: when the backend has exactly
+  // one provider, it is used automatically.
+  provider: z.string().min(1).optional(),
+  // The Vikunja API base URL the enrollment flow talks to
+  // (`VIKUNJA_MCP_ENROLL_VIKUNJA_URL`), e.g. `https://vikunja.example/api/v1`.
+  // Defaults to the shared `auth.vikunjaUrl` (`VIKUNJA_URL`) when omitted.
+  vikunjaUrl: z.string().url().optional(),
+  // Expiry, in days, of the auto-minted per-user Vikunja API token
+  // (`VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS`). Default: 365. When a token
+  // expires the user simply re-runs `vikunja_auth provision` and clicks the
+  // link again — re-enrollment mints and vaults a fresh token.
+  tokenExpiryDays: z.number().int().positive().default(365),
+  // Enrollment ticket lifetime in seconds (`VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC`)
+  // — how long the returned enrollment URL stays clickable. Default: 600.
+  ticketTtlSec: z.number().int().positive().default(600),
+});
+
+export type EnrollConfig = z.infer<typeof EnrollConfigSchema>;
+
 // Complete Application Configuration Schema
 export const ApplicationConfigSchema = z.object({
   environment: z.nativeEnum(Environment).default(Environment.DEVELOPMENT),
@@ -301,7 +337,48 @@ export const ApplicationConfigSchema = z.object({
   // Credential vault path config (docs/OIDC-RESOURCE-SERVER.md §3c). Only
   // consulted in `oidc-http` mode; `stdio` mode never reads it.
   vault: VaultConfigSchema.default({}),
-});
+  // One-click SSO enrollment (issue #220). Opt-in, oidc-http mode only.
+  enroll: EnrollConfigSchema.default({}),
+})
+  // Cross-field contract for SSO enrollment (issue #220, review finding #7):
+  // `enroll.enabled` is only meaningful in oidc-http mode with a public URL —
+  // anywhere else it MUST be a hard config error, never a silent no-op. An
+  // operator who set VIKUNJA_MCP_ENROLL_ENABLED=true and got no /enroll
+  // endpoints would otherwise debug a ghost.
+  .superRefine((config, ctx) => {
+    if (!config.enroll.enabled) {
+      return;
+    }
+    if (config.transport !== 'http') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['enroll', 'enabled'],
+        message:
+          'SSO enrollment (VIKUNJA_MCP_ENROLL_ENABLED) requires transport=http — it is ' +
+          'meaningless under stdio, which has no per-identity vault or browser endpoints. ' +
+          'Set VIKUNJA_MCP_TRANSPORT=http or disable enrollment.',
+      });
+    }
+    if (config.oidc === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['enroll', 'enabled'],
+        message:
+          'SSO enrollment requires the OIDC resource-server config (VIKUNJA_MCP_OIDC_*) — ' +
+          'enrollment tickets are minted for OIDC-validated identities only.',
+      });
+    }
+    if (config.http.publicUrl === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['http', 'publicUrl'],
+        message:
+          'SSO enrollment requires the canonical public MCP URL ' +
+          '(VIKUNJA_MCP_HTTP_PUBLIC_URL) — enrollment links and the OAuth redirect_uri are ' +
+          'built from it and must be browser-reachable and IdP-whitelisted.',
+      });
+    }
+  });
 
 export type ApplicationConfig = z.infer<typeof ApplicationConfigSchema>;
 
