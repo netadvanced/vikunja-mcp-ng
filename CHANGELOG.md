@@ -59,36 +59,22 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 ## [0.7.0-beta.1] - 2026-08-14
 
-_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._
+**One-click SSO enrollment** (#220, #221): in oidc-http mode, a user whose Vikunja backend shares the MCP server's IdP no longer handles API tokens at all. `vikunja_auth provision` without a token now returns a personal enrollment link; one click walks the user's existing SSO session through Vikunja's native OpenID login, mints their API token server-side, and stores it encrypted in the vault under their identity. Manual token provisioning remains available for non-SSO backends.
 
 ### Added
 
-- enrollment lane — mock OIDC IdP, opt-in docker overlay, oidc-e2e steps f0-f5
-- wire SSO enrollment into oidc-http startup (index.ts)
-- vikunja_auth provision without a token returns the SSO enrollment URL (TDD)
-- route /enroll endpoints on the HTTP transport ahead of bearer auth (TDD)
-- EnrollmentService — validated Vikunja openid callback -> token mint -> vault chain (TDD)
-- enroll config block (schema + env mapping, TDD)
-- enrollment ticket store for SSO auto-provisioning (TDD)
+- `/enroll` + `/enroll/callback` endpoints on the HTTP transport (served ahead of bearer auth; Host-allowlist enforced), backed by single-use, TTL-bound, identity-bound enrollment tickets
+- New `enroll` config block (`VIKUNJA_MCP_ENROLL_*`): enabled flag, target Vikunja URL, provider key, token expiry (default 365d); `VIKUNJA_MCP_HTTP_PUBLIC_URL` is required when enrollment is enabled and the server fails loud at startup otherwise (including under stdio transport)
+- Enrollment e2e lane: mock OIDC IdP + opt-in docker overlay run the full real chain against Vikunja 2.4.0 — code exchange, first-login account auto-creation, token mint, vault write
 
-### Fixed
+### Security
 
-- e2e forged-link step, docs corrections, lint
-- findings 3,7,9,11 — vikunjaUrl guard, already-linked short-circuit, config cross-field refine, Host allowlist on /enroll
-- findings 1,2,4,5,6,8,10,12 — identity pinning, publicUrl base, deferred consume, rest-layer parity
-- async bootstrap spawn — spawnSync starved the in-process mock IdP
-- robust enrollment-lane teardown, longer overlay health wait
+- **Enrollment is identity-pinned**: the callback verifies the IdP-authenticated browser user matches the ticket's identity (email/username claims, fail-closed) before vaulting — a forwarded enrollment link completed by another user's SSO session is refused (proven live in the e2e lane). Access tokens must carry an `email` or `preferred_username` claim for enrollment.
+- Adversarial review of the feature (12 confirmed findings) fixed pre-release: deferred ticket consumption (transient upstream failures no longer burn links), `/routes` response hardening (no garbage-permission tokens), malformed-URL handling, explicit `vikunjaUrl` mismatch rejection, already-linked short-circuit (no orphaned tokens), ticket-cap ordering, and all Vikunja calls routed through the shared retry/circuit-breaker layer
 
 ### Documentation
 
-- TOOLS.md provision/enrollment note
-- CONFIGURATION.md enroll section
-- OIDC-SETUP §9a — validated one-click SSO enrollment design (issue #220)
-
-### Chores
-
-- prettier pass + changelog entry for SSO enrollment (#220)
-- index wiring coverage for setupEnrollment ordering
+- OIDC-SETUP §9a: validated enrollment design with the Vikunja 2.4.0 ground truth (callback semantics, redirect-URI handling, provider config as a map); CONFIGURATION.md + TOOLS.md updated
 
 ## [0.7.0-beta.0] - 2026-08-14
 
