@@ -29,6 +29,36 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 
 
+
+## [0.7.0-beta.0] - 2026-08-14
+
+**Public beta of the multi-user OIDC resource-server mode.** Published on the npm `beta` dist-tag and GHCR `:beta`; `latest` stays on 0.6.2. Everything below is inert unless `VIKUNJA_MCP_TRANSPORT=http` — stdio deployments are unaffected.
+
+### Added
+
+- **OIDC resource-server mode over Streamable HTTP**: opt-in HTTP transport (`VIKUNJA_MCP_TRANSPORT=http`) that validates per-user OIDC access tokens (issuer/JWKS/audience/algorithms, configurable clock skew and required scope) and gives every identity its own isolated request context and session storage
+- **Encrypted per-user credential vault** with `vikunja_auth` provision/deprovision: each user's Vikunja API token is stored encrypted at rest (`VIKUNJA_MCP_VAULT_PATH` / `VIKUNJA_MCP_VAULT_KEY`) and resolved per request — no shared service credential
+- **MCP authorization-spec discovery (RFC 9728)**: `GET /.well-known/oauth-protected-resource` (and `/mcp` path variant), `resource_metadata` hint on 401 challenges, and optional `VIKUNJA_MCP_HTTP_PUBLIC_URL` for the canonical resource URL behind a reverse proxy — lets browser MCP clients (e.g. claude.ai custom connectors) auto-discover the IdP
+- Mock-issuer OIDC e2e lane (`npm run test:e2e:oidc`) plus threat-model tests
+- Local e2e harness: one persistent stack per Vikunja version with stable tokens and safe concurrent runs
+
+### Fixed
+
+- Per-identity credential and session-storage resolution threaded end to end (two identity-bleed risks caught by review closed before release)
+- `vikunja_auth` tool description no longer claims `disconnect` is unavailable in oidc-http mode (it acts as an alias of `deprovision`)
+
+### Documentation
+
+- New `docs/OIDC-SETUP.md`: full install and configuration manual (any OIDC provider; Keycloak as reference), with a verification ladder and troubleshooting by symptom
+- `docs/CONTEXT-FORGE.md` + `docs/OIDC-RESOURCE-SERVER.md`: deployment behind IBM MCP Context Forge and the as-shipped design reference, corrected against a live production-cluster PoC (real Keycloak + gateway, per-user isolation verified)
+- README split: npm-facing README at the root, GitHub-facing one under `.github/`
+
+### Chores
+
+- Release pipeline is prerelease-aware (#214): `-beta.x` tags publish to the npm `beta` dist-tag, GHCR `:beta`, and a GitHub prerelease — `latest` is untouched
+- Release images build arm64 on native runners (no QEMU) with idempotent, re-dispatchable publishing
+- Cleared five Dependabot advisories in the transitive tree (#213); `npm audit` clean
+
 ## [0.6.2] - 2026-07-28
 
 A correctness release, and a good argument for testing the parts of a surface you can only refuse.
