@@ -408,8 +408,10 @@ async function main(): Promise<void> {
     if (RUN_ENROLLMENT) {
       // One-click SSO enrollment (issue #220): the /enroll endpoints + the
       // provision-without-token path. Provider selection is left on auto —
-      // the overlay configures exactly one.
+      // the overlay configures exactly one. Enrollment requires the canonical
+      // public MCP URL (finding #2 — links/redirect_uri are built from it).
       childEnv.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      childEnv.VIKUNJA_MCP_HTTP_PUBLIC_URL = `http://127.0.0.1:${port}/mcp`;
     }
 
     child = spawn('node', [DIST_ENTRY], { cwd: REPO_ROOT, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -623,11 +625,15 @@ async function main(): Promise<void> {
     // token exchange with the mock IdP, real first-login account
     // auto-creation) -> real GET /routes -> real PUT /tokens -> vault.
     if (RUN_ENROLLMENT) {
+      // Carol's MCP bearer token carries the SAME email/preferred_username
+      // claims her IdP session presents to Vikunja — the callback pins the
+      // enrolled account to the initiating identity through them (finding #1).
       const carolToken = await signTestToken(key.privateKey, {
         kid: key.kid,
         issuer: ISSUER,
         audience: AUDIENCE,
         sub: carolSub,
+        extraClaims: { email: `${carolSub}@e2e.local`, preferred_username: carolSub },
       });
       let enrollmentUrl = '';
       let callbackUrl = '';
@@ -706,6 +712,48 @@ async function main(): Promise<void> {
         const res = await fetch(callbackUrl);
         if (res.status !== 400) {
           throw new Error(`expected 400 on replay, got ${res.status}`);
+        }
+      });
+
+      // Finding #1, proven live: Mallory (a different validated MCP identity)
+      // requests an enrollment link and "forwards" it — but the browser
+      // session at the IdP belongs to CAROL (the mock IdP always signs carol
+      // in). The callback must refuse to vault carol's Vikunja token under
+      // mallory's identity.
+      await step('(f6) a forwarded enrollment link opened by another account is refused (identity pinning)', async () => {
+        const mallorySub = `oidc-e2e-mallory-${Date.now()}`;
+        const malloryToken = await signTestToken(key.privateKey, {
+          kid: key.kid,
+          issuer: ISSUER,
+          audience: AUDIENCE,
+          sub: mallorySub,
+          extraClaims: { email: `${mallorySub}@e2e.local`, preferred_username: mallorySub },
+        });
+
+        const provisionRes = await callTool(
+          port,
+          24,
+          'vikunja_auth',
+          { subcommand: 'provision' },
+          malloryToken,
+        );
+        const match = provisionRes.text.match(
+          /https?:\/\/[^\s"'\\)\]]+\/enroll\?ticket=[A-Za-z0-9_-]+/,
+        );
+        if (!match) {
+          throw new Error(`no enrollment URL for mallory: ${provisionRes.text}`);
+        }
+        const authorizeUrl = await expectRedirect(match[0]);
+        // Carol's IdP session completes the hop against mallory's state.
+        const forgedCallback = await expectRedirect(toHostLocal(authorizeUrl));
+        const res = await fetch(forgedCallback);
+        const body = await res.text();
+        if (res.status !== 403) {
+          throw new Error(`expected 403 on cross-account callback, got ${res.status}: ${body.slice(0, 300)}`);
+        }
+        const status = await callTool(port, 25, 'vikunja_auth', { subcommand: 'status' }, malloryToken);
+        if (!status.text.includes('No Vikunja API token linked yet')) {
+          throw new Error(`mallory must remain unprovisioned, got: ${status.text}`);
         }
       });
     }

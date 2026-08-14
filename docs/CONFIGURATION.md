@@ -569,6 +569,12 @@ OpenID callback, mints their `tk_*` token, and vaults it automatically. See
 `docs/OIDC-SETUP.md` §9a for the full validated design and IdP prerequisites (the MCP
 callback URL must be whitelisted on **Vikunja's** OAuth client).
 
+Enabling enrollment adds three hard config requirements (startup error otherwise):
+`transport=http`, an `oidc` block, and `http.publicUrl` (`VIKUNJA_MCP_HTTP_PUBLIC_URL`) —
+enrollment links and the OAuth `redirect_uri` are built from the public URL. The MCP
+access tokens must also carry an `email` (or `preferred_username`) claim: the callback
+pins the enrolled Vikunja account to the initiating identity and fails closed without it.
+
 | Setting | Config key | Env var | Notes |
 |---|---|---|---|
 | Enable enrollment | `enroll.enabled` | `VIKUNJA_MCP_ENROLL_ENABLED` | Default `false`. Manual token provisioning keeps working either way |

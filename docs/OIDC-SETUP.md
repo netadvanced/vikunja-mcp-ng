@@ -523,9 +523,27 @@ Two IdP-side consequences fall out of the verified facts:
 | `VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS` | `365` | Expiry of the auto-minted per-user `tk_*` token. On expiry the user re-runs `provision` and clicks the fresh link. |
 | `VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC` | `600` | How long an issued enrollment URL stays clickable. |
 
-Set `VIKUNJA_MCP_HTTP_PUBLIC_URL` when running behind a gateway — enrollment URLs and the
-OAuth `redirect_uri` are derived from its origin (falling back to the request `Host`
-header, then the bind address).
+`VIKUNJA_MCP_HTTP_PUBLIC_URL` is **required** whenever enrollment is enabled (a hard
+config error otherwise): enrollment links and the OAuth `redirect_uri` are built from it
+and must be a browser-reachable, IdP-whitelisted public URL — a bind address never is.
+A path prefix is preserved: `https://gw.example/vikunja-mcp/mcp` serves enrollment at
+`https://gw.example/vikunja-mcp/enroll`.
+
+**Identity pinning (forwarded-link protection).** Before anything is minted or stored,
+the callback fetches `GET /user` with the fresh Vikunja JWT and requires that the
+signed-in account matches the identity the enrollment link was issued to — `email` claim
+first (case-insensitive), `preferred_username` vs. username as the fallback, **failing
+closed** when the MCP access token carries neither claim. Without this, an attacker
+could request a link, hand it to a victim with an active SSO session, and capture the
+victim's Vikunja token under the attacker's identity. Consequence for operators: the
+connector's access tokens must include the `email` (or `preferred_username`) claim, and
+under the same-IdP precondition these match what Vikunja stores for OpenID users.
+
+Two more behaviours worth knowing: an enrollment ticket is only consumed once the code
+exchange with Vikunja **succeeds** — a transient upstream failure leaves the link
+redeemable — and a token-less `provision` by an **already-linked** identity returns
+"already linked" instead of minting a second (orphaned) full-permission token; rotate
+deliberately with `deprovision` → `provision`.
 
 **Failure behaviour:** if the Vikunja backend has OpenID disabled, no providers, or the
 named provider is missing, `vikunja_auth provision` (without a token) fails with a clear

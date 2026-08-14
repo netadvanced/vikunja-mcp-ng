@@ -25,7 +25,14 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
   validated against the go-vikunja v2.4.0 source and proven end-to-end in the extended
   `test:e2e:oidc` lane (opt-in `docker/e2e/docker-compose.oidc.yml` overlay + a full mock OIDC
   IdP; the Vikunja-callback → JWT → token-mint → vault chain runs against the real local 2.4.0
-  stack, including first-login account auto-creation). See `docs/OIDC-SETUP.md` §9a.
+  stack, including first-login account auto-creation). The callback **pins the enrolled account
+  to the initiating identity** (`GET /user` under the fresh JWT must match the caller's
+  `email`/`preferred_username` claims, failing closed — forwarded enrollment links cannot
+  capture another account's token), tickets are only consumed once the code exchange succeeds,
+  an already-linked identity gets "already linked" instead of a second minted token, and
+  enabling enrollment hard-requires `transport=http` + `oidc` + `VIKUNJA_MCP_HTTP_PUBLIC_URL`
+  (links/redirect_uri are built from the public URL, path prefixes preserved). See
+  `docs/OIDC-SETUP.md` §9a.
 
 ### Security
 

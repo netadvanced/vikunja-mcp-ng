@@ -202,7 +202,7 @@ export class EnrollmentService {
   private readonly basePath: string;
 
   constructor(private readonly deps: EnrollmentServiceDeps) {
-    this.restRequest = deps.restRequest ?? (vikunjaRestRequest as EnrollmentRestRequest);
+    this.restRequest = deps.restRequest ?? vikunjaRestRequest;
     this.basePath = new URL(deps.publicBaseUrl).pathname.replace(/\/+$/, '');
   }
 
