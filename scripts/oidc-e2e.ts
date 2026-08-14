@@ -335,64 +335,70 @@ async function main(): Promise<void> {
     throw new Error('Build failed; aborting oidc-e2e run.');
   }
 
-  // Enrollment lane setup happens BEFORE any Vikunja call: the overlay
-  // recreates the Vikunja container, and its OpenID provider init needs the
-  // mock IdP to already be answering discovery when first exercised.
+  // Everything after this point runs under one try/finally so a failure at
+  // ANY stage still restores the plain docker stack and closes the mock IdP
+  // — a leaked 0.0.0.0 listener would otherwise also keep the process alive
+  // forever (the hang this structure was introduced to fix).
   let idp: MockOidcIdp | undefined;
-  const carolSub = `oidc-e2e-carol-${Date.now()}`;
-  if (RUN_ENROLLMENT) {
-    log(`Starting the mock OIDC IdP on 0.0.0.0:${OIDC_IDP_PORT} (issuer host.docker.internal)...`);
-    idp = await startMockOidcIdp({
-      port: OIDC_IDP_PORT,
-      issuerHost: 'host.docker.internal',
-      clientId: 'vikunja-e2e',
-      clientSecret: 'vikunja-e2e-oidc-secret',
-      user: {
-        sub: carolSub,
-        email: `${carolSub}@e2e.local`,
-        name: 'Carol Enrollment',
-        preferredUsername: carolSub,
-      },
-    });
-    runBootstrap(true);
-  }
-
-  const realApiToken = await getRealVikunjaApiToken();
-
-  log('Starting the in-process mock OIDC issuer (RSA keypair + loopback JWKS server)...');
-  const key: TestKey = await generateTestKey('oidc-e2e-key-1');
-  const jwks: MockJwksServer = await startMockJwksServer([key.jwk]);
-
-  const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vikunja-oidc-e2e-vault-'));
-  const vaultPath = path.join(vaultDir, 'vault.json');
-  const vaultKey = crypto.randomBytes(32).toString('hex');
-  const port = 8877 + Math.floor(Math.random() * 500);
-
-  log(`Spawning dist/index.js in oidc-http mode on 127.0.0.1:${port}...`);
-  const childEnv: NodeJS.ProcessEnv = { ...process.env };
-  delete childEnv.VIKUNJA_API_TOKEN;
-  delete childEnv.VIKUNJA_API_TOKEN_FILE;
-  Object.assign(childEnv, {
-    VIKUNJA_URL,
-    VIKUNJA_MCP_TRANSPORT: 'http',
-    VIKUNJA_MCP_HTTP_HOST: '127.0.0.1',
-    VIKUNJA_MCP_HTTP_PORT: String(port),
-    VIKUNJA_MCP_HTTP_PATH: '/mcp',
-    VIKUNJA_MCP_OIDC_ISSUER: ISSUER,
-    VIKUNJA_MCP_OIDC_AUDIENCE: AUDIENCE,
-    VIKUNJA_MCP_OIDC_JWKS_URI: jwks.url,
-    VIKUNJA_MCP_VAULT_PATH: vaultPath,
-    VIKUNJA_MCP_VAULT_KEY: vaultKey,
-  });
-  if (RUN_ENROLLMENT) {
-    // One-click SSO enrollment (issue #220): the /enroll endpoints + the
-    // provision-without-token path. Provider selection is left on auto —
-    // the overlay configures exactly one.
-    childEnv.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
-  }
-
+  let jwks: MockJwksServer | undefined;
+  let vaultDir: string | undefined;
   let child: ChildProcess | undefined;
+  const carolSub = `oidc-e2e-carol-${Date.now()}`;
   try {
+    // Enrollment lane setup happens BEFORE any Vikunja call: the overlay
+    // recreates the Vikunja container, and its OpenID provider init needs
+    // the mock IdP to already be answering discovery when first exercised.
+    if (RUN_ENROLLMENT) {
+      log(`Starting the mock OIDC IdP on 0.0.0.0:${OIDC_IDP_PORT} (issuer host.docker.internal)...`);
+      idp = await startMockOidcIdp({
+        port: OIDC_IDP_PORT,
+        issuerHost: 'host.docker.internal',
+        clientId: 'vikunja-e2e',
+        clientSecret: 'vikunja-e2e-oidc-secret',
+        user: {
+          sub: carolSub,
+          email: `${carolSub}@e2e.local`,
+          name: 'Carol Enrollment',
+          preferredUsername: carolSub,
+        },
+      });
+      runBootstrap(true);
+    }
+
+    const realApiToken = await getRealVikunjaApiToken();
+
+    log('Starting the in-process mock OIDC issuer (RSA keypair + loopback JWKS server)...');
+    const key: TestKey = await generateTestKey('oidc-e2e-key-1');
+    jwks = await startMockJwksServer([key.jwk]);
+
+    vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vikunja-oidc-e2e-vault-'));
+    const vaultPath = path.join(vaultDir, 'vault.json');
+    const vaultKey = crypto.randomBytes(32).toString('hex');
+    const port = 8877 + Math.floor(Math.random() * 500);
+
+    log(`Spawning dist/index.js in oidc-http mode on 127.0.0.1:${port}...`);
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    delete childEnv.VIKUNJA_API_TOKEN;
+    delete childEnv.VIKUNJA_API_TOKEN_FILE;
+    Object.assign(childEnv, {
+      VIKUNJA_URL,
+      VIKUNJA_MCP_TRANSPORT: 'http',
+      VIKUNJA_MCP_HTTP_HOST: '127.0.0.1',
+      VIKUNJA_MCP_HTTP_PORT: String(port),
+      VIKUNJA_MCP_HTTP_PATH: '/mcp',
+      VIKUNJA_MCP_OIDC_ISSUER: ISSUER,
+      VIKUNJA_MCP_OIDC_AUDIENCE: AUDIENCE,
+      VIKUNJA_MCP_OIDC_JWKS_URI: jwks.url,
+      VIKUNJA_MCP_VAULT_PATH: vaultPath,
+      VIKUNJA_MCP_VAULT_KEY: vaultKey,
+    });
+    if (RUN_ENROLLMENT) {
+      // One-click SSO enrollment (issue #220): the /enroll endpoints + the
+      // provision-without-token path. Provider selection is left on auto —
+      // the overlay configures exactly one.
+      childEnv.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+    }
+
     child = spawn('node', [DIST_ENTRY], { cwd: REPO_ROOT, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
     const serverLogs: string[] = [];
     child.stdout?.on('data', d => serverLogs.push(String(d)));
@@ -711,8 +717,12 @@ async function main(): Promise<void> {
     if (child && !child.killed) {
       child.kill('SIGTERM');
     }
-    await jwks.close();
-    fs.rmSync(vaultDir, { recursive: true, force: true });
+    if (jwks) {
+      await jwks.close();
+    }
+    if (vaultDir) {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    }
     if (idp) {
       // Restore the plain stack FIRST (the container is recreated without the
       // OpenID provider), then stop the issuer it pointed at — other lanes

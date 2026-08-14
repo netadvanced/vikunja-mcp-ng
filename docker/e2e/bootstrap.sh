@@ -75,8 +75,16 @@ compose() {
 }
 
 wait_for_health() {
+  # OIDC overlay runs get a longer budget: Vikunja's startup provider
+  # discovery retries can stall for minutes when the container->host hop to
+  # the mock IdP hangs rather than fails fast (observed on Docker Desktop),
+  # and the container is healthy shortly after.
+  local wait_timeout=180
+  if [ "${VIKUNJA_E2E_OIDC:-0}" = "1" ]; then
+    wait_timeout=420
+  fi
   log "Waiting for $E2E_TARGET_ID (project $E2E_PROJECT, service $E2E_SERVICE) to report healthy..."
-  compose up -d --wait --wait-timeout 180
+  compose up -d --wait --wait-timeout "$wait_timeout"
   log "Stack is healthy on $VIKUNJA_URL"
 }
 

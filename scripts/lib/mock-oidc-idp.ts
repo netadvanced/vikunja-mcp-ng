@@ -240,6 +240,11 @@ export async function startMockOidcIdp(options: MockOidcIdpOptions): Promise<Moc
     issuer,
     localBase: `http://127.0.0.1:${options.port}`,
     close: () =>
-      new Promise<void>((resolve, reject) => server.close(err => (err ? reject(err) : resolve()))),
+      new Promise<void>((resolve, reject) => {
+        server.close(err => (err ? reject(err) : resolve()));
+        // Keep-alive sockets (harness fetch agent, the Vikunja container's Go
+        // HTTP client) would otherwise keep `close` pending indefinitely.
+        server.closeAllConnections();
+      }),
   };
 }
