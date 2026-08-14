@@ -57,8 +57,21 @@ TOKEN_TITLE="vikunja-mcp-e2e"
 
 log() { echo "[bootstrap] $*" >&2; }
 
+# Opt-in OpenID overlay (issue #220 — SSO enrollment lane). When
+# VIKUNJA_E2E_OIDC=1, docker-compose.oidc.yml configures Vikunja with one
+# OpenID provider pointing at the harness's mock IdP on the host, published
+# on E2E_OIDC_IDP_PORT (derived: E2E_PORT + 4000 -> 2.4.0-postgres: 12240).
+# Without the flag the overlay is never passed to compose, so existing lanes
+# are byte-for-byte unaffected; a later flag-less bootstrap run recreates the
+# container without the provider again (compose config-hash change).
+export E2E_OIDC_IDP_PORT="${E2E_OIDC_IDP_PORT:-$((E2E_PORT + 4000))}"
+
 compose() {
-  docker compose -f "$COMPOSE_FILE" --profile "$E2E_DB" "$@"
+  local files=(-f "$COMPOSE_FILE")
+  if [ "${VIKUNJA_E2E_OIDC:-0}" = "1" ]; then
+    files+=(-f "$SCRIPT_DIR/docker-compose.oidc.yml")
+  fi
+  docker compose "${files[@]}" --profile "$E2E_DB" "$@"
 }
 
 wait_for_health() {
