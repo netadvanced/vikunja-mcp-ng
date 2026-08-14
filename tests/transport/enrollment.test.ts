@@ -17,9 +17,17 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { EnrollmentService, type EnrollmentServiceDeps } from '../../src/transport/enrollment';
+import {
+  EnrollmentService,
+  getActiveEnrollmentService,
+  setActiveEnrollmentService,
+  setupEnrollment,
+  type EnrollmentServiceDeps,
+} from '../../src/transport/enrollment';
 import { EnrollmentTicketStore } from '../../src/transport/enrollmentTickets';
 import type { Identity } from '../../src/context/requestContext';
+import { setActiveVaultStore, type VaultFileStore } from '../../src/storage/vaultFileStore';
+import { ConfigurationError, type EnrollConfig, type HttpConfig } from '../../src/config/types';
 
 const alice: Identity = { issuer: 'https://idp.example.test/realms/e', sub: 'alice' };
 
@@ -518,5 +526,68 @@ describe('GET /enroll/callback', () => {
     })();
     expect(res.statusCode).toBe(500);
     expect(res.body).not.toContain('/var/secret/vault.json');
+  });
+});
+
+describe('setupEnrollment (production wiring)', () => {
+  const httpConfig: HttpConfig = {
+    host: '127.0.0.1',
+    port: 8765,
+    path: '/mcp',
+    publicUrl: 'https://mcp.example.test/mcp',
+  };
+  const enrollConfig = (overrides: Partial<EnrollConfig> = {}): EnrollConfig => ({
+    enabled: true,
+    tokenExpiryDays: 365,
+    ticketTtlSec: 600,
+    ...overrides,
+  });
+  const fakeVault = { provision: jest.fn() } as unknown as VaultFileStore;
+
+  afterEach(() => {
+    setActiveEnrollmentService(undefined);
+    setActiveVaultStore(undefined);
+  });
+
+  it('registers nothing when enrollment is disabled', () => {
+    setActiveVaultStore(fakeVault);
+    setupEnrollment(enrollConfig({ enabled: false }), httpConfig, VIKUNJA_URL);
+    expect(getActiveEnrollmentService()).toBeUndefined();
+  });
+
+  it('fails loud when enabled without an active vault (setup-order bug)', () => {
+    expect(() => setupEnrollment(enrollConfig(), httpConfig, VIKUNJA_URL)).toThrow(
+      ConfigurationError,
+    );
+  });
+
+  it('fails loud when enabled with no resolvable Vikunja URL', () => {
+    setActiveVaultStore(fakeVault);
+    expect(() => setupEnrollment(enrollConfig(), httpConfig, undefined)).toThrow(
+      ConfigurationError,
+    );
+  });
+
+  it('registers a service issuing URLs on the publicUrl origin (config URL wins over fallback)', () => {
+    setActiveVaultStore(fakeVault);
+    setupEnrollment(
+      enrollConfig({ vikunjaUrl: 'https://vikunja.example.test/api/v1' }),
+      httpConfig,
+      'http://fallback.example/api/v1',
+    );
+    const service = getActiveEnrollmentService();
+    expect(service).toBeDefined();
+    const url = new URL((service as EnrollmentService).createEnrollmentUrl(alice));
+    expect(url.origin).toBe('https://mcp.example.test');
+    expect(url.pathname).toBe('/enroll');
+  });
+
+  it('derives the public origin from the bind address when no publicUrl is set', () => {
+    setActiveVaultStore(fakeVault);
+    setupEnrollment(enrollConfig(), { host: '127.0.0.1', port: 9123, path: '/mcp' }, VIKUNJA_URL);
+    const url = new URL(
+      (getActiveEnrollmentService() as EnrollmentService).createEnrollmentUrl(alice),
+    );
+    expect(url.origin).toBe('http://127.0.0.1:9123');
   });
 });

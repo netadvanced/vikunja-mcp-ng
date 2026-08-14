@@ -39,7 +39,10 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Identity } from '../context/requestContext';
-import type { EnrollmentTicketStore } from './enrollmentTickets';
+import { EnrollmentTicketStore } from './enrollmentTickets';
+import { resolveResourceUrl } from './resourceMetadata';
+import { getActiveVaultStore } from '../storage/vaultFileStore';
+import { ConfigurationError, type EnrollConfig, type HttpConfig } from '../config/types';
 import { logger } from '../utils/logger';
 
 /** Browser-facing paths served by {@link EnrollmentService.handleRequest}. */
@@ -493,4 +496,59 @@ export function setActiveEnrollmentService(service: EnrollmentService | undefine
 /** The registered enrollment service, or `undefined` when enrollment is disabled/not in oidc-http mode. */
 export function getActiveEnrollmentService(): EnrollmentService | undefined {
   return activeEnrollmentService;
+}
+
+/**
+ * Production wiring, called from `src/index.ts` AFTER `setupOidcHttpAuth`
+ * (which registers the active vault store this feature writes through). A
+ * no-op when `enroll.enabled` is false; fails loud (`ConfigurationError`,
+ * matching the §2 "any missing → hard startup error" posture) when enabled
+ * without a vault or without a resolvable Vikunja URL — a deployment that
+ * advertises one-click enrollment but cannot complete it must not start.
+ *
+ * The public origin for enrollment URLs and the OAuth `redirect_uri` is
+ * resolved ONCE here from `http.publicUrl` (recommended behind a gateway)
+ * or the bind address — a single fixed value keeps the authorize hop's
+ * `redirect_uri` and the Vikunja callback's `redirect_url` byte-identical
+ * by construction (Vikunja replays the latter in its IdP token exchange).
+ */
+export function setupEnrollment(
+  enroll: EnrollConfig,
+  http: HttpConfig,
+  fallbackVikunjaUrl: string | undefined,
+): void {
+  if (!enroll.enabled) {
+    return;
+  }
+  const vault = getActiveVaultStore();
+  if (!vault) {
+    throw new ConfigurationError(
+      'enroll.enabled',
+      'SSO enrollment requires the oidc-http credential vault to be initialized first ' +
+        '(setupOidcHttpAuth). This is a wiring bug or enrollment was enabled outside ' +
+        'oidc-http mode.',
+    );
+  }
+  const vikunjaUrl = enroll.vikunjaUrl ?? fallbackVikunjaUrl;
+  if (!vikunjaUrl) {
+    throw new ConfigurationError(
+      'enroll.vikunjaUrl',
+      'SSO enrollment needs a Vikunja API base URL. Set VIKUNJA_MCP_ENROLL_VIKUNJA_URL ' +
+        'or the shared VIKUNJA_URL.',
+    );
+  }
+  const publicOrigin = new URL(resolveResourceUrl(http)).origin;
+  const service = new EnrollmentService({
+    tickets: new EnrollmentTicketStore(enroll.ticketTtlSec * 1000),
+    vault,
+    vikunjaUrl,
+    publicOrigin,
+    providerName: enroll.provider,
+    tokenExpiryDays: enroll.tokenExpiryDays,
+  });
+  setActiveEnrollmentService(service);
+  logger.info('SSO enrollment enabled (one-click auto-provisioning)', {
+    publicOrigin,
+    provider: enroll.provider ?? '(auto)',
+  });
 }
