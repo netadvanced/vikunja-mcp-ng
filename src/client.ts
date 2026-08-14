@@ -12,6 +12,8 @@ import type { AuthManager } from './auth/AuthManager';
 import { VikunjaClientFactory } from './client/VikunjaClientFactory';
 import { Mutex } from 'async-mutex';
 import { createAuthRequiredError } from './utils/error-handler';
+import { getRequestContext } from './context/requestContext';
+import { createOidcAuthRequiredError } from './auth/CredentialSource';
 
 export { VikunjaClientFactory } from './client/VikunjaClientFactory';
 
@@ -101,10 +103,67 @@ class ClientContext {
 /**
  * Convenience function to get the active AuthManager from context
  * (thread-safe). See `ClientContext.getAuthManager()`.
+ *
+ * Re-pointed per docs/OIDC-RESOURCE-SERVER.md §3d (D6): when an ALS
+ * `RequestContext` is bound (`oidc-http` mode, one scope per request — see
+ * `src/context/requestContext.ts`), its per-identity `AuthManager` is
+ * returned directly, so every one of the dozens of REST-migrated call
+ * sites that already recover credentials through this accessor gets
+ * per-user isolation for free. `stdio` mode never opens an ALS scope, so
+ * `getRequestContext()` is always `undefined` there and this falls through
+ * to the original global-singleton path, unchanged.
+ *
+ * Integration wiring (H1 §3c "Missing-credential behaviour"): when an ALS
+ * context is bound but its per-identity `AuthManager` carries no session,
+ * the caller is a validly-authenticated OIDC identity that has no linked
+ * Vikunja credential (the H1 `OidcStubCredentialSource` returns `null` for
+ * everyone until H2's vault lands). Every REST-migrated tool funnels through
+ * this accessor, so converting that state into the structured
+ * `AUTH_REQUIRED` "provision" error here — once — gives the whole tool
+ * surface the correct, `sub`-masked provisioning prompt instead of a generic
+ * "not connected" message, and never leaks whether any other identity is
+ * provisioned. `stdio` mode is unaffected (it never binds an ALS context).
  */
 export async function getAuthManagerFromContext(): Promise<AuthManager> {
+  const requestContext = getRequestContext();
+  if (requestContext) {
+    if (!requestContext.authManager.isAuthenticated()) {
+      throw createOidcAuthRequiredError(requestContext.identity);
+    }
+    return requestContext.authManager;
+  }
   const context = await ClientContext.getInstanceAsync();
   return context.getAuthManager();
+}
+
+/**
+ * Whether an ALS `RequestContext` is currently bound — i.e. this call is
+ * running inside `oidc-http` mode's per-request scope
+ * (`src/context/requestContext.ts`). `stdio` mode never opens one, so this
+ * is always `false` there.
+ *
+ * Closure-gate precedence fix (docs/OIDC-RESOURCE-SERVER.md §3c, H1
+ * integration owner-attention #2): dozens of tools gate on the
+ * process-global closure `AuthManager`'s `isAuthenticated()` *before* ever
+ * calling {@link getAuthManagerFromContext}. In `oidc-http` mode that
+ * closure manager is never authenticated (there is no static per-process
+ * credential — every identity's credential lives behind the vault, keyed by
+ * the per-request ALS context), so that up-front check always fired first
+ * and threw the tool's own generic "please connect" message — masking the
+ * correct, `sub`-scoped `createOidcAuthRequiredError` "provision" prompt
+ * that {@link getAuthManagerFromContext} would otherwise produce.
+ *
+ * The fix mirrors {@link getAuthManagerFromContext}'s own ALS-first order:
+ * every up-front gate consults `hasRequestContext()` first and, when bound,
+ * defers entirely to {@link getAuthManagerFromContext} (which throws the
+ * correctly-scoped error itself) instead of evaluating the closure
+ * manager's `isAuthenticated()` at all. `stdio` mode is unaffected — this
+ * always returns `false` there, so every gate's `else` branch (the
+ * pre-existing `authManager.isAuthenticated()` check) runs byte-for-byte
+ * unchanged.
+ */
+export function hasRequestContext(): boolean {
+  return getRequestContext() !== undefined;
 }
 
 /**

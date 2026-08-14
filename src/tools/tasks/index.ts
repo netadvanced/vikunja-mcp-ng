@@ -8,9 +8,10 @@ import { z } from 'zod';
 import type { AuthManager } from '../../auth/AuthManager';
 import type { VikunjaClientFactory } from '../../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../../types';
-import { getAuthManagerFromContext, setGlobalClientFactory } from '../../client';
+import { getAuthManagerFromContext, hasRequestContext, setGlobalClientFactory } from '../../client';
 import { logger } from '../../utils/logger';
 import { storageManager } from '../../storage';
+import { getEffectiveSessionId } from '../../context/requestContext';
 import { relationSchema, handleRelationSubcommands } from '../tasks-relations';
 import { TaskFilteringOrchestrator } from './filtering';
 import type { TaskListingArgs } from './types/filters';
@@ -60,15 +61,25 @@ const SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS = new Set<string>([
 ]);
 
 /**
- * Get session-scoped storage instance
+ * Get session-scoped storage instance.
+ *
+ * The session id is `(issuer,sub)`-keyed in `oidc-http` mode and falls back
+ * to the original apiUrl+token-prefix derivation in `stdio` mode — see
+ * `getEffectiveSessionId` (docs/OIDC-RESOURCE-SERVER.md §3d, isolation-table
+ * row #3). Resolves the ALS-bound per-identity manager first (falling back
+ * to the closure-captured one in `stdio` mode, where no request context is
+ * ever bound) — the closure manager is never authenticated in `oidc-http`
+ * mode, so calling `.getSession()` on it directly throws for every request
+ * regardless of provisioning status.
  */
 async function getSessionStorage(
   authManager: AuthManager,
 ): ReturnType<typeof storageManager.getStorage> {
-  const session = authManager.getSession();
-  const sessionId = session.apiToken
-    ? `${session.apiUrl}:${session.apiToken.substring(0, 8)}`
-    : 'anonymous';
+  const effectiveAuthManager = hasRequestContext()
+    ? await getAuthManagerFromContext()
+    : authManager;
+  const session = effectiveAuthManager.getSession();
+  const sessionId = getEffectiveSessionId(effectiveAuthManager);
   return storageManager.getStorage(sessionId, session.userId, session.apiUrl);
 }
 
@@ -410,7 +421,11 @@ export function registerTasksTool(
         logger.debug('Executing tasks tool', { subcommand: args.subcommand, args });
 
         // Check authentication with enhanced error message
-        if (!authManager.isAuthenticated()) {
+        // (closure-gate precedence fix: defer to the per-request context
+        // when bound — see hasRequestContext's doc comment, src/client.ts)
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task management features');
         }
 

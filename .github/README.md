@@ -127,6 +127,7 @@ Mocked unit tests cannot catch a whole class of bug here — several real defect
 - [Local testing](../docs/LOCAL-TESTING.md) · [Battle testing](../docs/BATTLE-TESTING.md)
 - [Releasing](../docs/RELEASING.md) — versioning policy and the release checklist · [CHANGELOG](../CHANGELOG.md)
 - [Docker Desktop MCP Toolkit how-to](../docs/DOCKER-DESKTOP-MCP.md)
+- [IBM MCP Context Forge deployment guide](../docs/CONTEXT-FORGE.md) — hosted, multi-user OIDC resource-server mode behind Context Forge + Keycloak (or any OIDC provider) · [OIDC resource-server reference](../docs/OIDC-RESOURCE-SERVER.md)
 
 ## License
 

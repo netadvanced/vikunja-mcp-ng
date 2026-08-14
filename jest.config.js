@@ -9,6 +9,16 @@ module.exports = {
   // tests/setup/suppress-webstorage-warning.js for why). It's loaded via
   // `NODE_OPTIONS="--require ..."` in package.json's test scripts instead.
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/**/__tests__/**'],
+  // `jose` ships ESM-only; transpile it through babel-jest so CJS test
+  // runs can import it (OIDC resource-server mode, feat/oidc-mode).
+  transform: {
+    '^.+\\.tsx?$': 'ts-jest',
+    '^.+\\.jsx?$': [
+      'babel-jest',
+      { plugins: ['@babel/plugin-transform-modules-commonjs'] },
+    ],
+  },
+  transformIgnorePatterns: ['/node_modules/(?!(jose)/)'],
   coverageThreshold: {
     global: {
       // Ratcheted gate — see CLAUDE.md "Coverage Thresholds" for policy.

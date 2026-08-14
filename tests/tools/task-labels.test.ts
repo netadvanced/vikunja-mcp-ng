@@ -14,6 +14,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 jest.mock('../../src/client', () => ({
   getAuthManagerFromContext: jest.fn().mockResolvedValue(undefined),
+  // stdio mode: no ALS-bound request context in these tests.
+  hasRequestContext: jest.fn().mockReturnValue(false),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
 }));

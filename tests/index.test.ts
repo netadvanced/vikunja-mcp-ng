@@ -43,6 +43,22 @@ const mockSetGlobalClientFactory = jest.fn();
 const mockClearGlobalClientFactory = jest.fn();
 const mockGetAuthManagerFromContext = jest.fn();
 
+// H1a: opt-in HTTP transport. Mocked here so these tests exercise only
+// src/index.ts's mode-selection wiring (does it call startHttpTransport
+// instead of StdioServerTransport, does it propagate a rejection instead of
+// falling through to stdio) — the OIDC-middleware refuse-to-start behavior
+// itself is unit-tested against the real implementation in
+// tests/transport/httpTransport.test.ts.
+const mockStartHttpTransport = jest.fn();
+
+// H1 integration: OIDC HTTP-auth wiring. Mocked so these tests exercise only
+// src/index.ts's orchestration (is setupOidcHttpAuth called with the loaded
+// oidc config when — and only when — one is present, before startHttpTransport
+// runs). The middleware-building itself is unit-tested against the real
+// implementation in tests/transport/oidcHttpAuth.test.ts and driven end-to-end
+// in tests/oidc/http-e2e.test.ts.
+const mockSetupOidcHttpAuth = jest.fn();
+
 const mockResolvePackageVersion = jest.fn().mockReturnValue('9.9.9-test');
 
 // Set up all mocks before imports
@@ -87,6 +103,14 @@ jest.mock('../src/client', () => ({
   setGlobalClientFactory: mockSetGlobalClientFactory,
   getAuthManagerFromContext: mockGetAuthManagerFromContext,
   clearGlobalClientFactory: mockClearGlobalClientFactory,
+}));
+
+jest.mock('../src/transport/httpTransport', () => ({
+  startHttpTransport: mockStartHttpTransport,
+}));
+
+jest.mock('../src/transport/oidcHttpAuth', () => ({
+  setupOidcHttpAuth: mockSetupOidcHttpAuth,
 }));
 
 describe('Main Server Entry Point (index.ts)', () => {
@@ -443,6 +467,141 @@ describe('Main Server Entry Point (index.ts)', () => {
     // Note: Testing the actual main() function execution in production mode
     // would require more complex mocking since it runs immediately on import
     // and we can't easily separate the import from the execution.
+  });
+
+  describe('Transport Mode Selection (main()) — H1a opt-in HTTP transport', () => {
+    it('stdio invariant: default mode (no VIKUNJA_MCP_TRANSPORT set) starts exactly as before this item', async () => {
+      const indexModule = require('../src/index');
+
+      await indexModule.main();
+
+      expect(MockStdioServerTransport).toHaveBeenCalledTimes(1);
+      expect(mockMcpServer.connect).toHaveBeenCalledTimes(1);
+      expect(mockMcpServer.connect).toHaveBeenCalledWith(mockStdioServerTransport);
+      expect(mockStartHttpTransport).not.toHaveBeenCalled();
+      expect(mockLogger.info).toHaveBeenCalledWith('Vikunja MCP server started');
+      expect(mockCreateSecureLogConfig).toHaveBeenCalledWith({
+        mode: undefined,
+        debug: undefined,
+        hasAuth: false,
+        url: undefined,
+        token: undefined,
+      });
+      expect(mockLogger.debug).toHaveBeenCalledWith('Configuration loaded', { config: 'test' });
+    });
+
+    it('stdio invariant: an explicit transport=stdio behaves identically to the default', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'stdio';
+      const indexModule = require('../src/index');
+
+      await indexModule.main();
+
+      expect(MockStdioServerTransport).toHaveBeenCalledTimes(1);
+      expect(mockMcpServer.connect).toHaveBeenCalledWith(mockStdioServerTransport);
+      expect(mockStartHttpTransport).not.toHaveBeenCalled();
+      expect(mockLogger.info).toHaveBeenCalledWith('Vikunja MCP server started');
+    });
+
+    it('mode selection: transport=http calls startHttpTransport and never touches the stdio branch', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_HOST = '0.0.0.0';
+      process.env.VIKUNJA_MCP_HTTP_PORT = '9999';
+      mockStartHttpTransport.mockResolvedValueOnce({
+        httpServer: {},
+        close: jest.fn(),
+      });
+      const indexModule = require('../src/index');
+
+      await indexModule.main();
+
+      expect(mockStartHttpTransport).toHaveBeenCalledTimes(1);
+      // First arg is now a per-request McpServer *factory* (stateless mode
+      // builds a fresh server per request), not a single server instance.
+      expect(mockStartHttpTransport).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.objectContaining({ host: '0.0.0.0', port: 9999, path: '/mcp' }),
+        // Third arg: the oidc config (RFC 9728 discovery) — undefined here
+        // since no OIDC env vars are set in this test.
+        undefined
+      );
+      expect(MockStdioServerTransport).not.toHaveBeenCalled();
+      expect(mockMcpServer.connect).not.toHaveBeenCalledWith(mockStdioServerTransport);
+      expect(mockLogger.info).toHaveBeenCalledWith('Vikunja MCP server started (http transport)');
+      expect(mockLogger.info).not.toHaveBeenCalledWith('Vikunja MCP server started');
+    });
+
+    it('OIDC wiring: transport=http with no oidc config does NOT call setupOidcHttpAuth (deny-mixed-mode left to startHttpTransport)', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+      const indexModule = require('../src/index');
+
+      await indexModule.main();
+
+      expect(mockSetupOidcHttpAuth).not.toHaveBeenCalled();
+      expect(mockStartHttpTransport).toHaveBeenCalledTimes(1);
+    });
+
+    it('OIDC wiring: transport=http with oidc config calls setupOidcHttpAuth with the loaded config before startHttpTransport', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/realms/h1/protocol/openid-connect/certs';
+      mockSetupOidcHttpAuth.mockResolvedValueOnce(undefined);
+      mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+      const indexModule = require('../src/index');
+
+      await indexModule.main();
+
+      expect(mockSetupOidcHttpAuth).toHaveBeenCalledTimes(1);
+      expect(mockSetupOidcHttpAuth).toHaveBeenCalledWith(
+        expect.objectContaining({
+          issuer: 'https://idp.example.test/realms/h1',
+          audience: 'vikunja-mcp-ng',
+          jwksUri: 'https://idp.example.test/realms/h1/protocol/openid-connect/certs',
+        }),
+        // Second arg: the vault config section (H2a) — passed through
+        // unconditionally regardless of whether vault env vars are set;
+        // setupOidcHttpAuth itself is responsible for failing loud if it's
+        // incomplete.
+        expect.anything(),
+        // Third arg: the http config section, so the middleware can build the
+        // RFC 9728 resource_metadata URL for 401 challenges.
+        expect.objectContaining({ path: '/mcp' })
+      );
+      expect(mockStartHttpTransport).toHaveBeenCalledTimes(1);
+      // Ordering: middleware registered before the listener starts.
+      expect(mockSetupOidcHttpAuth.mock.invocationCallOrder[0]).toBeLessThan(
+        mockStartHttpTransport.mock.invocationCallOrder[0]
+      );
+    });
+
+    it('refuse-to-start: transport=http propagates a startHttpTransport rejection and never starts stdio', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      mockStartHttpTransport.mockRejectedValueOnce(
+        new Error(
+          'transport=http requires the OIDC authentication middleware to be registered'
+        )
+      );
+      const indexModule = require('../src/index');
+
+      await expect(indexModule.main()).rejects.toThrow(/OIDC authentication middleware/i);
+
+      expect(MockStdioServerTransport).not.toHaveBeenCalled();
+      expect(mockMcpServer.connect).not.toHaveBeenCalled();
+      expect(mockLogger.info).not.toHaveBeenCalledWith('Vikunja MCP server started');
+      expect(mockLogger.info).not.toHaveBeenCalledWith('Vikunja MCP server started (http transport)');
+    });
+
+    it('config parsing: an invalid transport value fails configuration validation before any transport is chosen', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'carrier-pigeon';
+      const indexModule = require('../src/index');
+
+      await expect(indexModule.main()).rejects.toThrow();
+
+      expect(MockStdioServerTransport).not.toHaveBeenCalled();
+      expect(mockMcpServer.connect).not.toHaveBeenCalled();
+      expect(mockStartHttpTransport).not.toHaveBeenCalled();
+    });
   });
 
   describe('Exported Functions', () => {

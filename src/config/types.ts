@@ -187,6 +187,90 @@ export const TemplatesConfigSchema = z.object({
 
 export type TemplatesConfig = z.infer<typeof TemplatesConfigSchema>;
 
+// Transport mode. `stdio` (default) is the existing single-tenant behavior
+// and MUST stay byte-for-byte unchanged. `http` is the new opt-in
+// Streamable HTTP transport (see docs/OIDC-RESOURCE-SERVER.md §2/§3a) — it
+// requires the OIDC middleware seam (item H1b) to be registered before it
+// will actually serve traffic; see src/transport/oidcMiddlewareSeam.ts.
+export const TransportModeSchema = z.enum(['stdio', 'http']);
+
+export type TransportMode = z.infer<typeof TransportModeSchema>;
+
+// HTTP transport configuration (docs/OIDC-RESOURCE-SERVER.md §2.1, §3a).
+//
+// Host binding defaults to loopback (`127.0.0.1`) — a misconfigured
+// deployment fails closed (unreachable) rather than exposing an
+// unauthenticated-looking port to the LAN. `allowedHosts` feeds the SDK
+// transport's DNS-rebinding protection (`enableDnsRebindingProtection`,
+// always on for `http` mode); when unset, it defaults to `host:port` so the
+// default loopback binding gets working protection out of the box.
+export const HttpConfigSchema = z.object({
+  host: z.string().min(1).default('127.0.0.1'),
+  port: z.number().int().positive().max(65535).default(8765),
+  path: z.string().min(1).default('/mcp'),
+  allowedHosts: z.array(z.string()).optional(),
+  // Canonical public URL of the MCP endpoint (`http.publicUrl` /
+  // `VIKUNJA_MCP_HTTP_PUBLIC_URL`), e.g. `https://mcp-vikunja.example.ch/mcp`.
+  // Used as the RFC 9728 `resource` value on the
+  // `/.well-known/oauth-protected-resource` discovery document and to build
+  // the `resource_metadata` URL on 401 challenges
+  // (src/transport/resourceMetadata.ts). Optional: when unset, both are
+  // derived per-request from the `Host` header (+ `X-Forwarded-Proto`) and
+  // the configured `http.path` — setting it explicitly is recommended behind
+  // a reverse proxy, where the bind host/port say nothing about the public
+  // origin.
+  publicUrl: z.string().url().optional(),
+});
+
+export type HttpConfig = z.infer<typeof HttpConfigSchema>;
+
+// OIDC resource-server configuration (docs/OIDC-RESOURCE-SERVER.md §2.1, §3b).
+//
+// Consumed only when `transport=http` — it is the config half of the
+// deny-mixed-mode rule (§2 "Selection rule"): `http` mode with no `oidc`
+// block refuses to start (never serve unauthenticated HTTP), and an
+// incomplete block (e.g. `issuer` without `audience`/`jwksUri`) is a hard
+// config-validation error rather than a silent downgrade. Field names mirror
+// the JWT validator's `OidcJwtValidatorConfig` (src/auth/oidc/types.ts) 1:1;
+// the HTTP-auth wiring (src/transport/oidcHttpAuth.ts) maps straight across.
+export const OidcConfigSchema = z.object({
+  // Exact-match trusted issuer (`oidc.issuer`), compared with plain string
+  // equality — no prefix matching.
+  issuer: z.string().min(1),
+  // Required audience value(s) (`oidc.audience`). Env form is a
+  // comma-separated list; a single value stays a string.
+  audience: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+  // JWKS endpoint URL to fetch signing keys from (`oidc.jwksUri`).
+  jwksUri: z.string().url(),
+  // Allowed JWS `alg` values (`oidc.allowedAlgs`). Defaults (in the validator)
+  // to `['RS256']`; `none` is never accepted.
+  allowedAlgs: z.array(z.string().min(1)).min(1).optional(),
+  // Bounded clock-skew tolerance in seconds (`oidc.clockSkewSec`), applied to
+  // `exp`/`nbf`/`iat`. Validator default: 60.
+  clockSkewSec: z.number().int().nonnegative().optional(),
+  // Optional coarse scope gate (`oidc.requiredScope`) — a validly
+  // authenticated token missing it is a 403, not a 401.
+  requiredScope: z.string().min(1).optional(),
+});
+
+export type OidcConfig = z.infer<typeof OidcConfigSchema>;
+
+// Credential vault configuration (docs/OIDC-RESOURCE-SERVER.md §3c, D1/D4).
+//
+// Only meaningful in `oidc-http` mode: the vault maps validated `(issuer,
+// sub)` identities to an encrypted Vikunja `tk_` token (H2's real
+// `src/storage/vaultFileStore.ts`, replacing H1's `OidcStubCredentialSource`).
+// `path` is not secret (it's just a filesystem location); the master
+// encryption key (`VIKUNJA_MCP_VAULT_KEY[_FILE]`) rides the existing `_FILE`
+// secrets convention instead (`src/config/secrets.ts`, `SENSITIVE_ENV_VARS`)
+// and is never part of this config schema — never written to the
+// config-file, only ever read from the environment.
+export const VaultConfigSchema = z.object({
+  path: z.string().min(1).optional(),
+});
+
+export type VaultConfig = z.infer<typeof VaultConfigSchema>;
+
 // Complete Application Configuration Schema
 export const ApplicationConfigSchema = z.object({
   environment: z.nativeEnum(Environment).default(Environment.DEVELOPMENT),
@@ -202,6 +286,21 @@ export const ApplicationConfigSchema = z.object({
   // (env always wins over the config file, per standard layering).
   readOnly: z.boolean().default(false),
   templates: TemplatesConfigSchema.default({}),
+  // Transport mode switch (docs/OIDC-RESOURCE-SERVER.md §2). Defaults to
+  // `stdio` — today's single-tenant behavior, unchanged. `http` opts into
+  // the Streamable HTTP transport and, without the OIDC middleware seam
+  // registered, refuses to start (never serve unauthenticated HTTP).
+  transport: TransportModeSchema.default('stdio'),
+  http: HttpConfigSchema.default({}),
+  // OIDC resource-server config (docs/OIDC-RESOURCE-SERVER.md §3b). Optional
+  // and only meaningful in `http` mode — its presence is what lets `http`
+  // mode actually start (the JWT-validation middleware is built from it and
+  // registered on the transport's auth seam before the listener opens).
+  // Absent in `stdio` mode, which never reads it.
+  oidc: OidcConfigSchema.optional(),
+  // Credential vault path config (docs/OIDC-RESOURCE-SERVER.md §3c). Only
+  // consulted in `oidc-http` mode; `stdio` mode never reads it.
+  vault: VaultConfigSchema.default({}),
 });
 
 export type ApplicationConfig = z.infer<typeof ApplicationConfigSchema>;

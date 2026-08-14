@@ -23,6 +23,7 @@ jest.mock('../../src/client', () => ({
     .mockRejectedValue(new Error('no client context in this test')),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 
 jest.mock('../../src/utils/logger', () => ({

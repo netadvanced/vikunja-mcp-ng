@@ -15,6 +15,8 @@ import type {
   FeatureFlagsConfig,
   ModulesConfig,
   TemplatesConfig,
+  HttpConfig,
+  TransportMode,
 } from './types';
 import { Environment, ConfigurationError, ApplicationConfigSchema } from './types';
 import { readSecretEnv } from './secrets';
@@ -211,6 +213,21 @@ export class ConfigurationManager {
   public async getTemplatesConfig(): Promise<TemplatesConfig> {
     const config = await this.getConfiguration();
     return config.templates;
+  }
+
+  public async getHttpConfig(): Promise<HttpConfig> {
+    const config = await this.getConfiguration();
+    return config.http;
+  }
+
+  /**
+   * The transport mode (`stdio` | `http`). Synchronous, like `isReadOnly()`,
+   * because `src/index.ts`'s startup branch needs a cheap, non-async check
+   * before it has awaited anything else; `loadConfiguration()` itself is
+   * synchronous and cached after the first call.
+   */
+  public getTransportMode(): TransportMode {
+    return this.loadConfiguration().transport;
   }
 
   /**
@@ -518,6 +535,70 @@ export class ConfigurationManager {
       result.templates = templates;
     }
 
+    // Transport mode (docs/OIDC-RESOURCE-SERVER.md §2.1). `stdio` (default,
+    // unchanged) or `http` (opt-in Streamable HTTP transport).
+    this.assignEnvValue(result, 'transport', process.env.VIKUNJA_MCP_TRANSPORT, false);
+
+    // HTTP transport settings — only consulted when `transport=http`.
+    const http: Record<string, unknown> = {};
+    this.assignEnvValue(http, 'host', process.env.VIKUNJA_MCP_HTTP_HOST, false);
+    this.assignEnvValue(http, 'port', process.env.VIKUNJA_MCP_HTTP_PORT, true);
+    this.assignEnvValue(http, 'path', process.env.VIKUNJA_MCP_HTTP_PATH, false);
+    // Canonical public MCP URL for RFC 9728 discovery (`http.publicUrl`) —
+    // recommended behind a reverse proxy; derived from the request's Host
+    // header when unset. See src/transport/resourceMetadata.ts.
+    this.assignEnvValue(http, 'publicUrl', process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL, false);
+    const allowedHostsRaw = process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS;
+    if (allowedHostsRaw !== undefined) {
+      http.allowedHosts = allowedHostsRaw
+        .split(',')
+        .map(host => host.trim())
+        .filter(host => host.length > 0);
+    }
+    if (Object.keys(http).length > 0) {
+      result.http = http;
+    }
+
+    // OIDC resource-server settings — only consulted when `transport=http`
+    // (docs/OIDC-RESOURCE-SERVER.md §3b). A comma-separated `AUDIENCE`/
+    // `ALLOWED_ALGS` becomes an array; a single value stays a string. When
+    // no OIDC env vars are set at all this stays absent, so `http` mode with
+    // no OIDC config refuses to start (deny-mixed-mode, §2).
+    const oidc: Record<string, unknown> = {};
+    this.assignEnvValue(oidc, 'issuer', process.env.VIKUNJA_MCP_OIDC_ISSUER, false);
+    const audienceRaw = process.env.VIKUNJA_MCP_OIDC_AUDIENCE;
+    if (audienceRaw !== undefined) {
+      const audiences = audienceRaw
+        .split(',')
+        .map(value => value.trim())
+        .filter(value => value.length > 0);
+      oidc.audience = audiences.length === 1 ? audiences[0] : audiences;
+    }
+    this.assignEnvValue(oidc, 'jwksUri', process.env.VIKUNJA_MCP_OIDC_JWKS_URI, false);
+    const allowedAlgsRaw = process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS;
+    if (allowedAlgsRaw !== undefined) {
+      oidc.allowedAlgs = allowedAlgsRaw
+        .split(',')
+        .map(value => value.trim())
+        .filter(value => value.length > 0);
+    }
+    this.assignEnvValue(oidc, 'clockSkewSec', process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC, true);
+    this.assignEnvValue(oidc, 'requiredScope', process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE, false);
+    if (Object.keys(oidc).length > 0) {
+      result.oidc = oidc;
+    }
+
+    // Credential vault path (docs/OIDC-RESOURCE-SERVER.md §3c) — only the
+    // (non-secret) file path lives in config; the master key
+    // (`VIKUNJA_MCP_VAULT_KEY[_FILE]`) is read directly from the environment
+    // via the `_FILE` secrets convention (`src/config/secrets.ts`), never
+    // through this config layer.
+    const vault: Record<string, unknown> = {};
+    this.assignEnvValue(vault, 'path', process.env.VIKUNJA_MCP_VAULT_PATH, false);
+    if (Object.keys(vault).length > 0) {
+      result.vault = vault;
+    }
+
     return result;
   }
 
@@ -643,6 +724,20 @@ export class ConfigurationManager {
       templates: {
         persistenceEnabled: !!this.config.templates.persistPath,
       },
+      transport: this.config.transport,
+      http:
+        this.config.transport === 'http'
+          ? {
+              host: this.config.http.host,
+              port: this.config.http.port,
+              path: this.config.http.path,
+              allowedHostsConfigured: !!this.config.http.allowedHosts,
+              // Presence only — never the issuer/audience/JWKS values
+              // themselves, which are non-secret but noisy; the boolean is
+              // enough to confirm the deny-mixed-mode gate is satisfied.
+              oidcConfigured: !!this.config.oidc,
+            }
+          : undefined,
     };
 
     logger.info('Configuration loaded successfully', summary);
@@ -667,3 +762,7 @@ export const getModulesConfig = (): Promise<ModulesConfig> =>
 export const isReadOnly = (): boolean => ConfigurationManager.getInstance().isReadOnly();
 export const getTemplatesConfig = (): Promise<TemplatesConfig> =>
   ConfigurationManager.getInstance().getTemplatesConfig();
+export const getHttpConfig = (): Promise<HttpConfig> =>
+  ConfigurationManager.getInstance().getHttpConfig();
+export const getTransportMode = (): TransportMode =>
+  ConfigurationManager.getInstance().getTransportMode();

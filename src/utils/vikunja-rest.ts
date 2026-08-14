@@ -32,8 +32,48 @@ import {
   rewordBreakerOpenError,
   type RetryOptions,
 } from './retry';
+import { getRequestContext } from '../context/requestContext';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+/**
+ * Resolves the EFFECTIVE `AuthManager` for a request, closing the
+ * credential-threading gap (docs/OIDC-RESOURCE-SERVER.md §3d, D6).
+ *
+ * The problem this fixes: most tool handlers capture the process-global
+ * `AuthManager` as a closure parameter at `registerTools()` time and pass
+ * *that* straight into `vikunjaRestRequest(authManager, ...)`, even though in
+ * `oidc-http` mode the credential that should be used lives on the
+ * per-identity `AuthManager` bound in the ALS `RequestContext` for this
+ * request — not on the global closure manager (which, in `oidc-http` mode,
+ * is never authenticated). Fixing this at every call site would mean editing
+ * dozens of handlers and forever policing new ones; fixing it here, once, at
+ * the single choke point every REST call already funnels through, makes the
+ * whole tool surface identity-correct for free.
+ *
+ * Rule:
+ *  - When an ALS `RequestContext` is bound (`oidc-http` mode, one scope per
+ *    request), its per-identity `authManager` is authoritative and the passed
+ *    closure manager is ignored. Two concurrent identities therefore each send
+ *    their OWN vaulted token, never the process global's.
+ *  - Otherwise (`stdio` mode — which NEVER opens an ALS scope) the passed
+ *    manager is used unchanged, so stdio behaviour is byte-for-byte identical.
+ *  - `options.ignoreRequestContext` forces the passed manager to win even
+ *    inside an ALS scope. Exactly one caller needs this: `vikunja_auth
+ *    provision`'s pre-store token validation (`verifyConnection`), which must
+ *    probe Vikunja with a *throwaway* manager holding the not-yet-stored
+ *    candidate token, NOT the calling identity's still-unprovisioned ALS
+ *    manager.
+ */
+function resolveEffectiveAuthManager(
+  authManager: AuthManager,
+  options?: VikunjaRestRequestOptions,
+): AuthManager {
+  if (options?.ignoreRequestContext) {
+    return authManager;
+  }
+  return getRequestContext()?.authManager ?? authManager;
+}
 
 /**
  * Resolves the API base URL for a session, normalizing whether or not
@@ -170,6 +210,16 @@ export interface VikunjaRestRequestOptions {
   breakerName?: string;
   /** Overrides merged over this helper's default retry/backoff settings. */
   retry?: RetryOptions;
+  /**
+   * Forces the explicitly-passed `AuthManager` to be used even when an ALS
+   * `RequestContext` is bound — bypassing the per-identity manager the
+   * central {@link resolveEffectiveAuthManager} would otherwise substitute.
+   * The ONLY intended caller is `vikunja_auth provision`'s `verifyConnection`
+   * probe, which must validate a throwaway candidate token rather than the
+   * calling identity's (still unprovisioned) ALS credential. Leave unset
+   * everywhere else so identity threading stays automatic.
+   */
+  ignoreRequestContext?: boolean;
 }
 
 /**
@@ -272,6 +322,7 @@ export async function vikunjaRestRequest<T = unknown>(
   body?: unknown,
   options?: VikunjaRestRequestOptions,
 ): Promise<T> {
+  const effectiveAuthManager = resolveEffectiveAuthManager(authManager, options);
   const breakerName = options?.breakerName ?? deriveRestBreakerName(path);
   const retryOptions: RetryOptions = {
     ...DEFAULT_JSON_RETRY,
@@ -281,7 +332,7 @@ export async function vikunjaRestRequest<T = unknown>(
   const breaker = createCircuitBreaker(vikunjaRestRequestRaw, breakerName, retryOptions);
   const result = await withRetry(
     () =>
-      breaker.fire(authManager, method, path, body).catch((error: unknown) => {
+      breaker.fire(effectiveAuthManager, method, path, body).catch((error: unknown) => {
         throw rewordBreakerOpenError(error);
       }),
     retryOptions,
@@ -384,6 +435,7 @@ export async function vikunjaRestMultipartRequest<T = unknown>(
   form: FormData,
   options?: VikunjaRestRequestOptions,
 ): Promise<T> {
+  const effectiveAuthManager = resolveEffectiveAuthManager(authManager, options);
   // `-multipart` suffix is load bearing (#199): without it this derives the
   // SAME name as the JSON helper for sibling paths (`/user/settings/avatar`
   // vs `/user/settings/avatar/upload`, `/tasks/{id}/attachments` for both
@@ -405,7 +457,7 @@ export async function vikunjaRestMultipartRequest<T = unknown>(
   const breaker = createCircuitBreaker(vikunjaRestMultipartRequestRaw, breakerName, retryOptions);
   const result = await withRetry(
     () =>
-      breaker.fire(authManager, method, path, form).catch((error: unknown) => {
+      breaker.fire(effectiveAuthManager, method, path, form).catch((error: unknown) => {
         throw rewordBreakerOpenError(error);
       }),
     retryOptions,

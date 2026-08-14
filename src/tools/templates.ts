@@ -7,6 +7,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
+import { getAuthManagerFromContext, hasRequestContext } from '../client';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
 import { storageManager } from '../storage';
 // Imported directly from the module (not the `../storage` barrel) so that
@@ -21,6 +22,7 @@ import {
 import type { PersistedTemplateRecord } from '../storage/templateFileStore';
 import { ConfigurationManager } from '../config';
 import { logger } from '../utils/logger';
+import { getEffectiveSessionId } from '../context/requestContext';
 import { setTaskLabels } from '../utils/label-bulk';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
@@ -34,14 +36,24 @@ type VikunjaTask = components['schemas']['models.Task'];
 /**
  * Get session-scoped storage instance, hydrated from the templates
  * persistence file (if configured) on first touch for that session.
+ *
+ * The session id is `(issuer,sub)`-keyed in `oidc-http` mode and falls back
+ * to the original apiUrl+token-prefix derivation in `stdio` mode — see
+ * `getEffectiveSessionId` (docs/OIDC-RESOURCE-SERVER.md §3d, isolation-table
+ * row #4). Resolves the ALS-bound per-identity manager first (falling back
+ * to the closure-captured one in `stdio` mode, where no request context is
+ * ever bound) — the closure manager is never authenticated in `oidc-http`
+ * mode, so calling `.getSession()` on it directly throws for every request
+ * regardless of provisioning status.
  */
 async function getSessionStorage(
   authManager: AuthManager,
 ): ReturnType<typeof storageManager.getStorage> {
-  const session = authManager.getSession();
-  const sessionId = session.apiToken
-    ? `${session.apiUrl}:${session.apiToken.substring(0, 8)}`
-    : 'anonymous';
+  const effectiveAuthManager = hasRequestContext()
+    ? await getAuthManagerFromContext()
+    : authManager;
+  const session = effectiveAuthManager.getSession();
+  const sessionId = getEffectiveSessionId(effectiveAuthManager);
   const storage = await storageManager.getStorage(sessionId, session.userId, session.apiUrl);
 
   const persistPath = getTemplatesPersistPath();
@@ -186,8 +198,12 @@ export function registerTemplatesTool(
     getToolAnnotations('vikunja_templates'),
     async (args) => {
       try {
-        // Check authentication
-        if (!authManager.isAuthenticated()) {
+        // Check authentication (closure-gate precedence fix: defer to the
+        // per-request context when bound — see hasRequestContext's doc
+        // comment, src/client.ts)
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
           throw new MCPError(
             ErrorCode.AUTH_REQUIRED,
             'Authentication required. Please use vikunja_auth.connect first.',

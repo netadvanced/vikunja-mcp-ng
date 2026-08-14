@@ -47,6 +47,18 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS;
     delete process.env.VIKUNJA_MCP_READ_ONLY;
     delete process.env.VIKUNJA_MCP_TEMPLATES_FILE;
+    delete process.env.VIKUNJA_MCP_TRANSPORT;
+    delete process.env.VIKUNJA_MCP_HTTP_HOST;
+    delete process.env.VIKUNJA_MCP_HTTP_PORT;
+    delete process.env.VIKUNJA_MCP_HTTP_PATH;
+    delete process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS;
+    delete process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL;
+    delete process.env.VIKUNJA_MCP_OIDC_ISSUER;
+    delete process.env.VIKUNJA_MCP_OIDC_AUDIENCE;
+    delete process.env.VIKUNJA_MCP_OIDC_JWKS_URI;
+    delete process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS;
+    delete process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC;
+    delete process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE;
 
     // Reset singleton
     ConfigurationManager.reset();
@@ -664,6 +676,185 @@ describe('ConfigurationManager', () => {
 
       const templatesConfig = await ConfigurationManager.getInstance().getTemplatesConfig();
       expect(templatesConfig.persistPath).toBe('/env/templates.json');
+    });
+  });
+
+  describe('Transport Configuration', () => {
+    it('defaults to stdio transport with default http settings', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('stdio');
+      expect(config.http).toEqual({ host: '127.0.0.1', port: 8765, path: '/mcp' });
+    });
+
+    it('is settable to http via VIKUNJA_MCP_TRANSPORT', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('http');
+    });
+
+    it('is settable to http via the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ transport: 'http' }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('http');
+    });
+
+    it('lets VIKUNJA_MCP_TRANSPORT win over the config file value (env always wins)', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ transport: 'http' }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+      process.env.VIKUNJA_MCP_TRANSPORT = 'stdio';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('stdio');
+    });
+
+    it('rejects an invalid transport value (fail loud, never silently downgrade)', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'websocket';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+    });
+
+    it('reads host/port/path/allowedHosts from env vars', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_HOST = '0.0.0.0';
+      process.env.VIKUNJA_MCP_HTTP_PORT = '9000';
+      process.env.VIKUNJA_MCP_HTTP_PATH = '/api/mcp';
+      process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS = 'example.com:9000, other.example.com:9000';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http).toEqual({
+        host: '0.0.0.0',
+        port: 9000,
+        path: '/api/mcp',
+        allowedHosts: ['example.com:9000', 'other.example.com:9000'],
+      });
+    });
+
+    it('reads http settings from the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ transport: 'http', http: { host: '0.0.0.0', port: 9001 } })
+      );
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.host).toBe('0.0.0.0');
+      expect(config.http.port).toBe(9001);
+    });
+
+    it('reads the canonical public URL from VIKUNJA_MCP_HTTP_PUBLIC_URL', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'https://mcp-vikunja.example.ch/mcp';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.publicUrl).toBe('https://mcp-vikunja.example.ch/mcp');
+    });
+
+    it('leaves publicUrl unset by default (derive-from-Host fallback)', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.publicUrl).toBeUndefined();
+    });
+
+    it('reads publicUrl from the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ http: { publicUrl: 'https://mcp.example.org/mcp' } })
+      );
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.publicUrl).toBe('https://mcp.example.org/mcp');
+    });
+
+    it('rejects a publicUrl that is not a valid URL', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+    });
+
+    it('rejects a non-numeric port', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PORT = 'not-a-number';
+
+      // A non-numeric string fails the env-value numeric parse regex, so it
+      // is passed through as a string and fails HttpConfigSchema's z.number().
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+    });
+
+    it('rejects an out-of-range port', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PORT = '99999';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+    });
+
+    it('exposes the http config section via getHttpConfig', async () => {
+      process.env.VIKUNJA_MCP_HTTP_HOST = '0.0.0.0';
+
+      const httpConfig = await ConfigurationManager.getInstance().getHttpConfig();
+      expect(httpConfig.host).toBe('0.0.0.0');
+    });
+
+    it('exposes the transport mode synchronously via getTransportMode', () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+
+      expect(ConfigurationManager.getInstance().getTransportMode()).toBe('http');
+    });
+  });
+
+  describe('OIDC Configuration (resource-server, http mode)', () => {
+    it('leaves oidc undefined when no OIDC env vars are set', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc).toBeUndefined();
+    });
+
+    it('reads issuer/audience/jwksUri from env vars (single audience stays a string)', async () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI =
+        'https://idp.example.test/realms/h1/protocol/openid-connect/certs';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc).toEqual({
+        issuer: 'https://idp.example.test/realms/h1',
+        audience: 'vikunja-mcp-ng',
+        jwksUri: 'https://idp.example.test/realms/h1/protocol/openid-connect/certs',
+      });
+    });
+
+    it('splits a comma-separated audience into an array and parses optional tuning', async () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'aud-1, aud-2';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS = 'RS256, ES256';
+      process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC = '30';
+      process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE = 'vikunja';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc).toEqual({
+        issuer: 'https://idp.example.test/realms/h1',
+        audience: ['aud-1', 'aud-2'],
+        jwksUri: 'https://idp.example.test/certs',
+        allowedAlgs: ['RS256', 'ES256'],
+        clockSkewSec: 30,
+        requiredScope: 'vikunja',
+      });
+    });
+
+    it('fails loud on an incomplete OIDC block (issuer without audience/jwksUri)', () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+    });
+
+    it('rejects a non-URL jwksUri', () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
     });
   });
 
