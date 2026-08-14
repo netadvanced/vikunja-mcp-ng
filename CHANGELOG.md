@@ -56,6 +56,26 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 
 
+
+## [0.7.0-beta.1] - 2026-08-14
+
+**One-click SSO enrollment** (#220, #221): in oidc-http mode, a user whose Vikunja backend shares the MCP server's IdP no longer handles API tokens at all. `vikunja_auth provision` without a token now returns a personal enrollment link; one click walks the user's existing SSO session through Vikunja's native OpenID login, mints their API token server-side, and stores it encrypted in the vault under their identity. Manual token provisioning remains available for non-SSO backends.
+
+### Added
+
+- `/enroll` + `/enroll/callback` endpoints on the HTTP transport (served ahead of bearer auth; Host-allowlist enforced), backed by single-use, TTL-bound, identity-bound enrollment tickets
+- New `enroll` config block (`VIKUNJA_MCP_ENROLL_*`): enabled flag, target Vikunja URL, provider key, token expiry (default 365d); `VIKUNJA_MCP_HTTP_PUBLIC_URL` is required when enrollment is enabled and the server fails loud at startup otherwise (including under stdio transport)
+- Enrollment e2e lane: mock OIDC IdP + opt-in docker overlay run the full real chain against Vikunja 2.4.0 — code exchange, first-login account auto-creation, token mint, vault write
+
+### Security
+
+- **Enrollment is identity-pinned**: the callback verifies the IdP-authenticated browser user matches the ticket's identity (email/username claims, fail-closed) before vaulting — a forwarded enrollment link completed by another user's SSO session is refused (proven live in the e2e lane). Access tokens must carry an `email` or `preferred_username` claim for enrollment.
+- Adversarial review of the feature (12 confirmed findings) fixed pre-release: deferred ticket consumption (transient upstream failures no longer burn links), `/routes` response hardening (no garbage-permission tokens), malformed-URL handling, explicit `vikunjaUrl` mismatch rejection, already-linked short-circuit (no orphaned tokens), ticket-cap ordering, and all Vikunja calls routed through the shared retry/circuit-breaker layer
+
+### Documentation
+
+- OIDC-SETUP §9a: validated enrollment design with the Vikunja 2.4.0 ground truth (callback semantics, redirect-URI handling, provider config as a map); CONFIGURATION.md + TOOLS.md updated
+
 ## [0.7.0-beta.0] - 2026-08-14
 
 **Public beta of the multi-user OIDC resource-server mode.** Published on the npm `beta` dist-tag and GHCR `:beta`; `latest` stays on 0.6.2. Everything below is inert unless `VIKUNJA_MCP_TRANSPORT=http` — stdio deployments are unaffected.
