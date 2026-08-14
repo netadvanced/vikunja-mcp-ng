@@ -599,6 +599,28 @@ export class ConfigurationManager {
       result.vault = vault;
     }
 
+    // One-click SSO enrollment (issue #220, docs/OIDC-SETUP.md §"One-click
+    // SSO enrollment") — opt-in, only consulted in `oidc-http` mode.
+    const enroll: Record<string, unknown> = {};
+    this.assignEnvValue(enroll, 'enabled', process.env.VIKUNJA_MCP_ENROLL_ENABLED, true);
+    this.assignEnvValue(enroll, 'provider', process.env.VIKUNJA_MCP_ENROLL_PROVIDER, false);
+    this.assignEnvValue(enroll, 'vikunjaUrl', process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL, false);
+    this.assignEnvValue(
+      enroll,
+      'tokenExpiryDays',
+      process.env.VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS,
+      true,
+    );
+    this.assignEnvValue(
+      enroll,
+      'ticketTtlSec',
+      process.env.VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC,
+      true,
+    );
+    if (Object.keys(enroll).length > 0) {
+      result.enroll = enroll;
+    }
+
     return result;
   }
 

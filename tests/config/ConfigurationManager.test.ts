@@ -59,6 +59,11 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS;
     delete process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC;
     delete process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE;
+    delete process.env.VIKUNJA_MCP_ENROLL_ENABLED;
+    delete process.env.VIKUNJA_MCP_ENROLL_PROVIDER;
+    delete process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL;
+    delete process.env.VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS;
+    delete process.env.VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC;
 
     // Reset singleton
     ConfigurationManager.reset();
@@ -853,6 +858,47 @@ describe('ConfigurationManager', () => {
       process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
       process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
       process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+    });
+  });
+
+  describe('SSO Enrollment Configuration (oidc-http mode, issue #220)', () => {
+    it('defaults to disabled with the documented tuning defaults', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.enroll).toEqual({
+        enabled: false,
+        tokenExpiryDays: 365,
+        ticketTtlSec: 600,
+      });
+    });
+
+    it('reads the full enrollment block from env vars', async () => {
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      process.env.VIKUNJA_MCP_ENROLL_PROVIDER = 'keycloak';
+      process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL = 'http://localhost:8240/api/v1';
+      process.env.VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS = '30';
+      process.env.VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC = '120';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.enroll).toEqual({
+        enabled: true,
+        provider: 'keycloak',
+        vikunjaUrl: 'http://localhost:8240/api/v1',
+        tokenExpiryDays: 30,
+        ticketTtlSec: 120,
+      });
+    });
+
+    it('rejects a non-URL enrollment vikunjaUrl', () => {
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
+    });
+
+    it('rejects non-positive tokenExpiryDays', () => {
+      process.env.VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS = '0';
 
       expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(ConfigurationError);
     });
