@@ -96,6 +96,19 @@ export function registerTeamsTool(
       id: z.union([z.string(), z.number()]).optional(),
       name: z.string().optional(),
       description: z.string().optional(),
+      // models.Team.is_public — "Defines whether the team should be publicly
+      // discoverable when sharing a project". Present in the vendored 2.4.0
+      // spec but previously unsettable here (reads passed it through, writes
+      // never sent it).
+      isPublic: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether the team is publicly discoverable when sharing a project. IMPORTANT on ' +
+            'update: Vikunja replaces this flag on every team update, so a team update that ' +
+            'omits isPublic resets it to false — always re-send the current value when ' +
+            'updating a public team (see docs/VIKUNJA_API_ISSUES.md).',
+        ),
 
       // Member operations
       // 'toggleAdmin' matches the real API: POST /teams/{id}/members/{username}/admin
@@ -178,6 +191,9 @@ export function registerTeamsTool(
             if (args.description !== undefined) {
               teamData.description = args.description;
             }
+            if (args.isPublic !== undefined) {
+              teamData.is_public = args.isPublic;
+            }
 
             const team = await vikunjaRestRequest<Team>(authManager, 'PUT', '/teams', teamData);
 
@@ -231,16 +247,36 @@ export function registerTeamsTool(
 
             const teamId = validateAndConvertId(args.id, 'id');
 
-            if (!args.name && !args.description) {
+            if (!args.name && !args.description && args.isPublic === undefined) {
               throw new MCPError(
                 ErrorCode.VALIDATION_ERROR,
                 'At least one field to update is required',
               );
             }
 
+            // Partial payload, deliberately: `POST /teams/{id}` binds into an
+            // EMPTY server-side struct (pkg/web/handler/update.go) and xorm then
+            // writes only the non-zero columns, so omitted string fields are
+            // left alone rather than cleared.
+            //
+            // KNOWN SERVER-SIDE HAZARDS, reported not fixed here (both predate
+            // this field and are the same class of full-payload-replace problem
+            // `buildProjectUpdatePayload` in src/tools/projects/crud.ts solves
+            // for projects — fixing them means a read-then-merge, which is a
+            // deliberate scoping decision for its own change):
+            //  1. `is_public` is written unconditionally
+            //     (`s.ID(t.ID).UseBool("is_public").Update(t)`,
+            //     pkg/models/teams.go), so ANY update that omits it resets a
+            //     public team to private. Hence the warning on the schema field
+            //     above: re-send isPublic whenever updating a public team.
+            //  2. `name` carries `valid:"required,runelength(1|250)"`, so an
+            //     update that omits it is rejected by the server's validator
+            //     with HTTP 400 "Invalid model" — a description-only or
+            //     isPublic-only update needs `name` re-sent too.
             const updateData: Partial<Team> = {};
             if (args.name !== undefined) updateData.name = args.name;
             if (args.description !== undefined) updateData.description = args.description;
+            if (args.isPublic !== undefined) updateData.is_public = args.isPublic;
 
             // The API only routes team updates through POST /teams/{id};
             // PUT is reserved for team creation (PUT /teams) and is not a

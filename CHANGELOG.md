@@ -10,6 +10,43 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 ### Added
 
+- **Task fields that only worked on update now work on create too.** `percentDone` is
+  accepted by `vikunja_tasks create` and by `bulk-create` (both flavours), mapped to
+  `models.Task.percent_done`, and `percent_done` joins the `bulk-update` field allowlist —
+  previously bulk-update rejected a value single `update` accepted. `bucketId` (with the
+  optional `viewId`) is honoured on `create` as a post-create move through the same
+  view/bucket resolution `set-bucket` uses, instead of being accepted by the schema and
+  silently dropped; if the move fails the error names the created task id and the task is
+  **not** deleted. `position` on `create` is now rejected with a pointer to `set-position`
+  rather than silently ignored — task position is per-view state owned by a dedicated
+  endpoint that has no meaningful default for a brand-new task.
+  **Scale note, recorded so nobody "fixes" it:** `percentDone` is a **fraction 0-1**
+  (0.5 = 50%), not 0-100. Verified in go-vikunja — `PercentDone float64`
+  (`pkg/models/tasks.go`), the frontend's own picker stores `[0, 0.1, … 1]`
+  (`PercentDoneSelect.vue`), and every display site renders `percentDone * 100`.
+  Surfaced by democratize-technology/vikunja-mcp#94 (@joyjit) and #82 (@Alex-Blanes),
+  whose "0-100" wording describes their i18n input scale, not the wire contract.
+- **`vikunja_teams` can set `is_public`** on `create` and `update` via a new `isPublic`
+  field — `models.Team.is_public` ("defines whether the team should be publicly
+  discoverable when sharing a project") was in the vendored 2.4.0 spec and passed through
+  on reads, but was never sent on writes. Two **open server-side hazards** on
+  `POST /teams/{id}` are documented rather than worked around here (a fix needs a
+  read-then-merge, which changes every team update's payload and is deliberately scoped as
+  its own change): Vikunja binds the body into an empty model and writes `is_public`
+  unconditionally (`UseBool`), so an update that omits `isPublic` resets a public team to
+  private; and `name` carries a server-side `required` validator, so an update that omits
+  it is rejected with HTTP 400. Always re-send both. See
+  [docs/VIKUNJA_API_ISSUES.md §3a](docs/VIKUNJA_API_ISSUES.md).
+- **`VIKUNJA_BULK_WRITE_CONCURRENCY`** — opt-in override for bulk-**create** concurrency,
+  default unchanged at `1` (sequential), validated as a positive integer and capped at 10;
+  an invalid value warns and falls back instead of failing startup. **Raising this on a
+  SQLite-backed Vikunja reintroduces the "database is locked" storm and the circuit-breaker
+  cascade the sequential default exists to prevent** — it is for Postgres/MySQL-backed
+  instances only. Scoped to creates: bulk update and delete keep their fixed concurrency,
+  which is ordinary throughput tuning rather than a defect workaround. See
+  [docs/CONFIGURATION.md](docs/CONFIGURATION.md#bulk-write-concurrency). Proposed by
+  @joyjit in democratize-technology/vikunja-mcp#97.
+
 - **One-click SSO enrollment for oidc-http mode** (#220): when the Vikunja backend uses the same
   IdP as a native OpenID login provider, `vikunja_auth provision` called **without** a token now
   returns a short-lived, single-use enrollment URL instead of an error. The new browser endpoints

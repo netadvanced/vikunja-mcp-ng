@@ -99,7 +99,10 @@ truncation notice beyond that (`LIST_ITEM_RENDER_CAP`) — page further with
       be repeated) are forwarded to `GET /tasks` for cross-project listing
   - `create` - Create a new task
     - Required: title, projectId
-    - Optional: description, dueDate, priority, labels, assignees
+    - Optional: description, dueDate, startDate, endDate, priority, percentDone, labels, assignees, bucketId (+ optional viewId), repeatAfter/repeatMode
+    - `percentDone` is a **fraction between 0 and 1** (0.25 = 25%, 1 = 100%), matching Vikunja's `models.Task.percent_done` wire contract — **not** a 0-100 percentage. Same scale on `update` and `bulk-create`
+    - `bucketId` drops the new task straight into a Kanban bucket. Vikunja's task-create endpoint has no bucket field, so this is applied as a post-create move through the same view/bucket resolution `set-bucket` uses. If the move fails the error names the created task id and the task is **not** deleted (the task itself was created correctly) — retry the placement with `set-bucket`
+    - `position` is **rejected** on create, not silently ignored: task position is per-view state written through Vikunja's dedicated Task Position endpoint, which needs a `projectViewId` that has no sensible default for a brand-new task. Create the task, then call `set-position`
     - Validates date format (ISO 8601) and IDs
   - `get` - Get task details by ID
   - `update` - Update existing task
@@ -115,7 +118,8 @@ truncation notice beyond that (`LIST_ITEM_RENDER_CAP`) — page further with
     - Optional: `search` (username search, `s` query param), `page`, `perPage`
   - `comment` - List or add comments to tasks
   - `bulk-create` / `bulk-update` / `bulk-delete` - Bulk task operations (same underlying handlers as the standalone `vikunja_task_bulk` tool below)
-    - `bulk-update` required: taskIds array, field name, value. Supported fields: done, priority, due_date, project_id, assignees, labels. Uses per-task fetch+merge+update (does not call Vikunja's native bulk API, which can wipe omitted fields). **Cost:** O(n) get+update calls.
+    - `bulk-create` required: projectId, tasks array. Per-task fields: title (required), description, dueDate, startDate, endDate, priority, `percentDone` (fraction 0-1, same contract as `create`), labels, assignees, repeatAfter/repeatMode. Creates run **sequentially** by default — see `VIKUNJA_BULK_WRITE_CONCURRENCY` in [CONFIGURATION.md](CONFIGURATION.md#bulk-write-concurrency) for the opt-in override and its SQLite caveat
+    - `bulk-update` required: taskIds array, field name, value. Supported fields: done, priority, `percent_done` (fraction 0-1), due_date, start_date, end_date, project_id, assignees, labels, repeat_after, repeat_mode. Uses per-task fetch+merge+update (does not call Vikunja's native bulk API, which can wipe omitted fields). **Cost:** O(n) get+update calls.
     - `bulk-delete` required: taskIds array. Returns deleted task details for confirmation; handles partial failures gracefully. **Cost:** one delete call per task — batch in groups of 20 or fewer.
   - `attach` - Upload a file attachment to a task (`filePath` or base64 `fileContent`)
   - `list-attachments` - List a task's attachments (file name, size, mime, created, author), with optional `page`/`perPage`
@@ -281,9 +285,11 @@ description.
 
 - `vikunja_teams` - Team operations, fully via direct REST calls
   - `list` - List all teams with filters (pagination, search)
-  - `create` - Create new team (required: name; optional: description)
+  - `create` - Create new team (required: name; optional: description, `isPublic`)
   - `get` - Get a team by ID
-  - `update` - Update a team's name/description (required: id; at least one of name/description)
+  - `update` - Update a team's name/description/`isPublic` (required: id; at least one of name/description/isPublic)
+    - `isPublic` maps to `models.Team.is_public` — "defines whether the team should be publicly discoverable when sharing a project"
+    - **Always re-send `isPublic` (and `name`) when updating a public team.** Vikunja binds `POST /teams/{id}` into an empty model and then writes `is_public` unconditionally, so an update that omits it resets a public team to private; `name` carries a server-side `required` validator, so an update that omits it is rejected with HTTP 400 "Invalid model". Both are server-side behaviours, not client-side choices — see [VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md)
   - `delete` - Delete a team by ID
   - `members` - Manage team membership (keyed by **username**, not numeric user id — this is deliberate on Vikunja's part to prevent automated/enumerated user-id entry). Use `memberSubcommand`:
     - `list` - List a team's members (read from the team's embedded `members` array; there is no standalone list-members endpoint)

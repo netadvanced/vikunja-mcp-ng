@@ -13,6 +13,7 @@ interface Team {
   id?: number;
   name?: string;
   description?: string;
+  is_public?: boolean;
   created?: string;
   updated?: string;
 }
@@ -205,6 +206,52 @@ describe('Teams Tool', () => {
       await expect(callTool('create')).rejects.toThrow('Team name is required');
     });
 
+    // models.Team.is_public — "Defines whether the team should be publicly
+    // discoverable when sharing a project". Present in the vendored spec but
+    // previously unsettable: writes never sent it.
+    it('sends is_public when isPublic is supplied', async () => {
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockFetchResponse({ body: { ...mockTeam, is_public: true } })) as any;
+
+      await callTool('create', { name: 'Public Team', isPublic: true });
+
+      expect(global.fetch).toHaveBeenCalledWith('https://vikunja.example.com/api/v1/teams', {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: 'Public Team', is_public: true }),
+      });
+    });
+
+    it('sends is_public: false explicitly (the falsy value is not dropped)', async () => {
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(mockFetchResponse({ body: { ...mockTeam, is_public: false } })) as any;
+
+      await callTool('create', { name: 'Private Team', isPublic: false });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/teams',
+        expect.objectContaining({
+          body: JSON.stringify({ name: 'Private Team', is_public: false }),
+        }),
+      );
+    });
+
+    it('omits is_public entirely when isPublic is not supplied', async () => {
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: mockTeam })) as any;
+
+      await callTool('create', { name: 'Test Team' });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/teams',
+        expect.objectContaining({ body: JSON.stringify({ name: 'Test Team' }) }),
+      );
+    });
+
     it('should handle API errors', async () => {
       global.fetch = jest
         .fn()
@@ -344,6 +391,64 @@ describe('Teams Tool', () => {
         },
         body: JSON.stringify({ name: 'Updated', description: 'Updated desc' }),
       });
+    });
+
+    it('should send is_public when isPublic is supplied', async () => {
+      const updatedTeam = { ...mockTeam, is_public: true };
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: updatedTeam })) as any;
+
+      await callTool('update', { id: 1, name: 'Test Team', isPublic: true });
+
+      expect(global.fetch).toHaveBeenCalledWith('https://vikunja.example.com/api/v1/teams/1', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer test-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: 'Test Team', is_public: true }),
+      });
+    });
+
+    it('sends is_public: false explicitly (the falsy value is not dropped)', async () => {
+      const updatedTeam = { ...mockTeam, is_public: false };
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: updatedTeam })) as any;
+
+      await callTool('update', { id: 1, name: 'Test Team', isPublic: false });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/teams/1',
+        expect.objectContaining({
+          body: JSON.stringify({ name: 'Test Team', is_public: false }),
+        }),
+      );
+    });
+
+    it('accepts isPublic alone as the one field being updated', async () => {
+      const updatedTeam = { ...mockTeam, is_public: true };
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: updatedTeam })) as any;
+
+      await callTool('update', { id: 1, isPublic: true });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/teams/1',
+        expect.objectContaining({ body: JSON.stringify({ is_public: true }) }),
+      );
+    });
+
+    it('omits is_public entirely when isPublic is not supplied', async () => {
+      // Documented caveat (see the comment in src/tools/teams.ts): Vikunja
+      // writes is_public unconditionally server-side, so an update that omits
+      // it resets a public team to private. That is pre-existing server
+      // behavior, deliberately NOT worked around here — this test pins the
+      // payload so the day the workaround lands it is a visible change.
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: mockTeam })) as any;
+
+      await callTool('update', { id: 1, name: 'Test Team' });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/teams/1',
+        expect.objectContaining({ body: JSON.stringify({ name: 'Test Team' }) }),
+      );
     });
 
     it('should handle API errors when updating team', async () => {

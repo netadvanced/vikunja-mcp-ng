@@ -229,7 +229,25 @@ export function registerTasksTool(
       startDate: z.string().optional(),
       endDate: z.string().optional(),
       priority: z.number().min(0).max(5).optional(),
-      percentDone: z.number().min(0).max(1).optional(),
+      // percentDone is a FRACTION between 0 and 1 on the wire (0.5 = 50%), NOT
+      // 0-100. Verified against go-vikunja: the model field is
+      // `PercentDone float64` (pkg/models/tasks.go), the frontend's own picker
+      // stores [0, 0.1, ... 1]
+      // (frontend/src/components/tasks/partials/PercentDoneSelect.vue) and every
+      // display site renders `task.percentDone * 100` (e.g. KanbanCard.vue).
+      // Community PRs describing this as "0-100"
+      // (democratize-technology/vikunja-mcp#94, #82) are quoting the
+      // user-facing input scale of their i18n strings, not the API contract.
+      // DO NOT "fix" this to max(100).
+      percentDone: z
+        .number()
+        .min(0)
+        .max(1)
+        .optional()
+        .describe(
+          'Completion progress as a FRACTION between 0 and 1 (0.25 = 25%, 1 = 100%) — not a ' +
+            '0-100 percentage. Accepted by create, update and bulk-create.',
+        ),
       labels: z.array(z.number()).optional(),
       assignees: z.array(z.number()).optional(),
       // Kanban bucket fields (set-bucket, bulk-set-bucket subcommands).
@@ -333,6 +351,8 @@ export function registerTasksTool(
             startDate: z.string().optional(),
             endDate: z.string().optional(),
             priority: z.number().min(0).max(5).optional(),
+            // Fraction 0-1, same contract as the top-level percentDone above.
+            percentDone: z.number().min(0).max(1).optional(),
             labels: z.array(z.number()).optional(),
             assignees: z.array(z.number()).optional(),
             repeatAfter: z.number().min(0).optional(),

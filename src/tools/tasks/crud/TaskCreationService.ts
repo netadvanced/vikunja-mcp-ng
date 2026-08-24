@@ -20,6 +20,7 @@ import {
 } from '../validation';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
+import { moveTaskToBucket } from '../buckets';
 import type { components } from '../../../types/generated/vikunja-openapi';
 
 /** `models.Task` per the OpenAPI spec — request/response shape for the task endpoints. */
@@ -33,10 +34,33 @@ export interface CreateTaskArgs {
   startDate?: string;
   endDate?: string;
   priority?: number;
+  /**
+   * Completion fraction, **0-1** (0.5 = 50%) — the wire contract, not a
+   * percentage. See the `percentDone` note on the Zod schema in
+   * `../index.ts` for the go-vikunja evidence behind that range.
+   */
+  percentDone?: number;
   labels?: number[];
   assignees?: number[];
   repeatAfter?: number;
   repeatMode?: 'day' | 'week' | 'month' | 'year';
+  /**
+   * Drop the new task straight into a Kanban bucket. Applied as a
+   * post-create `moveTaskToBucket` call (the same view/bucket resolution
+   * `set-bucket` and `update` use) because `PUT /projects/{id}/tasks` has no
+   * bucket field of its own. Without this the tool's flat schema accepted
+   * `bucketId` on create and silently dropped it — the exact friction
+   * already fixed for `update`.
+   */
+  bucketId?: number;
+  /** Optional Kanban view id, used with `bucketId`. Auto-resolved when omitted. */
+  viewId?: number;
+  /**
+   * Not settable at create time — see the explicit rejection in `createTask`.
+   * Declared so the flat tool schema's `position` (used by `set-position`)
+   * has a home and can be rejected loudly instead of silently ignored.
+   */
+  position?: number;
   // Session ID for AORP response tracking
   sessionId?: string;
 }
@@ -95,6 +119,41 @@ export async function createTask(
       args.labels.forEach((id) => validateId(id, 'label ID'));
     }
 
+    // Validate the Kanban bucket move target if provided (applied after the
+    // create call, below).
+    if (args.bucketId !== undefined) {
+      validateId(args.bucketId, 'bucketId');
+    }
+    if (args.viewId !== undefined) {
+      validateId(args.viewId, 'viewId');
+    }
+
+    // `position` is deliberately NOT settable at create time. Task position is
+    // per-view state written through the dedicated Task Position endpoint
+    // (`POST /tasks/{id}/position`, models.TaskPosition), which needs a
+    // project_view_id that has no sensible default for a brand-new task — and
+    // Vikunja already assigns every new task a position in every view. Rather
+    // than accept the field and silently drop it (the trap `bucketId` used to
+    // fall into on update), say so.
+    if (args.position !== undefined) {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'position cannot be set when creating a task — Vikunja writes task position through ' +
+          'a per-view endpoint. Create the task, then use the set-position subcommand ' +
+          '(with projectViewId or viewKind).',
+      );
+    }
+
+    // percentDone is a FRACTION 0-1 on the wire (0.5 = 50%), not 0-100 — see
+    // the schema note in ../index.ts. Guard here too, since createTask is also
+    // reachable from callers that don't go through the Zod schema.
+    if (args.percentDone !== undefined && (args.percentDone < 0 || args.percentDone > 1)) {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'percentDone must be between 0 and 1 (a fraction, e.g. 0.5 for 50%)',
+      );
+    }
+
     // Build the initial task object with sanitized values
     const newTask: VikunjaTask = {
       title: sanitizedTitle,
@@ -115,6 +174,7 @@ export async function createTask(
     if (args.endDate !== undefined)
       newTask.end_date = normalizeDateForApi(args.endDate) ?? args.endDate;
     if (args.priority !== undefined) newTask.priority = args.priority;
+    if (args.percentDone !== undefined) newTask.percent_done = args.percentDone;
 
     // Handle repeat configuration. The generated `models.Task.repeat_mode`
     // type (0 | 1 | 2) matches the real API, unlike the legacy client's
@@ -175,6 +235,39 @@ export async function createTask(
       }
     }
 
+    // Drop the task into a Kanban bucket if requested. `PUT /projects/{id}/tasks`
+    // has no bucket field, so this reuses the exact post-write
+    // `moveTaskToBucket` step `update` performs (same view/bucket resolution as
+    // `set-bucket`). Deliberately NOT rolled back on failure, unlike the
+    // label/assignee steps above: the task itself was created correctly and
+    // only its column placement failed, so destroying it would lose real work.
+    // The error names the created task id so the caller can finish the job with
+    // `set-bucket`.
+    if (args.bucketId !== undefined) {
+      if (!createdTask.id) {
+        throw new MCPError(
+          ErrorCode.API_ERROR,
+          'Task was created but Vikunja did not return a task id, so bucketId could not be applied',
+        );
+      }
+      const createdId = createdTask.id;
+      try {
+        await moveTaskToBucket(authManager, {
+          taskId: createdId,
+          bucketId: args.bucketId,
+          viewId: args.viewId,
+          projectId: args.projectId,
+        });
+      } catch (bucketError) {
+        const detail = bucketError instanceof Error ? bucketError.message : String(bucketError);
+        throw new MCPError(
+          ErrorCode.API_ERROR,
+          `Task ${createdId} was created but could not be moved into bucket ${args.bucketId}: ` +
+            `${detail}. The task exists — retry the move with the set-bucket subcommand.`,
+        );
+      }
+    }
+
     // Fetch the complete task with labels and assignees
     const completeTask = createdTask.id
       ? await vikunjaRestRequest<VikunjaTask>(authManager, 'GET', `/tasks/${createdTask.id}`)
@@ -229,6 +322,9 @@ export async function createTask(
         // once the corresponding step has genuinely succeeded.
         labelsAdded: creationState.labelsAdded,
         assigneesAdded: creationState.assigneesAdded,
+        // Only reported once the move actually succeeded — a failed move
+        // throws above and never reaches this response.
+        ...(args.bucketId !== undefined && { bucketId: args.bucketId }),
       },
       undefined, // verbosity (ignored - using standard AORP)
       undefined, // useOptimizedFormat (ignored - using standard AORP)

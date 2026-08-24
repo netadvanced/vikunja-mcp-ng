@@ -38,8 +38,8 @@ export function registerTaskBulkTool(
         .optional()
         .describe(
           "The task field to bulk-update, e.g. 'due_date', 'start_date', 'end_date', " +
-            "'priority', 'done', 'project_id', 'assignees', 'labels', 'repeat_after', " +
-            "'repeat_mode'.",
+            "'priority', 'percent_done', 'done', 'project_id', 'assignees', 'labels', " +
+            "'repeat_after', 'repeat_mode'.",
         ),
       value: z
         .unknown()
@@ -83,6 +83,18 @@ export function registerTaskBulkTool(
                   'being sent to Vikunja.',
               ),
             priority: z.number().min(0).max(5).optional(),
+            // Completion progress as a FRACTION 0-1 (0.25 = 25%), matching
+            // Vikunja's wire contract — see the percentDone note in
+            // src/tools/tasks/index.ts. NOT a 0-100 percentage.
+            percentDone: z
+              .number()
+              .min(0)
+              .max(1)
+              .optional()
+              .describe(
+                'Completion progress as a FRACTION between 0 and 1 (0.25 = 25%) — not a ' +
+                  '0-100 percentage.',
+              ),
             labels: z.array(z.number()).optional(),
             assignees: z.array(z.number()).optional(),
             repeatAfter: z.number().min(0).optional(),

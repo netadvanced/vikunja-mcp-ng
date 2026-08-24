@@ -149,6 +149,35 @@ below are kept because they remain non-obvious and are easy to get wrong:
 
 **Impact:** None once routed correctly. The lesson generalizes: verify team-endpoint changes against the vendored OpenAPI spec (`docs/vikunja-openapi.json`) and, where the spec is ambiguous, against a live server — never against a client library's types.
 
+### 3a. `POST /teams/{id}` full-replace hazards (open)
+
+**Status:** ⚠️ Open, server-side, **reported not worked around** (as of the
+`isPublic` support added to `vikunja_teams`). Verified in go-vikunja source, not
+just observed:
+
+- `pkg/web/handler/update.go` binds the request body into an **empty** model
+  (`c.EmptyStruct()`); there is no server-side read-then-merge. So the payload a
+  client sends is the entire model the server sees.
+- `pkg/models/teams.go`'s `Team.Update` writes with
+  `s.ID(t.ID).UseBool("is_public").Update(t)`. xorm skips zero-valued non-bool
+  columns (so an omitted `description` is *not* cleared), but `UseBool` forces
+  `is_public` to be written **even when false** — therefore **any team update
+  that omits `is_public` resets a public team to private.**
+- `Team.Name` carries `valid:"required,runelength(1|250)"`, so the request is
+  rejected by the server's validator with HTTP 400 "Invalid model" when `name`
+  is omitted — a description-only or `isPublic`-only update fails.
+
+**Impact:** callers must re-send both `name` and `isPublic` on every
+`vikunja_teams update`, which the tool's field descriptions and
+[TOOLS.md](TOOLS.md) now say explicitly.
+
+**Fix shape (not applied yet):** the same read-then-merge treatment
+`buildProjectUpdatePayload` (`src/tools/projects/crud.ts`) applies to projects —
+`GET /teams/{id}`, merge the requested changes over the current model, then
+`POST`. That changes the request count and the wire payload of *every* team
+update, so it is deliberately scoped as its own change rather than being
+smuggled into a field addition.
+
 ## 4. Bulk Operations
 
 **Status:** ✅ Mostly resolved (spec-verified against vendored `v2.4.0`). The

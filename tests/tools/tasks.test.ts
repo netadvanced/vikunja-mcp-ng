@@ -678,8 +678,11 @@ describe('Tasks Tool', () => {
         reminderDates: ['2024-12-25T00:00:00Z'],
         hexColor: '#FF0000',
         relatedTasks: { related: [2, 3] },
-        bucketId: 1,
-        position: 100,
+        // bucketId and position used to be listed here as inert extras — the
+        // create path silently dropped both. They are now honoured (bucketId,
+        // via a post-create bucket move) and rejected (position, which is
+        // per-view state written by set-position) respectively, and both have
+        // dedicated coverage in tests/tools/tasks/create-field-gaps.test.ts.
       };
 
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 1 });
@@ -2366,7 +2369,7 @@ describe('Tasks Tool', () => {
           value: 'test',
         }),
       ).rejects.toThrow(
-        'Invalid field: invalid_field. Allowed fields: done, priority, due_date, start_date, end_date, project_id, assignees, labels',
+        'Invalid field: invalid_field. Allowed fields: done, priority, percent_done, due_date, start_date, end_date, project_id, assignees, labels',
       );
     });
 
