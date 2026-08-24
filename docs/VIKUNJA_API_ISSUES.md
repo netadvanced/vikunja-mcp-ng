@@ -149,34 +149,49 @@ below are kept because they remain non-obvious and are easy to get wrong:
 
 **Impact:** None once routed correctly. The lesson generalizes: verify team-endpoint changes against the vendored OpenAPI spec (`docs/vikunja-openapi.json`) and, where the spec is ambiguous, against a live server — never against a client library's types.
 
-### 3a. `POST /teams/{id}` full-replace hazards (open)
+### 3a. `POST /teams/{id}` full-replace hazards (worked around)
 
-**Status:** ⚠️ Open, server-side, **reported not worked around** (as of the
-`isPublic` support added to `vikunja_teams`). Verified in go-vikunja source, not
-just observed:
+**Status:** ⚠️ Open server-side, ✅ **worked around client-side** via
+read-then-merge in `vikunja_teams update`. Verified in go-vikunja source
+(v2.3.0), not just observed:
 
-- `pkg/web/handler/update.go` binds the request body into an **empty** model
+- `pkg/web/handler/update.go:37` binds the request body into an **empty** model
   (`c.EmptyStruct()`); there is no server-side read-then-merge. So the payload a
   client sends is the entire model the server sees.
-- `pkg/models/teams.go`'s `Team.Update` writes with
+- `pkg/models/teams.go:388` writes with
   `s.ID(t.ID).UseBool("is_public").Update(t)`. xorm skips zero-valued non-bool
-  columns (so an omitted `description` is *not* cleared), but `UseBool` forces
+  columns (so an omitted `description` is _not_ cleared), but `UseBool` forces
   `is_public` to be written **even when false** — therefore **any team update
   that omits `is_public` resets a public team to private.**
-- `Team.Name` carries `valid:"required,runelength(1|250)"`, so the request is
-  rejected by the server's validator with HTTP 400 "Invalid model" when `name`
-  is omitted — a description-only or `isPublic`-only update fails.
+- `Team.Name` (`pkg/models/teams.go:37`) carries
+  `valid:"required,runelength(1|250)"`, and `Team.Update`
+  (`pkg/models/teams.go:378`) returns `ErrTeamNameCannotBeEmpty{}` when it is
+  empty — so the request is rejected with HTTP 400 "Invalid model" when `name`
+  is omitted.
 
-**Impact:** callers must re-send both `name` and `isPublic` on every
-`vikunja_teams update`, which the tool's field descriptions and
-[TOOLS.md](TOOLS.md) now say explicitly.
+**Impact (now):** none for callers. `vikunja_teams update` `GET`s the team,
+spreads the whole returned model, overlays only the fields the caller actually
+supplied, and `POST`s the merged model back — so a description-only update
+preserves `name`, `is_public`, and every other server-returned field, and no
+longer 400s. Callers pass only what they want to change. An explicit
+`isPublic: false` still sets it to false: omission and an explicit `false` are
+distinguished, never conflated. **Cost:** one extra `GET /teams/{id}` per
+update, and a team update is consequently non-atomic — a concurrent edit
+between the read and the write is overwritten by the merged snapshot (the same
+trade-off `buildProjectUpdatePayload` has always carried for projects).
 
-**Fix shape (not applied yet):** the same read-then-merge treatment
-`buildProjectUpdatePayload` (`src/tools/projects/crud.ts`) applies to projects —
-`GET /teams/{id}`, merge the requested changes over the current model, then
-`POST`. That changes the request count and the wire payload of *every* team
-update, so it is deliberately scoped as its own change rather than being
-smuggled into a field addition.
+**Implementation:** `buildTeamUpdatePayload` (`src/tools/teams.ts`), the teams
+sibling of `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`) — the
+fetch → merge → POST pattern `docs/ENDPOINT-PLAYBOOK.md` §4 prescribes. The
+spread is deliberate over a hand-maintained allow-list, which would silently
+drop fields a newer server adds.
+
+**Not affected — checked, same-shaped but genuinely safe:** the team-membership
+writes. `PUT /teams/{id}/members` is a *create* (`TeamMember.Create`,
+`pkg/models/team_members.go:41`), `DELETE /teams/{id}/members/{username}` sends
+no body, and `POST /teams/{id}/members/{username}/admin`
+(`TeamMember.Update`, `pkg/models/team_members.go:149`) re-reads the membership
+row server-side and writes with `Cols("admin")`, so nothing is replaced.
 
 ## 4. Bulk Operations
 
