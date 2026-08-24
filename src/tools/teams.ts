@@ -72,6 +72,34 @@ interface VikunjaMessage {
   message: string;
 }
 
+/**
+ * Builds a team update payload by merging the team's current server-side state
+ * with the caller's requested changes.
+ *
+ * `POST /teams/{id}` is a full-model replace with no server-side merge (see the
+ * call-site comment in the `update` subcommand for the go-vikunja references),
+ * and `is_public` in particular is written unconditionally — so anything the
+ * body omits is lost. Spreading the whole fetched team, rather than copying a
+ * hand-maintained allow-list of fields, is deliberate: an allow-list silently
+ * drops fields the server adds in later versions. Mirrors
+ * `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`).
+ */
+export function buildTeamUpdatePayload(
+  currentTeam: TeamWithMembers,
+  updates: {
+    name?: string;
+    description?: string;
+    isPublic?: boolean;
+  },
+): TeamWithMembers {
+  return {
+    ...currentTeam,
+    ...(updates.name !== undefined && { name: updates.name }),
+    ...(updates.description !== undefined && { description: updates.description }),
+    ...(updates.isPublic !== undefined && { is_public: updates.isPublic }),
+  };
+}
+
 export function registerTeamsTool(
   server: McpServer,
   authManager: AuthManager,
@@ -104,10 +132,10 @@ export function registerTeamsTool(
         .boolean()
         .optional()
         .describe(
-          'Whether the team is publicly discoverable when sharing a project. IMPORTANT on ' +
-            'update: Vikunja replaces this flag on every team update, so a team update that ' +
-            'omits isPublic resets it to false — always re-send the current value when ' +
-            'updating a public team (see docs/VIKUNJA_API_ISSUES.md).',
+          'Whether the team is publicly discoverable when sharing a project. On update, ' +
+            'omitting this leaves the stored value untouched: the tool reads the team first ' +
+            'and merges your changes over it, so pass isPublic only when you actually want ' +
+            'to change it (see docs/VIKUNJA_API_ISSUES.md).',
         ),
 
       // Member operations
@@ -254,29 +282,42 @@ export function registerTeamsTool(
               );
             }
 
-            // Partial payload, deliberately: `POST /teams/{id}` binds into an
-            // EMPTY server-side struct (pkg/web/handler/update.go) and xorm then
-            // writes only the non-zero columns, so omitted string fields are
-            // left alone rather than cleared.
-            //
-            // KNOWN SERVER-SIDE HAZARDS, reported not fixed here (both predate
-            // this field and are the same class of full-payload-replace problem
-            // `buildProjectUpdatePayload` in src/tools/projects/crud.ts solves
-            // for projects — fixing them means a read-then-merge, which is a
-            // deliberate scoping decision for its own change):
-            //  1. `is_public` is written unconditionally
-            //     (`s.ID(t.ID).UseBool("is_public").Update(t)`,
-            //     pkg/models/teams.go), so ANY update that omits it resets a
-            //     public team to private. Hence the warning on the schema field
-            //     above: re-send isPublic whenever updating a public team.
-            //  2. `name` carries `valid:"required,runelength(1|250)"`, so an
-            //     update that omits it is rejected by the server's validator
-            //     with HTTP 400 "Invalid model" — a description-only or
-            //     isPublic-only update needs `name` re-sent too.
-            const updateData: Partial<Team> = {};
-            if (args.name !== undefined) updateData.name = args.name;
-            if (args.description !== undefined) updateData.description = args.description;
-            if (args.isPublic !== undefined) updateData.is_public = args.isPublic;
+            // `POST /teams/{id}` is a FULL-MODEL REPLACE, so we read-then-merge —
+            // the same pattern `buildTeamUpdatePayload`'s sibling
+            // `buildProjectUpdatePayload` (src/tools/projects/crud.ts) applies to
+            // projects, and the one docs/ENDPOINT-PLAYBOOK.md §4 prescribes.
+            // Verified in go-vikunja source (v2.3.0):
+            //  - `pkg/web/handler/update.go:37` binds the request body into an
+            //    EMPTY struct (`c.EmptyStruct()`); nothing is merged from the
+            //    stored row, so the body we send is the whole model the server sees.
+            //  - `pkg/models/teams.go:388` writes with
+            //    `s.ID(t.ID).UseBool("is_public").Update(t)`. xorm skips zero-valued
+            //    columns on a struct update, but `UseBool` forces `is_public` to be
+            //    written EVEN WHEN FALSE — so a partial body that omitted it
+            //    silently flipped a public team to private.
+            //  - `pkg/models/teams.go:37` marks `Name` `valid:"required,..."` and
+            //    `Team.Update` (`teams.go:378`) returns `ErrTeamNameCannotBeEmpty`
+            //    when it is empty — so a description-only partial body 400d.
+            // Merging the caller's deltas over the current model fixes all three.
+            const currentTeam = await vikunjaRestRequest<TeamWithMembers>(
+              authManager,
+              'GET',
+              `/teams/${teamId}`,
+            );
+
+            const updateData = buildTeamUpdatePayload(currentTeam, {
+              ...(args.name !== undefined && { name: args.name }),
+              ...(args.description !== undefined && { description: args.description }),
+              ...(args.isPublic !== undefined && { isPublic: args.isPublic }),
+            });
+
+            // Report the caller's explicit deltas, not every field the merged
+            // payload happens to carry.
+            const affectedFields = [
+              ...(args.name !== undefined ? ['name'] : []),
+              ...(args.description !== undefined ? ['description'] : []),
+              ...(args.isPublic !== undefined ? ['is_public'] : []),
+            ];
 
             // The API only routes team updates through POST /teams/{id};
             // PUT is reserved for team creation (PUT /teams) and is not a
@@ -292,7 +333,7 @@ export function registerTeamsTool(
               'update-team',
               `Team "${team.name}" updated successfully`,
               { team },
-              { teamId, affectedFields: Object.keys(updateData) },
+              { teamId, affectedFields },
             );
 
             return {

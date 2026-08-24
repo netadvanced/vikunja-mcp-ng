@@ -29,14 +29,8 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 - **`vikunja_teams` can set `is_public`** on `create` and `update` via a new `isPublic`
   field — `models.Team.is_public` ("defines whether the team should be publicly
   discoverable when sharing a project") was in the vendored 2.4.0 spec and passed through
-  on reads, but was never sent on writes. Two **open server-side hazards** on
-  `POST /teams/{id}` are documented rather than worked around here (a fix needs a
-  read-then-merge, which changes every team update's payload and is deliberately scoped as
-  its own change): Vikunja binds the body into an empty model and writes `is_public`
-  unconditionally (`UseBool`), so an update that omits `isPublic` resets a public team to
-  private; and `name` carries a server-side `required` validator, so an update that omits
-  it is rejected with HTTP 400. Always re-send both. See
-  [docs/VIKUNJA_API_ISSUES.md §3a](docs/VIKUNJA_API_ISSUES.md).
+  on reads, but was never sent on writes. On `update` it is safe to omit — see the
+  read-then-merge fix under **Fixed** below, which landed alongside it.
 - **`VIKUNJA_BULK_WRITE_CONCURRENCY`** — opt-in override for bulk-**create** concurrency,
   default unchanged at `1` (sequential), validated as a positive integer and capped at 10;
   an invalid value warns and falls back instead of failing startup. **Raising this on a
@@ -84,6 +78,29 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
   vulnerable version.
 
 ### Fixed
+
+- **`vikunja_teams update` no longer silently makes a public team private.**
+  `POST /teams/{id}` is a full-model replace with no server-side merge: Vikunja binds the
+  request body into an **empty** struct (`pkg/web/handler/update.go:37`), and
+  `Team.Update` writes with `s.ID(t.ID).UseBool("is_public").Update(t)`
+  (`pkg/models/teams.go:388`) — `UseBool` forces `is_public` to be written **even when
+  false**, so every update that omitted it flipped a public team to private, with no error
+  and nothing in the response to notice. The tool sent a partial body, so _any_ update that
+  did not explicitly re-send `isPublic` destroyed it. It now reads the team first and merges
+  the caller's explicit changes over the whole stored model before posting it back
+  (`buildTeamUpdatePayload`, the teams sibling of `buildProjectUpdatePayload` — the
+  fetch → merge → POST pattern of [docs/ENDPOINT-PLAYBOOK.md](docs/ENDPOINT-PLAYBOOK.md)
+  §4). Consequences: omitting `isPublic` preserves the stored value; passing
+  `isPublic: false` explicitly still sets it to false (omission and an explicit `false` are
+  never conflated); and a **description-only update no longer fails with HTTP 400** — `name`
+  carries a server-side `required` validator (`pkg/models/teams.go:37`,
+  `ErrTeamNameCannotBeEmpty` at `:378`) and the merged payload always carries it. Costs one
+  extra `GET /teams/{id}` per update, and makes a team update non-atomic against a
+  concurrent edit — the same trade-off projects have always carried. Team **membership**
+  writes were checked and are not affected (member add is a create, remove sends no body,
+  and the admin toggle re-reads the row server-side and writes with `Cols("admin")`). See
+  [docs/VIKUNJA_API_ISSUES.md §3a](docs/VIKUNJA_API_ISSUES.md). Surfaced by the teams work
+  @safrano9999 opened in democratize-technology/vikunja-mcp.
 
 - **Creates are no longer retried after an ambiguous failure** — a `PUT` whose response was lost
   (proxy timeout, load-balancer reset, gateway 5xx raised after the row was already persisted)
