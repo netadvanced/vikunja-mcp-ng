@@ -14,6 +14,8 @@ import {
   vikunjaRestMultipartRequest,
   resolveKanbanViewId,
   deriveRestBreakerName,
+  defaultRestShouldRetry,
+  shouldRetryNonIdempotentWrite,
 } from '../../src/utils/vikunja-rest';
 import { MCPError, ErrorCode } from '../../src/types';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
@@ -468,6 +470,212 @@ describe('vikunja-rest helper', () => {
         expect((error as MCPError).details?.statusCode).toBe(401);
       }
       expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Regression cover for the create/retry idempotency hazard: a create whose
+  // response is lost (proxy timeout, LB reset, gateway 5xx raised after the
+  // row was already persisted) must NOT be resent, or the user silently gets
+  // two tasks. Hazard flagged in democratize-technology/vikunja-mcp#98.
+  describe('non-idempotent write (create) retry policy', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('does NOT retry a create (PUT) that fails with 500 — an ambiguous write must not be duplicated', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', text: '' }),
+      );
+
+      const promise = vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', {
+        title: 'Only once',
+      });
+      promise.catch(() => {});
+      // Advance well past every default backoff window; if a retry were
+      // scheduled at all it would have fired by now.
+      await jest.advanceTimersByTimeAsync(5000);
+
+      await expect(promise).rejects.toThrow('HTTP 500');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT retry a create that fails with 502/503 from a proxy either', async () => {
+      for (const status of [502, 503]) {
+        mockFetch.mockReset();
+        circuitBreakerRegistry.clear();
+        mockFetch.mockResolvedValue(
+          mockResponse({ ok: false, status, statusText: 'Bad', text: '' }),
+        );
+
+        const promise = vikunjaRestRequest(authManager, 'PUT', '/labels', { title: 'x' });
+        promise.catch(() => {});
+        await jest.advanceTimersByTimeAsync(5000);
+
+        await expect(promise).rejects.toThrow(`HTTP ${status}`);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('does NOT retry a create after a mid-flight ECONNRESET (the response may have been lost)', async () => {
+      mockFetch.mockRejectedValue(
+        Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      );
+
+      const promise = vikunjaRestRequest(authManager, 'PUT', '/projects', { title: 'x' });
+      promise.catch(() => {});
+      await jest.advanceTimersByTimeAsync(5000);
+
+      await expect(promise).rejects.toThrow('ECONNRESET');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('STILL retries a create on 429 — the rate limiter rejected it before anything was created', async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({ ok: false, status: 429, statusText: 'Too Many Requests', text: '' }),
+        )
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 12 }) }));
+
+      const promise = vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', { title: 'x' });
+      await jest.advanceTimersByTimeAsync(250);
+
+      await expect(promise).resolves.toEqual({ id: 12 });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('STILL retries a create when the connection was refused — no request bytes were sent', async () => {
+      mockFetch
+        .mockRejectedValueOnce(
+          Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+        )
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 13 }) }));
+
+      const promise = vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', { title: 'x' });
+      await jest.advanceTimersByTimeAsync(250);
+
+      await expect(promise).resolves.toEqual({ id: 13 });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('STILL retries a create when the TLS/TCP handshake timed out (undici nested cause shape)', async () => {
+      mockFetch
+        .mockRejectedValueOnce(
+          Object.assign(new TypeError('fetch failed'), {
+            cause: { code: 'UND_ERR_CONNECT_TIMEOUT' },
+          }),
+        )
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 14 }) }));
+
+      const promise = vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', { title: 'x' });
+      await jest.advanceTimersByTimeAsync(250);
+
+      await expect(promise).resolves.toEqual({ id: 14 });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry a create when the circuit breaker is open (plain Error, no status)', async () => {
+      const opts = {
+        breakerName: 'test-breaker-create-open',
+        retry: { errorThresholdPercentage: 1, volumeThreshold: 1, resetTimeout: 60_000 },
+      };
+      mockFetch.mockResolvedValue(
+        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', text: '' }),
+      );
+      await expect(
+        vikunjaRestRequest(authManager, 'PUT', '/projects/4/tasks', { title: 'x' }, opts),
+      ).rejects.toThrow('HTTP 500');
+
+      // Breaker now open: the call fails fast, and the open-breaker error
+      // (a plain Error with neither a status nor a preRequest marker) must
+      // not be retried either.
+      mockFetch.mockClear();
+      const promise = vikunjaRestRequest(
+        authManager,
+        'PUT',
+        '/projects/4/tasks',
+        { title: 'x' },
+        opts,
+      );
+      promise.catch(() => {});
+      await jest.advanceTimersByTimeAsync(5000);
+      await expect(promise).rejects.toThrow('circuit breaker open');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('CONTRAST: an idempotent update (POST) still retries a 500 as before', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', text: '' }),
+      );
+
+      const promise = vikunjaRestRequest(authManager, 'POST', '/tasks/7', { title: 'x' });
+      promise.catch(() => {});
+      await jest.advanceTimersByTimeAsync(250);
+      await jest.advanceTimersByTimeAsync(500);
+
+      await expect(promise).rejects.toThrow('HTTP 500');
+      // Initial attempt + the 2 default retries.
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('CONTRAST: a DELETE still retries a mid-flight ECONNRESET as before', async () => {
+      mockFetch
+        .mockRejectedValueOnce(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }))
+        .mockResolvedValueOnce(mockResponse({ text: '' }));
+
+      const promise = vikunjaRestRequest(authManager, 'DELETE', '/tasks/7');
+      await jest.advanceTimersByTimeAsync(250);
+
+      await expect(promise).resolves.toBeNull();
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('lets a caller opt back in to full retry semantics for a PUT it knows is safe', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse({ ok: false, status: 500, statusText: 'Internal Server Error', text: '' }),
+      );
+
+      const promise = vikunjaRestRequest(authManager, 'PUT', '/tasks/7/labels', undefined, {
+        retry: { maxRetries: 1, initialDelay: 10, shouldRetry: defaultRestShouldRetry },
+      });
+      promise.catch(() => {});
+      await jest.advanceTimersByTimeAsync(50);
+
+      await expect(promise).rejects.toThrow('HTTP 500');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('shouldRetryNonIdempotentWrite', () => {
+    it('retries only 429 among HTTP statuses', () => {
+      const withStatus = (statusCode: number): MCPError =>
+        new MCPError(ErrorCode.API_ERROR, 'boom', { statusCode });
+      expect(shouldRetryNonIdempotentWrite(withStatus(429))).toBe(true);
+      expect(shouldRetryNonIdempotentWrite(withStatus(500))).toBe(false);
+      expect(shouldRetryNonIdempotentWrite(withStatus(503))).toBe(false);
+      expect(shouldRetryNonIdempotentWrite(withStatus(400))).toBe(false);
+    });
+
+    it('retries a pre-request network failure but not a merely-transient one', () => {
+      expect(
+        shouldRetryNonIdempotentWrite(
+          new MCPError(ErrorCode.API_ERROR, 'boom', { transient: true, preRequest: true }),
+        ),
+      ).toBe(true);
+      expect(
+        shouldRetryNonIdempotentWrite(
+          new MCPError(ErrorCode.API_ERROR, 'boom', { transient: true, preRequest: false }),
+        ),
+      ).toBe(false);
+      expect(shouldRetryNonIdempotentWrite(new MCPError(ErrorCode.API_ERROR, 'boom'))).toBe(false);
+    });
+
+    it('never retries a non-MCPError', () => {
+      expect(shouldRetryNonIdempotentWrite(new Error('timeout connection network'))).toBe(false);
+      expect(shouldRetryNonIdempotentWrite('nope')).toBe(false);
     });
   });
 

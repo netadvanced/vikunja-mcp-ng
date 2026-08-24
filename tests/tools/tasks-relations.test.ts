@@ -637,10 +637,12 @@ describe('Task Relations Tool', () => {
       expect(callsByMethod('PUT')).toHaveLength(1);
     });
 
-    it('retries a 500 on relate (PUT) then surfaces it (5xx IS retried)', async () => {
-      // DEFAULT_JSON_RETRY.maxRetries === 2 (src/utils/vikunja-rest.ts), so
-      // withRetry makes 1 initial + 2 retries = 3 PUT attempts before surfacing.
-      // The refresh GET is never reached because the write throws.
+    it('does NOT retry a 500 on relate — PUT is a create, so an ambiguous 5xx is not resent', async () => {
+      // Creating a relation is a non-idempotent write: a 5xx does not say
+      // whether the relation was persisted before the response was lost, so
+      // `shouldRetryNonIdempotentWrite` (src/utils/vikunja-rest.ts) surfaces
+      // it after a single attempt rather than resending. Contrast with the
+      // DELETE case below, which is idempotent and still retries.
       fetchMock.mockResolvedValue(restError(500, 'Internal Server Error', 'boom'));
 
       await expect(
@@ -651,7 +653,25 @@ describe('Task Relations Tool', () => {
           relationKind: 'subtask',
         }),
       ).rejects.toThrow('HTTP 500');
-      expect(callsByMethod('PUT')).toHaveLength(3);
+      expect(callsByMethod('PUT')).toHaveLength(1);
+    });
+
+    it('retries a 500 on unrelate (DELETE) then surfaces it (5xx IS still retried for idempotent writes)', async () => {
+      // DEFAULT_JSON_RETRY.maxRetries === 2 (src/utils/vikunja-rest.ts), so
+      // withRetry makes 1 initial + 2 retries = 3 DELETE attempts before
+      // surfacing. This is the contrast case for the create policy: dropping
+      // a relation twice converges on the same state, so retrying is safe.
+      fetchMock.mockResolvedValue(restError(500, 'Internal Server Error', 'boom'));
+
+      await expect(
+        server.executeTool('vikunja_tasks', {
+          subcommand: 'unrelate',
+          id: 1,
+          otherTaskId: 2,
+          relationKind: 'subtask',
+        }),
+      ).rejects.toThrow('HTTP 500');
+      expect(callsByMethod('DELETE')).toHaveLength(3);
     });
   });
 });
