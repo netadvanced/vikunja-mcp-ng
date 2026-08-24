@@ -23,6 +23,12 @@ export interface BulkCreateTaskData {
   startDate?: string;
   endDate?: string;
   priority?: number;
+  /**
+   * Completion fraction, **0-1** (0.5 = 50%) — Vikunja's wire contract, not a
+   * 0-100 percentage. See the `percentDone` note on the Zod schema in
+   * `../index.ts`.
+   */
+  percentDone?: number;
   labels?: number[];
   assignees?: number[];
   repeatAfter?: number;
@@ -131,7 +137,7 @@ export const bulkOperationValidator = {
     // Handle numeric fields that come as strings
     if (
       args.field &&
-      ['priority', 'project_id', 'repeat_after'].includes(args.field) &&
+      ['priority', 'percent_done', 'project_id', 'repeat_after'].includes(args.field) &&
       typeof args.value === 'string'
     ) {
       const numValue = Number(args.value);
@@ -155,6 +161,11 @@ export const bulkOperationValidator = {
     const allowedFields = [
       'done',
       'priority',
+      // Fraction 0-1 (0.5 = 50%), matching models.Task.percent_done — see the
+      // percentDone note in ../index.ts. This was missing while `update`
+      // supported the field, so bulk-update rejected a value single update
+      // accepted.
+      'percent_done',
       'due_date',
       'start_date',
       'end_date',
@@ -176,6 +187,15 @@ export const bulkOperationValidator = {
     if (args.field === 'priority' && typeof args.value === 'number') {
       if (args.value < 0 || args.value > 5) {
         throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Priority must be between 0 and 5');
+      }
+    }
+
+    if (args.field === 'percent_done' && typeof args.value === 'number') {
+      if (args.value < 0 || args.value > 1) {
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          'percent_done must be between 0 and 1 (a fraction, e.g. 0.5 for 50%)',
+        );
       }
     }
 
@@ -306,6 +326,19 @@ export const bulkOperationValidator = {
 
       if (task.labels) {
         task.labels.forEach((id) => validateId(id, `tasks[${index}].label ID`));
+      }
+
+      // Fraction 0-1, not 0-100 — see BulkCreateTaskData.percentDone. Checked
+      // here as well as in the Zod schema because createOneBulkTask/
+      // bulkCreateTasks are exported and reachable without it.
+      if (
+        task.percentDone !== undefined &&
+        (typeof task.percentDone !== 'number' || task.percentDone < 0 || task.percentDone > 1)
+      ) {
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          `tasks[${index}].percentDone must be between 0 and 1 (a fraction, e.g. 0.5 for 50%)`,
+        );
       }
     });
   },

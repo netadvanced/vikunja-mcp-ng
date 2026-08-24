@@ -53,6 +53,21 @@ type BulkAssignees = components['schemas']['models.BulkAssignees'];
 
 // ==================== BATCH PROCESSORS ====================
 
+/**
+ * Default concurrency for bulk task **creates**: sequential. See the long
+ * comment on `processors.create` below for why, and `getBulkWriteConcurrency`
+ * for the opt-in override.
+ */
+const DEFAULT_BULK_WRITE_CONCURRENCY = 1;
+/** Env var that overrides {@link DEFAULT_BULK_WRITE_CONCURRENCY}. */
+const BULK_WRITE_CONCURRENCY_ENV_VAR = 'VIKUNJA_BULK_WRITE_CONCURRENCY';
+/**
+ * Hard upper bound for the override. 10 is already far past the point where the
+ * historical SQLite lock storm reproduced (it reproduced at 8), so anything
+ * higher is a typo or a misunderstanding, not a tuning choice.
+ */
+const MAX_BULK_WRITE_CONCURRENCY = 10;
+
 const processors = {
   update: new BatchProcessor({
     maxConcurrency: 5,
@@ -95,13 +110,79 @@ const processors = {
   // Vikunja version is raised to ≥ 2.4.0 AND further multi-run evidence
   // (beyond this wave's handful of runs) confirms the fix is durable across
   // upstream point releases, not a one-off.
+  //
+  // Escape hatch: `VIKUNJA_BULK_WRITE_CONCURRENCY` (see
+  // `getBulkWriteConcurrency` below and docs/CONFIGURATION.md) raises this at
+  // the caller's own risk for deployments that are *not* SQLite-backed — the
+  // default is unchanged at 1, and the per-call override is applied in
+  // `bulkCreateTasks`, not baked in here, so it stays readable at runtime.
+  // Proposed by @joyjit in democratize-technology/vikunja-mcp#97.
   create: new BatchProcessor({
-    maxConcurrency: 1,
+    maxConcurrency: DEFAULT_BULK_WRITE_CONCURRENCY,
     batchSize: 15,
     enableMetrics: true,
     batchDelay: 0,
   }),
 };
+
+/**
+ * Resolve the concurrency used for bulk task **creates**.
+ *
+ * Defaults to {@link DEFAULT_BULK_WRITE_CONCURRENCY} (1 — sequential), which is
+ * the safe setting for SQLite-backed Vikunja instances for the reasons spelled
+ * out on `processors.create` above. `VIKUNJA_BULK_WRITE_CONCURRENCY` lets an
+ * operator who knows their backend is not SQLite (Postgres/MySQL) trade that
+ * safety for throughput.
+ *
+ * Deliberately read on every call rather than at module load so the value is
+ * observable in tests and so a long-running server picks up a changed
+ * environment without a rebuild; the read is a couple of string ops per bulk
+ * request, not per task.
+ *
+ * Invalid values never throw — they log a warning and fall back to the default
+ * (or the cap), mirroring `getMaxTasksLimit()` in `src/utils/memory.ts`. A
+ * typo in an env var must not take the server down at startup.
+ *
+ * Scope: **creates only.** `processors.update` (5) drives per-task fallback
+ * updates and `processors.delete` (3) drives deletes; those numbers are
+ * ordinary throughput tuning that has never been reported as a problem, while
+ * create's `1` is a workaround for a specific server-side defect and is
+ * therefore the only one an operator has a principled reason to change.
+ */
+export function getBulkWriteConcurrency(): number {
+  const raw = process.env[BULK_WRITE_CONCURRENCY_ENV_VAR];
+  if (raw === undefined || raw.trim() === '') {
+    return DEFAULT_BULK_WRITE_CONCURRENCY;
+  }
+
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    logger.warn(
+      `Invalid ${BULK_WRITE_CONCURRENCY_ENV_VAR} value: ${raw}. Must be a positive integer. ` +
+        `Using default: ${DEFAULT_BULK_WRITE_CONCURRENCY}`,
+    );
+    return DEFAULT_BULK_WRITE_CONCURRENCY;
+  }
+
+  const parsed = parseInt(trimmed, 10);
+  if (parsed <= 0) {
+    logger.warn(
+      `Invalid ${BULK_WRITE_CONCURRENCY_ENV_VAR} value: ${raw}. Must be a positive integer. ` +
+        `Using default: ${DEFAULT_BULK_WRITE_CONCURRENCY}`,
+    );
+    return DEFAULT_BULK_WRITE_CONCURRENCY;
+  }
+
+  if (parsed > MAX_BULK_WRITE_CONCURRENCY) {
+    logger.warn(
+      `${BULK_WRITE_CONCURRENCY_ENV_VAR} value too high: ${parsed}. ` +
+        `Capping at ${MAX_BULK_WRITE_CONCURRENCY}.`,
+    );
+    return MAX_BULK_WRITE_CONCURRENCY;
+  }
+
+  return parsed;
+}
 
 // ==================== VALIDATION WRAPPERS ====================
 
@@ -595,6 +676,8 @@ export async function createOneBulkTask(
     newTask.start_date = normalizeDateForApi(t.startDate) ?? t.startDate;
   if (t.endDate !== undefined) newTask.end_date = normalizeDateForApi(t.endDate) ?? t.endDate;
   if (t.priority !== undefined) newTask.priority = t.priority;
+  // Fraction 0-1, not a 0-100 percentage — see BulkCreateTaskData.percentDone.
+  if (t.percentDone !== undefined) newTask.percent_done = t.percentDone;
   if (t.repeatAfter !== undefined || t.repeatMode !== undefined) {
     const rc = convertRepeatConfiguration(t.repeatAfter, t.repeatMode);
     if (rc.repeat_after !== undefined) newTask.repeat_after = rc.repeat_after;
@@ -699,6 +782,9 @@ export async function bulkCreateTasks(
     const projectId = args.projectId ?? 0;
     const tasks = args.tasks ?? [];
 
+    // Per-call concurrency override (default: the sequential
+    // DEFAULT_BULK_WRITE_CONCURRENCY baked into processors.create).
+    const maxConcurrency = getBulkWriteConcurrency();
     const creationResult = await processors.create.processBatches(
       tasks.map((_, i) => i),
       async (index) => {
@@ -706,6 +792,7 @@ export async function bulkCreateTasks(
         if (!t) throw new Error(`Task data at index ${index} is undefined`);
         return createOneBulkTask(authManager, projectId, t);
       },
+      { maxConcurrency },
     );
 
     const failedTasks = creationResult.failed.map((f) => ({

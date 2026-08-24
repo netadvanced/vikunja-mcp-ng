@@ -427,6 +427,87 @@ describe('Bulk operations', () => {
         expect(markdown).toContain('Assignee restoration failed for task(s): 1');
       });
 
+      // `percent_done` was missing from the bulk-update field allowlist while
+      // single `update` supported it — bulk-update rejected a value single
+      // update accepted. The scale is a FRACTION 0-1 (0.5 = 50%), matching
+      // models.Task.percent_done; see the note in
+      // tests/tools/tasks/create-field-gaps.test.ts for the go-vikunja
+      // evidence.
+      describe('percent_done field (0-1 fraction)', () => {
+        it('sends percent_done in the native bulk payload', async () => {
+          let sentBody: unknown;
+          mockRest.mockImplementation(
+            async (_auth: unknown, method: string, path: string, body?: unknown) => {
+              if (method === 'GET' && /^\/tasks\/\d+$/.test(path)) {
+                return { id: 1, title: 'Task 1', assignees: [] };
+              }
+              if (method === 'POST' && path === '/tasks/bulk') {
+                sentBody = body;
+                return {
+                  task_ids: (body as { task_ids: number[] }).task_ids,
+                  tasks: [{ id: 1, title: 'Task 1', percent_done: 0.5 }],
+                };
+              }
+              throw new Error(`mockRest: unhandled ${method} ${path}`);
+            },
+          );
+
+          const result = await bulkUpdateTasks({
+            taskIds: [1],
+            field: 'percent_done',
+            value: 0.5,
+          });
+
+          expect(sentBody).toEqual({
+            task_ids: [1],
+            fields: ['percent_done'],
+            values: { percent_done: 0.5 },
+          });
+          expect(result.content[0].text).toContain('## ✅ Success');
+        });
+
+        it('coerces a stringified percent_done from a stale client schema', async () => {
+          let sentBody: unknown;
+          mockRest.mockImplementation(
+            async (_auth: unknown, method: string, path: string, body?: unknown) => {
+              if (method === 'GET' && /^\/tasks\/\d+$/.test(path)) {
+                return { id: 1, title: 'Task 1', assignees: [] };
+              }
+              if (method === 'POST' && path === '/tasks/bulk') {
+                sentBody = body;
+                return {
+                  task_ids: (body as { task_ids: number[] }).task_ids,
+                  tasks: [{ id: 1, title: 'Task 1', percent_done: 0.25 }],
+                };
+              }
+              throw new Error(`mockRest: unhandled ${method} ${path}`);
+            },
+          );
+
+          await bulkUpdateTasks({ taskIds: [1], field: 'percent_done', value: '0.25' });
+
+          expect(sentBody).toEqual({
+            task_ids: [1],
+            fields: ['percent_done'],
+            values: { percent_done: 0.25 },
+          });
+        });
+
+        it('rejects a 0-100 style value before any request is sent', async () => {
+          await expect(
+            bulkUpdateTasks({ taskIds: [1], field: 'percent_done', value: 50 }),
+          ).rejects.toThrow('percent_done must be between 0 and 1');
+          expect(mockRest).not.toHaveBeenCalled();
+        });
+
+        it('rejects a negative value before any request is sent', async () => {
+          await expect(
+            bulkUpdateTasks({ taskIds: [1], field: 'percent_done', value: -1 }),
+          ).rejects.toThrow('percent_done must be between 0 and 1');
+          expect(mockRest).not.toHaveBeenCalled();
+        });
+      });
+
       // Regression for issue #164: Vikunja SILENTLY DROPS a bare
       // 'YYYY-MM-DD' due_date/start_date/end_date value on POST
       // /tasks/bulk — the rest of the payload persists, so nothing errors

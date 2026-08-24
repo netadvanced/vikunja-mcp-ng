@@ -139,6 +139,12 @@ export function applyFieldUpdate(task: Task, field: string | undefined, value: u
     case 'priority':
       task.priority = value as number;
       break;
+    // Fraction 0-1 (0.5 = 50%), matching models.Task.percent_done — see the
+    // percentDone note in ./index.ts.
+    case 'percent_done':
+    case 'percentDone':
+      task.percent_done = value as number;
+      break;
     case 'due_date':
       task.due_date = value as string;
       break;

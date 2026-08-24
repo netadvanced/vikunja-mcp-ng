@@ -622,6 +622,43 @@ per-user OAuth flow against the IdP, and forwards each request with
 credentials and never talks to the IdP's token endpoint — see
 `docs/OIDC-RESOURCE-SERVER.md` §1 for the full topology diagram.
 
+## Bulk Write Concurrency
+
+Bulk task **creates** (`vikunja_tasks bulk-create` / `vikunja_task_bulk
+bulk-create`) run **sequentially** — one create at a time — and that is the
+default you should keep unless you know your Vikunja's database is not SQLite.
+
+- **Env var**: `VIKUNJA_BULK_WRITE_CONCURRENCY`
+- **Default**: `1` (sequential)
+- **Accepted values**: a positive integer, capped at `10`
+- **Scope**: bulk **create** only. Bulk update (which uses Vikunja's native
+  single-request `POST /tasks/bulk`) and bulk delete keep their own fixed
+  concurrency; those numbers are ordinary throughput tuning that has never been
+  a reported problem, whereas create's `1` exists to work around a specific
+  server-side defect and is therefore the only one an operator has a principled
+  reason to change.
+
+> **SQLite caveat — read this before raising it.** On a SQLite-backed Vikunja
+> (the default deployment), concurrent task creates return HTTP 500 "database is
+> locked". The REST layer's 5xx retry then re-enters the still-contended pool
+> and the burst of failures trips the shared `vikunja-rest-projects-tasks`
+> circuit breaker, after which *every* create fails instantly with "Breaker is
+> open" until the reset timeout. Live repro on Vikunja 2.3.0: three 12-task
+> bulk-creates at concurrency 8 yielded 2/12, 0/12, 0/12; sequential creates
+> yielded 36/36. Vikunja 2.4.0 advertises `concurrent_writes: true` and passed
+> the same stress check cleanly, but the supported floor is still 2.3.0 — so
+> raising this on a SQLite backend reintroduces the lock storm. Raise it only
+> for Postgres/MySQL-backed instances.
+
+An invalid value (non-numeric, fractional, zero, negative) logs a warning and
+falls back to the default rather than failing startup; a value above the cap is
+clamped to `10` with a warning. Credit: proposed by @joyjit in
+democratize-technology/vikunja-mcp#97.
+
+```env
+VIKUNJA_BULK_WRITE_CONCURRENCY=1   # default; raise ONLY on non-SQLite backends
+```
+
 ## Secrets Management
 
 **The config file is for non-sensitive settings only.** It's designed to be safe to
@@ -738,6 +775,12 @@ VIKUNJA_MCP_READ_ONLY=true                  # optional, default false; see Globa
 ### Templates Persistence Variable
 ```env
 VIKUNJA_MCP_TEMPLATES_FILE=/path/to/templates.json   # optional; see Templates Persistence
+```
+
+### Bulk Operation Variables
+```env
+VIKUNJA_BULK_WRITE_CONCURRENCY=1     # optional, default 1 (sequential), max 10; see Bulk Write Concurrency
+VIKUNJA_MAX_TASKS_LIMIT=10000        # optional, default 10000, max 50000; memory guard for large task loads
 ```
 
 ### Transport Variables
