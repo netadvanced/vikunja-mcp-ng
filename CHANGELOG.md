@@ -46,6 +46,20 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
   were pinned to, so a fresh install without the lockfile cannot silently land back on a
   vulnerable version.
 
+### Fixed
+
+- **Creates are no longer retried after an ambiguous failure** — a `PUT` whose response was lost
+  (proxy timeout, load-balancer reset, gateway 5xx raised after the row was already persisted)
+  used to be resent by the REST helper's default retry loop, silently producing a duplicate task,
+  project, label, comment, or webhook. `vikunjaRestRequest` now recognizes `PUT` as Vikunja's
+  create verb and gates it with `shouldRetryNonIdempotentWrite`: retries happen only for failures
+  that prove nothing was created (HTTP 429 from the rate limiter, or a connection that was
+  refused / never resolved / never completed its handshake). Idempotent methods (`GET`, `POST`
+  updates, `DELETE`) keep the previous 5xx/429/transient-network retry behaviour unchanged, and a
+  caller that knows a specific `PUT` is safe to repeat can opt back in via
+  `options.retry.shouldRetry`. The hazard was flagged publicly by @safrano9999 in
+  democratize-technology/vikunja-mcp#98.
+
 
 
 

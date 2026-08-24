@@ -43,6 +43,18 @@ interface MCPErrorDetails {
    */
   transient?: boolean;
   /**
+   * Set by network-layer failures wrapped into an MCPError (see
+   * `transient` above) when the original cause proves the request was never
+   * delivered — connection refused, host not resolved, network unreachable,
+   * or the TCP/TLS handshake itself timed out. Distinct from `transient`,
+   * which is also true for mid-flight failures (ECONNRESET, read timeouts)
+   * where the server may well have committed the write before the response
+   * was lost. Retry predicates for non-idempotent writes
+   * (`shouldRetryNonIdempotentWrite` in src/utils/vikunja-rest.ts) use this
+   * to distinguish "provably nothing happened" from merely "transient".
+   */
+  preRequest?: boolean;
+  /**
    * Set by OIDC bearer-token validation failures (src/auth/oidc/jwtValidator.ts)
    * so an HTTP transport can build the `WWW-Authenticate: Bearer error="..."`
    * header per RFC 6750 without re-deriving it from `code`/`statusCode`.

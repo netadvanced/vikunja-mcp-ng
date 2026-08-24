@@ -80,3 +80,10 @@ Each tool is one Vikunja domain, registered once in `src/tools/index.ts`:
 - Non-retryable errors (validation, not found) fail immediately
 - The retry count is logged at debug level; bulk assignee operations also surface it in
   their partial-failure message
+- **Creates never retry an ambiguous failure.** Vikunja's v1 API uses `PUT` as its create verb,
+  so `vikunjaRestRequest` gives every `PUT` the `shouldRetryNonIdempotentWrite` predicate: it
+  retries only HTTP 429 and connection failures that prove the request was never delivered
+  (refused / unresolved / handshake timeout). A 5xx or a mid-flight reset is ambiguous — the
+  write may have committed with the response lost — and resending it would silently create a
+  duplicate. Idempotent methods keep the standard 5xx/429/transient-network policy; a call site
+  that knows a given `PUT` is safe to repeat can override `options.retry.shouldRetry`.

@@ -106,7 +106,9 @@ export function deriveRestBreakerName(path: string): string {
  * Default retry/backoff tuning for JSON REST calls. Deliberately modest —
  * this is a fallback safety net for transient failures, not a substitute
  * for a caller thinking about idempotency. Overridable per call via
- * `VikunjaRestRequestOptions.retry`.
+ * `VikunjaRestRequestOptions.retry`. Note this predicate-free base is paired
+ * with `defaultRestShouldRetry` for idempotent methods only; resource-
+ * creating requests use {@link DEFAULT_CREATE_RETRY} instead.
  */
 const DEFAULT_JSON_RETRY: RetryOptions = {
   maxRetries: 2,
@@ -151,6 +153,58 @@ const TRANSIENT_NETWORK_CODES = new Set([
 ]);
 
 /**
+ * The subset of {@link TRANSIENT_NETWORK_CODES} that PROVES the request was
+ * never delivered: the connection was refused, the host never resolved, the
+ * network was unreachable, or the TCP/TLS handshake itself timed out. In all
+ * of those cases no request bytes ever reached the application, so the server
+ * cannot have committed anything — which makes them safe to retry even for a
+ * non-idempotent write (see {@link shouldRetryNonIdempotentWrite}).
+ *
+ * Codes that can only fire AFTER a connection exists (ECONNRESET, ETIMEDOUT,
+ * EPIPE, the undici header/body timeouts) are deliberately EXCLUDED: from the
+ * client's side those are indistinguishable from "the server committed the
+ * write and the response was lost on the way back".
+ */
+const PRE_REQUEST_NETWORK_CODES = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'ENETUNREACH',
+  'EAI_AGAIN',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+/**
+ * Reads a system error code off an Error, checking both `.code` and the
+ * nested `.cause.code` where undici parks the real cause of a
+ * `TypeError: fetch failed`, and reports whether it is in `codes`.
+ */
+function hasNetworkCode(error: Error, codes: Set<string>): boolean {
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === 'string' && codes.has(code)) {
+    return true;
+  }
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause && typeof cause === 'object' && 'code' in cause) {
+    const causeCode = (cause as { code?: unknown }).code;
+    if (typeof causeCode === 'string' && codes.has(causeCode)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a caught network-layer error is one of the
+ * {@link PRE_REQUEST_NETWORK_CODES} — i.e. the request provably never
+ * reached the server. Threaded to retry predicates via
+ * `MCPErrorDetails.preRequest` for the same reason as `transient`: wrapping
+ * the error into an MCPError discards the original `.code`/`.cause.code`.
+ */
+function isPreRequestNetworkError(error: unknown): boolean {
+  return error instanceof Error && hasNetworkCode(error, PRE_REQUEST_NETWORK_CODES);
+}
+
+/**
  * Determines whether a caught network-layer error (i.e. `fetch()` itself
  * rejected, before any HTTP response was received) looks transient and
  * therefore worth retrying. Checked BEFORE the error is wrapped into an
@@ -164,16 +218,8 @@ function isTransientNetworkError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
   }
-  const code = (error as { code?: unknown }).code;
-  if (typeof code === 'string' && TRANSIENT_NETWORK_CODES.has(code)) {
+  if (hasNetworkCode(error, TRANSIENT_NETWORK_CODES)) {
     return true;
-  }
-  const cause = (error as { cause?: unknown }).cause;
-  if (cause && typeof cause === 'object' && 'code' in cause) {
-    const causeCode = (cause as { code?: unknown }).code;
-    if (typeof causeCode === 'string' && TRANSIENT_NETWORK_CODES.has(causeCode)) {
-      return true;
-    }
   }
   return isRetryableError(error);
 }
@@ -199,6 +245,61 @@ export function defaultRestShouldRetry(error: unknown): boolean {
   }
   return isRetryableError(error);
 }
+
+/**
+ * Retry predicate for NON-IDEMPOTENT writes — the requests that CREATE a new
+ * resource, where a repeat produces a SECOND resource rather than converging
+ * on the same one.
+ *
+ * We do NOT retry an ambiguous failure on a create because a 5xx (or a
+ * connection dropped mid-flight) does not tell us whether the write
+ * committed: a proxy timeout, an LB reset, or a gateway 502 raised *after*
+ * Vikunja persisted the row all look identical from here, and resending
+ * then silently produces a duplicate task/project/label/comment. The same
+ * reasoning already governs `DEFAULT_MULTIPART_RETRY` above (an attachment
+ * upload is additive, so it never auto-retries). Losing the retry is a
+ * bounded availability cost — the caller sees an error and can decide, after
+ * checking, whether to create again — while a duplicate is silent data
+ * corruption the caller never learns about.
+ *
+ * Two classes of failure ARE still retried, because in both the server
+ * provably did no work:
+ *  - HTTP 429: the request was rejected by the rate limiter before reaching
+ *    any handler, so nothing was created. Retrying is the whole point of a
+ *    429, and creates are exactly the calls that hit it (bulk imports).
+ *  - `MCPErrorDetails.preRequest`: the connection was refused / never
+ *    resolved / never completed its handshake, so no request bytes were sent
+ *    (see {@link PRE_REQUEST_NETWORK_CODES}).
+ *
+ * Revisit if either premise changes: if Vikunja ever supports an idempotency
+ * key on creates (`Idempotency-Key` header or equivalent), the ambiguity
+ * disappears and creates can safely retry 5xx again.
+ */
+export function shouldRetryNonIdempotentWrite(error: unknown): boolean {
+  if (error instanceof MCPError) {
+    const statusCode = error.details?.statusCode;
+    if (statusCode !== undefined) {
+      return statusCode === 429;
+    }
+    return error.details?.preRequest === true;
+  }
+  // Anything with no status and no pre-request marker (including the
+  // circuit-breaker-open error, a plain Error) is treated as ambiguous.
+  return false;
+}
+
+/**
+ * Retry defaults for resource-CREATING requests: same modest backoff as
+ * {@link DEFAULT_JSON_RETRY}, but gated by
+ * {@link shouldRetryNonIdempotentWrite} so an ambiguous failure is never
+ * repeated. Applied automatically by `vikunjaRestRequest` — see the comment
+ * at its `isResourceCreatingWrite` branch for why that decision lives at the
+ * choke point rather than at each create call site.
+ */
+const DEFAULT_CREATE_RETRY: RetryOptions = {
+  ...DEFAULT_JSON_RETRY,
+  shouldRetry: shouldRetryNonIdempotentWrite,
+};
 
 export interface VikunjaRestRequestOptions {
   /**
@@ -253,7 +354,10 @@ async function vikunjaRestRequestRaw(
       `Vikunja REST request failed (${method} ${path}): ${
         error instanceof Error ? error.message : String(error)
       }`,
-      { transient: isTransientNetworkError(error) },
+      {
+        transient: isTransientNetworkError(error),
+        preRequest: isPreRequestNetworkError(error),
+      },
     );
   }
 
@@ -301,6 +405,13 @@ async function vikunjaRestRequestRaw(
  * by a named circuit breaker and a bounded retry loop (see the module doc
  * comment for why retry/breaker names work the way they do here).
  *
+ * Retry policy depends on the method: PUT (Vikunja's CREATE verb) is treated
+ * as a non-idempotent write and only retries failures that prove nothing was
+ * created (429, connection never established) — see
+ * {@link shouldRetryNonIdempotentWrite}. Every other method keeps the
+ * standard {@link defaultRestShouldRetry} behaviour (5xx/429/transient
+ * network). Both are overridable via `options.retry`.
+ *
  * @param authManager - Active auth manager holding the session credentials
  * @param method - HTTP method
  * @param path - API path relative to the configured apiUrl, must start with '/'
@@ -324,9 +435,20 @@ export async function vikunjaRestRequest<T = unknown>(
 ): Promise<T> {
   const effectiveAuthManager = resolveEffectiveAuthManager(authManager, options);
   const breakerName = options?.breakerName ?? deriveRestBreakerName(path);
+  // Vikunja's v1 API uses PUT as its CREATE verb (`PUT /projects/{id}/tasks`,
+  // `PUT /projects`, `PUT /labels`, `PUT /tasks/{id}/comments`, ...) and POST
+  // as its update verb, so the HTTP method alone identifies a non-idempotent
+  // write here. Deciding this at the single choke point every REST call
+  // already funnels through — rather than opting in at each create call site —
+  // is deliberate: a per-call-site flag is precisely what was missing when
+  // this hazard was found, and every create endpoint added later would have
+  // to remember it. A caller that knows a specific PUT is safe to repeat can
+  // still opt back in with `options.retry.shouldRetry`.
+  const isResourceCreatingWrite = method === 'PUT';
   const retryOptions: RetryOptions = {
-    ...DEFAULT_JSON_RETRY,
-    shouldRetry: defaultRestShouldRetry,
+    ...(isResourceCreatingWrite
+      ? DEFAULT_CREATE_RETRY
+      : { ...DEFAULT_JSON_RETRY, shouldRetry: defaultRestShouldRetry }),
     ...options?.retry,
   };
   const breaker = createCircuitBreaker(vikunjaRestRequestRaw, breakerName, retryOptions);
