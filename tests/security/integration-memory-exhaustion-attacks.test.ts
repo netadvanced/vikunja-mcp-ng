@@ -130,17 +130,24 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
     // Route global.fetch to the node-vikunja client mocks above — see the
     // module-level comment on `mockFetch` for why.
     mockFetch.mockImplementation(async (url: string) => {
-      const path = new URL(url).pathname.replace(/^\/api\/v\d+/, '');
+      const parsed = new URL(url);
+      const path = parsed.pathname.replace(/^\/api\/v\d+/, '');
+      // Both list endpoints are paged now (issue #225). A real server returns
+      // an empty page past the end; mirror that here so the aggregation
+      // terminates instead of re-reading page 1 forever.
+      const page = Number(parsed.searchParams.get('page') ?? '1');
       if (path === '/tasks') {
         throw new Error('mock: REST GET /tasks unavailable');
       }
       if (path === '/projects') {
-        return jsonResponse(await mockClient.projects.getProjects({ per_page: 1000 }));
+        return jsonResponse(
+          page > 1 ? [] : await mockClient.projects.getProjects({ per_page: 1000 }),
+        );
       }
       const projectTasksMatch = /^\/projects\/(-?\d+)\/tasks$/.exec(path);
       if (projectTasksMatch?.[1] !== undefined) {
         const tasks = await mockClient.tasks.getProjectTasks(Number(projectTasksMatch[1]), {});
-        return jsonResponse(tasks);
+        return jsonResponse(page > 1 ? [] : tasks);
       }
       throw new Error(`mock: unhandled fetch path ${path}`);
     });

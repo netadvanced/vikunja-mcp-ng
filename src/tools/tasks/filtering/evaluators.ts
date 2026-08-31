@@ -89,12 +89,19 @@ export function evaluateCondition(task: Task, condition: FilterCondition): boole
         Array.isArray(value) ? value.map((v) => Number(v)) : [Number(value)],
       );
 
+    // Label conditions are normally rewritten to numeric label ids upstream
+    // (see resolveLabelTitlesInExpression in FilterValidator) because that is
+    // the ONLY spelling Vikunja's server-side `labels` filter accepts. The
+    // client-side evaluator additionally matches TITLES, so a label filter is
+    // still evaluated correctly on the fallback path even when the id
+    // rewrite did not happen (no authManager threaded through, a pure
+    // in-memory `applyFilter` call, a saved filter replayed offline).
+    //
+    // Before this, the evaluator did `Number(value)` unconditionally: a title
+    // became NaN, NaN matched no id, and `labels in 'HU'` returned zero tasks
+    // while reporting a clean success (issue #227).
     case 'labels':
-      return evaluateArrayComparison(
-        task.labels?.map((l) => l.id).filter((id): id is number => id !== undefined) || [],
-        operator,
-        Array.isArray(value) ? value.map((v) => Number(v)) : [Number(value)],
-      );
+      return evaluateLabelComparison(task.labels, operator, Array.isArray(value) ? value : [value]);
 
     default:
       return false;
@@ -245,6 +252,41 @@ export function evaluateArrayComparison(
     default:
       return false;
   }
+}
+
+/**
+ * Evaluates a `labels` condition against a task's labels, accepting either
+ * numeric label ids or label titles (case-insensitive) on the filter side.
+ * See the `labels` case in {@link evaluateCondition} for why both spellings
+ * have to work here.
+ */
+export function evaluateLabelComparison(
+  taskLabels: Task['labels'],
+  operator: string,
+  expected: Array<string | number | boolean>,
+): boolean {
+  if (operator !== 'in' && operator !== 'not in') return false;
+
+  const labels = taskLabels ?? [];
+  const actualIds = new Set(
+    labels.map((l) => l.id).filter((id): id is number => typeof id === 'number'),
+  );
+  const actualTitles = new Set(
+    labels
+      .map((l) => l.title)
+      .filter((title): title is string => typeof title === 'string')
+      .map((title) => title.toLowerCase()),
+  );
+
+  const matchesAny = expected.some((raw) => {
+    const asString = String(raw).trim();
+    if (asString === '') return false;
+    const asNumber = Number(asString);
+    if (Number.isFinite(asNumber) && actualIds.has(asNumber)) return true;
+    return actualTitles.has(asString.toLowerCase());
+  });
+
+  return operator === 'in' ? matchesAny : !matchesAny;
 }
 
 /**

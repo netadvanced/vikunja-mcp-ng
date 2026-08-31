@@ -49,6 +49,9 @@ const validationResult = (overrides: Record<string, unknown> = {}) => ({
   filterExpression: null,
   filterString: undefined,
   validationWarnings: [],
+  // Warnings raised while resolving the FILTER itself (e.g. a label title
+  // that matched no label) travel with the result metadata, not just the log.
+  filterWarnings: [],
   memoryValidation: { isValid: true, warnings: [] },
   ...overrides,
 });
@@ -86,7 +89,10 @@ describe('executeTaskFiltering', () => {
     const result = await TaskFilteringOrchestrator.executeTaskFiltering(args, storage);
 
     expect(result.tasks).toHaveLength(2);
-    expect(mockValidator.validateTaskFiltering).toHaveBeenCalledWith(args, storage, {});
+    // The auth manager is threaded into validation too: resolving label
+    // TITLES to ids (issue #227) is an authenticated lookup that has to
+    // happen before the expression is serialised for the wire.
+    expect(mockValidator.validateTaskFiltering).toHaveBeenCalledWith(args, storage, {}, undefined);
     expect(mockExecutor.prepareQueryParameters).toHaveBeenCalledWith(args);
     expect(mockValidator.validateLoadedTasks).toHaveBeenCalledWith(2);
   });
@@ -116,7 +122,12 @@ describe('executeTaskFiltering', () => {
   it('passes the caller-supplied validation config through', async () => {
     const config = { maxTaskCount: 10 };
     await TaskFilteringOrchestrator.executeTaskFiltering({}, storage, config);
-    expect(mockValidator.validateTaskFiltering).toHaveBeenCalledWith({}, storage, config);
+    expect(mockValidator.validateTaskFiltering).toHaveBeenCalledWith(
+      {},
+      storage,
+      config,
+      undefined,
+    );
   });
 
   it('logs validation warnings without failing the call', async () => {

@@ -109,6 +109,7 @@ export const FilterExecutor = {
         serverSideFilteringUsed,
         serverSideFilteringAttempted,
         filteringResult.metadata.filteringNote,
+        filteringResult.metadata,
       );
 
       // Build return object, only including defined properties to satisfy exactOptionalPropertyTypes
@@ -163,7 +164,19 @@ export const FilterExecutor = {
     serverSideFilteringUsed: boolean,
     serverSideFilteringAttempted: boolean,
     filteringNote: string,
+    completeness?: Pick<FilteringMetadata, 'resultComplete' | 'warnings'>,
   ): FilteringMetadata {
+    // An incomplete or partially-honoured result must survive this
+    // re-derivation intact: it is the ONLY thing that distinguishes "nothing
+    // matched" from "part of the answer" for the caller (issues #225/#227).
+    const carried: Pick<FilteringMetadata, 'resultComplete' | 'warnings'> = {};
+    if (completeness?.resultComplete !== undefined) {
+      carried.resultComplete = completeness.resultComplete;
+    }
+    if (completeness?.warnings !== undefined && completeness.warnings.length > 0) {
+      carried.warnings = completeness.warnings;
+    }
+
     if (filterString) {
       if (serverSideFilteringUsed) {
         return {
@@ -171,6 +184,7 @@ export const FilterExecutor = {
           serverSideFilteringAttempted: true,
           clientSideFiltering: false,
           filteringNote,
+          ...carried,
         };
       } else if (serverSideFilteringAttempted) {
         return {
@@ -178,6 +192,7 @@ export const FilterExecutor = {
           serverSideFilteringAttempted: true,
           clientSideFiltering: true,
           filteringNote,
+          ...carried,
         };
       } else {
         return {
@@ -185,6 +200,7 @@ export const FilterExecutor = {
           serverSideFilteringAttempted: false,
           clientSideFiltering: true,
           filteringNote,
+          ...carried,
         };
       }
     } else {
@@ -193,6 +209,7 @@ export const FilterExecutor = {
         serverSideFilteringAttempted: false,
         clientSideFiltering: false,
         filteringNote,
+        ...carried,
       };
     }
   },

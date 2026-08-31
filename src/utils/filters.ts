@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { FIELD_TYPES } from '../types/filters';
 import { percentDoneToFraction, fractionToPercentExact } from './percent-done';
+import { normalizeDateForApi } from '../tools/tasks/validation';
 import type {
   FilterCondition,
   FilterExpression,
@@ -1043,15 +1044,65 @@ function rescalePercentDoneValue(
 }
 
 /**
+ * The DSL fields whose values are date literals. `conditionToString` runs
+ * every one of these through `normalizeDateForApi` before it reaches the
+ * server-side `filter` query param.
+ *
+ * Why: Vikunja rejects a filter date literal that is not RFC3339 with HTTP
+ * 400 code 4019 (`The task filter value '2026-08-16 00:00:00' for field
+ * 'created' is invalid.`, verified against 2.4.0). The natural spelling an
+ * agent writes — `created >= '2026-08-16 00:00:00'` — therefore failed the
+ * whole call, which then dropped into a client-side fallback that returned a
+ * silently incomplete answer (issue #225). v0.6.0 fixed this same class for
+ * task *fields* (#164/#167/#168) via `normalizeDateForApi`; this is the same
+ * helper applied at the other place date strings cross to the wire, not a
+ * second normalizer.
+ *
+ * Relative literals (`now`, `now+7d`, `now-1w`) and anything else the helper
+ * does not recognise are passed through untouched — Vikunja understands
+ * those natively.
+ */
+const DATE_FILTER_FIELDS: ReadonlySet<FilterField> = new Set<FilterField>([
+  'dueDate',
+  'startDate',
+  'endDate',
+  'doneAt',
+  'created',
+  'updated',
+]);
+
+/**
+ * Applies `normalizeDateForApi` to a filter condition's value(s) when the
+ * field carries a date. Non-string values (and `in`/`not in` list members
+ * that are not strings) are returned untouched.
+ */
+function normalizeDateFilterValue(value: FilterCondition['value']): FilterCondition['value'] {
+  const one = (v: string | number | boolean): string | number | boolean =>
+    typeof v === 'string' ? (normalizeDateForApi(v) ?? v) : v;
+
+  if (Array.isArray(value)) {
+    return (value as Array<string | number>).map((v) =>
+      one(v),
+    ) as unknown as FilterCondition['value'];
+  }
+  return one(value);
+}
+
+/**
  * Convert condition to string representation
  */
 export function conditionToString(condition: FilterCondition): string {
   const { field, operator } = condition;
   const apiField = FILTER_FIELD_TO_API_FIELD[field] ?? field;
   // percentDone is 0-100 in the DSL, 0-1 on the wire — see
-  // rescalePercentDoneValue.
+  // rescalePercentDoneValue. Date fields are coerced to RFC3339 — see
+  // DATE_FILTER_FIELDS.
   const value =
-    field === 'percentDone' ? rescalePercentDoneValue(condition.value, 'to-wire') : condition.value;
+    field === 'percentDone'
+      ? rescalePercentDoneValue(condition.value, 'to-wire')
+      : DATE_FILTER_FIELDS.has(field)
+        ? normalizeDateFilterValue(condition.value)
+        : condition.value;
 
   let valueStr: string;
   if (Array.isArray(value)) {

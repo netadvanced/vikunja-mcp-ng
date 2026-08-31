@@ -122,12 +122,24 @@ export class RestCrossProjectFilteringStrategy implements TaskFilteringStrategy 
 
       const fallbackResult = await new ClientSideFilteringStrategy().execute(params);
 
+      // Carry the server's own reason forward instead of a generic "failed":
+      // the reported bugs were both diagnosable ONLY from that message
+      // (`4019 ... value '2026-08-16 00:00:00' for field 'created' is
+      // invalid`, `4019 ... value 'HU' for field 'labels' is invalid`), and
+      // swallowing it is what made a broken filter look like an empty one.
+      const reason = error instanceof Error ? error.message : String(error);
+      const baseNote = `Direct REST GET /tasks failed (${reason}); used per-project aggregation fallback`;
+      const fallbackWarnings = fallbackResult.metadata.warnings ?? [];
+
       return {
         ...fallbackResult,
         metadata: {
           ...fallbackResult.metadata,
           serverSideFilteringAttempted: true,
-          filteringNote: 'Direct REST GET /tasks failed; used per-project aggregation fallback',
+          filteringNote:
+            fallbackWarnings.length > 0
+              ? `${baseNote} — INCOMPLETE: ${fallbackWarnings.join(' ')}`
+              : baseNote,
         },
       };
     }

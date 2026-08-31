@@ -255,8 +255,8 @@ describe('Consolidated Filter Utilities', () => {
         // stored value ever exceeds 1.
         ['percentDone', '>=', 75, 'percent_done >= 0.75'],
         ['dueDate', '<', 'now', 'due_date < now'],
-        ['startDate', '>=', '2024-01-01', 'start_date >= 2024-01-01'],
-        ['endDate', '<=', '2024-12-31', 'end_date <= 2024-12-31'],
+        ['startDate', '>=', '2024-01-01', 'start_date >= 2024-01-01T00:00:00Z'],
+        ['endDate', '<=', '2024-12-31', 'end_date <= 2024-12-31T00:00:00Z'],
         ['doneAt', '!=', 'now', 'done_at != now'],
         // 'project' is not just camelCased differently - it renames to the
         // API's project_id field entirely.
@@ -307,7 +307,7 @@ describe('Consolidated Filter Utilities', () => {
 
         const result = expressionToString(expression);
         expect(result).toBe(
-          '(due_date < now && start_date >= 2024-01-01 && end_date <= 2024-12-31 && done_at != now && percent_done >= 0.5 && project_id = 4)',
+          '(due_date < now && start_date >= 2024-01-01T00:00:00Z && end_date <= 2024-12-31T00:00:00Z && done_at != now && percent_done >= 0.5 && project_id = 4)',
         );
       });
 
@@ -497,7 +497,7 @@ describe('Consolidated Filter Utilities', () => {
       // functions are genuinely serving different purposes rather than one
       // having quietly become a no-op alias of the other.
       expect(expressionToString(expression)).toBe(
-        '(due_date < now && start_date >= 2024-01-01 && end_date <= 2024-12-31 && done_at != now && percent_done >= 0.5 && project_id = 4)',
+        '(due_date < now && start_date >= 2024-01-01T00:00:00Z && end_date <= 2024-12-31T00:00:00Z && done_at != now && percent_done >= 0.5 && project_id = 4)',
       );
     });
   });

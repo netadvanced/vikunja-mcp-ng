@@ -217,7 +217,7 @@ describe('HybridFilteringStrategy', () => {
       expect(result.tasks).toEqual([mockTask]);
       expect(result.metadata.serverSideFilteringAttempted).toBe(true);
       expect(result.metadata.filteringNote).toBe(
-        'Server-side filtering failed, client-side filtering applied as fallback',
+        'Server-side filtering failed (Server-side filtering not supported), client-side filtering applied as fallback',
       );
     });
 
@@ -244,7 +244,8 @@ describe('HybridFilteringStrategy', () => {
           serverSideFilteringUsed: false,
           serverSideFilteringAttempted: true, // Updated from false
           clientSideFiltering: true,
-          filteringNote: 'Server-side filtering failed, client-side filtering applied as fallback', // Updated
+          filteringNote:
+            'Server-side filtering failed (Network timeout), client-side filtering applied as fallback', // Updated: now names the server's own reason
         },
       });
     });
@@ -414,7 +415,8 @@ describe('HybridFilteringStrategy', () => {
         serverSideFilteringUsed: false,
         serverSideFilteringAttempted: true, // Updated
         clientSideFiltering: true,
-        filteringNote: 'Server-side filtering failed, client-side filtering applied as fallback', // Updated
+        filteringNote:
+          'Server-side filtering failed (Server error), client-side filtering applied as fallback', // Updated: now names the server's own reason
         customField: 'custom value', // Preserved
       });
     });

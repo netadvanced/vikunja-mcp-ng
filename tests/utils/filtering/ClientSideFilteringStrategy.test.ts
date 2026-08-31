@@ -115,7 +115,7 @@ describe('ClientSideFilteringStrategy', () => {
       const projectId = 42;
       const task = makeTask(1, projectId);
       const params: FilteringParams = {
-        args: { projectId, allProjects: false },
+        args: { projectId, allProjects: false, page: 1, perPage: 10 },
         filterExpression: null,
         filterString: undefined,
         params: { page: 1, per_page: 10 },
@@ -142,7 +142,7 @@ describe('ClientSideFilteringStrategy', () => {
   describe('cross-project aggregation', () => {
     it('aggregates tasks across all projects instead of calling GET /tasks/all (allProjects: true)', async () => {
       const params: FilteringParams = {
-        args: { allProjects: true },
+        args: { allProjects: true, page: 1, perPage: 50 },
         filterExpression: null,
         filterString: undefined,
         params: { page: 1, per_page: 50 },
@@ -153,6 +153,11 @@ describe('ClientSideFilteringStrategy', () => {
       const taskB = makeTask(20, 2);
       (vikunjaRestRequest as jest.Mock).mockImplementation(
         (_auth: unknown, _method: string, path: string) => {
+          // The project list is paged now (issue #225); a real server returns
+          // an empty page past the end.
+          if (path.startsWith('/projects?') && path !== '/projects?per_page=1000') {
+            return Promise.resolve([]);
+          }
           if (path === '/projects?per_page=1000')
             return Promise.resolve([makeProject(1), makeProject(2)]);
           if (path.startsWith('/projects/1/tasks')) return Promise.resolve([taskA]);
@@ -183,7 +188,7 @@ describe('ClientSideFilteringStrategy', () => {
 
     it('aggregates when projectId is omitted entirely', async () => {
       const params: FilteringParams = {
-        args: {},
+        args: { page: 1, perPage: 50 },
         filterExpression: null,
         filterString: undefined,
         params: { page: 1, per_page: 50 },
@@ -193,6 +198,11 @@ describe('ClientSideFilteringStrategy', () => {
       const task = makeTask(30, 3);
       (vikunjaRestRequest as jest.Mock).mockImplementation(
         (_auth: unknown, _method: string, path: string) => {
+          // The project list is paged now (issue #225); a real server returns
+          // an empty page past the end.
+          if (path.startsWith('/projects?') && path !== '/projects?per_page=1000') {
+            return Promise.resolve([]);
+          }
           if (path === '/projects?per_page=1000') return Promise.resolve([makeProject(3)]);
           return Promise.resolve([task]);
         },
@@ -210,7 +220,7 @@ describe('ClientSideFilteringStrategy', () => {
 
     it('skips pseudo-projects with a negative id (e.g. Favorites) to avoid duplicate tasks', async () => {
       const params: FilteringParams = {
-        args: { allProjects: true },
+        args: { allProjects: true, page: 1, perPage: 50 },
         filterExpression: null,
         filterString: undefined,
         params: { page: 1, per_page: 50 },
@@ -245,7 +255,7 @@ describe('ClientSideFilteringStrategy', () => {
 
     it('skips a project whose id is not a number', async () => {
       const params: FilteringParams = {
-        args: { allProjects: true },
+        args: { allProjects: true, page: 1, perPage: 50 },
         filterExpression: null,
         filterString: undefined,
         params: { page: 1, per_page: 50 },
@@ -255,6 +265,11 @@ describe('ClientSideFilteringStrategy', () => {
       const realTask = makeTask(70, 7);
       (vikunjaRestRequest as jest.Mock).mockImplementation(
         (_auth: unknown, _method: string, path: string) => {
+          // The project list is paged now (issue #225); a real server returns
+          // an empty page past the end.
+          if (path.startsWith('/projects?') && path !== '/projects?per_page=1000') {
+            return Promise.resolve([]);
+          }
           if (path === '/projects?per_page=1000') {
             return Promise.resolve([{ id: undefined, title: 'No id' }, makeProject(7)]);
           }
@@ -270,7 +285,7 @@ describe('ClientSideFilteringStrategy', () => {
 
     it('logs and skips a project whose fetch throws without failing the whole listing', async () => {
       const params: FilteringParams = {
-        args: { allProjects: true },
+        args: { allProjects: true, page: 1, perPage: 50 },
         filterExpression: null,
         filterString: undefined,
         params: { page: 1, per_page: 50 },
@@ -280,6 +295,11 @@ describe('ClientSideFilteringStrategy', () => {
       const goodTask = makeTask(10, 1);
       (vikunjaRestRequest as jest.Mock).mockImplementation(
         (_auth: unknown, _method: string, path: string) => {
+          // The project list is paged now (issue #225); a real server returns
+          // an empty page past the end.
+          if (path.startsWith('/projects?') && path !== '/projects?per_page=1000') {
+            return Promise.resolve([]);
+          }
           if (path === '/projects?per_page=1000')
             return Promise.resolve([makeProject(1), makeProject(2)]);
           if (path.startsWith('/projects/1/tasks')) return Promise.resolve([goodTask]);
@@ -301,7 +321,7 @@ describe('ClientSideFilteringStrategy', () => {
 
     it('stringifies non-Error thrown values when logging a skipped project', async () => {
       const params: FilteringParams = {
-        args: { allProjects: true },
+        args: { allProjects: true, page: 1, perPage: 50 },
         filterExpression: null,
         filterString: undefined,
         params: { page: 1, per_page: 50 },
@@ -310,6 +330,11 @@ describe('ClientSideFilteringStrategy', () => {
 
       (vikunjaRestRequest as jest.Mock).mockImplementation(
         (_auth: unknown, _method: string, path: string) => {
+          // The project list is paged now (issue #225); a real server returns
+          // an empty page past the end.
+          if (path.startsWith('/projects?') && path !== '/projects?per_page=1000') {
+            return Promise.resolve([]);
+          }
           if (path === '/projects?per_page=1000') return Promise.resolve([makeProject(9)]);
           // eslint-disable-next-line prefer-promise-reject-errors
           return Promise.reject('plain string failure');
@@ -331,7 +356,7 @@ describe('ClientSideFilteringStrategy', () => {
       const doneTask = { ...makeTask(1, 1), done: true };
       const openTask = { ...makeTask(2, 1), done: false };
       const params: FilteringParams = {
-        args: { allProjects: true },
+        args: { allProjects: true, page: 1, perPage: 50 },
         filterExpression: {
           groups: [
             {
@@ -348,6 +373,11 @@ describe('ClientSideFilteringStrategy', () => {
 
       (vikunjaRestRequest as jest.Mock).mockImplementation(
         (_auth: unknown, _method: string, path: string) => {
+          // The project list is paged now (issue #225); a real server returns
+          // an empty page past the end.
+          if (path.startsWith('/projects?') && path !== '/projects?per_page=1000') {
+            return Promise.resolve([]);
+          }
           if (path === '/projects?per_page=1000') return Promise.resolve([makeProject(1)]);
           return Promise.resolve([doneTask, openTask]);
         },
@@ -363,7 +393,7 @@ describe('ClientSideFilteringStrategy', () => {
 
     it('returns an empty task list when no projects are accessible', async () => {
       const params: FilteringParams = {
-        args: { allProjects: true },
+        args: { allProjects: true, page: 1, perPage: 50 },
         filterExpression: null,
         filterString: undefined,
         params: { page: 1, per_page: 50 },
@@ -372,6 +402,11 @@ describe('ClientSideFilteringStrategy', () => {
 
       (vikunjaRestRequest as jest.Mock).mockImplementation(
         (_auth: unknown, _method: string, path: string) => {
+          // The project list is paged now (issue #225); a real server returns
+          // an empty page past the end.
+          if (path.startsWith('/projects?') && path !== '/projects?per_page=1000') {
+            return Promise.resolve([]);
+          }
           if (path === '/projects?per_page=1000') return Promise.resolve([]);
           return Promise.resolve([]);
         },

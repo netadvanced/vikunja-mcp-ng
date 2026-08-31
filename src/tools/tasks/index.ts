@@ -116,10 +116,21 @@ async function listTasks(
       }
     }
 
+    // A result that is knowingly incomplete or a filter that could only be
+    // partially honoured must be visible in the SUMMARY LINE, not only in the
+    // metadata block — the whole point of issues #225/#227 is that a caller
+    // could not tell "nothing matched" from "the answer is wrong/partial".
+    const resultWarnings = filteringResult.metadata?.warnings ?? [];
+    const incomplete = filteringResult.metadata?.resultComplete === false;
+    const reliabilityMessage =
+      incomplete || resultWarnings.length > 0
+        ? ` — ${incomplete ? 'INCOMPLETE RESULT' : 'PARTIAL FILTER'}: ${resultWarnings.join(' ')}`
+        : '';
+
     const taskCount = filteringResult.tasks?.length || 0;
     const response = createTaskResponse(
       'list-tasks',
-      `Found ${taskCount} tasks${filteringMessage}`,
+      `Found ${taskCount} tasks${filteringMessage}${reliabilityMessage}`,
       { tasks: filteringResult.tasks || [] },
       {
         timestamp: new Date().toISOString(),
