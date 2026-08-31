@@ -213,9 +213,11 @@ describe('TaskCreationService', () => {
         // 50% in, Vikunja's 0-1 wire fraction out.
         percent_done: 0.5,
         description: 'Test description',
-        due_date: '2024-12-31',
-        start_date: '2024-01-01',
-        end_date: '2024-12-31',
+        // Date-only values are coerced to RFC3339 before being sent — see
+        // the dedicated 'date normalization' describe block below.
+        due_date: '2024-12-31T00:00:00Z',
+        start_date: '2024-01-01T00:00:00Z',
+        end_date: '2024-12-31T00:00:00Z',
         hex_color: '#ff0000',
         repeat_after: 3600,
         repeat_mode: 'week',
@@ -254,6 +256,54 @@ describe('TaskCreationService', () => {
         done: false,
         priority: 0,
         percent_done: 0,
+      });
+    });
+
+    describe('date normalization', () => {
+      it('coerces a date-only dueDate to RFC3339 before sending the create request', async () => {
+        const task: ImportedTask = { title: 'Task', dueDate: '2026-09-01' };
+        fetchOkOnce({ id: 125, title: 'Task', done: false, priority: 0, percent_done: 0 } as Task);
+
+        await taskCreationService.createTask(task, 456, authManager, mockEntityMaps);
+
+        expect(fetchBody(0)).toMatchObject({ due_date: '2026-09-01T00:00:00Z' });
+      });
+
+      it('coerces date-only startDate and endDate to RFC3339 before sending the create request', async () => {
+        const task: ImportedTask = {
+          title: 'Task',
+          startDate: '2026-09-01',
+          endDate: '2026-09-05',
+        };
+        fetchOkOnce({ id: 126, title: 'Task', done: false, priority: 0, percent_done: 0 } as Task);
+
+        await taskCreationService.createTask(task, 456, authManager, mockEntityMaps);
+
+        expect(fetchBody(0)).toMatchObject({
+          start_date: '2026-09-01T00:00:00Z',
+          end_date: '2026-09-05T00:00:00Z',
+        });
+      });
+
+      it('leaves a full RFC3339 dueDate timestamp unchanged', async () => {
+        const task: ImportedTask = { title: 'Task', dueDate: '2026-09-01T15:30:00Z' };
+        fetchOkOnce({ id: 127, title: 'Task', done: false, priority: 0, percent_done: 0 } as Task);
+
+        await taskCreationService.createTask(task, 456, authManager, mockEntityMaps);
+
+        expect(fetchBody(0)).toMatchObject({ due_date: '2026-09-01T15:30:00Z' });
+      });
+
+      it('does not add due_date/start_date/end_date fields when not provided', async () => {
+        const task: ImportedTask = { title: 'Task' };
+        fetchOkOnce({ id: 128, title: 'Task', done: false, priority: 0, percent_done: 0 } as Task);
+
+        await taskCreationService.createTask(task, 456, authManager, mockEntityMaps);
+
+        const body = fetchBody(0);
+        expect(body).not.toHaveProperty('due_date');
+        expect(body).not.toHaveProperty('start_date');
+        expect(body).not.toHaveProperty('end_date');
       });
     });
 

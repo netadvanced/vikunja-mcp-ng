@@ -1555,6 +1555,92 @@ describe('Templates Tool', () => {
       expect(taskCall.due_date).toBe('2025-12-31T00:00:00Z');
     });
 
+    describe('date normalization', () => {
+      it('coerces a date-only due_date to RFC3339 before creating the task', async () => {
+        const mockTemplate = {
+          id: 'template_123',
+          name: 'Template',
+          projectData: { title: 'Project' },
+          tasks: [{ title: 'Task', due_date: '2026-09-01' }],
+        };
+
+        (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
+          id: 'filter_123',
+          name: 'template_123',
+          filter: JSON.stringify(mockTemplate),
+          created: new Date(),
+          updated: new Date(),
+          isGlobal: true,
+        });
+        fetchOkOnce({ ...mockProject, id: 100 });
+        fetchOkOnce({ ...mockTask, id: 200 });
+
+        await toolHandler({
+          subcommand: 'instantiate',
+          id: 'template_123',
+          projectName: 'Test Project',
+        });
+
+        expect(fetchBody(1).due_date).toBe('2026-09-01T00:00:00Z');
+      });
+
+      it('leaves a full RFC3339 due_date timestamp unchanged', async () => {
+        const mockTemplate = {
+          id: 'template_123',
+          name: 'Template',
+          projectData: { title: 'Project' },
+          tasks: [{ title: 'Task', due_date: '2026-09-01T15:30:00Z' }],
+        };
+
+        (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
+          id: 'filter_123',
+          name: 'template_123',
+          filter: JSON.stringify(mockTemplate),
+          created: new Date(),
+          updated: new Date(),
+          isGlobal: true,
+        });
+        fetchOkOnce({ ...mockProject, id: 100 });
+        fetchOkOnce({ ...mockTask, id: 200 });
+
+        await toolHandler({
+          subcommand: 'instantiate',
+          id: 'template_123',
+          projectName: 'Test Project',
+        });
+
+        expect(fetchBody(1).due_date).toBe('2026-09-01T15:30:00Z');
+      });
+
+      it('does not add a due_date field when the task template has none', async () => {
+        const mockTemplate = {
+          id: 'template_123',
+          name: 'Template',
+          projectData: { title: 'Project' },
+          tasks: [{ title: 'Task' }],
+        };
+
+        (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
+          id: 'filter_123',
+          name: 'template_123',
+          filter: JSON.stringify(mockTemplate),
+          created: new Date(),
+          updated: new Date(),
+          isGlobal: true,
+        });
+        fetchOkOnce({ ...mockProject, id: 100 });
+        fetchOkOnce({ ...mockTask, id: 200 });
+
+        await toolHandler({
+          subcommand: 'instantiate',
+          id: 'template_123',
+          projectName: 'Test Project',
+        });
+
+        expect(fetchBody(1)).not.toHaveProperty('due_date');
+      });
+    });
+
     it('should handle undefined text in applyVariables', async () => {
       const mockTemplate = {
         id: 'template_123',

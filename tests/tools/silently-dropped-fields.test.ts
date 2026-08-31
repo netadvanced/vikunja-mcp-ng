@@ -356,10 +356,14 @@ describe('silently dropped fields', () => {
         },
         authManager,
       );
+      // start_date/end_date are date-only on input; the create-task step
+      // coerces them to RFC3339 (normalizeDateForApi) before sending, same
+      // as the top-level `create` path — see the dedicated 'date
+      // normalization' coverage in subtasks.test.ts.
       expect(bodyOf('PUT', '/projects/3/tasks')).toMatchObject({
         percent_done: 0.5,
-        start_date: '2026-09-01',
-        end_date: '2026-09-30',
+        start_date: '2026-09-01T00:00:00Z',
+        end_date: '2026-09-30T00:00:00Z',
       });
     });
 

@@ -42,7 +42,12 @@ import { MCPError, ErrorCode } from '../../types';
 import { vikunjaRestRequest } from '../../utils/vikunja-rest';
 import { getTaskViaRest } from '../../utils/task-rest-transport';
 import { validateId, sanitizeString } from '../../utils/validation';
-import { convertRepeatConfiguration, validateDateString, validateHexColor } from './validation';
+import {
+  convertRepeatConfiguration,
+  validateDateString,
+  validateHexColor,
+  normalizeDateForApi,
+} from './validation';
 import { transformApiError } from '../../utils/error-handler';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
 import { CompositeOperation } from '../../utils/composite-operation';
@@ -199,9 +204,19 @@ function addSubtaskCreationSteps(
       const projectId = getParentProjectId();
       const newTask: VikunjaTask = { title: spec.title, project_id: projectId };
       if (spec.description !== undefined) newTask.description = spec.description;
-      if (spec.dueDate !== undefined) newTask.due_date = spec.dueDate;
-      if (spec.startDate !== undefined) newTask.start_date = spec.startDate;
-      if (spec.endDate !== undefined) newTask.end_date = spec.endDate;
+      // Coerce date-only values (e.g. '2026-09-01') to RFC3339 before
+      // sending — verified live against Vikunja 2.4.0: this exact endpoint
+      // (PUT /projects/{id}/tasks) rejects a bare date-only due_date with
+      // HTTP 400 code 2004 "Invalid model provided" (issues #167/#163). Full
+      // timestamps and empty/undefined values pass through unchanged. Same
+      // shared helper `createTask` uses (TaskCreationService.ts) — never a
+      // second hand-rolled coercion.
+      if (spec.dueDate !== undefined)
+        newTask.due_date = normalizeDateForApi(spec.dueDate) ?? spec.dueDate;
+      if (spec.startDate !== undefined)
+        newTask.start_date = normalizeDateForApi(spec.startDate) ?? spec.startDate;
+      if (spec.endDate !== undefined)
+        newTask.end_date = normalizeDateForApi(spec.endDate) ?? spec.endDate;
       if (spec.priority !== undefined) newTask.priority = spec.priority;
       // 0-100 in, 0-1 wire fraction out — the ONE shared conversion
       // (src/utils/percent-done.ts); never hand-rolled here.
