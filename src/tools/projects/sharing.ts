@@ -518,6 +518,35 @@ export async function authProjectShare(
       { password: password || '' },
     );
 
+    // INTENTIONAL: `authResult.token`, a live share-scoped JWT, is returned
+    // to the caller in full. Audit #287 (HIGH-16) flagged this; it is the one
+    // place in the tool surface where returning a credential is the point,
+    // not a leak, and it stays that way for these reasons:
+    //
+    //  - The token IS the deliverable. `POST /shares/{hash}/auth` is a
+    //    credential-exchange endpoint: the caller trades a share hash plus the
+    //    share's password for the bearer token that every subsequent read of
+    //    the shared project requires. Redacting it leaves the subcommand with
+    //    no output a caller could act on.
+    //  - It is the caller's OWN credential, minted for them in this request
+    //    from a secret (the share password) they supplied in the same call. It
+    //    is not another identity's token, and nothing about it is drawn from
+    //    process-global or cross-request state, so it is not a multi-tenancy
+    //    exposure even in `oidc-http` mode: the response goes only to the MCP
+    //    client that made the request.
+    //  - Its scope is the single link share and its lifetime is the share
+    //    token's, which is narrower than the session credential the caller
+    //    already holds.
+    //
+    // What is NOT acceptable, and is fixed separately, is this token reaching
+    // any surface the caller did not ask for: `Logger.log` redaction
+    // (`redactSecretsInText`) covers log output, and `SecureErrorHandler`
+    // now runs the same pass over thrown-error text so a failure on this path
+    // cannot echo the token back inside an error message.
+    //
+    // Pinned by tests/tools/projects/sharing.test.ts ("returns the live share
+    // token verbatim") so a future "harden the responses" sweep has to make
+    // this decision deliberately rather than silently break share auth.
     const result = createProjectResponse(
       'auth_project_share',
       `Successfully authenticated to share`,

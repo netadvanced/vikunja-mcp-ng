@@ -33,8 +33,55 @@ import {
   type RetryOptions,
 } from './retry';
 import { resolveIdentityAuthManager } from '../context/requestContext';
+import { redactSecretsInText } from './security';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+/**
+ * How much of an upstream error body is scanned for credentials before it is
+ * truncated for display. Redaction has to run on more text than we keep,
+ * otherwise a secret straddling the 500-character display cut would have its
+ * tail removed and its head kept, leaving a partial credential that no pattern
+ * matches any more. Scanning 4 KiB is cheap and covers every realistic
+ * Vikunja/proxy error body.
+ */
+const ERROR_BODY_SCAN_LIMIT = 4096;
+
+/** How much of the (already redacted) error body is shown to the caller. */
+const ERROR_BODY_DISPLAY_LIMIT = 500;
+
+/**
+ * Prepares untrusted upstream text for interpolation into an
+ * `MCPError.message`.
+ *
+ * The response body of a failed request is authored by something we do not
+ * control: Vikunja itself, but also any reverse proxy, WAF, or auth gateway
+ * in front of it. Those routinely echo request details back, including the
+ * `Authorization` header or a query string, so the body can carry the
+ * caller's own credential. Before this existed the body's first 500
+ * characters went straight into the error message, which the MCP client sees:
+ * audit #292 MED-18. It runs through the same `redactSecretsInText` pass as
+ * the logger and the thrown-error sanitizer, so there is a single definition
+ * of what counts as a secret.
+ *
+ * @param text - Raw upstream text (response body, or a network error message)
+ * @param limit - Maximum length of the returned string
+ * @returns The text with credentials redacted, truncated to `limit`
+ */
+function redactUpstreamText(text: string, limit = ERROR_BODY_DISPLAY_LIMIT): string {
+  return redactSecretsInText(text.slice(0, ERROR_BODY_SCAN_LIMIT)).slice(0, limit);
+}
+
+/**
+ * Same treatment for the message of a failure thrown by `fetch` itself, which
+ * embeds the request URL and can therefore carry userinfo credentials.
+ */
+function describeRequestError(error: unknown): string {
+  return redactUpstreamText(
+    error instanceof Error ? error.message : String(error),
+    ERROR_BODY_SCAN_LIMIT,
+  );
+}
 
 /**
  * Resolves the EFFECTIVE `AuthManager` for a request, closing the
@@ -353,9 +400,7 @@ async function vikunjaRestRequestRaw(
   } catch (error) {
     throw new MCPError(
       ErrorCode.API_ERROR,
-      `Vikunja REST request failed (${method} ${path}): ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Vikunja REST request failed (${method} ${path}): ${describeRequestError(error)}`,
       {
         transient: isTransientNetworkError(error),
         preRequest: isPreRequestNetworkError(error),
@@ -366,7 +411,7 @@ async function vikunjaRestRequestRaw(
   if (!response.ok) {
     let detail = '';
     try {
-      detail = (await response.text()).slice(0, 500);
+      detail = redactUpstreamText(await response.text());
     } catch {
       // Body could not be read — fall back to the status line only.
     }
@@ -492,9 +537,7 @@ async function vikunjaRestMultipartRequestRaw(
   } catch (error) {
     throw new MCPError(
       ErrorCode.API_ERROR,
-      `Vikunja REST request failed (${method} ${path}): ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Vikunja REST request failed (${method} ${path}): ${describeRequestError(error)}`,
       { transient: isTransientNetworkError(error) },
     );
   }
@@ -502,7 +545,7 @@ async function vikunjaRestMultipartRequestRaw(
   if (!response.ok) {
     let detail = '';
     try {
-      detail = (await response.text()).slice(0, 500);
+      detail = redactUpstreamText(await response.text());
     } catch {
       // Body could not be read — fall back to the status line only.
     }

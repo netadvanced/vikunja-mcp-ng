@@ -48,14 +48,23 @@ jest.mock('../../src/middleware/direct-middleware', () => ({
 }));
 
 // Mock security utils
-jest.mock('../../src/utils/security', () => ({
-  createSecureConnectionMessage: jest.fn(
-    (url, token) => `Connecting to ${url} with token ${token.slice(0, 4)}...`,
-  ),
-  maskCredential: jest.fn((token: string | undefined | null) =>
-    token && token.length > 4 ? `${token.slice(0, 4)}...` : '***',
-  ),
-}));
+// Partial mock: only the two message-formatting helpers this suite asserts on
+// are stubbed. The rest of the module must stay real, because `src/utils/error-handler`
+// now calls `redactSecretsInText` from here on every sanitized error, so a
+// wholesale mock would make that call `undefined is not a function` in any test
+// that goes through the error path.
+jest.mock('../../src/utils/security', () => {
+  const actual = jest.requireActual('../../src/utils/security');
+  return {
+    ...actual,
+    createSecureConnectionMessage: jest.fn(
+      (url, token) => `Connecting to ${url} with token ${token.slice(0, 4)}...`,
+    ),
+    maskCredential: jest.fn((token: string | undefined | null) =>
+      token && token.length > 4 ? `${token.slice(0, 4)}...` : '***',
+    ),
+  };
+});
 
 // Mock logger
 jest.mock('../../src/utils/logger', () => ({
