@@ -422,12 +422,13 @@ routing calls at `/api/v2/*` without separately verifying each endpoint's
 shape against the vendored v2 OpenAPI spec, the same way `docs/API_NOTES.md`
 already requires for v1.
 
-**Version note (2026-08-24):** Vikunja 2.5.0 has since been released
-upstream. It is neither this project's floor (2.3.0) nor its aligned/tested
-default (2.4.0, above) — nothing in `src/` targets it, and no claim in this
-file has been re-verified against it. Treat 2.5-specific behavior as unknown
-rather than assuming it matches 2.4.0, until it gets the same
-live-verification treatment 2.4.0 received here.
+**Version note (2026-08-31):** Vikunja 2.5.0 and 2.6.0 have since been
+released upstream (2.6.0 on 2026-08-31, primarily a security release — 18
+fixes). Neither is this project's floor (2.3.0) nor its aligned/tested
+default (2.4.0, above) — nothing in `src/` targets them, and no claim in this
+file has been re-verified against either. Treat 2.5- and 2.6-specific
+behavior as unknown rather than assuming it matches 2.4.0, until it gets the
+same live-verification treatment 2.4.0 received here.
 
 ## Filter Implementation Notes
 
@@ -485,5 +486,5 @@ The Vikunja API supports SQL-like filter syntax as documented. Filters should be
 `UseBool` public/private trap, and the spec-vs-handler member-addressing
 mismatch — both cross-linked to `docs/VIKUNJA_API_ISSUES.md`), added "Create
 Retries and Idempotency" cross-linking `docs/ARCHITECTURE.md`'s Retry Logic
-section, and noted Vikunja 2.5.0 exists upstream but is unverified against
-this codebase.*
+section, and noted Vikunja 2.5.0 and 2.6.0 exist upstream but are unverified
+against this codebase.*
