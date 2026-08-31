@@ -17,6 +17,7 @@ import {
   resolveTemplatesPersistPath,
   loadTemplatesFile,
   writeTemplatesFileAtomic,
+  persistIdentityTemplateRecords,
   type PersistedTemplateRecord,
 } from '../../src/storage/templateFileStore';
 
@@ -92,19 +93,32 @@ describe('loadTemplatesFile', () => {
 
   it('drops malformed entries but keeps well-formed ones', () => {
     const entries = [
-      { id: 'template_1', name: 'template_1', data: '{}' },
-      { id: 'template_2' }, // missing name/data
+      { id: 'template_1', name: 'template_1', data: '{}', identity: 'identity-a' },
+      { id: 'template_2' }, // missing name/data/identity
       'not an object',
       42,
       null,
-      { id: 'template_3', name: 'template_3', data: '{"a":1}' },
+      { id: 'template_3', name: 'template_3', data: '{"a":1}', identity: 'identity-a' },
     ];
     fs.writeFileSync(filePath, JSON.stringify(entries), 'utf-8');
 
     const result = loadTemplatesFile(filePath);
     expect(result).toEqual([
-      { id: 'template_1', name: 'template_1', data: '{}' },
-      { id: 'template_3', name: 'template_3', data: '{"a":1}' },
+      { id: 'template_1', name: 'template_1', data: '{}', identity: 'identity-a' },
+      { id: 'template_3', name: 'template_3', data: '{"a":1}', identity: 'identity-a' },
+    ]);
+  });
+
+  it('drops a record with no identity field as malformed (#265 / CRIT-4: pre-migration data cannot be safely attributed to a tenant)', () => {
+    const entries = [
+      { id: 'template_1', name: 'template_1', data: '{}' }, // no identity — legacy shape
+      { id: 'template_2', name: 'template_2', data: '{}', identity: 'identity-a' },
+    ];
+    fs.writeFileSync(filePath, JSON.stringify(entries), 'utf-8');
+
+    const result = loadTemplatesFile(filePath);
+    expect(result).toEqual([
+      { id: 'template_2', name: 'template_2', data: '{}', identity: 'identity-a' },
     ]);
   });
 
@@ -164,8 +178,18 @@ describe('writeTemplatesFileAtomic', () => {
 
   it('round-trips records written to disk', () => {
     const records: PersistedTemplateRecord[] = [
-      { id: 'template_1', name: 'template_1', data: JSON.stringify({ name: 'A' }) },
-      { id: 'template_2', name: 'template_2', data: JSON.stringify({ name: 'B' }) },
+      {
+        id: 'template_1',
+        name: 'template_1',
+        data: JSON.stringify({ name: 'A' }),
+        identity: 'identity-a',
+      },
+      {
+        id: 'template_2',
+        name: 'template_2',
+        data: JSON.stringify({ name: 'B' }),
+        identity: 'identity-a',
+      },
     ];
     writeTemplatesFileAtomic(filePath, records);
     expect(loadTemplatesFile(filePath)).toEqual(records);
@@ -176,7 +200,7 @@ describe('writeTemplatesFileAtomic', () => {
     const writeSpy = jest.spyOn(fs, 'writeFileSync');
     const renameSpy = jest.spyOn(fs, 'renameSync');
 
-    writeTemplatesFileAtomic(filePath, [{ id: 't', name: 't', data: '{}' }]);
+    writeTemplatesFileAtomic(filePath, [{ id: 't', name: 't', data: '{}', identity: 'identity-a' }]);
 
     expect(writeSpy).toHaveBeenCalledTimes(1);
     const writtenPath = writeSpy.mock.calls[0]![0] as string;
@@ -194,9 +218,77 @@ describe('writeTemplatesFileAtomic', () => {
   });
 
   it('overwrites an existing file completely rather than merging', () => {
-    writeTemplatesFileAtomic(filePath, [{ id: 'old', name: 'old', data: '{}' }]);
-    writeTemplatesFileAtomic(filePath, [{ id: 'new', name: 'new', data: '{}' }]);
-    expect(loadTemplatesFile(filePath)).toEqual([{ id: 'new', name: 'new', data: '{}' }]);
+    writeTemplatesFileAtomic(filePath, [
+      { id: 'old', name: 'old', data: '{}', identity: 'identity-a' },
+    ]);
+    writeTemplatesFileAtomic(filePath, [
+      { id: 'new', name: 'new', data: '{}', identity: 'identity-a' },
+    ]);
+    expect(loadTemplatesFile(filePath)).toEqual([
+      { id: 'new', name: 'new', data: '{}', identity: 'identity-a' },
+    ]);
+  });
+});
+
+describe('persistIdentityTemplateRecords', () => {
+  let tmpDir: string;
+  let filePath: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'templateFileStore-merge-'));
+    filePath = path.join(tmpDir, 'templates.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('replaces only the given identity records, leaving other identities untouched', async () => {
+    writeTemplatesFileAtomic(filePath, [
+      { id: 'a1', name: 'a1', data: '{"v":1}', identity: 'identity-a' },
+      { id: 'b1', name: 'b1', data: '{"v":1}', identity: 'identity-b' },
+    ]);
+
+    await persistIdentityTemplateRecords(filePath, 'identity-a', [
+      { id: 'a1', name: 'a1', data: '{"v":2}', identity: 'identity-a' },
+      { id: 'a2', name: 'a2', data: '{"v":1}', identity: 'identity-a' },
+    ]);
+
+    const onDisk = loadTemplatesFile(filePath);
+    expect(onDisk).toHaveLength(3);
+    expect(onDisk).toEqual(
+      expect.arrayContaining([
+        { id: 'a1', name: 'a1', data: '{"v":2}', identity: 'identity-a' },
+        { id: 'a2', name: 'a2', data: '{"v":1}', identity: 'identity-a' },
+        { id: 'b1', name: 'b1', data: '{"v":1}', identity: 'identity-b' },
+      ]),
+    );
+  });
+
+  it('serializes concurrent persists from different identities so neither clobbers the other (#265 / CRIT-4)', async () => {
+    // Two identities race to persist at the same time, starting from an
+    // empty file. Without the write mutex, both could read the same
+    // (empty) snapshot and each write only its own record, with whichever
+    // finishes last winning and silently dropping the other's write.
+    await Promise.all([
+      persistIdentityTemplateRecords(filePath, 'identity-a', [
+        { id: 'a1', name: 'a1', data: '{}', identity: 'identity-a' },
+      ]),
+      persistIdentityTemplateRecords(filePath, 'identity-b', [
+        { id: 'b1', name: 'b1', data: '{}', identity: 'identity-b' },
+      ]),
+    ]);
+
+    const onDisk = loadTemplatesFile(filePath);
+    expect(onDisk).toHaveLength(2);
+    expect(onDisk.map((r) => r.identity).sort()).toEqual(['identity-a', 'identity-b']);
+  });
+
+  it('creates missing parent directories', () => {
+    const nestedPath = path.join(tmpDir, 'nested', 'templates.json');
+    return persistIdentityTemplateRecords(nestedPath, 'identity-a', []).then(() => {
+      expect(fs.existsSync(nestedPath)).toBe(true);
+    });
   });
 
   describe('durability (issue #293 / LOW-10)', () => {

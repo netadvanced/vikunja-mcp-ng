@@ -66,10 +66,20 @@ describe('vikunja_templates file-backed persistence', () => {
    * (Re-)requires the templates tool fresh — module registry must already
    * have been reset by the caller when simulating a restart — and returns a
    * ready-to-call tool handler bound to a newly-connected AuthManager.
+   *
+   * `apiUrl`/`token` default to a single fixed identity; pass distinct
+   * values to get a handler for a *different* identity within the same
+   * process (no `resetModules` between them) — this is how the two-identity
+   * race test below exercises two tenants sharing one live `storageManager`
+   * singleton, matching `getEffectiveSessionId`'s stdio-mode derivation
+   * (`apiUrl:tokenPrefix`) that stands in for the `(issuer,sub)` keying used
+   * in real `oidc-http` mode — same mechanism, no OIDC context mocking
+   * needed to exercise it.
    */
-  function setupTool(): (
-    args: Record<string, unknown>,
-  ) => Promise<{ content: { text: string }[] }> {
+  function setupTool(
+    apiUrl = 'https://test.vikunja.io',
+    token = 'test-token-12345678',
+  ): (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }> {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { registerTemplatesTool } =
       require('../../src/tools/templates') as typeof import('../../src/tools/templates');
@@ -78,7 +88,7 @@ describe('vikunja_templates file-backed persistence', () => {
       require('../../src/auth/AuthManager') as typeof import('../../src/auth/AuthManager');
 
     const authManager = new AuthManager();
-    authManager.connect('https://test.vikunja.io', 'test-token-12345678');
+    authManager.connect(apiUrl, token);
 
     const calls: unknown[][] = [];
     const server = { tool: (...args: unknown[]) => calls.push(args) } as unknown as Parameters<
@@ -255,6 +265,68 @@ describe('vikunja_templates file-backed persistence', () => {
       } finally {
         jest.useRealTimers();
       }
+    },
+  );
+
+  it(
+    'two identities creating templates concurrently never clobber each ' +
+      "other's disk records, and hydration stays isolated per identity " +
+      '(#265 CRIT-4)',
+    async () => {
+      // A generic responder (not order-dependent mockResolvedValueOnce
+      // queuing) so two concurrent `create` calls — each issuing a GET
+      // project + GET tasks pair — can interleave in any order.
+      mockFetch.mockImplementation((url: unknown) => {
+        const asString = String(url);
+        if (asString.endsWith('/tasks')) {
+          return mockResponse({ text: JSON.stringify([]) });
+        }
+        return mockResponse({ text: JSON.stringify({ id: 1, title: 'Proj' }) });
+      });
+
+      const handlerA = setupTool('https://identity-a.vikunja.io', 'token-identity-aaaaaaaa');
+      const handlerB = setupTool('https://identity-b.vikunja.io', 'token-identity-bbbbbbbb');
+
+      await Promise.all([
+        handlerA({ subcommand: 'create', projectId: 1, name: 'Template A' }),
+        handlerB({ subcommand: 'create', projectId: 1, name: 'Template B' }),
+      ]);
+
+      const onDisk = JSON.parse(fs.readFileSync(persistFile, 'utf-8')) as Array<{
+        identity: string;
+        data: string;
+      }>;
+      expect(onDisk).toHaveLength(2);
+      expect(new Set(onDisk.map((r) => r.identity)).size).toBe(2);
+      const names = onDisk.map((r) => (JSON.parse(r.data) as { name: string }).name).sort();
+      expect(names).toEqual(['Template A', 'Template B']);
+
+      // Neither identity should ever see the other's template.
+      const listA = await handlerA({ subcommand: 'list' });
+      expect(listA.content[0]!.text).toContain('Template A');
+      expect(listA.content[0]!.text).not.toContain('Template B');
+
+      const listB = await handlerB({ subcommand: 'list' });
+      expect(listB.content[0]!.text).toContain('Template B');
+      expect(listB.content[0]!.text).not.toContain('Template A');
+
+      // And that isolation survives a restart (fresh hydration from disk),
+      // not just the in-memory state from the create calls above.
+      jest.resetModules();
+      mockFetch = jest.fn();
+      global.fetch = mockFetch as unknown as typeof fetch;
+      const handlerARestarted = setupTool('https://identity-a.vikunja.io', 'token-identity-aaaaaaaa');
+      const handlerBRestarted = setupTool('https://identity-b.vikunja.io', 'token-identity-bbbbbbbb');
+
+      const listARestarted = await handlerARestarted({ subcommand: 'list' });
+      expect(listARestarted.content[0]!.text).toContain('Retrieved 1 template');
+      expect(listARestarted.content[0]!.text).toContain('Template A');
+      expect(listARestarted.content[0]!.text).not.toContain('Template B');
+
+      const listBRestarted = await handlerBRestarted({ subcommand: 'list' });
+      expect(listBRestarted.content[0]!.text).toContain('Retrieved 1 template');
+      expect(listBRestarted.content[0]!.text).toContain('Template B');
+      expect(listBRestarted.content[0]!.text).not.toContain('Template A');
     },
   );
 });

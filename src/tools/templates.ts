@@ -16,7 +16,7 @@ import { storageManager } from '../storage';
 // concern (see templateFileStore.ts's header).
 import {
   loadTemplatesFile,
-  writeTemplatesFileAtomic,
+  persistIdentityTemplateRecords,
   resolveTemplatesPersistPath,
 } from '../storage/templateFileStore';
 import type { PersistedTemplateRecord } from '../storage/templateFileStore';
@@ -118,7 +118,13 @@ async function hydrateTemplatesFromDiskIfNeeded(
   }
   hydratedPaths.add(persistPath);
 
-  const records = loadTemplatesFile(persistPath);
+  // Identity = the same stable session-id string SimpleFilterStorage
+  // instances are keyed by (see getEffectiveSessionId), so hydration only
+  // ever loads records this identity itself persisted — #265 (CRIT-4): a
+  // record with no matching identity belongs to a different tenant and
+  // must never be hydrated into this session.
+  const identity = storage.getSession().id;
+  const records = loadTemplatesFile(persistPath).filter((record) => record.identity === identity);
   for (const record of records) {
     try {
       const existing = await findTemplateByName(storage, record.name);
@@ -157,12 +163,17 @@ async function findTemplateByName(
 }
 
 /**
- * Write-through: persist the full current template set for this session to
+ * Write-through: persist the full current template set for this identity to
  * disk, atomically, when persistence is configured. A write failure is
  * logged but never surfaced as a tool error — the in-memory mutation the
  * caller just made already succeeded, and durability is a best-effort
  * bonus, not a correctness requirement (per the "in memory by default"
  * contract templates.ts documents).
+ *
+ * `persistIdentityTemplateRecords` merges this identity's records into the
+ * file rather than overwriting it wholesale — see #265 (CRIT-4): the old
+ * behavior wrote only the mutating session's full set over the *entire*
+ * file, so concurrent identities silently erased each other's templates.
  */
 async function persistTemplatesIfConfigured(
   storage: Awaited<ReturnType<typeof storageManager.getStorage>>,
@@ -172,11 +183,12 @@ async function persistTemplatesIfConfigured(
     return;
   }
   try {
+    const identity = storage.getSession().id;
     const all = await storage.list();
     const records: PersistedTemplateRecord[] = all
       .filter((filter) => filter.namespace === 'template')
-      .map((filter) => ({ id: filter.name, name: filter.name, data: filter.filter }));
-    writeTemplatesFileAtomic(persistPath, records);
+      .map((filter) => ({ id: filter.name, name: filter.name, data: filter.filter, identity }));
+    await persistIdentityTemplateRecords(persistPath, identity, records);
   } catch (error) {
     logger.error('Failed to persist templates to disk', {
       persistPath,
