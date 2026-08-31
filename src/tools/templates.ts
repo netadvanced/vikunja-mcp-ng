@@ -78,23 +78,44 @@ function getTemplatesPersistPath(): string | undefined {
 }
 
 /**
- * Templates already hydrated from disk in this process, keyed by
- * `${persistPath}:${sessionId}` — hydration happens once per session per
- * configured path, not on every call, so repeated tool invocations don't
- * re-read the file or attempt to re-create already-loaded templates.
+ * Templates already hydrated from disk in this process, per configured
+ * persist path, for the currently-live storage *instance*.
+ *
+ * Keyed by the `SimpleFilterStorage` object itself (a `WeakMap`), not by the
+ * session id string it was previously keyed by — this is the #264 / MED-11
+ * fix. The old string key (`${persistPath}:${sessionId}`) survived eviction:
+ * `FilterStorageManager`'s 1h idle sweep discards a session's storage
+ * instance and hands back a brand-new, empty one on the next lookup, but the
+ * hydration key stayed marked "already done" forever, so `list` reported "0
+ * templates" while the file still held them, and the next `create`
+ * write-through overwrote the disk file with that near-empty set —
+ * permanently deleting everything. Keying on the instance reference instead
+ * makes that impossible structurally: an evicted-then-recreated session gets
+ * a storage object with no entry in this `WeakMap`, so hydration simply runs
+ * again, and the stale entry for the discarded instance is garbage-collected
+ * on its own. Paired with the `getStorage` fix in `SimpleFilterStorage.ts`
+ * (bump `lastAccessAt` on every lookup, not just on filter CRUD) as
+ * defense-in-depth against the eviction race itself, not just its
+ * consequence here.
  */
-const hydratedPersistenceKeys = new Set<string>();
+const hydratedPersistPathsByStorage = new WeakMap<
+  Awaited<ReturnType<typeof storageManager.getStorage>>,
+  Set<string>
+>();
 
 async function hydrateTemplatesFromDiskIfNeeded(
   storage: Awaited<ReturnType<typeof storageManager.getStorage>>,
   persistPath: string,
 ): Promise<void> {
-  const sessionId = storage.getSession().id;
-  const key = `${persistPath}:${sessionId}`;
-  if (hydratedPersistenceKeys.has(key)) {
+  let hydratedPaths = hydratedPersistPathsByStorage.get(storage);
+  if (!hydratedPaths) {
+    hydratedPaths = new Set<string>();
+    hydratedPersistPathsByStorage.set(storage, hydratedPaths);
+  }
+  if (hydratedPaths.has(persistPath)) {
     return;
   }
-  hydratedPersistenceKeys.add(key);
+  hydratedPaths.add(persistPath);
 
   const records = loadTemplatesFile(persistPath);
   for (const record of records) {

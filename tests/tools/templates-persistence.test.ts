@@ -213,4 +213,48 @@ describe('vikunja_templates file-backed persistence', () => {
     const listResult = await handlerAfterRestart({ subcommand: 'list' });
     expect(listResult.content[0]!.text).toContain('Retrieved 0 templates');
   });
+
+  it(
+    'recovers a session evicted mid-idle without losing its disk-persisted ' +
+      'templates (eviction-then-access, #264 CRIT-3 combined with #293 MED-11)',
+    async () => {
+      jest.useFakeTimers();
+      try {
+        const handler = setupTool();
+        fetchOkOnce({ id: 1, title: 'Proj' });
+        fetchOkOnce([{ id: 1, title: 'Task 1' }]);
+        await handler({ subcommand: 'create', projectId: 1, name: 'Durable Template' });
+
+        const beforeIdle = await handler({ subcommand: 'list' });
+        expect(beforeIdle.content[0]!.text).toContain('Retrieved 1 template');
+
+        // Let the session go idle long enough for storageManager's 1h
+        // cleanup sweep to evict its in-memory storage instance, without the
+        // caller doing anything in between (simulating an MCP client that
+        // goes quiet for a while). Two full sweep ticks clear the
+        // exact-boundary edge case (a sweep at precisely the 1h mark does
+        // not count as expired yet) — see tests/storage/SimpleFilterStorage.test.ts.
+        await jest.advanceTimersByTimeAsync(121 * 60 * 1000);
+
+        // The very next access must transparently re-hydrate from disk
+        // rather than reporting the near-empty state of the fresh storage
+        // instance the eviction left behind — this was the actual #264
+        // failure mode: a stale hydration-tracking key (keyed on the
+        // session id string, which survives eviction) made hydration
+        // silently skip on the way back in, so `list` reported "0
+        // templates" while the file still held the record.
+        const afterEviction = await handler({ subcommand: 'list' });
+        expect(afterEviction.content[0]!.text).toContain('Retrieved 1 template');
+        expect(afterEviction.content[0]!.text).toContain('Durable Template');
+
+        // And the disk file must still be intact — the historical failure
+        // mode was the *next* write-through overwriting the file with the
+        // near-empty post-eviction set, destroying the record permanently.
+        const onDisk = JSON.parse(fs.readFileSync(persistFile, 'utf-8')) as unknown[];
+        expect(onDisk).toHaveLength(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 });
