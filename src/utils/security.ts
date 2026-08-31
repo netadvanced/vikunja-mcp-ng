@@ -26,6 +26,17 @@ const SENSITIVE_KEY_PATTERNS = [
   /(?:^|[_-])(client_secret|client_id|client_key|app_secret|app_key|app_id)(?:$|[_-])/i,
   /(?:^|[_-])(user|username|user_id|email|login|signin)(?:$|[_-])/i,
 
+  // OIDC identity patterns (#292 MED-15): `sub` and the derived
+  // `identityKey`/`sessionId` (`"<issuer>|<sub>"`, see
+  // src/context/requestContext.ts) are stable per-caller identifiers, not
+  // credentials - but leaking them still de-anonymizes a caller across log
+  // lines. `identityKey`/`sessionId` already happen to match the generic
+  // `key`/`session` patterns below, but that's incidental; `sub` matches
+  // none of them, so it needs an explicit pattern of its own. Listed
+  // together and named for what they are, so the identity-masking
+  // guarantee doesn't quietly depend on wording coincidences.
+  /(?:^|[_-])(sub|identity_key|identitykey)(?:$|[_-])/i,
+
   // Database and connection patterns
   /(?:^|[_-])(database|db|connection|connection_string|mongo_uri|mongodb_uri|redis_url)(?:$|[_-])/i,
   /(?:^|[_-])(host|hostname|server|endpoint|uri|url|link)(?:$|[_-])/i,

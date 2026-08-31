@@ -307,6 +307,25 @@ describe('Security Utilities', () => {
     });
   });
 
+  describe('OIDC identity masking (#292 MED-15)', () => {
+    it('masks a bare `sub` field the same way secrets are masked', () => {
+      const sanitized = sanitizeLogData({ sub: 'user-a-1234567890' }) as Record<
+        string,
+        unknown
+      >;
+      expect(sanitized.sub).toBe('[REDACTED]');
+    });
+
+    it('masks `identityKey` and `sessionId` fields carrying the issuer|sub pair', () => {
+      const sanitized = sanitizeLogData({
+        identityKey: 'https://idp.example/realm|user-a',
+        sessionId: 'https://idp.example/realm|user-a',
+      }) as Record<string, unknown>;
+      expect(sanitized.identityKey).toBe('[REDACTED]');
+      expect(sanitized.sessionId).toBe('[REDACTED]');
+    });
+  });
+
   describe('Edge Case Coverage Tests', () => {
     it('should mask URL fragments with sensitive keys (line 245)', () => {
       const url = 'https://example.com/api#token_secret';
