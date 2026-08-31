@@ -311,6 +311,7 @@ describe('EntityResolver', () => {
       // MCPError before it reaches this catch, so the logged error is no
       // longer the exact original `Error` instance — just check its shape.
       expect(logger.warn).toHaveBeenCalledWith('Failed to fetch users', {
+        username: 'alice',
         error: expect.any(Error),
       });
     });
@@ -483,7 +484,12 @@ describe('EntityResolver', () => {
         ],
       });
 
-      expect(logger.debug).toHaveBeenCalledWith('Users fetched', { searchCount: 3, count: 3 });
+      expect(logger.debug).toHaveBeenCalledWith('Users fetched', {
+        searchCount: 3,
+        count: 3,
+        failedDueToAuth: false,
+        searchFailed: false,
+      });
 
       expect(logger.debug).toHaveBeenCalledWith('Label and user maps created', {
         labelMapSize: 3,

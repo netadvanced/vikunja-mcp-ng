@@ -145,17 +145,14 @@ export class TaskCreationService {
         task,
         entityMaps.userMap,
         entityMaps.projectUsers,
+        entityMaps.userFetchFailedDueToAuth,
+        entityMaps.userSearchFailed,
       );
       warnings.push(...assigneeWarnings);
 
-      if (task.reminders && task.reminders.length > 0) {
-        warnings.push(
-          this.handleReminders(
-            createdTask.id,
-            task.reminders as Array<{ reminder_date?: string; reminder?: string }>,
-          ),
-        );
-      }
+      // Reminders (when present) were already included in the create body
+      // by `prepareTaskData` — see its comment on why no post-creation
+      // reminder call, or warning about needing one, belongs here (#284).
 
       const result: TaskCreationResult = {
         success: true,
@@ -459,6 +456,17 @@ export class TaskCreationService {
    * @param task - Original task data with assignees
    * @param userMap - Mapping of usernames to IDs
    * @param projectUsers - List of available project users
+   * @param userFetchFailedDueToAuth - True if `EntityResolver.fetchUsers` hit
+   *   a real auth failure on at least one search (see
+   *   `EntityResolutionResult.userFetchFailedDueToAuth`)
+   * @param userSearchFailed - True if at least one non-auth search call
+   *   itself failed (network/5xx/etc, see
+   *   `EntityResolutionResult.userSearchFailed`). Distinguishing this from
+   *   "the search succeeded and found nobody" is the issue #283 HIGH-12 fix:
+   *   an empty `projectUsers` with BOTH flags false means the search(es)
+   *   worked and legitimately matched no one, so control falls through to
+   *   the same "Users not found" reporting a partial miss gets below, rather
+   *   than misdiagnosing it as an API problem.
    * @returns Array of warnings from user assignment
    */
   private async handleUserAssignment(
@@ -467,6 +475,8 @@ export class TaskCreationService {
     task: ImportedTask,
     userMap: Map<string, number>,
     projectUsers: VikunjaUser[],
+    userFetchFailedDueToAuth: boolean,
+    userSearchFailed: boolean,
   ): Promise<string[]> {
     const warnings: string[] = [];
 
@@ -474,15 +484,29 @@ export class TaskCreationService {
       return warnings;
     }
 
-    // Check if we have any users mapped (might be empty due to API issue)
-    if (projectUsers.length === 0) {
-      logger.warn('Skipping assignees due to user fetch failure', {
-        taskId: createdTask.id || 'unknown',
-        assignees: task.assignees,
-      });
-      warnings.push(
-        'Assignees skipped due to user fetch failure (possible API authentication issue)',
-      );
+    // An empty projectUsers list means no assignee could possibly resolve,
+    // but "empty" has two very different causes: the search call(s) broke
+    // (auth or otherwise), or every search ran fine and simply matched no
+    // one. Only the former is actually an API problem worth surfacing as
+    // one — the latter is the ordinary "Users not found" case handled below.
+    if (projectUsers.length === 0 && (userFetchFailedDueToAuth || userSearchFailed)) {
+      if (userFetchFailedDueToAuth) {
+        logger.warn('Skipping assignees due to user fetch authentication failure', {
+          taskId: createdTask.id || 'unknown',
+          assignees: task.assignees,
+        });
+        warnings.push(
+          'Assignees skipped due to user fetch failure (possible API authentication issue)',
+        );
+      } else {
+        logger.warn('Skipping assignees due to user search failure', {
+          taskId: createdTask.id || 'unknown',
+          assignees: task.assignees,
+        });
+        warnings.push(
+          'Assignees skipped: user search failed (network or server error, not an authentication issue)',
+        );
+      }
       return warnings;
     }
 

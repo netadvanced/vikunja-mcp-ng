@@ -27,6 +27,18 @@ export interface EntityResolutionResult {
   userMap: Map<string, number>;
   /** Whether user fetch failed due to known authentication issues */
   userFetchFailedDueToAuth: boolean;
+  /**
+   * True once at least one `GET /users?s=...` search call itself failed
+   * (network/5xx/etc, not an auth error — those set
+   * `userFetchFailedDueToAuth` instead). Lets callers distinguish "the
+   * search call broke" from "the search succeeded and legitimately found
+   * nobody", which used to be indistinguishable (both left `projectUsers`
+   * empty), forcing `TaskCreationService.handleUserAssignment` to always
+   * blame "possible API authentication issue" even for a plain typo'd
+   * username a successful search correctly reported as not found
+   * (issue #283 HIGH-12).
+   */
+  userSearchFailed: boolean;
   /** Raw labels array for reference */
   projectLabels: VikunjaLabel[];
   /** Raw users array for reference */
@@ -67,6 +79,7 @@ export class EntityResolver {
       labelMap: new Map(),
       userMap: new Map(),
       userFetchFailedDueToAuth: false,
+      userSearchFailed: false,
       projectLabels: [],
       projectUsers: [],
     };
@@ -219,8 +232,15 @@ export class EntityResolver {
     }
 
     const usersById = new Map<number, VikunjaUser>();
-    try {
-      for (const username of assigneeUsernames) {
+    let failedDueToAuth = false;
+    let searchFailed = false;
+
+    // One try/catch per username rather than around the whole loop: a
+    // single search failing (auth or otherwise) used to abort every
+    // remaining username's search too, which is strictly worse than just
+    // best-effort skipping the one that failed.
+    for (const username of assigneeUsernames) {
+      try {
         const usersResponse = await vikunjaRestRequest<VikunjaUser[]>(
           authManager,
           'GET',
@@ -231,41 +251,48 @@ export class EntityResolver {
             usersById.set(user.id, user);
           }
         }
+      } catch (error) {
+        // This is a known limitation with Vikunja API authentication. Checked
+        // directly via `details.statusCode` (set by `vikunjaRestRequest` on
+        // every non-2xx response) alongside the shared message-pattern
+        // classifier: `isAuthenticationError`'s structured checks look for
+        // `.status`/`.response.status`, properties the legacy client's HTTP errors
+        // carried but a plain `MCPError` from the REST helper does not — so a
+        // bare 401/403 with a response body that doesn't happen to match one
+        // of the message-pattern fallbacks would otherwise stop being
+        // classified as an auth failure after this transport migration.
+        const statusCode = error instanceof MCPError ? error.details?.statusCode : undefined;
+        if (statusCode === 401 || statusCode === 403 || isAuthenticationError(error)) {
+          logger.warn(
+            'Cannot fetch users due to known Vikunja API authentication issue. Assignees will be skipped.',
+            {
+              username,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+          failedDueToAuth = true;
+          // Continue without user mapping - assignees will be ignored
+        } else {
+          // Some other error - log but continue. Distinct from an empty
+          // (but successful) search result: `userSearchFailed` tells
+          // TaskCreationService the search itself broke, rather than ran
+          // and correctly found nobody (issue #283 HIGH-12 — see
+          // `UserSearchOutcome`'s doc comment).
+          logger.warn('Failed to fetch users', { username, error });
+          searchFailed = true;
+        }
       }
-      result.projectUsers = Array.from(usersById.values());
-      logger.debug('Users fetched', {
-        searchCount: assigneeUsernames.length,
-        count: result.projectUsers.length,
-      });
-    } catch (error) {
-      // This is a known limitation with Vikunja API authentication. Checked
-      // directly via `details.statusCode` (set by `vikunjaRestRequest` on
-      // every non-2xx response) alongside the shared message-pattern
-      // classifier: `isAuthenticationError`'s structured checks look for
-      // `.status`/`.response.status`, properties the legacy client's HTTP errors
-      // carried but a plain `MCPError` from the REST helper does not — so a
-      // bare 401/403 with a response body that doesn't happen to match one
-      // of the message-pattern fallbacks would otherwise stop being
-      // classified as an auth failure after this transport migration.
-      const statusCode = error instanceof MCPError ? error.details?.statusCode : undefined;
-      if (statusCode === 401 || statusCode === 403 || isAuthenticationError(error)) {
-        logger.warn(
-          'Cannot fetch users due to known Vikunja API authentication issue. Assignees will be skipped.',
-          {
-            error: error instanceof Error ? error.message : String(error),
-          },
-        );
-        result.userFetchFailedDueToAuth = true;
-        // Continue without user mapping - assignees will be ignored
-      } else {
-        // Some other error - log but continue
-        logger.warn('Failed to fetch users', { error });
-      }
-      // Preserve whatever users were successfully resolved before the
-      // failing search (partial results are still useful), matching the
-      // "continue, best-effort" behavior of the rest of this method.
-      result.projectUsers = Array.from(usersById.values());
     }
+
+    result.projectUsers = Array.from(usersById.values());
+    result.userFetchFailedDueToAuth = failedDueToAuth;
+    result.userSearchFailed = searchFailed;
+    logger.debug('Users fetched', {
+      searchCount: assigneeUsernames.length,
+      count: result.projectUsers.length,
+      failedDueToAuth,
+      searchFailed,
+    });
   }
 
   /**

@@ -613,7 +613,7 @@ describe('TaskCreationService', () => {
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
     });
 
-    it('should handle user assignment when no users are available', async () => {
+    it('should skip assignees with an auth-specific warning when the user fetch failed due to auth', async () => {
       // Arrange
       const taskWithoutLabels: ImportedTask = {
         ...mockTask,
@@ -625,9 +625,15 @@ describe('TaskCreationService', () => {
         done: false,
         priority: 3,
       } as Task;
-      const entityMapsWithNoUsers = {
+      // projectUsers is empty AND the entity resolver reported a real auth
+      // failure on the /users search — the auth-specific warning is only
+      // correct in this combination (issue #283 HIGH-12: previously ANY
+      // empty projectUsers list, including a clean "searched, found
+      // nobody" result, produced this same message).
+      const entityMapsWithAuthFailure = {
         ...mockEntityMaps,
         projectUsers: [],
+        userFetchFailedDueToAuth: true,
       };
 
       fetchOkOnce(createdTask);
@@ -637,13 +643,90 @@ describe('TaskCreationService', () => {
         taskWithoutLabels,
         456,
         authManager,
-        entityMapsWithNoUsers,
+        entityMapsWithAuthFailure,
       );
 
       // Assert
       expect(result.success).toBe(true);
       expect(result.warnings).toHaveLength(1);
       expect(result.warnings![0]).toContain('Assignees skipped due to user fetch failure');
+      expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
+      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+    });
+
+    it('should skip assignees with a search-failure warning (not the auth one) when a non-auth search error occurred', async () => {
+      // Arrange: same empty projectUsers, but the failure was NOT an auth
+      // error (e.g. a 500 or network blip on the /users search).
+      const taskWithoutLabels: ImportedTask = {
+        ...mockTask,
+        labels: [],
+      };
+      const createdTask: Task = {
+        id: 123,
+        title: 'Test Task',
+        done: false,
+        priority: 3,
+      } as Task;
+      const entityMapsWithSearchFailure = {
+        ...mockEntityMaps,
+        projectUsers: [],
+        userSearchFailed: true,
+      };
+
+      fetchOkOnce(createdTask);
+
+      const result = await taskCreationService.createTask(
+        taskWithoutLabels,
+        456,
+        authManager,
+        entityMapsWithSearchFailure,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings![0]).toContain('user search failed');
+      expect(result.warnings![0]).not.toContain('possible API authentication issue');
+      expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
+      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+    });
+
+    it('should report assignees as not found (not an API-issue warning) when the user search succeeded but simply matched no one', async () => {
+      // Arrange: projectUsers is empty because the search(es) ran fine and
+      // legitimately found nobody — neither failure flag is set. This is
+      // the "correct branch is unreachable" defect from issue #283 HIGH-12:
+      // before the fix, this indistinguishable-from-a-real-failure case
+      // always produced the "possible API authentication issue" warning.
+      const taskWithoutLabels: ImportedTask = {
+        ...mockTask,
+        labels: [],
+      };
+      const createdTask: Task = {
+        id: 123,
+        title: 'Test Task',
+        done: false,
+        priority: 3,
+      } as Task;
+      const entityMapsWithNoMatches = {
+        ...mockEntityMaps,
+        userMap: new Map(), // no username matched any search
+        projectUsers: [],
+        userFetchFailedDueToAuth: false,
+        userSearchFailed: false,
+      };
+
+      fetchOkOnce(createdTask);
+
+      const result = await taskCreationService.createTask(
+        taskWithoutLabels,
+        456,
+        authManager,
+        entityMapsWithNoMatches,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings![0]).toContain('Users not found');
+      expect(result.warnings![0]).not.toContain('possible API authentication issue');
       expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
     });
