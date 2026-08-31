@@ -75,8 +75,11 @@ report to the operator.
   in the go-vikunja source). `normalizeDateForApi`
   (`src/tools/tasks/validation.ts`) coerces the date-only and SQL-ish
   space-separated forms to RFC3339 before they reach the wire, on
-  `create-subtask`, `bulk-create-subtasks`, `vikunja_batch_import` and
-  template `instantiate`. **Known gap:** `vikunja_tasks update` does not run
+  `vikunja_tasks` `create`, `bulk-create`, `create-subtask` and
+  `bulk-create-subtasks`, on `vikunja_batch_import`, and on template
+  `instantiate`. (`vikunja_task_bulk update`'s date `values` and filter-string
+  date literals go through the same helper — see `resolveBulkUpdateValue` and
+  `src/utils/filters.ts`.) **Known gap:** `vikunja_tasks update` does not run
   this coercion yet — an agent-supplied date-only value on `update` still
   fails, tracked as a follow-up (see tracking issue #28). The doc comment on
   `normalizeDateForApi` itself (`src/tools/tasks/validation.ts:29-32`) still
@@ -358,14 +361,18 @@ Project sharing allows creating public or private links to share projects with e
    replace nor a partial merge — it's a hard-coded single-column write,
    `s.Where("id = ?", w.ID).Cols("events").Update(w)`. The handler's own doc
    comment says as much: "Change a webhook target's events. You cannot
-   change other values of a webhook." `targetUrl` and `secret` are therefore
-   permanently fixed at creation; there is no server-side path that will
-   ever change them, so no client-side fetch-merge can fix this the way it
-   fixes the teams/projects/views cases above — the only way to change them
-   is delete-and-recreate. `vikunja_webhooks update` rejects `targetUrl`/
-   `secret` outright (`src/tools/webhooks.ts`) rather than accepting them
-   and silently discarding the change, and its success message no longer
-   implies more was updated than `events`. See
+   change other values of a webhook." `targetUrl`, `secret`,
+   `basicAuthUser` and `basicAuthPassword` are therefore permanently fixed
+   at creation; there is no server-side path that will ever change them, so
+   no client-side fetch-merge can fix this the way it fixes the
+   teams/projects/views cases above — the only way to change them is
+   delete-and-recreate. `vikunja_webhooks update` rejects all four outright
+   (`src/tools/webhooks.ts`) rather than accepting them and silently
+   discarding the change, and its success message no longer implies more was
+   updated than `events`. (`basicAuthUser`/`basicAuthPassword` are the Basic
+   Auth credentials added as create-only fields in #243; they are rejected on
+   update by the same mechanism, and for the same reason, as
+   `targetUrl`/`secret`.) See
    [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #14.
 
 ## Operation Patterns
@@ -480,8 +487,13 @@ other verb- and field-mapping notes.
 2. **Bulk Update**: Updates the same field across multiple tasks
    - **Scalar fields go through Vikunja's native `POST /tasks/bulk`**
      (`models.BulkTask` — `{task_ids, fields, values}`) as **one** request
-     (landed in PR #89). Allowlist: `done`, `priority`, `due_date`,
-     `start_date`, `end_date`, `project_id`, `repeat_after`, `repeat_mode`.
+     (landed in PR #89). Allowlist: `done`, `priority`, `percent_done`,
+     `due_date`, `start_date`, `end_date`, `project_id`, `repeat_after`,
+     `repeat_mode` (`BulkOperationValidator.validateFieldConstraints`, which
+     also allows `assignees`/`labels` — those take the per-task path below,
+     not the native endpoint). `percent_done` takes the whole-percentage
+     0-100 scale `percentDone` uses everywhere else and is converted to the
+     0-1 wire fraction in `resolveBulkUpdateValue`.
    - The server wipes assignees on a bulk update regardless of `fields`, so
      the tool snapshots and restores them around the call; restore failures
      are surfaced as `assigneeRestoreFailures`, not swallowed.

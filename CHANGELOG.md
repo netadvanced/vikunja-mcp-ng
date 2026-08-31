@@ -350,6 +350,15 @@ supported Vikunja is now 2.4.0** — 2.3.0 is no longer supported.
 
 ### Internal
 
+- **A weekly upstream watch** (`npm run watch:upstream`,
+  `.github/workflows/upstream-watch.yml`) now scans `go-vikunja/vikunja`'s `main` branch for
+  commits that can plausibly change what this client observes, and appends a digest to its
+  tracking issue. It deliberately **ignores `swagger.json`**: across 2.4.0 → 2.6.0 the spec
+  moved by one operation while roughly 17 changes broke a client like ours, all of it in
+  handler enforcement the spec never describes. A run that finds nothing posts nothing.
+  Documented in [docs/LOCAL-TESTING.md](docs/LOCAL-TESTING.md#upstream-watch-npm-run-watchupstream) —
+  including the exit-code contract, the watermark, and the fact that GitHub disables
+  scheduled workflows after 60 days of repository inactivity.
 - The agent battle-testing library grew from 13 scenarios to **21**, covering the ground this
   release changed: team rename-keeps-visibility and create-with-admin-member, task position,
   `percentDone` on update / bulk-update / as a filter threshold, and bulk-update partial

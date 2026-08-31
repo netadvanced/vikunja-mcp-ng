@@ -137,6 +137,7 @@ Mocked unit tests cannot catch a whole class of bug here — several real defect
 - [Architecture](../docs/ARCHITECTURE.md) · [Roadmap](../docs/ROADMAP.md) · [API coverage](../docs/API-COVERAGE.md)
 - [Endpoint playbook](../docs/ENDPOINT-PLAYBOOK.md) — conventions for adding new coverage
 - [Local testing](../docs/LOCAL-TESTING.md) · [Battle testing](../docs/BATTLE-TESTING.md)
+- [Upstream watch](../docs/LOCAL-TESTING.md#upstream-watch-npm-run-watchupstream) — the weekly `go-vikunja/vikunja` `main` watcher (`npm run watch:upstream`, `.github/workflows/upstream-watch.yml`), its exit-code contract, the watermark in issue #250, and the 60-day scheduled-workflow trap
 - [Releasing](../docs/RELEASING.md) — versioning policy and the release checklist · [CHANGELOG](../CHANGELOG.md)
 - [Docker Desktop MCP Toolkit how-to](../docs/DOCKER-DESKTOP-MCP.md)
 - [OIDC setup manual](../docs/OIDC-SETUP.md) — install and configure the hosted, multi-user OIDC resource-server mode (any OIDC provider; Keycloak as reference)

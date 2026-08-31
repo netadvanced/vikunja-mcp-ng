@@ -592,7 +592,9 @@ wording.
 
 1. `curl -s https://hub.docker.com/v2/repositories/vikunja/vikunja/tags?page_size=100`
    (or the [releases page](https://github.com/go-vikunja/vikunja/releases))
-   to confirm the new tag exists.
+   to confirm the new tag exists. What is *in* it should already be on issue
+   #250 — see "Upstream watch" below, which watches upstream `main` weekly so
+   a release is never the first news.
 2. `VIKUNJA_VERSION=X.Y.Z npm run test:matrix` — inspect the verdict; a
    `FAIL` needs triage (script staleness / real tool bug / new server-drift
    to document and tolerate the same way the assignees case above is
@@ -616,6 +618,140 @@ wording.
    `X.Y.Z-vikunja<A.B.C>`, `latest`) — changing the base Vikunja version
    this project targets is always at least a minor bump (see
    [docs/RELEASING.md](RELEASING.md) §1).
+
+## Upstream watch (`npm run watch:upstream`)
+
+The section above starts at "a new Vikunja release ships" — this is how you
+find out that something is coming *before* there is a tag to react to.
+
+`scripts/upstream-watch.ts` (judgement in `scripts/lib/upstream-watch.ts`,
+unit-tested there) reads `go-vikunja/vikunja`'s `main` branch over the public
+GitHub REST API, filters the commits down to what can plausibly change what
+this client observes, and emits a digest as JSON and markdown.
+`.github/workflows/upstream-watch.yml` runs it weekly (Mondays 06:17 UTC) and
+appends the digest to tracking issue
+[#250](https://github.com/netadvanced/vikunja-mcp-ng/issues/250). It never
+talks to a Vikunja server, never touches a local clone, and is not PR CI —
+nothing a contributor pushes triggers it.
+
+### Why not just diff `swagger.json`
+
+Because the spec is the one place the interesting changes *don't* show up.
+Across 2.4.0 → 2.6.0 the vendored v1 OpenAPI surface moved by exactly **one**
+operation (`DELETE /notifications`), while a review of the same delta against
+what a client like ours actually does classified roughly **17 breaking**
+changes. The signal lives in handler enforcement the spec never describes:
+`pkg/models/**`, `pkg/routes/**`, `pkg/web/**`, `pkg/migration/**`,
+`pkg/modules/auth/**`, `pkg/user/**`, and any `*_permissions.go` /
+`*_rights.go` file wherever it moves to. So `pkg/swagger/**` and
+`*swagger.json` are on the **irrelevant** list on purpose — as are
+`*_test.go`, `frontend/`, and `docs/`, which churn several times a day and
+would drown the digest. Both lists live in `RELEVANT_UPSTREAM_PATHS` /
+`IRRELEVANT_UPSTREAM_PATHS` and are the only place to tune this. Adding a
+rule is cheap (more noise); removing one is what makes a 2.6.0-shaped
+surprise possible again. See issue #237 for the analysis this filter came
+out of.
+
+### Running it locally
+
+```bash
+# Free, read-only, stores nothing: scan the last 7 days, markdown to stdout.
+npm run watch:upstream -- --lookback-days 7
+```
+
+Auth is optional but strongly recommended: the script makes one API call per
+commit examined, and unauthenticated GitHub REST allows 60 requests an hour.
+Export `GITHUB_TOKEN` (or `GH_TOKEN`) — any read-only token will do; the
+workflow passes the default `GITHUB_TOKEN`, which needs no configuration.
+No repository secret is required for any of this.
+
+Useful flags (`scripts/upstream-watch.ts` carries the full list):
+`--lookback-days N` (ignore the watermark, scan a fixed window),
+`--json-out` / `--md-out` (write the digest to files instead of stdout),
+`--state-file` (read the stored watermark from a file), `--max-commits`,
+`--repo` / `--branch`.
+
+### Exit-code contract
+
+The caller has to be able to tell three outcomes apart, so it does:
+
+| Code | Meaning | What the workflow does |
+|---|---|---|
+| `0` | Ran fine, **nothing relevant** | Posts **nothing**. Deliberate: a tracker that says "nothing to report" every week gets muted, and then it is worse than nothing. |
+| `10` | Ran fine, **findings to report** | Appends the digest to issue #250 and advances the watermark. |
+| anything else (`1`) | **The run failed** | Fails the job, posts nothing, and leaves the watermark where it was so next week re-examines the same window. |
+
+If you wrap this in anything of your own, treat `10` as success. A naive
+`if [ $? -ne 0 ]` reads every findings run as a failure.
+
+### Running the workflow by hand
+
+Actions → **Upstream watch** → *Run workflow*. Two inputs:
+
+- **`lookback_days`** — ignore the stored watermark and scan this many days
+  back. Leave empty to use the watermark. Use it to re-examine a window you
+  think was missed.
+- **`dry_run`** — produce the digest but post nothing and do not advance the
+  watermark. The digest still lands in the job summary and as the
+  `upstream-watch-digest` artifact (30-day retention), so this is the safe
+  way to see what a run *would* say.
+
+### The watermark, and how to fix it by hand
+
+The watermark is a single HTML comment in the **body of issue #250**:
+
+```html
+<!-- upstream-watch:watermark sha=<commit-sha> date=<ISO-8601> -->
+```
+
+Not an Actions cache (evicted after 7 days unread — a weekly job would sit
+exactly on the eviction boundary and lose it silently) and not a committed
+file (this repo forbids direct commits to `main`). The issue body is written
+with the `issues: write` permission the job already needs, is human-readable,
+and lives next to the output it explains.
+
+It is advanced **only after** the digest has actually been posted, so a
+failed post re-examines its window next week. Worst case is a duplicate
+section; a silently lost week is not.
+
+To correct it, edit issue #250's body in the browser and change the `sha=` /
+`date=` values, or delete the line entirely. With no watermark line present a
+run is bounded to a fixed first-run lookback
+(`DEFAULT_FIRST_RUN_LOOKBACK_DAYS`, 14 days) rather than dumping the whole
+history. A window larger than `MAX_COMMITS_PER_RUN` (300) is processed
+oldest-first and the remainder is deferred to the next run, which the digest
+says out loud.
+
+### Agent triage is opt-in, and is off today
+
+The workflow has an agent-triage stage that maps each relevant commit onto
+our call sites and classifies it. It runs only when an `ANTHROPIC_API_KEY`
+repository secret is present. **No such secret is configured today**, and
+that is fine: the deterministic half still runs, still produces the digest,
+and still posts it — the digest footer says in so many words that triage was
+skipped for that run. The absence of the key changes nothing else about the
+run.
+
+### ⚠️ The trap: GitHub silently disables scheduled workflows
+
+**GitHub disables `schedule` triggers in a repository after 60 days without
+activity.** It does not fail the workflow, it does not open an issue, and it
+sends nothing beyond one email to the repo admin. A weekly watcher simply
+stops running, and a stopped watcher looks exactly like a quiet upstream —
+which is the failure this whole thing exists to prevent.
+
+How to notice:
+
+- Issue #250 is the tell. If **no new comment and no watermark change** has
+  appeared for more than about three weeks, assume the schedule is off before
+  assuming upstream is quiet. The watermark's `date=` is the timestamp to
+  read.
+- Actions → **Upstream watch** shows a banner when the schedule has been
+  disabled; re-enable it there, then use *Run workflow* with a
+  `lookback_days` covering the gap so the missed window is examined rather
+  than skipped.
+- This repository is low-traffic by design (no PR CI), so 60 quiet days is
+  genuinely reachable. Any push to a branch resets the clock.
 
 ## OIDC `oidc-http` transport e2e lane (`npm run test:e2e:oidc`)
 

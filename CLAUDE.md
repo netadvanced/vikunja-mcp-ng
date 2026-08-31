@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Pre-Commit Requirements (ALL must pass)
 ```bash
 npm run lint           # ESLint validation
-npm run test:coverage  # Jest with 90%+ branches, 95%+ lines coverage requirement  
+npm run test:coverage  # Jest behind the ratcheted coverage gate (see "Coverage Thresholds")
 npm run typecheck      # TypeScript compilation check
 ```
 

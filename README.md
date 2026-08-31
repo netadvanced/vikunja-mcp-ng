@@ -19,7 +19,7 @@ This server exposes Vikunja as **27 tools** (~150 subcommands), each covering on
 
 | Vikunja | Status |
 |---|---|
-| **2.4.0** | Aligned and tested — the version CI and the e2e stacks run against. Also the **minimum supported** version: floor and aligned currently coincide |
+| **2.4.0** | Aligned and tested — the version the local e2e stacks and live test lanes run against. Also the **minimum supported** version: floor and aligned currently coincide |
 | 2.5.0, 2.6.0 | Released upstream, **neither is supported or tested here** — no code in this server targets them yet. 2.6.0 (2026-08-31) is primarily a security release (18 fixes) |
 | < 2.4.0 | Not supported |
 
