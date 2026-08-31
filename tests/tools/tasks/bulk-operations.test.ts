@@ -1459,6 +1459,41 @@ describe('Bulk operations', () => {
         ).rejects.toThrow('Bulk create failed. Could not create any tasks');
       });
 
+      // LOW-6 in #294: the partial-failure path reports `failures: [{index,
+      // error}]` per task, but the total-failure path collapsed everything
+      // into one generic sentence, so "all N failed" said nothing about
+      // whether it was one cause or N different ones.
+      describe('total-failure detail (LOW-6)', () => {
+        it('names the failing index and its message when every task fails', async () => {
+          mockClient.tasks.createTask.mockRejectedValue(new Error('Project not writable'));
+
+          await expect(bulkCreateTasks({ projectId: 1, tasks: [{ title: 'A' }] })).rejects.toThrow(
+            'Bulk create failed. Could not create any tasks. Task(s) 0: Project not writable',
+          );
+        });
+
+        it('keeps per-index detail for distinct failures', async () => {
+          mockClient.tasks.createTask
+            .mockRejectedValueOnce(new Error('title too long'))
+            .mockRejectedValueOnce(new Error('bucket is full'));
+
+          await expect(
+            bulkCreateTasks({ projectId: 1, tasks: [{ title: 'A' }, { title: 'B' }] }),
+          ).rejects.toThrow('Task(s) 0: title too long; Task(s) 1: bucket is full');
+        });
+
+        it('groups indices that share one message instead of repeating it', async () => {
+          mockClient.tasks.createTask.mockRejectedValue(new Error('database is locked'));
+
+          await expect(
+            bulkCreateTasks({
+              projectId: 1,
+              tasks: [{ title: 'A' }, { title: 'B' }, { title: 'C' }],
+            }),
+          ).rejects.toThrow('Task(s) 0, 1, 2: database is locked');
+        });
+      });
+
       it('should handle repeat configuration', async () => {
         const mockTask = { id: 1, title: 'Test Task', project_id: 1 };
 

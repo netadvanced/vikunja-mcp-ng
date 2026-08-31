@@ -920,6 +920,26 @@ export async function createOneBulkTask(
   }
 }
 
+/**
+ * Render per-task bulk-create failures as `Task(s) 0, 2: <message>`, one
+ * clause per distinct message, joined with `; `.
+ *
+ * Grouping by message keeps the common "the same thing went wrong for every
+ * task" case to a single short clause while still naming every index, instead
+ * of repeating an identical sentence N times.
+ */
+function summarizeTaskFailures(failures: Array<{ index: number; error: string }>): string {
+  const byMessage = new Map<string, number[]>();
+  for (const { index, error } of failures) {
+    const indices = byMessage.get(error);
+    if (indices) indices.push(index);
+    else byMessage.set(error, [index]);
+  }
+  return [...byMessage]
+    .map(([message, indices]) => `Task(s) ${indices.join(', ')}: ${message}`)
+    .join('; ');
+}
+
 export async function bulkCreateTasks(
   args: BulkCreateArgs,
   authManager: AuthManager,
@@ -963,8 +983,17 @@ export async function bulkCreateTasks(
           (firstError as unknown as Record<string, unknown>).isLabelAssigneeError === true)
       )
         throw firstError;
-      // Transform all other errors (including API errors) into generic bulk create error
-      throw new MCPError(ErrorCode.API_ERROR, `Bulk create failed. Could not create any tasks`);
+      // Keep the per-index detail. The partial-failure path below reports
+      // `failures: [{ index, error }]` per task, but the total-failure path
+      // used to collapse everything into one message with no indication of
+      // which task hit what — so "all 20 failed" told the caller nothing
+      // about whether it was one bad project id or twenty distinct problems
+      // (LOW-6 in #294). Distinct messages are listed once each, with the
+      // indices that share them, so a uniform failure stays one short line.
+      throw new MCPError(
+        ErrorCode.API_ERROR,
+        `Bulk create failed. Could not create any tasks. ${summarizeTaskFailures(failedTasks)}`,
+      );
     }
 
     return successResponse(
