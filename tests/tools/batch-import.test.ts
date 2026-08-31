@@ -245,12 +245,13 @@ describe('Batch Import Tool', () => {
         }
       }
       // EntityResolver.fetchLabels -> GET /labels (migrated to direct REST,
-      // same wave as fetchUsers). Delegated to the SAME mockClient.labels
-      // .getLabels mock every existing arrange/assert already drives. A
-      // `null`/`undefined`/non-array return is serialized straight through so
-      // EntityResolver's own defensive branches (null warn, non-array warn)
-      // still run.
-      if (method === 'GET' && url.endsWith('/labels')) {
+      // same wave as fetchUsers), now paginated (?page=N&per_page=M — see
+      // MED-10 from #294) so matched on the path alone, ignoring the query
+      // string. Delegated to the SAME mockClient.labels.getLabels mock every
+      // existing arrange/assert already drives. A `null`/`undefined`/
+      // non-array return is serialized straight through so EntityResolver's
+      // own defensive branches (null warn, non-array warn) still run.
+      if (method === 'GET' && /\/labels(\?|$)/.test(url)) {
         try {
           const labels = await mockClient.labels.getLabels({});
           return mockResponse({ text: labels === undefined ? '' : JSON.stringify(labels) });
@@ -324,13 +325,13 @@ describe('Batch Import Tool', () => {
     it('should require authentication', async () => {
       mockAuthManager.isAuthenticated.mockReturnValue(false);
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: '[]',
-      });
-
-      expect(result.content[0].text).toContain('Authentication required');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: '[]',
+        }),
+      ).rejects.toThrow('Authentication required');
     });
   });
 
@@ -437,6 +438,9 @@ describe('Batch Import Tool', () => {
         // `percent_done: 50` — 50x out of range and silently accepted.
         percent_done: 0.5,
         repeat_after: 86400,
+        // Included directly in the create body rather than requiring a
+        // separate post-creation call (issue #284).
+        reminders: [{ reminder: '2024-12-25T00:00:00Z' }],
         repeat_mode: 'week',
         project_id: 1,
       });
@@ -454,33 +458,64 @@ describe('Batch Import Tool', () => {
     });
 
     it('should validate JSON format', async () => {
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: 'invalid json',
-      });
-
-      expect(result.content[0].text).toContain('Invalid JSON data');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: 'invalid json',
+        }),
+      ).rejects.toThrow('Invalid JSON data');
     });
 
     it('should validate required fields', async () => {
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ description: 'No title' }),
-      });
-
-      expect(result.content[0].text).toContain('Invalid JSON data');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ description: 'No title' }),
+        }),
+      ).rejects.toThrow('Invalid JSON data');
     });
 
     it('should validate hex color format', async () => {
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Task', hexColor: 'invalid' }),
+        }),
+      ).rejects.toThrow('Invalid JSON data');
+    });
+
+    it('should honor skipErrors for JSON imports the same way CSV already does (MED-14 from #294)', async () => {
+      const tasksData = [{ title: 'Valid Task' }, { invalidField: 'oops' }];
+
+      mockClient.tasks.createTask.mockResolvedValue({ id: 999, title: 'Valid Task' });
+
       const result = await toolHandler({
         projectId: 1,
         format: 'json',
-        data: JSON.stringify({ title: 'Task', hexColor: 'invalid' }),
+        data: JSON.stringify(tasksData),
+        skipErrors: true,
       });
 
-      expect(result.content[0].text).toContain('Invalid JSON data');
+      // The invalid task is dropped at parse time (never even reaches task
+      // creation), and the valid one still imports.
+      expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(1);
+      expect(result.content[0].text).toContain('Successfully imported: 1 tasks');
+    });
+
+    it('should still throw for an invalid JSON task when skipErrors is unset', async () => {
+      const tasksData = [{ title: 'Valid Task' }, { invalidField: 'oops' }];
+
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify(tasksData),
+        }),
+      ).rejects.toThrow('Invalid JSON data');
+      expect(mockClient.tasks.createTask).not.toHaveBeenCalled();
     });
   });
 
@@ -583,25 +618,23 @@ Task 2,Description 2,2,true`;
       const csvData = `description,priority
 Description,1`;
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'csv',
-        data: csvData,
-      });
-
-      expect(result.content[0].text).toContain('Missing required CSV headers: title');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'csv',
+          data: csvData,
+        }),
+      ).rejects.toThrow('Missing required CSV headers: title');
     });
 
     it('should require at least header and one data row', async () => {
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'csv',
-        data: 'title',
-      });
-
-      expect(result.content[0].text).toContain(
-        'CSV must have at least a header row and one data row',
-      );
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'csv',
+          data: 'title',
+        }),
+      ).rejects.toThrow('CSV must have at least a header row and one data row');
     });
 
     it('should fail on invalid CSV row without skipErrors', async () => {
@@ -609,13 +642,13 @@ Description,1`;
 "Valid Task",5
 "Invalid Task","not a number"`;
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'csv',
-        data: csvData,
-      });
-
-      expect(result.content[0].text).toContain('Invalid task data at row 3');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'csv',
+          data: csvData,
+        }),
+      ).rejects.toThrow('Invalid task data at row 3');
     });
   });
 
@@ -624,23 +657,36 @@ Description,1`;
       registerBatchImportTool(mockServer, mockAuthManager);
     });
 
-    it('should stop on first error by default', async () => {
+    it('should stop on first error by default, surfacing an error that still mentions the task that already landed (#269)', async () => {
       const tasksData = [{ title: 'Task 1' }, { title: 'Task 2' }];
 
       mockClient.tasks.createTask
         .mockResolvedValueOnce({ id: 301, title: 'Task 1' })
         .mockRejectedValueOnce(new Error('API Error'));
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify(tasksData),
-      });
+      // The abort must actually surface as a rejection (isError:true once
+      // wrapped by the MCP SDK) rather than plain success-shaped content —
+      // that was the CRIT-8 bug: batch-import used to be the one tool here
+      // that converted every failure into a non-error response.
+      let caught: unknown;
+      try {
+        await toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify(tasksData),
+        });
+      } catch (error) {
+        caught = error;
+      }
 
-      // The direct-REST helper prefixes the original message with its own
-      // "Vikunja REST request failed (...)" context.
-      expect(result.content[0].text).toContain('Failed to import tasks:');
-      expect(result.content[0].text).toContain('API Error');
+      expect(caught).toBeInstanceOf(MCPError);
+      const message = (caught as MCPError).message;
+      expect(message).toContain('API Error');
+      // The thrown error's message must still mention the task that WAS
+      // created before the abort (#301), not just the failure — losing that
+      // is exactly what invited a duplicate-creating retry.
+      expect(message).toContain('#301: Task 1');
+      expect(message).toContain('Successfully imported: 1 tasks');
       expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(2);
     });
 
@@ -999,14 +1045,21 @@ Description,1`;
     it('should handle auth error when creating tasks', async () => {
       mockClient.tasks.createTask.mockRejectedValue(new Error('401 Unauthorized: invalid token'));
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ title: 'Test Task' }),
-      });
+      let caught: unknown;
+      try {
+        await toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Test Task' }),
+        });
+      } catch (error) {
+        caught = error;
+      }
 
-      expect(result.content[0].text).toContain('Authentication error while creating task');
-      expect(result.content[0].text).toContain(
+      expect(caught).toBeInstanceOf(MCPError);
+      const message = (caught as MCPError).message;
+      expect(message).toContain('Authentication error while creating task');
+      expect(message).toContain(
         'The token works for other endpoints but may have issues with batch operations',
       );
     });
@@ -1032,14 +1085,14 @@ Description,1`;
     });
 
     it('should fail validation on invalid data', async () => {
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ description: 'No title' }),
-        dryRun: true,
-      });
-
-      expect(result.content[0].text).toContain('Invalid JSON data');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ description: 'No title' }),
+          dryRun: true,
+        }),
+      ).rejects.toThrow('Invalid JSON data');
     });
   });
 
@@ -1049,25 +1102,23 @@ Description,1`;
     });
 
     it('should handle empty JSON array', async () => {
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: '[]',
-      });
-
-      expect(result.content[0].text).toContain('No valid tasks found to import');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: '[]',
+        }),
+      ).rejects.toThrow('No valid tasks found to import');
     });
 
     it('should handle CSV with only header', async () => {
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'csv',
-        data: 'title,description',
-      });
-
-      expect(result.content[0].text).toContain(
-        'CSV must have at least a header row and one data row',
-      );
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'csv',
+          data: 'title,description',
+        }),
+      ).rejects.toThrow('CSV must have at least a header row and one data row');
     });
 
     it('should enforce batch size limit', async () => {
@@ -1078,13 +1129,13 @@ Description,1`;
           title: `Task ${i + 1}`,
         }));
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify(tasks),
-      });
-
-      expect(result.content[0].text).toContain('Batch size exceeds maximum limit of 100 tasks');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify(tasks),
+        }),
+      ).rejects.toThrow('Batch size exceeds maximum limit of 100 tasks');
     });
   });
 
@@ -1110,13 +1161,13 @@ Description,1`;
 
     it('should handle error instance check for non-Error objects', async () => {
       // Test the error handling when error is not an Error instance
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: '{"invalid json',
-      });
-
-      expect(result.content[0].text).toContain('Invalid JSON data');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: '{"invalid json',
+        }),
+      ).rejects.toThrow('Invalid JSON data');
     });
 
     it('should handle tasks array with null elements during iteration', async () => {
@@ -1157,14 +1208,13 @@ Description,1`;
         new MCPError(ErrorCode.API_ERROR, 'Custom API error message'),
       );
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ title: 'Test' }),
-      });
-
-      expect(result.content[0].text).toContain('Failed to import tasks:');
-      expect(result.content[0].text).toContain('Custom API error message');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Test' }),
+        }),
+      ).rejects.toThrow('Custom API error message');
     });
 
     it('should handle general errors with stack trace', async () => {
@@ -1176,13 +1226,13 @@ Description,1`;
         throw new Error('Connection failed');
       });
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ title: 'Test' }),
-      });
-
-      expect(result.content[0].text).toContain('Failed to import tasks: Connection failed');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Test' }),
+        }),
+      ).rejects.toThrow('Failed to import tasks: Connection failed');
       expect(logger.error).toHaveBeenCalledWith(
         'Batch import error',
         expect.objectContaining({
@@ -1203,21 +1253,18 @@ Description,1`;
       // value (e.g. `getClientFromContext`, covered separately above).
       mockClient.tasks.createTask.mockRejectedValue('String error');
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ title: 'Test' }),
-      });
-
-      expect(result.content[0].text).toContain('Failed to import tasks:');
-      expect(result.content[0].text).toContain('String error');
-      expect(logger.error).toHaveBeenCalledWith(
-        'Batch import error',
-        expect.objectContaining({
-          error: expect.any(String),
-          message: expect.stringContaining('String error'),
+      // This aborts inside the per-task loop (a genuine task-creation
+      // failure, skipErrors unset), which throws its own MCPError directly
+      // — it never reaches the top-level catch's generic
+      // non-MCPError/logger.error branch.
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Test' }),
         }),
-      );
+      ).rejects.toThrow('String error');
+      expect(logger.error).not.toHaveBeenCalledWith('Batch import error', expect.anything());
     });
 
     it('should handle CSV with empty values for labels and assignees', async () => {
@@ -1379,7 +1426,7 @@ Description,1`;
       expect(result.content[0].text).not.toContain('Vikunja API authentication issue');
     });
 
-    it('should handle reminders warning', async () => {
+    it('should include reminders in the create request rather than warning about them (#284)', async () => {
       const taskData = {
         title: 'Task with reminders',
         reminders: ['2025-01-01T00:00:00Z', '2025-01-02T00:00:00Z'],
@@ -1396,14 +1443,21 @@ Description,1`;
         data: JSON.stringify(taskData),
       });
 
-      expect(logger.warn).toHaveBeenCalledWith(
+      expect(logger.warn).not.toHaveBeenCalledWith(
         'Reminders cannot be added after task creation',
+        expect.anything(),
+      );
+      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
+        1,
         expect.objectContaining({
-          taskId: 1301,
-          reminders: ['2025-01-01T00:00:00Z', '2025-01-02T00:00:00Z'],
+          reminders: [
+            { reminder: '2025-01-01T00:00:00Z' },
+            { reminder: '2025-01-02T00:00:00Z' },
+          ],
         }),
       );
       expect(result.content[0].text).toContain('Successfully imported: 1 tasks');
+      expect(result.content[0].text).not.toContain('Warnings:');
     });
 
     it('should handle task creation with no ID returned', async () => {
@@ -1460,13 +1514,13 @@ Description,1`;
 
     it('should handle non-Error objects in JSON validation', async () => {
       // Pass malformed JSON to trigger catch block
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: '{invalid json',
-      });
-
-      expect(result.content[0].text).toContain('Invalid JSON data');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: '{invalid json',
+        }),
+      ).rejects.toThrow('Invalid JSON data');
     });
 
     it('should handle CSV with empty lines', async () => {
@@ -1487,15 +1541,14 @@ Description,1`;
     it('should handle CSV row with invalid data format', async () => {
       const csvData = `title,priority,hexColor\nValid Task,5,#FF0000\nInvalid Task,999,invalid-hex`;
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'csv',
-        data: csvData,
-        skipErrors: false,
-      });
-
-      expect(result.content[0].text).toContain('Invalid task data at row 3');
-      expect(result.content[0].text).toContain('Invalid');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'csv',
+          data: csvData,
+          skipErrors: false,
+        }),
+      ).rejects.toThrow('Invalid task data at row 3');
     });
 
     it('should handle CSV labels with falsy value in ternary', async () => {
@@ -1637,13 +1690,13 @@ Description,1`;
         throw 'String rejection';
       });
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ title: 'Test' }),
-      });
-
-      expect(result.content[0].text).toContain('Failed to import tasks: String rejection');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Test' }),
+        }),
+      ).rejects.toThrow('Failed to import tasks: String rejection');
       expect(logger.error).toHaveBeenCalledWith(
         'Batch import error',
         expect.objectContaining({
@@ -1674,8 +1727,10 @@ Description,1`;
       expect(result.content[0].text).toContain('Task creation failed');
     });
 
-    it('should handle reminders when task has no ID', async () => {
-      // Test line 517 - when createdTask.id is falsy
+    it('should still include reminders in the create body when the created task has no ID', async () => {
+      // Reminders are sent as part of the create request itself (#284), so
+      // whether the response happens to carry back an `id` is irrelevant to
+      // whether they were included.
       const taskData = {
         title: 'Task with reminders',
         reminders: ['2025-01-01T00:00:00Z'],
@@ -1686,18 +1741,21 @@ Description,1`;
         // No ID
       });
 
-      const result = await toolHandler({
+      await toolHandler({
         projectId: 1,
         format: 'json',
         data: JSON.stringify(taskData),
       });
 
-      expect(logger.warn).toHaveBeenCalledWith(
-        'Reminders cannot be added after task creation',
+      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
+        1,
         expect.objectContaining({
-          taskId: 'unknown',
-          reminders: ['2025-01-01T00:00:00Z'],
+          reminders: [{ reminder: '2025-01-01T00:00:00Z' }],
         }),
+      );
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        'Reminders cannot be added after task creation',
+        expect.anything(),
       );
     });
 
@@ -1845,14 +1903,13 @@ Description,1`;
       // Test line 367 for Error instance
       mockClient.tasks.createTask.mockRejectedValue(new Error('403 Forbidden'));
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ title: 'Test' }),
-      });
-
-      expect(result.content[0].text).toContain('Authentication error while creating task');
-      expect(result.content[0].text).toContain('403 Forbidden');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Test' }),
+        }),
+      ).rejects.toThrow('Authentication error while creating task');
     });
 
     it('should handle CSV with assignees empty value branch', async () => {
@@ -1957,14 +2014,13 @@ Description,1`;
         ),
       );
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ title: 'Test' }),
-      });
-
-      expect(result.content[0].text).toContain('Authentication error while creating task');
-      expect(result.content[0].text).toContain('401 Unauthorized');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Test' }),
+        }),
+      ).rejects.toThrow('Authentication error while creating task');
     });
 
     it('should handle getUsers error with Error instance', async () => {
@@ -2271,21 +2327,21 @@ Description,1`;
         throw mcpError;
       });
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ title: 'Test' }),
-      });
-
-      expect(result.content[0].text).toBe('Test MCP error');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Test' }),
+        }),
+      ).rejects.toThrow('Test MCP error');
     });
   });
 
   describe('global read-only mode', () => {
-    // vikunja_batch_import swallows a thrown MCPError into a text response
-    // (see the outer catch in src/tools/batch-import.ts) rather than
-    // rejecting the promise, so check the response text instead of using
-    // callAndCatch/isReadOnlyRejection here.
+    // vikunja_batch_import now re-throws a caught MCPError, like every
+    // other tool on this server, so the MCP SDK marks the response
+    // isError:true (issue #269 CRIT-8) — check for a rejection here rather
+    // than pattern-matching success-shaped content.
     beforeEach(() => {
       // Every sibling describe block re-registers the tool against the
       // freshly-recreated mockAuthManager (see the outer beforeEach) —
@@ -2304,12 +2360,13 @@ Description,1`;
       ConfigurationManager.reset();
       ConfigurationManager.getInstance({ sources: { readOnly: true } });
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ title: 'Test' }),
-      });
-      expect(result.content[0].text).toContain('server is in read-only mode');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Test' }),
+        }),
+      ).rejects.toThrow('server is in read-only mode');
     });
 
     it('does not raise the read-only error for a dryRun import when readOnly is on', async () => {
@@ -2329,12 +2386,22 @@ Description,1`;
       ConfigurationManager.reset();
       ConfigurationManager.getInstance({ sources: { readOnly: false } });
 
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ title: 'Test' }),
-      });
-      expect(result.content[0].text).not.toContain('server is in read-only mode');
+      // Only asserting the read-only gate didn't fire — the import itself
+      // may still fail downstream for unrelated reasons depending on what
+      // this describe block's shared mocks were left returning, so catch
+      // either outcome and inspect it rather than assuming a resolve.
+      let message = '';
+      try {
+        const result = await toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Test' }),
+        });
+        message = result.content[0].text;
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).not.toContain('server is in read-only mode');
     });
   });
 });

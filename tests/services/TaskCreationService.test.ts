@@ -613,7 +613,7 @@ describe('TaskCreationService', () => {
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
     });
 
-    it('should handle user assignment when no users are available', async () => {
+    it('should skip assignees with an auth-specific warning when the user fetch failed due to auth', async () => {
       // Arrange
       const taskWithoutLabels: ImportedTask = {
         ...mockTask,
@@ -625,9 +625,15 @@ describe('TaskCreationService', () => {
         done: false,
         priority: 3,
       } as Task;
-      const entityMapsWithNoUsers = {
+      // projectUsers is empty AND the entity resolver reported a real auth
+      // failure on the /users search — the auth-specific warning is only
+      // correct in this combination (issue #283 HIGH-12: previously ANY
+      // empty projectUsers list, including a clean "searched, found
+      // nobody" result, produced this same message).
+      const entityMapsWithAuthFailure = {
         ...mockEntityMaps,
         projectUsers: [],
+        userFetchFailedDueToAuth: true,
       };
 
       fetchOkOnce(createdTask);
@@ -637,13 +643,90 @@ describe('TaskCreationService', () => {
         taskWithoutLabels,
         456,
         authManager,
-        entityMapsWithNoUsers,
+        entityMapsWithAuthFailure,
       );
 
       // Assert
       expect(result.success).toBe(true);
       expect(result.warnings).toHaveLength(1);
       expect(result.warnings![0]).toContain('Assignees skipped due to user fetch failure');
+      expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
+      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+    });
+
+    it('should skip assignees with a search-failure warning (not the auth one) when a non-auth search error occurred', async () => {
+      // Arrange: same empty projectUsers, but the failure was NOT an auth
+      // error (e.g. a 500 or network blip on the /users search).
+      const taskWithoutLabels: ImportedTask = {
+        ...mockTask,
+        labels: [],
+      };
+      const createdTask: Task = {
+        id: 123,
+        title: 'Test Task',
+        done: false,
+        priority: 3,
+      } as Task;
+      const entityMapsWithSearchFailure = {
+        ...mockEntityMaps,
+        projectUsers: [],
+        userSearchFailed: true,
+      };
+
+      fetchOkOnce(createdTask);
+
+      const result = await taskCreationService.createTask(
+        taskWithoutLabels,
+        456,
+        authManager,
+        entityMapsWithSearchFailure,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings![0]).toContain('user search failed');
+      expect(result.warnings![0]).not.toContain('possible API authentication issue');
+      expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
+      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+    });
+
+    it('should report assignees as not found (not an API-issue warning) when the user search succeeded but simply matched no one', async () => {
+      // Arrange: projectUsers is empty because the search(es) ran fine and
+      // legitimately found nobody — neither failure flag is set. This is
+      // the "correct branch is unreachable" defect from issue #283 HIGH-12:
+      // before the fix, this indistinguishable-from-a-real-failure case
+      // always produced the "possible API authentication issue" warning.
+      const taskWithoutLabels: ImportedTask = {
+        ...mockTask,
+        labels: [],
+      };
+      const createdTask: Task = {
+        id: 123,
+        title: 'Test Task',
+        done: false,
+        priority: 3,
+      } as Task;
+      const entityMapsWithNoMatches = {
+        ...mockEntityMaps,
+        userMap: new Map(), // no username matched any search
+        projectUsers: [],
+        userFetchFailedDueToAuth: false,
+        userSearchFailed: false,
+      };
+
+      fetchOkOnce(createdTask);
+
+      const result = await taskCreationService.createTask(
+        taskWithoutLabels,
+        456,
+        authManager,
+        entityMapsWithNoMatches,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings![0]).toContain('Users not found');
+      expect(result.warnings![0]).not.toContain('possible API authentication issue');
       expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
     });
@@ -719,11 +802,19 @@ describe('TaskCreationService', () => {
   });
 
   describe('Reminder Handling', () => {
-    it('should handle reminders with API limitation warning', async () => {
-      // Arrange
+    it('should include reminders in the task creation body rather than warning they cannot be added (#284)', async () => {
+      // Arrange. `ImportedTask.reminders` is a plain array of date strings
+      // (see `importedTaskSchema`) — `prepareTaskData` maps each to
+      // `models.TaskReminder`'s wire shape (`{ reminder: <date> }`) and
+      // includes it directly in the `PUT /projects/{id}/tasks` body.
+      // Reminders are NOT dropped with a false "API limitation" warning the
+      // way they used to be: this codebase's own
+      // `vikunja_task_reminders` add-reminder operation proves reminders
+      // CAN be added after creation too, but there is no need for a second
+      // round trip when the create endpoint accepts them directly.
       const taskWithReminders: ImportedTask = {
         title: 'Test Task with Reminders',
-        reminders: [{ reminder: '2024-12-31T10:00:00Z' }, { reminder: '2024-11-30T09:00:00Z' }],
+        reminders: ['2024-12-31T10:00:00Z', '2024-11-30T09:00:00Z'],
         labels: [], // Remove labels to isolate reminder testing
         assignees: [], // Remove assignees to isolate reminder testing
       };
@@ -746,12 +837,19 @@ describe('TaskCreationService', () => {
 
       // Assert
       expect(result.success).toBe(true);
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0]).toContain('Reminders cannot be added after task creation');
-      expect(logger.warn).toHaveBeenCalledWith('Reminders cannot be added after task creation', {
-        taskId: 123,
-        reminders: [{ reminder: '2024-12-31T10:00:00Z' }, { reminder: '2024-11-30T09:00:00Z' }],
-      });
+      expect(result.warnings).toBeUndefined();
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        'Reminders cannot be added after task creation',
+        expect.anything(),
+      );
+      expect(fetchBody(0)).toEqual(
+        expect.objectContaining({
+          reminders: [
+            { reminder: '2024-12-31T10:00:00Z' },
+            { reminder: '2024-11-30T09:00:00Z' },
+          ],
+        }),
+      );
     });
   });
 
@@ -864,7 +962,10 @@ describe('TaskCreationService', () => {
         ...mockTask,
         labels: ['urgent', 'unknown'], // One valid, one not found
         assignees: ['john', 'unknown'], // One valid, one not found
-        reminders: [{ reminder: '2024-12-31T10:00:00Z' }],
+        // Reminders (a plain date-string array per importedTaskSchema) are
+        // now included directly in the create body rather than producing a
+        // warning (#284), so they no longer contribute to this count.
+        reminders: ['2024-12-31T10:00:00Z'],
       };
       const createdTask: Task = {
         id: 128,
@@ -889,11 +990,15 @@ describe('TaskCreationService', () => {
 
       // Assert
       expect(result.success).toBe(true);
-      expect(result.warnings).toHaveLength(4);
+      expect(result.warnings).toHaveLength(3);
       expect(result.warnings![0]).toContain('Labels not found: unknown');
       expect(result.warnings![1]).toContain('Labels specified but not assigned'); // Due to verification failure
       expect(result.warnings![2]).toContain('Users not found: unknown');
-      expect(result.warnings![3]).toContain('Reminders cannot be added after task creation');
+      expect(fetchBody(0)).toEqual(
+        expect.objectContaining({
+          reminders: [{ reminder: '2024-12-31T10:00:00Z' }],
+        }),
+      );
     });
   });
 });

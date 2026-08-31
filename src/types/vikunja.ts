@@ -365,6 +365,13 @@ export interface TaskCreationData {
   hex_color?: string;
   repeat_after?: number;
   repeat_mode?: string;
+  /**
+   * Absolute reminders (`models.TaskReminder[]`, wire field `reminders`) to
+   * create the task with directly. `PUT /projects/{id}/tasks` accepts a full
+   * task body per the OpenAPI spec, so reminders supplied at import time
+   * don't need a separate post-creation call — see issue #284.
+   */
+  reminders?: Array<{ reminder: string }>;
 }
 
 export interface TaskUpdateData extends Partial<TaskCreationData> {

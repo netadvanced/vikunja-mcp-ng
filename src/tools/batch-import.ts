@@ -123,6 +123,9 @@ export function registerBatchImportTool(
           errors: [],
           createdTasks: [],
         };
+        // Computed up front (not just for the final response) so a
+        // mid-batch abort can also format an accurate partial summary.
+        const hasAssignees = tasks.some((t) => t.assignees && t.assignees.length > 0);
 
         for (let i = 0; i < tasks.length; i++) {
           const task = tasks[i];
@@ -173,13 +176,30 @@ export function registerBatchImportTool(
             });
 
             if (!args.skipErrors) {
-              throw error;
+              // Abort. `result` at this point may already hold tasks that
+              // WERE created before this failure — discarding it here (the
+              // old behavior) meant the response never mentioned them,
+              // inviting a retry that duplicates every task that did land.
+              // Fold the partial result into the thrown error's message
+              // instead, and let it propagate as a genuine failure (caught
+              // below, rethrown) so this surfaces as isError:true like every
+              // other tool on this server does — batch-import used to be the
+              // one exception, converting every error into plain
+              // success-shaped content instead (issue #269 CRIT-8).
+              const partialSummary = responseFormatter.formatResult(
+                result,
+                userFetchFailedDueToAuth,
+                hasAssignees,
+              );
+              throw new MCPError(
+                ErrorCode.API_ERROR,
+                `Batch import aborted: ${error instanceof Error ? error.message : String(error)}\n\n${partialSummary}`,
+              );
             }
           }
         }
 
         // Format and return response
-        const hasAssignees = tasks.some((t) => t.assignees && t.assignees.length > 0);
         const responseText = responseFormatter.formatResult(
           result,
           userFetchFailedDueToAuth,
@@ -195,10 +215,17 @@ export function registerBatchImportTool(
           ],
         };
       } catch (error) {
+        // Matches this codebase's standard tool error-handling pattern (see
+        // CLAUDE.md "Error Handling Pattern"): re-throw our own MCPErrors
+        // as-is, wrap anything else. Previously this converted EVERY error
+        // — including a genuine mid-batch abort — into plain
+        // success-shaped MCP content with no `isError`, unlike every other
+        // tool on this server (issue #269 CRIT-8). Letting it throw here
+        // instead means the MCP SDK marks the response `isError: true`, so
+        // a caller checking that flag (rather than pattern-matching the
+        // text) correctly sees the import did not fully succeed.
         if (error instanceof MCPError) {
-          return {
-            content: [{ type: 'text', text: error.message }],
-          };
+          throw error;
         }
 
         logger.error('Batch import error', {
@@ -206,14 +233,10 @@ export function registerBatchImportTool(
           message: error instanceof Error ? error.message : 'Unknown error',
         });
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Failed to import tasks: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-        };
+        throw new MCPError(
+          ErrorCode.API_ERROR,
+          `Failed to import tasks: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     },
   );

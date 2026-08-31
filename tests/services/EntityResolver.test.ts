@@ -109,7 +109,9 @@ describe('EntityResolver', () => {
     // controllable mocks.
     mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       const method = (init?.method ?? 'GET') as string;
-      if (method === 'GET' && /\/labels$/.test(url)) {
+      // Paginated (?page=N&per_page=M — see MED-10 from #294), so matched on
+      // the path alone, ignoring the query string.
+      if (method === 'GET' && /\/labels(\?|$)/.test(url)) {
         const value = await getLabelsMock();
         return mockResponse({ text: value === undefined ? '' : JSON.stringify(value) });
       }
@@ -156,9 +158,10 @@ describe('EntityResolver', () => {
         expect.objectContaining({ method: 'GET' }),
       );
       expect(getUsersMock).toHaveBeenCalledTimes(3);
-      // ...and GET /labels is untouched by this fix.
+      // ...and GET /labels is untouched by this fix, aside from now being
+      // paginated (MED-10 from #294): the first page is always requested.
       expect(mockFetch).toHaveBeenCalledWith(
-        'https://vikunja.test/api/v1/labels',
+        'https://vikunja.test/api/v1/labels?page=1&per_page=50',
         expect.objectContaining({ method: 'GET' }),
       );
 
@@ -308,8 +311,61 @@ describe('EntityResolver', () => {
       // MCPError before it reaches this catch, so the logged error is no
       // longer the exact original `Error` instance — just check its shape.
       expect(logger.warn).toHaveBeenCalledWith('Failed to fetch users', {
+        username: 'alice',
         error: expect.any(Error),
       });
+    });
+
+    it('should paginate through every page of GET /labels (MED-10 from #294)', async () => {
+      // Arrange: 3 pages — two full pages of 50, and a final short page —
+      // so labels past page 1 are no longer misreported as "not found".
+      const page1: Label[] = Array.from({ length: 50 }, (_, i) => ({
+        id: i + 1,
+        title: `label-${i + 1}`,
+      }));
+      const page2: Label[] = Array.from({ length: 50 }, (_, i) => ({
+        id: i + 51,
+        title: `label-${i + 51}`,
+      }));
+      const page3: Label[] = [{ id: 101, title: 'label-101' }];
+
+      let call = 0;
+      getLabelsMock.mockImplementation(() => {
+        call += 1;
+        if (call === 1) return Promise.resolve(page1);
+        if (call === 2) return Promise.resolve(page2);
+        return Promise.resolve(page3);
+      });
+      usersJson([]);
+
+      // Act
+      const result = await resolver.resolveEntities(authManager, []);
+
+      // Assert: all 101 labels present, including the one on page 3.
+      expect(result.projectLabels).toHaveLength(101);
+      expect(result.labelMap.get('label-101')).toBe(101);
+      expect(getLabelsMock).toHaveBeenCalledTimes(3);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/labels?page=1&per_page=50',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/labels?page=2&per_page=50',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://vikunja.test/api/v1/labels?page=3&per_page=50',
+        expect.objectContaining({ method: 'GET' }),
+      );
+    });
+
+    it('should stop paginating GET /labels as soon as a page comes back short', async () => {
+      respondLabels(mockLabels); // 3 items, well under the page size
+      usersJson([]);
+
+      await resolver.resolveEntities(authManager, []);
+
+      expect(getLabelsMock).toHaveBeenCalledTimes(1);
     });
 
     it('should handle error for labels', async () => {
@@ -428,7 +484,12 @@ describe('EntityResolver', () => {
         ],
       });
 
-      expect(logger.debug).toHaveBeenCalledWith('Users fetched', { searchCount: 3, count: 3 });
+      expect(logger.debug).toHaveBeenCalledWith('Users fetched', {
+        searchCount: 3,
+        count: 3,
+        failedDueToAuth: false,
+        searchFailed: false,
+      });
 
       expect(logger.debug).toHaveBeenCalledWith('Label and user maps created', {
         labelMapSize: 3,

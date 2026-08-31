@@ -242,6 +242,57 @@ Task 1,invalid_priority`;
         expect(() => parseInputData(options)).toThrow(MCPError);
         expect(() => parseInputData(options)).toThrow('Invalid task data at row 2');
       });
+
+      describe('RFC 4180 multiline quoted fields (issue #275)', () => {
+        it('should keep an embedded newline inside a quoted field as part of that one row, not a new row', () => {
+          // A quoted `description` spanning two physical lines is one CSV
+          // record with two lines of text in one field — NOT two records.
+          // Before the fix, splitting on '\n' before quote-aware parsing
+          // tore this into a spurious extra (invalid) task.
+          const csvData =
+            'title,description\n' +
+            '"Multi-line task","line1\nline2"\n' +
+            'Second task,Normal desc';
+
+          const options: ParseInputOptions = {
+            format: 'csv',
+            data: csvData,
+          };
+
+          const result = parseInputData(options);
+
+          expect(result).toHaveLength(2);
+          expect(result[0]).toEqual({
+            title: 'Multi-line task',
+            description: 'line1\nline2',
+          });
+          expect(result[1]).toEqual({
+            title: 'Second task',
+            description: 'Normal desc',
+          });
+        });
+
+        it('should handle a quoted field spanning three or more physical lines', () => {
+          const csvData = 'title,description\n' + '"Task A","one\ntwo\nthree"\n' + 'Task B,short';
+
+          const result = parseInputData({ format: 'csv', data: csvData });
+
+          expect(result).toHaveLength(2);
+          expect(result[0]?.description).toBe('one\ntwo\nthree');
+          expect(result[1]?.title).toBe('Task B');
+        });
+
+        it('should handle multiple rows each with their own multiline quoted field', () => {
+          const csvData =
+            'title,description\n' + '"Task A","first\nsecond"\n' + '"Task B","third\nfourth"';
+
+          const result = parseInputData({ format: 'csv', data: csvData });
+
+          expect(result).toHaveLength(2);
+          expect(result[0]).toEqual({ title: 'Task A', description: 'first\nsecond' });
+          expect(result[1]).toEqual({ title: 'Task B', description: 'third\nfourth' });
+        });
+      });
     });
 
     describe('Error handling and validation', () => {
@@ -302,6 +353,60 @@ Task 4,fAlSe,4`;
         expect(result[1].done).toBe(false);
         expect(result[2].done).toBe(true);
         expect(result[3].done).toBe(false);
+      });
+
+      it('should recognize common truthy/falsy string forms for done, not just literal true/false (LOW-8)', () => {
+        const csvData = `title,done
+Task 1,yes
+Task 2,no
+Task 3,1
+Task 4,0
+Task 5,y
+Task 6,n`;
+
+        const result = parseInputData({ format: 'csv', data: csvData });
+
+        expect(result).toHaveLength(6);
+        expect(result[0].done).toBe(true);
+        expect(result[1].done).toBe(false);
+        expect(result[2].done).toBe(true);
+        expect(result[3].done).toBe(false);
+        expect(result[4].done).toBe(true);
+        expect(result[5].done).toBe(false);
+      });
+
+      it('should default an unrecognized done value to false rather than silently guessing', () => {
+        const csvData = `title,done
+Task 1,maybe`;
+
+        const result = parseInputData({ format: 'csv', data: csvData });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].done).toBe(false);
+      });
+
+      it('should reject (not truncate) a non-integer decimal in a CSV numeric column (LOW-7)', () => {
+        // '3.9' used to silently truncate to 3 via parseInt — a different,
+        // wrong value with no error and no warning. It must now fail
+        // validation instead, the same way non-numeric garbage already did.
+        const csvData = `title,priority
+Task 1,3.9`;
+
+        expect(() => parseInputData({ format: 'csv', data: csvData })).toThrow(MCPError);
+        expect(() => parseInputData({ format: 'csv', data: csvData })).toThrow(
+          'Invalid task data at row 2',
+        );
+      });
+
+      it('should skip (not truncate) a non-integer decimal numeric column when skipErrors is set', () => {
+        const csvData = `title,priority
+Task 1,3.9
+Task 2,4`;
+
+        const result = parseInputData({ format: 'csv', data: csvData, skipErrors: true });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toEqual({ title: 'Task 2', priority: 4 });
       });
 
       it('should convert numeric fields correctly', () => {
