@@ -6,6 +6,7 @@
 import CircuitBreaker from 'opossum';
 import { logger } from './logger';
 import { isAuthenticationError } from './auth-error-handler';
+import { MCPError } from '../types/errors';
 import { extractHttpStatus } from './http-error-detail';
 
 /**
@@ -150,9 +151,19 @@ const OPEN_BREAKER_CODE = 'EOPENBREAKER';
  * `ECONNRESET`/`ETIMEDOUT`, opossum's own `ETIMEDOUT`/`ESHUTDOWN`/
  * `ESEMLOCKED`) are NOT filtered — they keep counting toward opening the
  * breaker, which is exactly the "service looks unhealthy" signal the
- * breaker exists to catch.
+ * breaker exists to catch. The one exception is a caller-side cancellation
+ * (`details.cancelled`), handled first below.
  */
 export function isClientErrorExcludedFromBreaker(error: unknown): boolean {
+  // A request the CALLER aborted (the tool-execution deadline elapsed — see
+  // `cancelled` in src/types/errors.ts) is the same kind of non-signal as a
+  // 4xx: it says nothing about upstream health. Counting it would let one
+  // identity's slow or oversized calls trip breakers that, per decision
+  // 16(c), every other tenant in the process shares.
+  if (error instanceof MCPError && error.details?.cancelled === true) {
+    return true;
+  }
+
   const status = extractHttpStatus(error);
   if (status === null) return false;
   if (status === 401) return false;
