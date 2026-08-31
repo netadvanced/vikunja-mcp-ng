@@ -42,10 +42,20 @@ export function createProjectResponse(
   // Cast data to ResponseData for type compatibility
   const responseData = _data as ResponseData;
 
-  // Use simple response format
+  // Use simple response format. `_metadata` must be forwarded here — it is
+  // the ONLY place any of the extra metadata built by call sites (pagination
+  // hasMore/nextPage, moved-project parent ids, hierarchy depth/truncation,
+  // share info, etc.) reaches the actual response payload. Previously only
+  // `verbosity` was threaded through and every other key in `_metadata` was
+  // silently discarded (#280) — `formatSuccessMessage` renders whatever
+  // lands in `metadata` via `formatObjectData`, so this is also what makes
+  // it visible in the rendered markdown, the same way the buckets/views/
+  // sharing-access formatters (which call `createStandardResponse` with
+  // their metadata directly) already surface theirs.
   const simpleAorpResult = createAorpResponse(operation, message, responseData, {
     success: true,
     metadata: {
+      ..._metadata,
       verbosity: selectedVerbosity,
     },
   });

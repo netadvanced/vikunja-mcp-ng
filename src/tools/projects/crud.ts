@@ -254,7 +254,9 @@ export async function listProjects(
     // GET /projects returns a bare array — there is no {data, total} envelope
     // (see docs/API_NOTES.md). Total item/page counts are therefore unknown;
     // createProjectListResponse derives `hasMore` honestly from the page size
-    // instead of fabricating a total.
+    // instead of fabricating a total. That pagination metadata (hasMore/
+    // nextPage/prevPage) now actually reaches the rendered response — see
+    // createProjectResponse in response-formatter.ts (#280).
     const responseArray = Array.isArray(response) ? response : [response];
 
     // Build options object, only including defined properties to satisfy exactOptionalPropertyTypes
