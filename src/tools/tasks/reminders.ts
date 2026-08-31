@@ -13,7 +13,7 @@
 import { MCPError, ErrorCode } from '../../types';
 import type { AuthManager } from '../../auth/AuthManager';
 import { getTaskViaRest, updateTaskViaRest } from '../../utils/task-rest-transport';
-import { validateId, validateDateString } from './validation';
+import { validateId, validateDateString, normalizeDateForApi } from './validation';
 import { formatAorpAsMarkdown, createAorpFromData } from '../../utils/response-factory';
 
 /**
@@ -59,7 +59,14 @@ export async function addReminder(
         ...(r.relative_to !== undefined ? { relative_to: r.relative_to } : {}),
       }));
 
-    const updatedReminders = [...existingReminders, { reminder: args.reminderDate }];
+    // Coerce a date-only value (e.g. '2026-09-01') to RFC3339 before sending
+    // — the same normalization every create-family path routes through
+    // (normalizeDateForApi, src/tools/tasks/validation.ts). Full timestamps
+    // and the SQL-ish space-separated form pass through/are normalized the
+    // same way; only genuinely unrecognized input falls back to the raw
+    // value (validateDateString above already rejected malformed strings).
+    const normalizedReminderDate = normalizeDateForApi(args.reminderDate) ?? args.reminderDate;
+    const updatedReminders = [...existingReminders, { reminder: normalizedReminderDate }];
 
     // Update task with new reminders array — full-model-replace, so the
     // fetched task is spread and only `reminders` is overlaid.
@@ -68,12 +75,13 @@ export async function addReminder(
       reminders: updatedReminders,
     });
 
-    // Create proper AORP response
+    // Create proper AORP response — report the normalized value actually
+    // sent to the API, not the raw caller input.
     const aorpResult = createAorpFromData(
       'add-reminder',
-      `Reminder added successfully for ${args.reminderDate}`,
+      `Reminder added successfully for ${normalizedReminderDate}`,
       true,
-      `Reminder added successfully for ${args.reminderDate}`,
+      `Reminder added successfully for ${normalizedReminderDate}`,
     );
 
     return {

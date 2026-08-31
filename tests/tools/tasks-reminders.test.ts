@@ -191,6 +191,25 @@ describe('Tasks Tool - Reminders', () => {
       expect(markdown).toContain('add-reminder');
     });
 
+    it('normalizes a date-only reminderDate to RFC3339 before sending (LOW-5)', async () => {
+      // Every create-family path routes date-only input through
+      // normalizeDateForApi before it hits the wire; add-reminder must do
+      // the same rather than sending the bare date-only string.
+      mockFetchTaskFlow(restOk(mockTask));
+
+      const result = await callTool('add-reminder', {
+        id: 1,
+        reminderDate: '2026-09-01',
+      });
+
+      expect(postedBody()).toMatchObject({
+        reminders: [{ reminder: '2026-09-01T00:00:00Z' }],
+      });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('2026-09-01T00:00:00Z');
+    });
+
     it('should require task id', async () => {
       await expect(
         callTool('add-reminder', {
