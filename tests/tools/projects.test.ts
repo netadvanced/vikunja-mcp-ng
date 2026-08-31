@@ -1145,6 +1145,53 @@ describe('Projects Tool', () => {
       expect(markdown).toContain('Retrieved project tree with 4 nodes at depth 2');
     });
 
+    // LOW-2 (issue #291): a subtree beyond maxDepth used to vanish from the
+    // tree with no signal at all — indistinguishable from "this project
+    // genuinely has no deeper children". Fixture deeper than maxDepth
+    // confirms the response now says so explicitly.
+    it('reports truncation when a subtree is deeper than maxDepth (LOW-2, #291)', async () => {
+      const projects = [
+        { ...mockProject, id: 1, title: 'L0', parent_project_id: undefined },
+        { ...mockProject, id: 2, title: 'L1', parent_project_id: 1 },
+        { ...mockProject, id: 3, title: 'L2 (beyond maxDepth)', parent_project_id: 2 },
+      ];
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
+
+      const result = await callTool('get-tree', { id: 1, maxDepth: 2 });
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+
+      // The truncated node is genuinely absent from the tree...
+      expect(markdown).toContain('L0');
+      expect(markdown).toContain('L1');
+      expect(markdown).not.toContain('L2 (beyond maxDepth)');
+      // ...but the response now says so explicitly, both in the message and
+      // the structured metadata, instead of silently dropping it.
+      expect(markdown).toContain('truncated');
+      expect(markdown).toMatch(/"truncated":\s*true/);
+      expect(markdown).toMatch(/"truncatedCount":\s*1/);
+      // hierarchy.maxDepth must reflect the ACTUAL requested maxDepth, not a
+      // hardcoded constant.
+      expect(markdown).toMatch(/"maxDepth":\s*2/);
+    });
+
+    it('does not report truncation when the tree fits entirely within maxDepth', async () => {
+      const projects = [
+        { ...mockProject, id: 1, title: 'Root', parent_project_id: undefined },
+        { ...mockProject, id: 2, title: 'Child', parent_project_id: 1 },
+      ];
+      routeFetch({ 'GET /projects': mockResponse({ body: projects }) });
+
+      const result = await callTool('get-tree', { id: 1, maxDepth: 5 });
+      const markdown = result.content[0].text;
+
+      expect(markdown).toContain('Child');
+      expect(markdown).not.toContain('truncated');
+      expect(markdown).toMatch(/"maxDepth":\s*5/);
+    });
+
     it('should handle circular references', async () => {
       const projects = [
         { ...mockProject, id: 1, title: 'Project 1', parent_project_id: 2 },

@@ -169,6 +169,11 @@ export async function getProjectTree(
     let treeData: ProjectTreeNode[];
     let totalNodes = 0;
     let actualDepth = 0;
+    // Collects the ids of any project dropped purely because its own depth
+    // hit `maxDepth` (issue #291, LOW-2) — see buildProjectTree's doc
+    // comment. A non-empty array means the tree below is INCOMPLETE, not
+    // exhaustive.
+    const truncatedIds: number[] = [];
 
     if (id) {
       validateId(id, 'project id');
@@ -177,7 +182,14 @@ export async function getProjectTree(
         throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${id} not found`);
       }
 
-      rootNode = buildProjectTree(rootProject, allProjects, 0, maxDepth, includeArchived);
+      rootNode = buildProjectTree(
+        rootProject,
+        allProjects,
+        0,
+        maxDepth,
+        includeArchived,
+        truncatedIds,
+      );
       if (rootNode) {
         treeData = [rootNode];
         totalNodes = countTreeNodes(rootNode);
@@ -191,7 +203,7 @@ export async function getProjectTree(
       // Build forest of all root projects
       treeData = rootProjects
         .map((project: VikunjaProject) =>
-          buildProjectTree(project, allProjects, 0, maxDepth, includeArchived),
+          buildProjectTree(project, allProjects, 0, maxDepth, includeArchived, truncatedIds),
         )
         .filter(Boolean) as ProjectTreeNode[];
 
@@ -214,7 +226,11 @@ export async function getProjectTree(
       options1.useAorp = useAorp;
     }
 
-    const result = createProjectTreeResponse(treeData, actualDepth, totalNodes, options1);
+    const result = createProjectTreeResponse(treeData, actualDepth, totalNodes, options1, {
+      maxDepth,
+      truncated: truncatedIds.length > 0,
+      truncatedCount: truncatedIds.length,
+    });
 
     return {
       content: [
@@ -389,7 +405,16 @@ export async function moveProject(
 }
 
 /**
- * Builds a project tree recursively
+ * Builds a project tree recursively.
+ *
+ * `truncatedIds` (issue #291, LOW-2) is an OUT parameter: whenever a project
+ * is dropped because its own depth already reached `maxDepth`, its id is
+ * pushed onto this array before returning `null`. Without this, a subtree
+ * beyond `maxDepth` vanished from the result with no signal at all — the
+ * caller could not tell "this project genuinely has no children that deep"
+ * from "children exist but were silently pruned by the depth cap". The
+ * caller (`getProjectTree`) surfaces a non-empty `truncatedIds` as
+ * `truncated: true` (plus the count) in the response metadata.
  */
 function buildProjectTree(
   project: VikunjaProject,
@@ -397,8 +422,12 @@ function buildProjectTree(
   currentDepth: number,
   maxDepth: number,
   includeArchived: boolean = false,
+  truncatedIds?: number[],
 ): ProjectTreeNode | null {
   if (currentDepth >= maxDepth) {
+    if (typeof project.id === 'number') {
+      truncatedIds?.push(project.id);
+    }
     return null;
   }
 
@@ -406,7 +435,7 @@ function buildProjectTree(
     .filter((p: VikunjaProject) => p.parent_project_id === project.id)
     .filter((p: VikunjaProject) => includeArchived || !p.is_archived)
     .map((child: VikunjaProject) =>
-      buildProjectTree(child, allProjects, currentDepth + 1, maxDepth, includeArchived),
+      buildProjectTree(child, allProjects, currentDepth + 1, maxDepth, includeArchived, truncatedIds),
     )
     .filter(Boolean) as ProjectTreeNode[];
 
