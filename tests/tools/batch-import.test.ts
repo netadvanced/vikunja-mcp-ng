@@ -438,6 +438,9 @@ describe('Batch Import Tool', () => {
         // `percent_done: 50` — 50x out of range and silently accepted.
         percent_done: 0.5,
         repeat_after: 86400,
+        // Included directly in the create body rather than requiring a
+        // separate post-creation call (issue #284).
+        reminders: [{ reminder: '2024-12-25T00:00:00Z' }],
         repeat_mode: 'week',
         project_id: 1,
       });
@@ -1380,7 +1383,7 @@ Description,1`;
       expect(result.content[0].text).not.toContain('Vikunja API authentication issue');
     });
 
-    it('should handle reminders warning', async () => {
+    it('should include reminders in the create request rather than warning about them (#284)', async () => {
       const taskData = {
         title: 'Task with reminders',
         reminders: ['2025-01-01T00:00:00Z', '2025-01-02T00:00:00Z'],
@@ -1397,14 +1400,21 @@ Description,1`;
         data: JSON.stringify(taskData),
       });
 
-      expect(logger.warn).toHaveBeenCalledWith(
+      expect(logger.warn).not.toHaveBeenCalledWith(
         'Reminders cannot be added after task creation',
+        expect.anything(),
+      );
+      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
+        1,
         expect.objectContaining({
-          taskId: 1301,
-          reminders: ['2025-01-01T00:00:00Z', '2025-01-02T00:00:00Z'],
+          reminders: [
+            { reminder: '2025-01-01T00:00:00Z' },
+            { reminder: '2025-01-02T00:00:00Z' },
+          ],
         }),
       );
       expect(result.content[0].text).toContain('Successfully imported: 1 tasks');
+      expect(result.content[0].text).not.toContain('Warnings:');
     });
 
     it('should handle task creation with no ID returned', async () => {
@@ -1675,8 +1685,10 @@ Description,1`;
       expect(result.content[0].text).toContain('Task creation failed');
     });
 
-    it('should handle reminders when task has no ID', async () => {
-      // Test line 517 - when createdTask.id is falsy
+    it('should still include reminders in the create body when the created task has no ID', async () => {
+      // Reminders are sent as part of the create request itself (#284), so
+      // whether the response happens to carry back an `id` is irrelevant to
+      // whether they were included.
       const taskData = {
         title: 'Task with reminders',
         reminders: ['2025-01-01T00:00:00Z'],
@@ -1687,18 +1699,21 @@ Description,1`;
         // No ID
       });
 
-      const result = await toolHandler({
+      await toolHandler({
         projectId: 1,
         format: 'json',
         data: JSON.stringify(taskData),
       });
 
-      expect(logger.warn).toHaveBeenCalledWith(
-        'Reminders cannot be added after task creation',
+      expect(mockClient.tasks.createTask).toHaveBeenCalledWith(
+        1,
         expect.objectContaining({
-          taskId: 'unknown',
-          reminders: ['2025-01-01T00:00:00Z'],
+          reminders: [{ reminder: '2025-01-01T00:00:00Z' }],
         }),
+      );
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        'Reminders cannot be added after task creation',
+        expect.anything(),
       );
     });
 

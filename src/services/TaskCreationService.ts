@@ -39,6 +39,7 @@ interface TaskCreateRequest {
   hex_color?: string;
   repeat_after?: number;
   repeat_mode?: 'day' | 'week' | 'month' | 'year';
+  reminders?: Array<{ reminder: string }>;
 }
 
 /**
@@ -78,6 +79,9 @@ function convertTaskCreationDataToTask(taskData: TaskCreationData): TaskCreateRe
   }
   if (taskData.repeat_after !== undefined) {
     convertedTask.repeat_after = taskData.repeat_after;
+  }
+  if (taskData.reminders !== undefined) {
+    convertedTask.reminders = taskData.reminders;
   }
   if (taskData.repeat_mode !== undefined) {
     // Only assign if it's a valid repeat_mode value
@@ -223,6 +227,19 @@ export class TaskCreationService {
     if (task.endDate) taskData.end_date = normalizeDateForApi(task.endDate) ?? task.endDate;
 
     if (task.hexColor) taskData.hex_color = task.hexColor;
+
+    // Reminders CAN be included at creation time — `PUT /projects/{id}/tasks`
+    // accepts a full task body (`models.Task`, which includes `reminders`),
+    // so there is no need to defer to a post-creation call the way this path
+    // used to claim was required (issue #284 HIGH-13: reminders were
+    // accepted by the import schema but silently dropped, with a warning
+    // message asserting an API limitation that doesn't exist — this
+    // codebase's own `vikunja_task_reminders` add-reminder proves reminders
+    // can be added after creation too, but including them here up front
+    // avoids the extra round trip entirely).
+    if (task.reminders && task.reminders.length > 0) {
+      taskData.reminders = task.reminders.map((reminder) => ({ reminder }));
+    }
 
     if (task.repeatAfter) taskData.repeat_after = task.repeatAfter;
     if (task.repeatMode !== undefined) {
@@ -552,26 +569,5 @@ export class TaskCreationService {
     }
 
     return warnings;
-  }
-
-  /**
-   * Handles reminders for a task (API limitation)
-   *
-   * @param taskId - The task ID
-   * @param reminders - Array of reminder data
-   * @returns Warning message about API limitation
-   */
-  private handleReminders(
-    taskId: number | undefined,
-    reminders: Array<{ reminder_date?: string; reminder?: string }>,
-  ): string {
-    // Note: The API doesn't support adding reminders separately,
-    // they need to be added during task creation
-    // This is a limitation of the current implementation
-    logger.warn('Reminders cannot be added after task creation', {
-      taskId: taskId || 'unknown',
-      reminders,
-    });
-    return 'Reminders cannot be added after task creation (API limitation). Include them in the initial task data.';
   }
 }

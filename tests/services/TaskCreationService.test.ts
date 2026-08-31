@@ -802,11 +802,19 @@ describe('TaskCreationService', () => {
   });
 
   describe('Reminder Handling', () => {
-    it('should handle reminders with API limitation warning', async () => {
-      // Arrange
+    it('should include reminders in the task creation body rather than warning they cannot be added (#284)', async () => {
+      // Arrange. `ImportedTask.reminders` is a plain array of date strings
+      // (see `importedTaskSchema`) — `prepareTaskData` maps each to
+      // `models.TaskReminder`'s wire shape (`{ reminder: <date> }`) and
+      // includes it directly in the `PUT /projects/{id}/tasks` body.
+      // Reminders are NOT dropped with a false "API limitation" warning the
+      // way they used to be: this codebase's own
+      // `vikunja_task_reminders` add-reminder operation proves reminders
+      // CAN be added after creation too, but there is no need for a second
+      // round trip when the create endpoint accepts them directly.
       const taskWithReminders: ImportedTask = {
         title: 'Test Task with Reminders',
-        reminders: [{ reminder: '2024-12-31T10:00:00Z' }, { reminder: '2024-11-30T09:00:00Z' }],
+        reminders: ['2024-12-31T10:00:00Z', '2024-11-30T09:00:00Z'],
         labels: [], // Remove labels to isolate reminder testing
         assignees: [], // Remove assignees to isolate reminder testing
       };
@@ -829,12 +837,19 @@ describe('TaskCreationService', () => {
 
       // Assert
       expect(result.success).toBe(true);
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0]).toContain('Reminders cannot be added after task creation');
-      expect(logger.warn).toHaveBeenCalledWith('Reminders cannot be added after task creation', {
-        taskId: 123,
-        reminders: [{ reminder: '2024-12-31T10:00:00Z' }, { reminder: '2024-11-30T09:00:00Z' }],
-      });
+      expect(result.warnings).toBeUndefined();
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        'Reminders cannot be added after task creation',
+        expect.anything(),
+      );
+      expect(fetchBody(0)).toEqual(
+        expect.objectContaining({
+          reminders: [
+            { reminder: '2024-12-31T10:00:00Z' },
+            { reminder: '2024-11-30T09:00:00Z' },
+          ],
+        }),
+      );
     });
   });
 
@@ -947,7 +962,10 @@ describe('TaskCreationService', () => {
         ...mockTask,
         labels: ['urgent', 'unknown'], // One valid, one not found
         assignees: ['john', 'unknown'], // One valid, one not found
-        reminders: [{ reminder: '2024-12-31T10:00:00Z' }],
+        // Reminders (a plain date-string array per importedTaskSchema) are
+        // now included directly in the create body rather than producing a
+        // warning (#284), so they no longer contribute to this count.
+        reminders: ['2024-12-31T10:00:00Z'],
       };
       const createdTask: Task = {
         id: 128,
@@ -972,11 +990,15 @@ describe('TaskCreationService', () => {
 
       // Assert
       expect(result.success).toBe(true);
-      expect(result.warnings).toHaveLength(4);
+      expect(result.warnings).toHaveLength(3);
       expect(result.warnings![0]).toContain('Labels not found: unknown');
       expect(result.warnings![1]).toContain('Labels specified but not assigned'); // Due to verification failure
       expect(result.warnings![2]).toContain('Users not found: unknown');
-      expect(result.warnings![3]).toContain('Reminders cannot be added after task creation');
+      expect(fetchBody(0)).toEqual(
+        expect.objectContaining({
+          reminders: [{ reminder: '2024-12-31T10:00:00Z' }],
+        }),
+      );
     });
   });
 });
