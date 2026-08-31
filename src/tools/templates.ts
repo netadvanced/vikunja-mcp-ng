@@ -20,6 +20,7 @@ import {
   resolveTemplatesPersistPath,
 } from '../storage/templateFileStore';
 import type { PersistedTemplateRecord } from '../storage/templateFileStore';
+import type { SavedFilter } from '../types/filters';
 import { ConfigurationManager } from '../config';
 import { logger } from '../utils/logger';
 import { getEffectiveSessionId } from '../context/requestContext';
@@ -120,9 +121,14 @@ async function hydrateTemplatesFromDiskIfNeeded(
   const records = loadTemplatesFile(persistPath);
   for (const record of records) {
     try {
-      const existing = await storage.findByName(record.name);
+      const existing = await findTemplateByName(storage, record.name);
       if (!existing) {
-        await storage.create({ name: record.name, filter: record.data, isGlobal: true });
+        await storage.create({
+          name: record.name,
+          filter: record.data,
+          isGlobal: true,
+          namespace: 'template',
+        });
       }
     } catch (error) {
       logger.warn('Failed to hydrate a template from the persistence file, skipping it', {
@@ -132,6 +138,22 @@ async function hydrateTemplatesFromDiskIfNeeded(
       });
     }
   }
+}
+
+/**
+ * Look up a saved-filter record by name, but only if it actually belongs to
+ * the `template` namespace. `SimpleFilterStorage` is a shared per-session
+ * bucket (tasks' cross-project filtering also reads from it — see
+ * `src/tools/tasks/index.ts`); without this check, a non-template record
+ * that happened to share a template's generated name would be treated as a
+ * template — see #293 (LOW-12).
+ */
+async function findTemplateByName(
+  storage: Awaited<ReturnType<typeof storageManager.getStorage>>,
+  name: string,
+): Promise<SavedFilter | null> {
+  const filter = await storage.findByName(name);
+  return filter && filter.namespace === 'template' ? filter : null;
 }
 
 /**
@@ -152,7 +174,7 @@ async function persistTemplatesIfConfigured(
   try {
     const all = await storage.list();
     const records: PersistedTemplateRecord[] = all
-      .filter((filter) => filter.name.startsWith('template_'))
+      .filter((filter) => filter.namespace === 'template')
       .map((filter) => ({ id: filter.name, name: filter.name, data: filter.filter }));
     writeTemplatesFileAtomic(persistPath, records);
   } catch (error) {
@@ -306,11 +328,15 @@ export function registerTemplatesTool(
                 variables: {},
               };
 
-              // Save template as a saved filter
+              // Save template as a saved filter, tagged with the `template`
+              // namespace (not just the `template_` name prefix) so it can
+              // never be confused with an unrelated saved filter that
+              // happens to share the storage bucket — see #293 (LOW-12).
               await storage.create({
                 name: templateId,
                 filter: JSON.stringify(templateData),
                 isGlobal: true,
+                namespace: 'template',
               });
               await persistTemplatesIfConfigured(storage);
 
@@ -350,9 +376,11 @@ export function registerTemplatesTool(
           case 'list': {
             try {
               const savedFilters = await storage.list();
-              // Convert saved filters back to templates
+              // Convert saved filters back to templates. Filtered by the
+              // `template` namespace field (not the `template_` name
+              // prefix) — see #293 (LOW-12).
               const templates = savedFilters
-                .filter((f) => f.name.startsWith('template_'))
+                .filter((f) => f.namespace === 'template')
                 .map((f) => {
                   try {
                     return JSON.parse(f.filter) as TemplateData;
@@ -391,7 +419,7 @@ export function registerTemplatesTool(
             }
 
             try {
-              const savedFilter = await storage.findByName(args.id);
+              const savedFilter = await findTemplateByName(storage, args.id);
               if (!savedFilter) {
                 throw new MCPError(ErrorCode.NOT_FOUND, `Template with ID ${args.id} not found`);
               }
@@ -426,7 +454,7 @@ export function registerTemplatesTool(
             }
 
             try {
-              const savedFilter = await storage.findByName(args.id);
+              const savedFilter = await findTemplateByName(storage, args.id);
               if (!savedFilter) {
                 throw new MCPError(ErrorCode.NOT_FOUND, `Template with ID ${args.id} not found`);
               }
@@ -438,7 +466,7 @@ export function registerTemplatesTool(
               if (args.tags !== undefined) template.tags = args.tags;
 
               // Update the saved filter by finding it first
-              const existingFilter = await storage.findByName(args.id);
+              const existingFilter = await findTemplateByName(storage, args.id);
               if (existingFilter) {
                 await storage.update(existingFilter.id, {
                   filter: JSON.stringify(template),
@@ -480,7 +508,7 @@ export function registerTemplatesTool(
             }
 
             try {
-              const savedFilter = await storage.findByName(args.id);
+              const savedFilter = await findTemplateByName(storage, args.id);
               if (!savedFilter) {
                 throw new MCPError(ErrorCode.NOT_FOUND, `Template with ID ${args.id} not found`);
               }
@@ -521,7 +549,7 @@ export function registerTemplatesTool(
             }
 
             try {
-              const savedFilter = await storage.findByName(args.id);
+              const savedFilter = await findTemplateByName(storage, args.id);
               if (!savedFilter) {
                 throw new MCPError(ErrorCode.NOT_FOUND, `Template with ID ${args.id} not found`);
               }

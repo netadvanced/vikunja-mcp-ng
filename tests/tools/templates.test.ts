@@ -204,6 +204,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -226,6 +227,7 @@ describe('Templates Tool', () => {
         name: expect.stringMatching(/^template_\d+$/),
         filter: expect.any(String),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const markdown = result.content[0].text;
@@ -272,6 +274,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -311,6 +314,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -366,6 +370,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -415,6 +420,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -466,6 +472,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         },
         {
           id: 'filter_2',
@@ -474,6 +481,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         },
       ];
       (mockFilterStorage.list as jest.Mock).mockResolvedValue(mockSavedFilters);
@@ -498,6 +506,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         },
         {
           id: 'filter_2',
@@ -506,6 +515,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         },
       ];
       (mockFilterStorage.list as jest.Mock).mockResolvedValue(mockSavedFilters);
@@ -551,6 +561,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -624,6 +635,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.update as jest.Mock).mockResolvedValue(undefined);
 
@@ -658,6 +670,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.update as jest.Mock).mockResolvedValue(undefined);
 
@@ -707,6 +720,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         })
         .mockResolvedValueOnce(null);
 
@@ -736,6 +750,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.update as jest.Mock).mockRejectedValue(new Error('Update failed'));
 
@@ -760,6 +775,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.update as jest.Mock).mockRejectedValue('String error');
 
@@ -783,6 +799,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.delete as jest.Mock).mockResolvedValue(undefined);
 
@@ -827,6 +844,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.delete as jest.Mock).mockRejectedValue(new Error('Delete failed'));
 
@@ -846,6 +864,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.delete as jest.Mock).mockRejectedValue('String error');
 
@@ -888,6 +907,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       // Project + task creation succeed; the label-bulk POST resolves via
       // the default-success mockFetch configured in beforeEach.
@@ -951,6 +971,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       // Project + task creation succeed; the label-bulk POST fails.
       fetchOkOnce({ ...mockProject, id: 100 });
@@ -1014,6 +1035,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       mockFetch.mockRejectedValue(new Error('Project creation failed'));
 
@@ -1046,6 +1068,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
 
@@ -1123,6 +1146,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1168,6 +1192,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1201,6 +1226,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       // Project created with null ID
@@ -1245,6 +1271,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
 
@@ -1290,6 +1317,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1343,6 +1371,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1380,6 +1409,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
 
@@ -1412,6 +1442,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
 
@@ -1447,6 +1478,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
 
@@ -1491,6 +1523,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1535,6 +1568,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1571,6 +1605,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         });
         fetchOkOnce({ ...mockProject, id: 100 });
         fetchOkOnce({ ...mockTask, id: 200 });
@@ -1599,6 +1634,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         });
         fetchOkOnce({ ...mockProject, id: 100 });
         fetchOkOnce({ ...mockTask, id: 200 });
@@ -1627,6 +1663,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         });
         fetchOkOnce({ ...mockProject, id: 100 });
         fetchOkOnce({ ...mockTask, id: 200 });
@@ -1663,6 +1700,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1722,6 +1760,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
