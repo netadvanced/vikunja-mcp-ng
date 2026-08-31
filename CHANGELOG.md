@@ -8,6 +8,17 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 ## [Unreleased]
 
+**A correctness pass over the whole write surface, and one breaking change.** Nearly every
+entry below shares a single shape: the tool reported success while what you asked for did
+not happen. A field you sent was silently dropped. A partial update wiped settings you never
+mentioned. A filter written the documented way matched nothing. A listing returned page one
+of four and called it the answer. Every instance found is now either honoured properly or
+refused with an error naming the field and what to use instead — and the three that
+destroyed or duplicated your data are called out first, under **Fixed — data loss and
+duplicate writes**.
+The breaking change riding along: **`percentDone` is a whole percentage 0-100**, not a 0-1
+fraction.
+
 ### Changed
 
 - **BREAKING: `percentDone` is now a whole percentage 0-100 (integers only), everywhere
@@ -15,10 +26,21 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
   `models.Task.percent_done`. It still is on the wire; this server now converts in both
   directions at its boundary (`src/utils/percent-done.ts`) instead of making agents
   memorize it.
-  **What breaks:** any caller passing a fraction. `percentDone: 0.5` is now a validation
-  error (with a message that names the scale: *"percentDone must be a whole number between
-  0 and 100 — use 50 for 50%"*), and — the one silent change — **`percentDone: 1` now means
-  1%, not 100%**. Use `100`.
+
+  **Migration — what you send now versus before:**
+
+  | You mean | Send now | Used to send |
+  |---|---|---|
+  | 0% | `percentDone: 0` | `percentDone: 0` |
+  | half done | `percentDone: 50` | `percentDone: 0.5` |
+  | 75% | `percentDone: 75` | `percentDone: 0.75` |
+  | fully done | `percentDone: 100` | `percentDone: 1` |
+
+  A fraction is now a validation error naming the scale (*"percentDone must be a whole
+  number between 0 and 100 — use 50 for 50%"*), so `0.5` and `0.75` fail loudly. **The one
+  silent change is `percentDone: 1`**, which is still valid and now means **1%, not 100%** —
+  audit any caller that used `1` for "done" and change it to `100`.
+
   **Why now:** the fraction leaked an implementation detail agents had to memorize (a real
   Claude session recorded the 0-1 scale in its list of "gotchas" — a memory that dies with
   the session and transfers to no other MCP client), Vikunja's own human-facing scale is
@@ -28,99 +50,46 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
   silently wrote 1% with no error. Cheap on `0.7.0-beta`, expensive after issue #183
   declares the tool surface stable at 1.0. Full reasoning and revisit condition:
   decision 22 in [docs/ROADMAP.md](docs/ROADMAP.md) §3.
-  **Scope — one scale, no exceptions:** `vikunja_tasks` `create`/`update`/`bulk-create`,
-  `vikunja_task_bulk` `bulk-create` and `bulk-update`'s raw `percent_done` field,
-  `vikunja_batch_import` (JSON and CSV), and `percentDone` inside a filter string —
+
+  **Scope — one scale, no exceptions:** `vikunja_tasks` `create`/`update`/`bulk-create`/
+  `create-subtask`/`bulk-create-subtasks`, `vikunja_task_bulk` `bulk-create` and
+  `bulk-update`'s raw `percent_done` field, `vikunja_projects setup-kanban`'s per-task
+  shape, `vikunja_batch_import` (JSON and CSV), and `percentDone` inside a filter string —
   including saved filters, which are stored on the Vikunja server in its own scale and
   converted back to 0-100 when read, so `get` → edit → `update` round-trips instead of
   rescaling twice.
 
-### Fixed (breaking-change follow-ons)
+- **A field this server cannot honour is now refused, never quietly ignored.** Zod strips
+  undeclared object keys by default, so a per-task field an agent invented — or reached for
+  from a sibling shape — used to vanish with no error while the call reported success. The
+  four closed nested array-of-object shapes (`vikunja_projects setup-kanban`'s `tasks[]`,
+  `vikunja_tasks`' `tasks[]` and `subtasks[]`, `vikunja_task_bulk`'s `tasks[]`) are now
+  strict: an unrecognized key fails the call with an error naming it, listing what the shape
+  accepts, and pointing at the tool that owns the field. Top-level tool shapes stay
+  deliberately permissive — they are shared across subcommands and legitimately tolerate
+  `id`/`projectId` aliases and parameters carried between calls. Confirmed live: a battle
+  run asked for a task "75% done", the model sent one `setup-kanban` call carrying
+  `percentDone: 75`, and the task was created at 0% with a success response. The same
+  reasoning produced the individual rejections listed under **Added** below
+  (`position` on task create, `doneBucketId`/`defaultBucketId` on `create-view`,
+  `targetUrl`/`secret`/`basicAuth*` on webhook `update`, `labelTitles` on `remove-label`,
+  changed `title`/`description`/`parentProjectId`/`hexColor` on `setup-kanban`'s reuse path).
 
-- **Task progress was displayed as the raw fraction next to a `%` sign** — a half-done task
-  rendered as `**Progress:** 0.5%` and a finished one as `1%`. It now renders on the same
-  0-100 scale the tool surface accepts (nearest whole percent; a sub-percent value stored by
-  another Vikunja client is rounded, halves up).
-- **`vikunja_batch_import` wrote `percentDone` to the wire unconverted.** Its schema has
-  always validated the field as 0-100, but the value was passed straight through to
-  `percent_done`, so importing a task at 75% stored `75` — 75x out of range and silently
-  accepted by Vikunja.
-- **A `percentDone` filter matched nothing, silently.** `percentDone > 50` was sent to the
-  server as `percent_done > 50`, compared against a column whose values never exceed `1`.
-  Both the server-side filter string and the client-side evaluator now rescale.
+### Fixed — data loss and duplicate writes
 
-### Added
-
-- **Task fields that only worked on update now work on create too.** `percentDone` is
-  accepted by `vikunja_tasks create` and by `bulk-create` (both flavours), mapped to
-  `models.Task.percent_done`, and `percent_done` joins the `bulk-update` field allowlist —
-  previously bulk-update rejected a value single `update` accepted. `bucketId` (with the
-  optional `viewId`) is honoured on `create` as a post-create move through the same
-  view/bucket resolution `set-bucket` uses, instead of being accepted by the schema and
-  silently dropped; if the move fails the error names the created task id and the task is
-  **not** deleted. `position` on `create` is now rejected with a pointer to `set-position`
-  rather than silently ignored — task position is per-view state owned by a dedicated
-  endpoint that has no meaningful default for a brand-new task.
-  **Scale note:** this entry originally recorded `percentDone` as a fraction 0-1,
-  matching Vikunja's wire contract. That is superseded within this same unreleased
-  cycle — see the **BREAKING** entry below: the tool surface now takes a whole
-  percentage 0-100 and converts at the boundary. The wire really is a fraction
-  (`PercentDone float64`, `pkg/models/tasks.go`; the frontend picker stores
-  `[0, 0.1, … 1]` in `PercentDoneSelect.vue`); that is now an implementation detail
-  this server keeps to itself. democratize-technology/vikunja-mcp#94 (@joyjit) and
-  #82 (@Alex-Blanes) read the interface as 0-100, which is now what it is.
-- **`vikunja_teams` can set `is_public`** on `create` and `update` via a new `isPublic`
-  field — `models.Team.is_public` ("defines whether the team should be publicly
-  discoverable when sharing a project") was in the vendored 2.4.0 spec and passed through
-  on reads, but was never sent on writes. On `update` it is safe to omit — see the
-  read-then-merge fix under **Fixed** below, which landed alongside it.
-- **`VIKUNJA_BULK_WRITE_CONCURRENCY`** — opt-in override for bulk-**create** concurrency,
-  default unchanged at `1` (sequential), validated as a positive integer and capped at 10;
-  an invalid value warns and falls back instead of failing startup. **Raising this on a
-  SQLite-backed Vikunja reintroduces the "database is locked" storm and the circuit-breaker
-  cascade the sequential default exists to prevent** — it is for Postgres/MySQL-backed
-  instances only. Scoped to creates: bulk update and delete keep their fixed concurrency,
-  which is ordinary throughput tuning rather than a defect workaround. See
-  [docs/CONFIGURATION.md](docs/CONFIGURATION.md#bulk-write-concurrency). Proposed by
-  @joyjit in democratize-technology/vikunja-mcp#97.
-
-- **One-click SSO enrollment for oidc-http mode** (#220): when the Vikunja backend uses the same
-  IdP as a native OpenID login provider, `vikunja_auth provision` called **without** a token now
-  returns a short-lived, single-use enrollment URL instead of an error. The new browser endpoints
-  on the HTTP transport (`GET /enroll`, `GET /enroll/callback` — CSRF-protected via a
-  server-side ticket bound to the initiating `iss|sub`) drive one IdP authorization hop, forward
-  the code to Vikunja's native `POST /auth/openid/{provider}/callback`, mint a scoped `tk_*`
-  token via `GET /routes` + `PUT /tokens` with the user's own (10-minute) Vikunja JWT, vault it
-  under the identity, and discard the JWT — zero credential pasting, full per-user isolation.
-  Opt-in via `VIKUNJA_MCP_ENROLL_ENABLED` (plus `VIKUNJA_MCP_ENROLL_PROVIDER`,
-  `VIKUNJA_MCP_ENROLL_VIKUNJA_URL`, `VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS`,
-  `VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC`); manual token provisioning keeps working unchanged, and a
-  backend without an OpenID provider gets a clean error pointing at the manual path. Design
-  validated against the go-vikunja v2.4.0 source and proven end-to-end in the extended
-  `test:e2e:oidc` lane (opt-in `docker/e2e/docker-compose.oidc.yml` overlay + a full mock OIDC
-  IdP; the Vikunja-callback → JWT → token-mint → vault chain runs against the real local 2.4.0
-  stack, including first-login account auto-creation). The callback **pins the enrolled account
-  to the initiating identity** (`GET /user` under the fresh JWT must match the caller's
-  `email`/`preferred_username` claims, failing closed — forwarded enrollment links cannot
-  capture another account's token), tickets are only consumed once the code exchange succeeds,
-  an already-linked identity gets "already linked" instead of a second minted token, and
-  enabling enrollment hard-requires `transport=http` + `oidc` + `VIKUNJA_MCP_HTTP_PUBLIC_URL`
-  (links/redirect_uri are built from the public URL, path prefixes preserved). See
-  `docs/OIDC-SETUP.md` §9a.
-
-### Security
-
-- Refreshed the dependency tree to clear five advisories, all reached transitively through
-  `@modelcontextprotocol/sdk`: `fast-uri` 3.1.4 → 3.1.5 (host confusion via backslash authority,
-  high) and `hono` 4.12.32 → 4.13.1 (four advisories, the notable one being `memo()` retaining SSR
-  output across requests). Neither package is called by this server on the stdio path, but both ship
-  in the runtime tree, so they are worth keeping current. Dev-scope `js-yaml` moved to 4.3.1 and
-  `brace-expansion` to its patched lines. `npm audit` is clean at zero, runtime and dev alike.
-  The `fast-uri` and `js-yaml` overrides now name the patched floor rather than the older one they
-  were pinned to, so a fresh install without the lockfile cannot silently land back on a
-  vulnerable version.
-
-### Fixed
+- **`vikunja_users update-settings` was erasing every setting you did not mention.**
+  `POST /user/settings/general` is a full-model replace: the handler binds the request body
+  into a fresh `v1.UserSettings` and assigns *every* field of it onto the user
+  unconditionally, then saves with `forceOverride: true`. Anything absent from the body was
+  written back as its Go zero value. This tool sent a partial body, so a call changing only
+  the timezone also wiped the user's **name, language, week start, default project, both
+  discoverability flags and both reminder preferences** — silently, on every call. (It also
+  returned HTTP 400 outright whenever `overdue_tasks_reminders_time` was omitted, which is
+  tagged `valid:"time,required"` — so the single most likely outcome was a confusing failure
+  and the second most likely was quiet destruction.) `update-settings` now reads the current
+  settings, merges your explicit changes over the whole model, and posts that back — the same
+  fetch → merge → POST shape as projects and teams. Guards are `!== undefined` throughout, so
+  `false`, `0` and `''` are real values rather than "not supplied".
 
 - **`vikunja_teams update` no longer silently makes a public team private.**
   `POST /teams/{id}` is a full-model replace with no server-side merge: Vikunja binds the
@@ -157,16 +126,229 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
   `options.retry.shouldRetry`. The hazard was flagged publicly by @safrano9999 in
   democratize-technology/vikunja-mcp#98.
 
+### Security
 
+- **Credentials could reach the log stream.** `sanitizeLogData` existed in
+  `src/utils/security.ts` but was referenced nowhere outside that file — written and never
+  wired in — while a dozen call sites log raw tool `args`, several of which carry secrets.
+  ERROR level is on by default, so failure paths emitted them. Redaction is now applied once
+  at the choke point, inside `Logger.log` and *after* the level gate, so it covers every
+  level and every call site and costs nothing for a level that will not be emitted. Beyond
+  key-name matching it now also catches what key names structurally cannot see: a secret
+  embedded in a URL **path** (the motivating case — Slack-style webhook URLs), URL userinfo,
+  sensitive query parameters, JWTs, `tk_*` tokens, authorization header values, PEM private
+  keys, and `name=value` pairs in free text, applied as a backstop over the rendered line so
+  a credential interpolated into a message literal is caught too. `Error` instances are
+  unwrapped rather than reduced to `{}` (`message`/`stack` are non-enumerable), and a cycle
+  detection bug that reported a merely *repeated* object as `[Circular Reference]` is fixed.
+  Wiring `sanitizeLogData` in verbatim would have broken logging outright — it turns an
+  `Error` into `{}` and any string over 1000 characters into `[SANITIZATION_FAILED]` — so a
+  logging-specific `sanitizeForLogging` was written instead. **Operator-visible change:** some
+  fields, notably `user`, now render as `[REDACTED]`.
 
+- **A newly created webhook echoed its own secret back.** Vikunja blanks `secret` on every
+  read path but returns the bound struct from `create`/`update`, so the HMAC signing key the
+  caller had just supplied came back in the tool response. Both `secret` and
+  `basic_auth_password` are now redacted on this side too, matching the server's own read
+  behaviour. `vikunja_webhooks` also stopped logging raw `args` — the secret and the target
+  URL are logged only as presence booleans, and `basicAuthUser` is excluded as well so that
+  its presence never hints at the credential beside it.
 
+### Fixed — answers that were wrong, partial, or quietly ignored
 
+- **A label filter written the documented way matched nothing** (#227). Verified live against
+  Vikunja 2.4.0: the `labels` filter field matches on label **ids** and rejects a title
+  outright (`GET /tasks?filter=labels in HU` → HTTP 400 code 4019), while `labels in 100`
+  returns 200. The documented DSL spelling uses titles, so every title-based label filter
+  failed server-side; the client-side fallback then coerced the title with `Number('HU')` →
+  `NaN`, compared it against label ids, and matched nothing — reporting `Found 0 tasks` as a
+  clean success. Label titles are now resolved to ids once, in `FilterValidator`, feeding both
+  the wire string and the client-side evaluator (numeric values cost no lookup). A `labels`
+  condition where **no** title resolves is now an error naming the unresolved titles; one that
+  partially resolves keeps the resolvable half and warns; and a failed *lookup* (a 403 from a
+  scope-limited token, a network error) is reported as an error rather than as "no such
+  label". The evaluator also matches by title, case-insensitively, so the fallback is correct
+  on its own. The issue's hypothesis that list responses return `"labels": null` is **not**
+  what 2.4.0 does — labels are fully populated by both `GET /projects/{id}/tasks` and
+  `GET /tasks` — so the fallback was fixed rather than removed.
 
+- **A date-filtered listing never actually filtered server-side** (#225). Vikunja rejects
+  `created >= '2026-08-16 00:00:00'` with the same 4019, so the single-call `GET /tasks`
+  strategy failed every time and silently degraded to per-project aggregation. Date-field
+  literals in a filter string are now normalized to RFC3339 by the same `normalizeDateForApi`
+  the create paths use (extended to cover `YYYY-MM-DD HH:MM[:SS]`); relative literals such as
+  `now+7d` pass through untouched.
 
+- **A filtered listing could return part of the answer and report it as the whole answer**
+  (#225). Vikunja clamps `per_page` to `service.maxitemsperpage` (default **50**), so a
+  193-task project contributed 50 tasks to a cross-project aggregate, and — unreported, found
+  while fixing the above — `GET /projects?per_page=1000` was clamped identically, so a user
+  with more than 50 projects only ever had the first 50 searched. Both collections are now
+  paginated through, bounded by the existing `VIKUNJA_MAX_TASKS_LIMIT` as a shared budget plus
+  a 500-page-per-collection ceiling; an explicit caller `page`/`perPage` still returns exactly
+  that page. Anything that truncates the aggregate, skips an unreadable project, or drops part
+  of the project list now sets the new `resultComplete: false` response metadata and explains
+  itself in the new `warnings` list — and `vikunja_tasks list` renders `INCOMPLETE RESULT` or
+  `PARTIAL FILTER` in the **summary line**, not buried in metadata. Fallback notes carry the
+  server's own reason (the 4019 text, for instance) instead of a generic "failed", which is
+  what made both of these bugs undiagnosable from the response.
 
+- **A date-only `dueDate` failed on four create paths.** `create-subtask`,
+  `bulk-create-subtasks`, `vikunja_batch_import` and `vikunja_templates instantiate` sent
+  `dueDate`/`startDate`/`endDate` to `PUT /projects/{id}/tasks` raw, while `vikunja_tasks
+  create` had normalized them since #167. Verified live on 2.4.0: a bare `2026-09-01` on that
+  endpoint returns **HTTP 400 code 2004**, it is not silently dropped. All four now route
+  through the same `normalizeDateForApi` helper — no second coercion implementation. (Note
+  that `vikunja_tasks update` still has this gap; it was out of scope here.)
 
+- **Task progress was displayed as the raw fraction next to a `%` sign** — a half-done task
+  rendered as `**Progress:** 0.5%` and a finished one as `1%`. It now renders on the same
+  0-100 scale the tool surface accepts (nearest whole percent; a sub-percent value stored by
+  another Vikunja client is rounded, halves up).
 
+- **`vikunja_batch_import` wrote `percentDone` to the wire unconverted.** Its schema has
+  always validated the field as 0-100, but the value was passed straight through to
+  `percent_done`, so importing a task at 75% stored `75` — 75x out of range and silently
+  accepted by Vikunja.
 
+- **A `percentDone` filter matched nothing, silently.** `percentDone > 50` was sent to the
+  server as `percent_done > 50`, compared against a column whose values never exceed `1`.
+  Both the server-side filter string and the client-side evaluator now rescale.
+
+- **`vikunja_task_bulk bulk-create` dropped four schema-declared fields on the floor.** Its
+  hand-rolled per-task remap built an anonymous snake_case object (`due_date`, `repeat_after`,
+  `repeat_mode`) that nothing downstream read, and never copied `percentDone` at all. The
+  remap is now a typed `toBulkCreateTaskData`, so future drift is a compile error.
+
+- **An unrecognized CSV column in `vikunja_batch_import` was dropped without a word**, while
+  the identical payload as JSON was rejected (`importedTaskSchema` is `.strict()`) — so the
+  import reported every row created while the data was not there. The CSV path now rejects the
+  column, naming it and listing the supported ones; `skipErrors: true` still opts out and
+  imports anyway.
+
+### Added
+
+- **Task fields that were declared but never sent, or never offered at all.**
+  `done` on `create` — Vikunja's `createTask` inserts the whole task struct and
+  `setTaskInBucketInViews` even routes a done task into the Kanban view's Done bucket, so
+  "create this task, already done" now does what it says instead of creating an open task.
+  **Caveat:** `done_at` is stamped only by `updateDone`, which create never calls, so a task
+  created done carries no completion timestamp and will not match a `doneAt` filter — create
+  it open and update it to done if you need that timestamp. `hexColor` (`#RRGGBB`, or `''`
+  to clear) on `create` and `update`; note that Vikunja's `NormalizeHex` strips the leading
+  `#` and truncates to six characters, so the value reads back as `4287f5`, not `#4287f5`.
+  `labelTitles` on `apply-label` via `vikunja_tasks` — `applyLabels` had always read it and
+  `vikunja_task_labels` had always declared it, but the `vikunja_tasks` shape had not, so
+  titles sent alongside ids vanished and a titles-only call failed insisting no titles were
+  given; `remove-label` takes ids only and now rejects `labelTitles` loudly rather than
+  ignoring it. `repeatAfter`/`repeatMode`, plus `done` and `hexColor`, on `create-subtask`;
+  and `percentDone`/`startDate`/`endDate`, long declared on the schema and never read by the
+  subtask composites, are now forwarded.
+
+- **Task fields that only worked on update now work on create too.** `percentDone` is
+  accepted by `vikunja_tasks create` and by `bulk-create` (both flavours), mapped to
+  `models.Task.percent_done`, and `percent_done` joins the `bulk-update` field allowlist —
+  previously bulk-update rejected a value single `update` accepted. `bucketId` (with the
+  optional `viewId`) is honoured on `create` as a post-create move through the same
+  view/bucket resolution `set-bucket` uses, instead of being accepted by the schema and
+  silently dropped; if the move fails the error names the created task id and the task is
+  **not** deleted. `position` on `create` is now rejected with a pointer to `set-position`
+  rather than silently ignored — task position is per-view state owned by a dedicated
+  endpoint that has no meaningful default for a brand-new task.
+
+- **Project and project-view write fields.** `isFavorite` on project `create`/`update`
+  (`models.Project.is_favorite`; `false` explicitly un-favorites, omission leaves it alone).
+  `position` on `create-view`/`update-view` — previously declared, echoed back from the
+  server's response, and a no-op, so a caller reordering views got a success message implying
+  it had worked. `filter` on `create-view`/`update-view`, routed through the same
+  parse/validate/translate pipeline as `vikunja_tasks list` and merged onto any existing
+  collection so changing the query does not wipe the view's sort order; the wire shape is the
+  nested `models.TaskCollection` (`{filter: {filter: "…"}}`), not a bare string.
+  `bucketConfiguration` on `create-view`/`update-view` — without it,
+  `bucketConfigurationMode: 'filter'` produced a board with no columns at all. `hexColor` on
+  `setup-kanban`'s new-project path, matching `create`/`update`. All of these ride the
+  existing fetch → merge → POST builders, which is load-bearing twice over: the view update
+  handler names an explicit `Cols(...)` list that persists zero values (so a partial body
+  would reset a view's position to 0 and blank its filter), and `UpdateProject` **deletes**
+  the favorites row whenever `is_favorite` arrives false — a second instance of the
+  `UseBool`-shaped hazard from [docs/VIKUNJA_API_ISSUES.md §3a](docs/VIKUNJA_API_ISSUES.md),
+  by a different mechanism.
+  `create-view` now **rejects** `doneBucketId`/`defaultBucketId`: a bucket belongs to exactly
+  one view, so a brand-new view owns none and any id passed here necessarily points at
+  another view — and `createProjectView` overwrites both ids anyway when it auto-creates a
+  manual Kanban view's buckets. The error points at `update-view` / `set-done-bucket`.
+
+- **HTTP Basic Auth credentials on webhook creation.** `basicAuthUser`/`basicAuthPassword`
+  are documented create-time write fields on `models.Webhook` that this tool never declared,
+  so a webhook whose receiving endpoint sits behind Basic Auth could not be created at all.
+  They are create-only, exactly like `targetUrl`/`secret`, because `Webhook.Update` is a
+  hard-coded `Cols("events")` single-column write. `basicAuthPassword` is never logged (only
+  a `hasBasicAuthPassword` boolean), never echoed in a response, and never appears in a
+  thrown error.
+
+- **`vikunja_webhooks update` now rejects `targetUrl`, `secret`, `basicAuthUser` and
+  `basicAuthPassword`** instead of accepting them and reporting success.
+  `Webhook.Update` is `s.Where("id = ?", w.ID).Cols("events").Update(w)` for both scopes —
+  neither a full-model replace nor a partial update, but a hard-coded single-column write, so
+  **no payload shape makes any other field stick**. An agent repointing a webhook at a new URL
+  or rotating its secret was told it had worked while nothing changed. `events` is the only
+  changeable field; to change anything else, delete the webhook and create a replacement. The
+  success message no longer implies more than `events` changed.
+
+- **Three user settings that were silently stripped.** `defaultProjectId` (0 clears it),
+  `discoverableByEmail` and `discoverableByName` are documented write fields on
+  `models.UserGeneralSettings` that `vikunja_users update-settings` never declared, so an
+  agent asking to change them got silence instead of a change.
+
+- **`vikunja_teams` can set `is_public`** on `create` and `update` via a new `isPublic`
+  field — `models.Team.is_public` ("defines whether the team should be publicly
+  discoverable when sharing a project") was in the vendored 2.4.0 spec and passed through
+  on reads, but was never sent on writes. On `update` it is safe to omit — see the
+  read-then-merge fix under **Fixed — data loss and duplicate writes** above, which landed
+  alongside it.
+
+- **`setup-kanban` no longer ignores `title`/`description`/`parentProjectId`/`hexColor` on
+  the reuse path.** When `id` is supplied the composite reuses the project as-is and never
+  writes to it, so those fields were accepted and dropped. `hexColor` is now rejected
+  outright with a pointer at `vikunja_projects update`; the other three are rejected **only
+  when the value would actually change something** — a value matching what is stored stays a
+  harmless silent no-op, and the extra `GET` happens only when one of the three is supplied,
+  so the common "reuse by id alone" call costs no additional round trip. Comparison is
+  trimmed for `title`/`description` (an absent description reads as `''`) and normalizes a
+  missing or explicit `0` parent to "no parent".
+
+- **`VIKUNJA_BULK_WRITE_CONCURRENCY`** — opt-in override for bulk-**create** concurrency,
+  default unchanged at `1` (sequential), validated as a positive integer and capped at 10;
+  an invalid value warns and falls back instead of failing startup. **Raising this on a
+  SQLite-backed Vikunja reintroduces the "database is locked" storm and the circuit-breaker
+  cascade the sequential default exists to prevent** — it is for Postgres/MySQL-backed
+  instances only. Scoped to creates: bulk update and delete keep their fixed concurrency,
+  which is ordinary throughput tuning rather than a defect workaround. See
+  [docs/CONFIGURATION.md](docs/CONFIGURATION.md#bulk-write-concurrency). Proposed by
+  @joyjit in democratize-technology/vikunja-mcp#97.
+
+### Internal
+
+- The agent battle-testing library grew from 13 scenarios to **21**, covering the ground this
+  release changed: team rename-keeps-visibility and create-with-admin-member, task position,
+  `percentDone` on update / bulk-update / as a filter threshold, and bulk-update partial
+  failure. New check types (`team-exists`, `team-absent`, `task-absent-from-project`,
+  `task-first-in-list-view`, a `max` bound on `tasks-with-label-count`) and a `create-team`
+  setup action back them. Cleanup now sweeps teams too — a team is global to the instance, so
+  nothing else would ever reclaim one. `percent-done-scale`'s optimal call count was
+  re-derived 2 → 1 now that `setup-kanban` can express `percentDone`.
+
+### Documentation
+
+- Currency passes across both READMEs, `docs/CONFIGURATION.md`, `docs/LOCAL-TESTING.md`,
+  `docs/API_NOTES.md`, `docs/VIKUNJA_API_ISSUES.md` and `docs/ARCHITECTURE.md`.
+  `VIKUNJA_RESPONSE_VERBOSITY` and the SSO-enrollment lane inside `npm run test:e2e:oidc`
+  were undocumented and now are; the team admin-toggle route's spec/handler mismatch is
+  settled (its swagger annotation says `userID path int`, the handler binds
+  `TeamMember.Username` via a `param:"user"` tag — it is keyed by **username**), generalized
+  into a rule: where the spec and the handler disagree, the handler wins. The compatibility
+  matrix now records that Vikunja **2.5.0 and 2.6.0 are released upstream and neither
+  supported nor tested here** — 2.3.0 remains the floor and 2.4.0 the aligned, tested target.
 
 ## [0.7.0-beta.1] - 2026-08-14
 
