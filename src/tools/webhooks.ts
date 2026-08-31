@@ -29,6 +29,7 @@ import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
 import { getAuthManagerFromContext, hasRequestContext } from '../client';
+import { getEffectiveSessionId } from '../context/requestContext';
 import type { Webhook } from '../types/vikunja';
 import { logger } from '../utils/logger';
 import { validateAndConvertId } from '../utils/validation';
@@ -38,18 +39,39 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 
 type WebhookScope = 'project' | 'user';
 
-// Event cache for validation - one entry per scope, since project and
-// user-level webhooks are validated against separate `.../webhooks/events`
-// endpoints that may (in principle) return different valid-event sets.
+// Event cache for validation - one entry per (identity, scope) pair.
+//
+// #292 MED-9: this cache used to be keyed by scope alone, which is a
+// cross-tenant leak in `oidc-http` mode - two identities provisioned
+// against *different* Vikunja servers (or even the same server with
+// different valid-event sets, e.g. differing server versions/plugins)
+// would silently read each other's cached `/webhooks/events` response.
+// `getEffectiveSessionId` (src/context/requestContext.ts) is the same
+// identity/apiUrl-aware key already used to re-key `SimpleFilterStorage`
+// and `vikunja_templates` storage for the same reason (see
+// docs/OIDC-RESOURCE-SERVER.md §3d) - reusing it here keeps `stdio` mode's
+// single-tenant behaviour (one key, `${apiUrl}:${apiToken.slice(0,8)}`)
+// unchanged while making `oidc-http` mode safe.
 interface EventCacheEntry {
   events: string[] | null;
   expiry: Date | null;
 }
 
-const eventCache: Record<WebhookScope, EventCacheEntry> = {
-  project: { events: null, expiry: null },
-  user: { events: null, expiry: null },
-};
+const eventCache = new Map<string, EventCacheEntry>();
+
+function eventCacheKey(authManager: AuthManager, scope: WebhookScope): string {
+  return `${getEffectiveSessionId(authManager)}::${scope}`;
+}
+
+function getOrCreateEventCacheEntry(authManager: AuthManager, scope: WebhookScope): EventCacheEntry {
+  const key = eventCacheKey(authManager, scope);
+  let entry = eventCache.get(key);
+  if (!entry) {
+    entry = { events: null, expiry: null };
+    eventCache.set(key, entry);
+  }
+  return entry;
+}
 
 const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -104,17 +126,17 @@ function redactWebhookCredentials<T extends Partial<Webhook> | null | undefined>
   return redacted as T;
 }
 
-// Export for testing purposes - clears both scopes' caches.
+// Export for testing purposes - clears every identity/scope cache entry.
 export function clearWebhookEventCache(): void {
-  eventCache.project = { events: null, expiry: null };
-  eventCache.user = { events: null, expiry: null };
+  eventCache.clear();
 }
 
-// Export for testing - expire both scopes' caches but keep their events.
+// Export for testing - expire every cached entry but keep its events.
 export function expireWebhookEventCache(): void {
   const past = new Date(0);
-  eventCache.project.expiry = past;
-  eventCache.user.expiry = past;
+  for (const entry of eventCache.values()) {
+    entry.expiry = past;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +214,7 @@ function assertScopeConsistency(scope: WebhookScope, projectId: number | undefin
 // Get valid webhook events with caching
 async function getValidEvents(authManager: AuthManager, scope: WebhookScope): Promise<string[]> {
   const now = new Date();
-  const cache = eventCache[scope];
+  const cache = getOrCreateEventCacheEntry(authManager, scope);
 
   // Return cached events if still valid
   if (cache.events && cache.expiry && cache.expiry > now) {
