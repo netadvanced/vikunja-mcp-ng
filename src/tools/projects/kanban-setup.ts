@@ -102,6 +102,7 @@
 import type { AuthManager } from '../../auth/AuthManager';
 import { MCPError, ErrorCode, type CreateProjectRequest } from '../../types';
 import { validateId } from '../../utils/validation';
+import { validateHexColor } from './validation';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
 import { vikunjaRestRequest, resolveKanbanView } from '../../utils/vikunja-rest';
 import { ensureLabelByTitle } from '../../utils/label-ensure';
@@ -167,6 +168,14 @@ export interface SetupKanbanArgs {
   description?: string;
   /** New project's parent project id. Only used when creating a new project (`id` omitted). */
   parentProjectId?: number;
+  /**
+   * New project's hex color (`#rrggbb`), forwarded as `hex_color` on the
+   * create call exactly as `vikunja_projects create` does. Only meaningful
+   * when creating a new project — supplying it alongside an existing `id` is
+   * REJECTED (with a pointer to `vikunja_projects update`) rather than
+   * silently ignored, since this composite never updates a reused project.
+   */
+  hexColor?: string;
   /**
    * Ordered list of Kanban column (bucket) names, e.g. `["To Do", "Doing",
    * "Done"]`. Order is authoritative — see the module doc's "Ordering
@@ -496,6 +505,21 @@ export async function setupKanban(
   }
   if (args.id !== undefined) validateId(args.id, 'id');
   if (args.parentProjectId !== undefined) validateId(args.parentProjectId, 'parentProjectId');
+  if (args.hexColor !== undefined) {
+    validateHexColor(args.hexColor);
+    // Reject-loudly rather than drop: this composite only ever CREATES a
+    // project (it reuses an existing one as-is and never updates it), so a
+    // color supplied with an existing `id` could never be applied.
+    if (args.id !== undefined) {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'hexColor only applies when setup-kanban CREATES a project (i.e. when `title` is given ' +
+          'instead of `id`) — setup-kanban never modifies the project behind an existing `id`. ' +
+          'Recolor it with vikunja_projects update { id, hexColor } (a separate call), then ' +
+          're-run setup-kanban without hexColor. Nothing has been created by this call.',
+      );
+    }
+  }
 
   const tasks = args.tasks ?? [];
   if (tasks.length > MAX_BULK_OPERATION_TASKS) {
@@ -558,6 +582,8 @@ export async function setupKanban(
     const projectBody: CreateProjectRequest = { title: trimmedTitle };
     if (args.description !== undefined) projectBody.description = args.description;
     if (args.parentProjectId !== undefined) projectBody.parent_project_id = args.parentProjectId;
+    // Same normalization `createProject` applies (src/tools/projects/crud.ts).
+    if (args.hexColor !== undefined) projectBody.hex_color = args.hexColor.toLowerCase();
 
     const createdProject = await vikunjaRestRequest<VikunjaProject>(
       authManager,

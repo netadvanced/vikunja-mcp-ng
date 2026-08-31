@@ -332,7 +332,23 @@ export function registerProjectsTool(
       hexColor: z
         .string()
         .regex(/^#[0-9A-Fa-f]{6}$/)
-        .optional(),
+        .optional()
+        .describe(
+          'Project color as #rrggbb. Used by create/update and by setup-kanban when it ' +
+            'CREATES a project (with `title`); passing it alongside an existing `id` on ' +
+            'setup-kanban is rejected, since that path never modifies the project.',
+        ),
+      // Per-user favorite flag (`models.Project.is_favorite`). Honored by
+      // both create and update; update routes through
+      // buildProjectUpdatePayload so an unrelated update can't unfavorite
+      // the project (see that function's comment).
+      isFavorite: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether the project is a favorite FOR THE CALLING USER (create/update). ' +
+            '`false` explicitly un-favorites it; omitting it leaves the current state alone.',
+        ),
       page: z.number().min(1).optional(),
       perPage: z.number().min(1).max(100).optional(),
       search: z.string().optional(),
@@ -371,22 +387,91 @@ export function registerProjectsTool(
             'bucketId wins when both are supplied.',
         ),
       limit: z.coerce.number().min(0).optional(),
-      // Lane-order position for create-bucket/update-bucket. Vikunja
-      // positions are float64s — fractional values slot a bucket between
-      // two neighbors (e.g. 250 between Doing at 200 and Done at 300).
-      position: z.coerce.number().min(0).optional(),
+      // Sort position, shared by create-bucket/update-bucket (lane order)
+      // and create-view/update-view (view order). Vikunja positions are
+      // float64s — fractional values slot an entry between two neighbors
+      // (e.g. 250 between Doing at 200 and Done at 300).
+      position: z.coerce
+        .number()
+        .min(0)
+        .optional()
+        .describe(
+          'Sort position — the lane order of a bucket (create-bucket/update-bucket) or the ' +
+            "order of a view among the project's views (create-view/update-view). A float: " +
+            'use a value between two neighbors to slot in between them (250 between 200 and ' +
+            '300). 0 asks Vikunja for its default position.',
+        ),
       // Project view arguments (list-views, get-view, create-view,
       // update-view, delete-view, set-done-bucket subcommands).
       viewKind: z.enum(['list', 'gantt', 'table', 'kanban']).optional(),
-      bucketConfigurationMode: z.enum(['none', 'manual', 'filter']).optional(),
-      doneBucketId: z.coerce.number().positive().optional(),
-      defaultBucketId: z.coerce.number().positive().optional(),
+      bucketConfigurationMode: z
+        .enum(['none', 'manual', 'filter'])
+        .optional()
+        .describe(
+          "Kanban bucket source for a view. 'manual' = ordinary drag-between-columns " +
+            "buckets. 'filter' = one generated column per `bucketConfiguration` entry, so it " +
+            'needs `bucketConfiguration` to produce any columns at all.',
+        ),
+      bucketConfiguration: z
+        .array(
+          strictNestedObject(
+            {
+              title: z.string().min(1).describe('Column title for this generated bucket.'),
+              filter: z
+                .string()
+                .optional()
+                .describe(
+                  'Filter query selecting the tasks in this column, e.g. "priority >= 4". ' +
+                    'Same filter syntax as vikunja_tasks list.',
+                ),
+            },
+            'a bucketConfiguration entry',
+            "A bucketConfiguration entry has only `title` and `filter`. The view's own " +
+              'fields (title, viewKind, position, filter, bucketConfigurationMode) go at the ' +
+              'top level of the create-view/update-view call.',
+          ),
+        )
+        .optional()
+        .describe(
+          "Ordered generated columns for a view with bucketConfigurationMode: 'filter' " +
+            '(create-view/update-view). Each entry becomes one column built from its own ' +
+            'filter query. Unknown fields are REJECTED, not silently dropped.',
+        ),
+      // The VIEW's own filter (`models.ProjectView.filter`, a nested
+      // TaskCollection on the wire) — restricts which tasks the view shows.
+      // Distinct from `bucketConfiguration[].filter`, which builds one
+      // column per query.
+      filter: z
+        .string()
+        .optional()
+        .describe(
+          'Filter query restricting which tasks a view shows (create-view/update-view), e.g. ' +
+            '"done = false && priority >= 3". Same filter syntax as vikunja_tasks list. Not ' +
+            'the same as bucketConfiguration[].filter, which defines one column per query.',
+        ),
+      doneBucketId: z.coerce
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          'The bucket that marks tasks done, on update-view (or set-done-bucket). NOT ' +
+            'accepted by create-view — a new view has no buckets yet, so create the view ' +
+            'first and set it afterwards.',
+        ),
+      defaultBucketId: z.coerce
+        .number()
+        .positive()
+        .optional()
+        .describe(
+          'The bucket new tasks land in, on update-view. NOT accepted by create-view — see ' +
+            'doneBucketId.',
+        ),
       // Duplicate-project arguments (duplicate subcommand).
       duplicateShares: z.boolean().optional(),
       // setup-kanban composite arguments (issue #173). `columns` and
       // `tasks` are dedicated to this subcommand; `title`/`description`/
-      // `parentProjectId` above are reused when setup-kanban creates a new
-      // project (i.e. when `id` is omitted).
+      // `parentProjectId`/`hexColor` above are reused when setup-kanban
+      // creates a new project (i.e. when `id` is omitted).
       columns: z
         .array(z.string().min(1))
         .min(1)

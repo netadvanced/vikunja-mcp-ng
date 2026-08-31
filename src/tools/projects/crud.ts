@@ -78,6 +78,8 @@ export interface CreateProjectArgs {
   parentProjectId?: number;
   isArchived?: boolean;
   hexColor?: string;
+  /** Mark the new project as a favorite for the calling user. */
+  isFavorite?: boolean;
   verbosity?: string;
   useOptimizedFormat?: boolean;
   useAorp?: boolean;
@@ -93,6 +95,8 @@ export interface UpdateProjectArgs {
   parentProjectId?: number;
   isArchived?: boolean;
   hexColor?: string;
+  /** Favorite/unfavorite the project for the calling user. */
+  isFavorite?: boolean;
   verbosity?: string;
   useOptimizedFormat?: boolean;
   useAorp?: boolean;
@@ -131,6 +135,7 @@ export function buildProjectUpdatePayload(
     parentProjectId?: number;
     isArchived?: boolean;
     hexColor?: string;
+    isFavorite?: boolean;
   },
 ): VikunjaProject {
   return {
@@ -140,6 +145,15 @@ export function buildProjectUpdatePayload(
     ...(updates.parentProjectId !== undefined && { parent_project_id: updates.parentProjectId }),
     ...(updates.isArchived !== undefined && { is_archived: updates.isArchived }),
     ...(updates.hexColor !== undefined && { hex_color: updates.hexColor.toLowerCase() }),
+    // `is_favorite` is the UseBool-style hazard this merge exists for
+    // (docs/VIKUNJA_API_ISSUES.md §3a): go-vikunja's `UpdateProject` reads
+    // the flag off the request body and DELETES the favorites row whenever
+    // it is false, regardless of xorm's zero-value column skipping — so a
+    // partial body with no `is_favorite` would unfavorite the project on
+    // every unrelated update. Carrying the fetched project's own value
+    // forward (`GET /projects/{id}` populates it per-user) is what prevents
+    // that; an explicit `false` from the caller still wins.
+    ...(updates.isFavorite !== undefined && { is_favorite: updates.isFavorite }),
   };
 }
 
@@ -329,6 +343,7 @@ export async function createProject(
     parentProjectId,
     isArchived,
     hexColor,
+    isFavorite,
     verbosity,
     useOptimizedFormat,
     useAorp,
@@ -400,6 +415,13 @@ export async function createProject(
       projectData.hex_color = normalizedColor;
     }
 
+    // `!== undefined`, never a truthiness check: `isFavorite: false` is a
+    // real value and is forwarded as such. `CreateProject` (go-vikunja
+    // pkg/models/project.go) adds the favorites row when the flag is true.
+    if (isFavorite !== undefined) {
+      projectData.is_favorite = isFavorite;
+    }
+
     const createdProject = await vikunjaRestRequest<VikunjaProject>(
       authManager,
       'PUT',
@@ -447,6 +469,7 @@ export async function updateProject(
     parentProjectId,
     isArchived,
     hexColor,
+    isFavorite,
     verbosity,
     useOptimizedFormat,
     useAorp,
@@ -461,7 +484,8 @@ export async function updateProject(
       description !== undefined ||
       parentProjectId !== undefined ||
       isArchived !== undefined ||
-      hexColor !== undefined;
+      hexColor !== undefined ||
+      isFavorite !== undefined;
 
     if (!hasUpdateFields) {
       throw new MCPError(ErrorCode.VALIDATION_ERROR, 'No fields to update provided');
@@ -531,12 +555,15 @@ export async function updateProject(
       parentProjectId?: number;
       isArchived?: boolean;
       hexColor?: string;
+      isFavorite?: boolean;
     } = {};
     if (title !== undefined) fieldUpdates.title = title;
     if (description !== undefined) fieldUpdates.description = description;
     if (parentProjectId !== undefined) fieldUpdates.parentProjectId = parentProjectId;
     if (isArchived !== undefined) fieldUpdates.isArchived = isArchived;
     if (hexColor !== undefined) fieldUpdates.hexColor = hexColor;
+    // `!== undefined`: `isFavorite: false` means "unfavorite", not "unset".
+    if (isFavorite !== undefined) fieldUpdates.isFavorite = isFavorite;
 
     const updateData = buildProjectUpdatePayload(currentProject, fieldUpdates);
 

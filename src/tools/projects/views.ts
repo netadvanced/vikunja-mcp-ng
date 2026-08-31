@@ -12,7 +12,23 @@
  * `set-done-bucket` both fetch the current view first and merge requested
  * changes onto it (`buildViewUpdatePayload`) rather than sending a bare
  * partial object — the same fetch-merge-POST pattern as
- * `buildProjectUpdatePayload` in `crud.ts`.
+ * `buildProjectUpdatePayload` in `crud.ts`. That merge is load-bearing for
+ * `position` and `filter` in particular: go-vikunja's `ProjectView.Update`
+ * writes an explicit `Cols("title", "view_kind", "filter", "position",
+ * "bucket_configuration_mode", "bucket_configuration", "default_bucket_id",
+ * "done_bucket_id")` list, and an explicit `Cols` column is persisted even
+ * when its value is the zero value — so a partial body would silently reset
+ * a view's position to 0 and blank its filter.
+ *
+ * Fields the create/update surface forwards, and the two it deliberately
+ * refuses: `position` and `filter` are honored by BOTH endpoints (the create
+ * handler inserts the whole struct before `calculateDefaultPosition` fills
+ * in a zero position), and `bucket_configuration` is what makes
+ * `bucketConfigurationMode: 'filter'` mean anything.
+ * `doneBucketId`/`defaultBucketId` are honored by `update-view` only —
+ * `create-view` REJECTS them with a pointer to `update-view` /
+ * `set-done-bucket` rather than dropping them silently, because a brand-new
+ * view owns no buckets yet (see `createView`).
  */
 
 import type { AuthManager } from '../../auth/AuthManager';
@@ -20,14 +36,96 @@ import { MCPError, ErrorCode } from '../../types';
 import { validateId } from '../../utils/validation';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
 import { vikunjaRestRequest, resolveKanbanViewId } from '../../utils/vikunja-rest';
+import {
+  parseFilterString,
+  validateFilterExpression,
+  expressionToString,
+} from '../../utils/filters';
 import type { components } from '../../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
 // docs/API-SPEC.md. All fields are optional per the spec.
 type VikunjaProjectView = components['schemas']['models.ProjectView'];
+type VikunjaTaskCollection = components['schemas']['models.TaskCollection'];
+type VikunjaBucketConfiguration = components['schemas']['models.ProjectViewBucketConfiguration'];
 
 type ViewKind = 'list' | 'gantt' | 'table' | 'kanban';
 type BucketConfigurationMode = 'none' | 'manual' | 'filter';
+
+/** One `bucket_configuration` entry as the caller supplies it (flat filter string). */
+export interface ViewBucketConfigurationInput {
+  /** Column title for the generated bucket. */
+  title: string;
+  /** Filter query selecting the tasks that land in this bucket. */
+  filter?: string;
+}
+
+/**
+ * Parses, validates, and translates a caller-supplied DSL filter string into
+ * the snake_case form Vikunja's API expects — the SAME pipeline
+ * `vikunja_filters` and `vikunja_tasks list` route through
+ * (`parseFilterString` -> `validateFilterExpression` -> `expressionToString`,
+ * see src/utils/filters.ts). Without the last step a DSL field name
+ * (`dueDate`) is sent verbatim and Vikunja rejects it, since the real field
+ * is `due_date`.
+ *
+ * @throws {MCPError} VALIDATION_ERROR when the filter fails to parse/validate.
+ */
+function translateViewFilter(filterStr: string, label: string): string {
+  const parseResult = parseFilterString(filterStr);
+  if (!parseResult.expression) {
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `Invalid ${label}: ${parseResult.error?.message || 'Invalid filter syntax'}`,
+    );
+  }
+  const validation = validateFilterExpression(parseResult.expression);
+  if (!validation.valid) {
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `Invalid ${label}: ${validation.errors.join('; ')}`,
+    );
+  }
+  return expressionToString(parseResult.expression);
+}
+
+/**
+ * Builds the nested `filter` object Vikunja's ProjectView model expects.
+ *
+ * The wire shape is NOT a bare string: `models.ProjectView.filter` is a
+ * `models.TaskCollection` (`{ filter: "<query>" }`) — verified against the
+ * vendored spec and against `ProjectView.Filter *TaskCollection` in
+ * go-vikunja's `pkg/models/project_view.go`. The existing collection (sort_by,
+ * order_by, s, ...) is preserved when one is already set on the view, so
+ * changing the query on an update doesn't wipe the rest of the collection.
+ */
+function buildViewFilter(
+  filterStr: string,
+  current?: VikunjaTaskCollection,
+): VikunjaTaskCollection {
+  return { ...(current ?? {}), filter: translateViewFilter(filterStr, 'filter') };
+}
+
+/** Maps the caller's flat bucket-configuration entries onto the wire shape. */
+function buildBucketConfiguration(
+  entries: ViewBucketConfigurationInput[],
+): VikunjaBucketConfiguration[] {
+  return entries.map((entry, index) => {
+    if (typeof entry?.title !== 'string' || entry.title.trim() === '') {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `bucketConfiguration[${index}].title is required and must be a non-empty string`,
+      );
+    }
+    const mapped: VikunjaBucketConfiguration = { title: entry.title.trim() };
+    if (entry.filter !== undefined) {
+      mapped.filter = {
+        filter: translateViewFilter(entry.filter, `bucketConfiguration[${index}].filter`),
+      };
+    }
+    return mapped;
+  });
+}
 
 export interface ListViewsArgs {
   /** Project whose views should be listed. */
@@ -54,6 +152,27 @@ export interface CreateViewArgs {
   viewKind?: ViewKind;
   /** Bucket configuration mode. Only meaningful for kanban-style views. */
   bucketConfigurationMode?: BucketConfigurationMode;
+  /**
+   * Ordered `bucket_configuration` entries — required for the board to have
+   * any columns when `bucketConfigurationMode` is `filter`.
+   */
+  bucketConfiguration?: ViewBucketConfigurationInput[];
+  /**
+   * Sort position among the project's views. Views are listed ordered by
+   * this ascending. Omitted (or `0`) means "let Vikunja assign the default"
+   * — `calculateDefaultPosition` turns a zero into `viewId * 2^16`.
+   */
+  position?: number;
+  /** Filter query restricting which tasks this view shows. */
+  filter?: string;
+  /**
+   * NOT settable at create time — accepted only so the call can be REJECTED
+   * with a pointer to `update-view` / `set-done-bucket` instead of silently
+   * dropping it. See `createView`.
+   */
+  doneBucketId?: number;
+  /** NOT settable at create time — see `doneBucketId`. */
+  defaultBucketId?: number;
   /** Session id for response tracking. */
   sessionId?: string;
 }
@@ -69,6 +188,12 @@ export interface UpdateViewArgs {
   viewKind?: ViewKind;
   /** New bucket configuration mode, if changing. */
   bucketConfigurationMode?: BucketConfigurationMode;
+  /** New ordered `bucket_configuration` entries, if changing. */
+  bucketConfiguration?: ViewBucketConfigurationInput[];
+  /** New sort position among the project's views, if changing. */
+  position?: number;
+  /** New filter query for the view, if changing. */
+  filter?: string;
   /** New done-bucket id, if changing. Also settable via `set-done-bucket`. */
   doneBucketId?: number;
   /** New default-bucket id, if changing. */
@@ -97,6 +222,18 @@ export interface SetDoneBucketArgs {
   sessionId?: string;
 }
 
+/** The caller-facing field deltas `buildViewUpdatePayload` can overlay. */
+export interface ViewFieldUpdates {
+  title?: string;
+  viewKind?: ViewKind;
+  bucketConfigurationMode?: BucketConfigurationMode;
+  bucketConfiguration?: ViewBucketConfigurationInput[];
+  position?: number;
+  filter?: string;
+  doneBucketId?: number;
+  defaultBucketId?: number;
+}
+
 /**
  * Builds a project view update payload by merging the current view with
  * requested field changes, so fields the caller didn't mention survive the
@@ -104,13 +241,7 @@ export interface SetDoneBucketArgs {
  */
 export function buildViewUpdatePayload(
   currentView: VikunjaProjectView,
-  updates: {
-    title?: string;
-    viewKind?: ViewKind;
-    bucketConfigurationMode?: BucketConfigurationMode;
-    doneBucketId?: number;
-    defaultBucketId?: number;
-  },
+  updates: ViewFieldUpdates,
 ): VikunjaProjectView {
   return {
     ...currentView,
@@ -118,6 +249,17 @@ export function buildViewUpdatePayload(
     ...(updates.viewKind !== undefined && { view_kind: updates.viewKind }),
     ...(updates.bucketConfigurationMode !== undefined && {
       bucket_configuration_mode: updates.bucketConfigurationMode,
+    }),
+    ...(updates.bucketConfiguration !== undefined && {
+      bucket_configuration: buildBucketConfiguration(updates.bucketConfiguration),
+    }),
+    // `position` and `filter` are in the handler's explicit `Cols(...)` list
+    // (go-vikunja pkg/models/project_view.go `ProjectView.Update`), so they
+    // are written even when zero/empty — merging the fetched view forward is
+    // what keeps an untouched position from being reset to 0.
+    ...(updates.position !== undefined && { position: updates.position }),
+    ...(updates.filter !== undefined && {
+      filter: buildViewFilter(updates.filter, currentView.filter),
     }),
     ...(updates.doneBucketId !== undefined && { done_bucket_id: updates.doneBucketId }),
     ...(updates.defaultBucketId !== undefined && { default_bucket_id: updates.defaultBucketId }),
@@ -131,6 +273,8 @@ function viewSummary(view: VikunjaProjectView): Record<string, unknown> {
     viewKind: view.view_kind,
     position: view.position,
     bucketConfigurationMode: view.bucket_configuration_mode,
+    bucketConfiguration: view.bucket_configuration,
+    filter: view.filter?.filter,
     defaultBucketId: view.default_bucket_id,
     doneBucketId: view.done_bucket_id,
   };
@@ -236,12 +380,53 @@ export async function createView(
   }
   validateId(args.id, 'id');
 
+  // Reject-loudly, never silently drop: a bucket belongs to exactly ONE view
+  // (`models.Bucket.project_view_id`), so at create-view time this view has
+  // no buckets yet and any id the caller could pass necessarily belongs to a
+  // DIFFERENT view. Worse, go-vikunja's `createProjectView`
+  // (pkg/models/project_view.go) overwrites both ids with the auto-created
+  // To-Do/Done buckets for a kanban view in `manual` mode — so the value
+  // would be stored dangling or thrown away. Point at the tools that can
+  // actually do it instead.
+  const createTimeBucketFields: string[] = [];
+  if (args.doneBucketId !== undefined) createTimeBucketFields.push('doneBucketId');
+  if (args.defaultBucketId !== undefined) createTimeBucketFields.push('defaultBucketId');
+  if (createTimeBucketFields.length > 0) {
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `${createTimeBucketFields.join(' and ')} cannot be set by create-view: buckets belong to a ` +
+        'single view and none exist yet for a view that is being created, so any bucket id here ' +
+        'would point at another view (and Vikunja overwrites both ids anyway when it ' +
+        'auto-creates the To-Do/Doing/Done buckets of a manual kanban view). Create the view ' +
+        'first, then set them with vikunja_projects update-view (defaultBucketId/doneBucketId) ' +
+        'or vikunja_projects set-done-bucket — bucket ids come from vikunja_projects ' +
+        'list-buckets for the new view.',
+    );
+  }
+
   const body: VikunjaProjectView = {
     title: args.title.trim(),
     view_kind: args.viewKind,
   };
+  const affectedFields = ['title', 'view_kind'];
   if (args.bucketConfigurationMode !== undefined) {
     body.bucket_configuration_mode = args.bucketConfigurationMode;
+    affectedFields.push('bucket_configuration_mode');
+  }
+  if (args.bucketConfiguration !== undefined) {
+    body.bucket_configuration = buildBucketConfiguration(args.bucketConfiguration);
+    affectedFields.push('bucket_configuration');
+  }
+  // `!== undefined`, not a truthiness check: `position: 0` is a real,
+  // meaningful value (it asks Vikunja for the default position) and must
+  // reach the wire rather than being dropped by a falsy guard.
+  if (args.position !== undefined) {
+    body.position = args.position;
+    affectedFields.push('position');
+  }
+  if (args.filter !== undefined) {
+    body.filter = buildViewFilter(args.filter);
+    affectedFields.push('filter');
   }
 
   const view = await vikunjaRestRequest<VikunjaProjectView>(
@@ -257,7 +442,7 @@ export async function createView(
     { projectId: args.id, view: viewSummary(view) },
     {
       timestamp: new Date().toISOString(),
-      affectedFields: ['title', 'view_kind'],
+      affectedFields,
     },
     args.sessionId,
   );
@@ -292,6 +477,9 @@ export async function updateView(
     args.title !== undefined ||
     args.viewKind !== undefined ||
     args.bucketConfigurationMode !== undefined ||
+    args.bucketConfiguration !== undefined ||
+    args.position !== undefined ||
+    args.filter !== undefined ||
     args.doneBucketId !== undefined ||
     args.defaultBucketId !== undefined;
   if (!hasUpdateFields) {
@@ -309,18 +497,18 @@ export async function updateView(
     `/projects/${args.id}/views/${args.viewId}`,
   );
 
-  const fieldUpdates: {
-    title?: string;
-    viewKind?: ViewKind;
-    bucketConfigurationMode?: BucketConfigurationMode;
-    doneBucketId?: number;
-    defaultBucketId?: number;
-  } = {};
+  const fieldUpdates: ViewFieldUpdates = {};
   if (args.title !== undefined) fieldUpdates.title = args.title;
   if (args.viewKind !== undefined) fieldUpdates.viewKind = args.viewKind;
   if (args.bucketConfigurationMode !== undefined) {
     fieldUpdates.bucketConfigurationMode = args.bucketConfigurationMode;
   }
+  if (args.bucketConfiguration !== undefined) {
+    fieldUpdates.bucketConfiguration = args.bucketConfiguration;
+  }
+  // `!== undefined` on purpose — `position: 0` must reach the wire.
+  if (args.position !== undefined) fieldUpdates.position = args.position;
+  if (args.filter !== undefined) fieldUpdates.filter = args.filter;
   if (args.doneBucketId !== undefined) fieldUpdates.doneBucketId = args.doneBucketId;
   if (args.defaultBucketId !== undefined) fieldUpdates.defaultBucketId = args.defaultBucketId;
 
