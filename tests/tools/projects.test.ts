@@ -384,6 +384,38 @@ describe('Projects Tool', () => {
       await expect(callTool('create', { title: 'New Project' })).rejects.toThrow('HTTP 500');
     });
 
+    // LOW-1 (issue #291): an empty `allProjects` from a FAILED fetch used to
+    // be treated the same as "fetch succeeded, parent genuinely not in the
+    // list" — misreporting "Parent project with ID 1 not found" when the
+    // real problem was the GET /projects call itself failing. It must not
+    // block the create with that misleading message; the existence check is
+    // skipped and Vikunja's own PUT /projects call proceeds.
+    it('does not misreport "Parent project not found" when the underlying project-list fetch fails (LOW-1, #291)', async () => {
+      routeFetch({
+        'GET /projects': mockResponse({
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          text: 'upstream unavailable',
+        }),
+        'PUT /projects': mockResponse({ body: { ...mockProject, parent_project_id: 1 } }),
+      });
+
+      const result = await callTool('create', {
+        title: 'Child Project',
+        parentProjectId: 1,
+      });
+
+      // Must succeed (existence check skipped, not falsely rejected) and the
+      // request must still carry the requested parent.
+      expect(bodyOf('PUT', '/projects')).toEqual({
+        title: 'Child Project',
+        parent_project_id: 1,
+      });
+      const markdown = result.content[0].text;
+      expect(markdown).not.toContain('not found');
+    });
+
     it('should support all optional fields', async () => {
       routeFetch({
         'GET /projects': mockResponse({ body: [mockProject] }),
@@ -645,6 +677,36 @@ describe('Projects Tool', () => {
       await expect(callTool('update', { id: 999, title: 'New Title' })).rejects.toThrow(
         'Project with ID 999 not found',
       );
+    });
+
+    // LOW-1 (issue #291): updateProject re-resolves the CURRENT parent
+    // (resolvedParentProjectId) even when the caller isn't touching
+    // parentProjectId, so a failed GET /projects used to misreport "Parent
+    // project not found" on ANY update to a child project whenever the
+    // hierarchy fetch failed — even a plain title rename.
+    it('does not misreport "Parent project not found" on a plain update when the project-list fetch fails (LOW-1, #291)', async () => {
+      const childProject = { ...mockProject, id: 2, title: 'Child Project', parent_project_id: 1 };
+      routeFetch({
+        'GET /projects/2': mockResponse({ body: childProject }),
+        'GET /projects': mockResponse({
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          text: 'upstream unavailable',
+        }),
+        'POST /projects/2': mockResponse({ body: { ...childProject, title: 'Renamed' } }),
+      });
+
+      const result = await callTool('update', {
+        id: 2,
+        title: 'Renamed',
+      });
+
+      expect(bodyOf('POST', '/projects/2')).toEqual(
+        expect.objectContaining({ title: 'Renamed' }),
+      );
+      const markdown = result.content[0].text;
+      expect(markdown).not.toContain('not found');
     });
 
     it('should handle API errors', async () => {

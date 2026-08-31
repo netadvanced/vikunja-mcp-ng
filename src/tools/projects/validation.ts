@@ -175,6 +175,15 @@ export function validateProjectData(
     hexColor?: string;
     parentProjectId?: number;
   },
+  // `undefined` means "no reliable project list available" (either the
+  // caller never needed one, or the underlying fetch FAILED) and skips the
+  // existence check below entirely. An empty array (`[]`) is a claim that
+  // the list was fetched successfully and is genuinely empty — callers must
+  // never pass `[]` merely because a fetch failed (LOW-1, issue #291): that
+  // would make this report "Parent project not found" for a parent that may
+  // well exist, just because its existence couldn't be confirmed. See the
+  // call sites in crud.ts (createProject/updateProject) for how they
+  // distinguish the two.
   allProjects?: Project[],
 ): void {
   if (data.title !== undefined) {
