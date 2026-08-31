@@ -595,6 +595,157 @@ describe('VaultFileStore', () => {
     });
   });
 
+  describe('getStatus honesty about decrypt health (issue #278)', () => {
+    it('does not claim provisioned for a record it cannot decrypt', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real-token');
+
+      // Same vault file, different master key — the post-rotation situation.
+      const wrongKeyStore = new VaultFileStore(filePath, OTHER_KEY);
+      const status = wrongKeyStore.getStatus(IDENTITY_A);
+
+      // getCredential returns null, so status must not say "linked".
+      expect(wrongKeyStore.getCredential(IDENTITY_A)).toBeNull();
+      expect(status.provisioned).toBe(false);
+      // ...but it must still explain that a record exists and why it is unusable.
+      expect(status.recordPresent).toBe(true);
+      expect(status.issue).toMatch(/cannot be decrypted/);
+      expect(status.maskedToken).toBeUndefined();
+    });
+
+    it('does not claim "not provisioned" when the vault file could not be read', () => {
+      const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation(() => {
+        const error = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      });
+      try {
+        const store = new VaultFileStore(filePath, KEY);
+        const status = store.getStatus(IDENTITY_A);
+        expect(status.provisioned).toBe(false);
+        expect(status.issue).toMatch(/could not be fully read/);
+      } finally {
+        readSpy.mockRestore();
+      }
+    });
+
+    it('still reports a healthy record as provisioned with a masked token', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real-token-1234567890');
+
+      const status = store.getStatus(IDENTITY_A);
+      expect(status.provisioned).toBe(true);
+      expect(status.recordPresent).toBe(true);
+      expect(status.issue).toBeUndefined();
+      expect(status.maskedToken).toBe('tk_r...');
+    });
+  });
+
+  describe('lastUsedAt is actually written on use (issue #278)', () => {
+    it('stamps lastUsedAt the first time the credential is resolved', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      expect(store.getStatus(IDENTITY_A).lastUsedAt).toBeNull();
+
+      const before = Date.now();
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_real');
+
+      const stamped = store.getStatus(IDENTITY_A).lastUsedAt;
+      expect(stamped).not.toBeNull();
+      expect(Date.parse(stamped!)).toBeGreaterThanOrEqual(before - 1000);
+    });
+
+    it('persists lastUsedAt to disk, not just to the in-memory cache', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      store.getCredential(IDENTITY_A);
+
+      const freshStore = new VaultFileStore(filePath, KEY);
+      expect(freshStore.getStatus(IDENTITY_A).lastUsedAt).not.toBeNull();
+    });
+
+    it('throttles the write: repeated resolves inside the interval rewrite nothing', async () => {
+      const store = new VaultFileStore(filePath, KEY, { lastUsedFlushIntervalMs: 60_000 });
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      store.getCredential(IDENTITY_A);
+      const firstStamp = store.getStatus(IDENTITY_A).lastUsedAt;
+
+      const writeSpy = jest.spyOn(fs, 'writeFileSync');
+      try {
+        for (let i = 0; i < 25; i += 1) {
+          expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_real');
+        }
+        expect(writeSpy).not.toHaveBeenCalled();
+      } finally {
+        writeSpy.mockRestore();
+      }
+      expect(store.getStatus(IDENTITY_A).lastUsedAt).toBe(firstStamp);
+    });
+
+    it('refreshes the stamp again once the interval has elapsed', async () => {
+      const store = new VaultFileStore(filePath, KEY, { lastUsedFlushIntervalMs: 0 });
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      store.getCredential(IDENTITY_A);
+      const firstStamp = store.getStatus(IDENTITY_A).lastUsedAt;
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      store.getCredential(IDENTITY_A);
+
+      expect(store.getStatus(IDENTITY_A).lastUsedAt).not.toBe(firstStamp);
+    });
+
+    it('rewrites a corrupt (unparseable) lastUsedAt rather than trusting it', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, VaultRecord>;
+      const key = 'https://idp.example/realm|user-a';
+      onDisk[key] = { ...onDisk[key]!, lastUsedAt: 'not-a-timestamp' };
+      fs.writeFileSync(filePath, JSON.stringify(onDisk), 'utf-8');
+
+      const freshStore = new VaultFileStore(filePath, KEY, { lastUsedFlushIntervalMs: 60_000 });
+      freshStore.getCredential(IDENTITY_A);
+      expect(freshStore.getStatus(IDENTITY_A).lastUsedAt).not.toBe('not-a-timestamp');
+    });
+
+    it('never fails a credential lookup because the timestamp write failed', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+
+      const writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+        throw new Error('simulated disk full');
+      });
+      try {
+        expect(() => store.getCredential(IDENTITY_A)).not.toThrow();
+        expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_real');
+      } finally {
+        writeSpy.mockRestore();
+      }
+    });
+
+    it('does not write the timestamp back when the load was incomplete', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      // Append a malformed sibling entry so the next load is partial.
+      const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+      onDisk['https://idp.example/realm|user-broken'] = { vikunjaUrl: 'incomplete' };
+      fs.writeFileSync(filePath, JSON.stringify(onDisk), 'utf-8');
+
+      const degraded = new VaultFileStore(filePath, KEY);
+      const writeSpy = jest.spyOn(fs, 'writeFileSync');
+      try {
+        // The credential still resolves — a partial load must not lock out
+        // the identities that DID load.
+        expect(degraded.getCredential(IDENTITY_A)?.apiToken).toBe('tk_real');
+        expect(writeSpy).not.toHaveBeenCalled();
+      } finally {
+        writeSpy.mockRestore();
+      }
+      // The malformed sibling is still on disk, untouched.
+      const after = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+      expect(after['https://idp.example/realm|user-broken']).toEqual({ vikunjaUrl: 'incomplete' });
+    });
+  });
+
   describe('provision', () => {
     it('preserves createdAt but bumps updatedAt on a re-provision (token swap)', async () => {
       const store = new VaultFileStore(filePath, KEY);

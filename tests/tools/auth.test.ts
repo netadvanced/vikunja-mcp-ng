@@ -1448,6 +1448,23 @@ describe('Auth Tool', () => {
         const markdown = result.content[0].text;
         expect(markdown).toContain('No Vikunja API token linked yet');
       });
+
+      it('surfaces the vault\'s own reason when a stored record is unusable (#278)', async () => {
+        // A record exists but cannot be decrypted (e.g. master key rotated):
+        // "run provision" is not the honest explanation on its own.
+        mockVault.getStatus.mockReturnValue({
+          provisioned: false,
+          recordPresent: true,
+          issue: 'A credential is stored for you but cannot be decrypted.',
+          vikunjaUrl: 'https://vikunja.example.com',
+        });
+
+        const result = await callTool('status');
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('cannot be decrypted');
+        expect(markdown).not.toContain('No Vikunja API token linked yet');
+      });
     });
 
     describe('deprovision', () => {

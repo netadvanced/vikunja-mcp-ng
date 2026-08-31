@@ -291,11 +291,19 @@ export function registerAuthTool(
               const identity = requireCurrentIdentity();
               const vault = getActiveVaultStore();
               const vaultStatus = vault?.getStatus(identity) ?? { provisioned: false };
+              // `provisioned` reflects whether the stored credential can
+              // actually be decrypted and used, not merely whether a record
+              // exists (issue #278) — so when the vault reports a specific
+              // `issue`, say that instead of the generic "not linked yet".
+              const statusMessage =
+                vaultStatus.provisioned === true
+                  ? 'Vikunja API token linked'
+                  : typeof vaultStatus.issue === 'string'
+                    ? vaultStatus.issue
+                    : 'No Vikunja API token linked yet — run vikunja_auth provision';
               const response = createStandardResponse(
                 'auth-status',
-                vaultStatus.provisioned
-                  ? 'Vikunja API token linked'
-                  : 'No Vikunja API token linked yet — run vikunja_auth provision',
+                statusMessage,
                 vaultStatus,
                 vaultStatus.provisioned ? { apiUrl: vaultStatus.vikunjaUrl } : undefined,
               );

@@ -68,6 +68,13 @@ const KEY_VERSION_NO_AAD = 1;
  */
 const CURRENT_KEY_VERSION = 2;
 
+/**
+ * How often a record's `lastUsedAt` is actually flushed to disk (issue
+ * #278). `getCredential` runs per request, so the timestamp is throttled to
+ * at most one vault write per identity per interval.
+ */
+const DEFAULT_LAST_USED_FLUSH_INTERVAL_MS = 60_000;
+
 /** One vault record's on-disk shape (docs/OIDC-RESOURCE-SERVER.md §3c file-shape table). */
 export interface VaultRecord {
   readonly vikunjaUrl: string;
@@ -82,7 +89,18 @@ export interface VaultRecord {
 
 /** Status shape returned by `vikunja_auth status` in oidc-http mode. */
 export interface VaultStatus {
+  /**
+   * Whether this identity has a credential that actually WORKS — a stored
+   * record whose decrypt succeeds. A record that is present but
+   * undecryptable (master key rotated/mismatched, tampered binding) reports
+   * `false` here, because every request using it fails exactly as if nothing
+   * were linked; `recordPresent` + `issue` explain the difference (#278).
+   */
   readonly provisioned: boolean;
+  /** True when a record exists for this identity, decryptable or not. */
+  readonly recordPresent?: boolean;
+  /** Human-readable reason a present record is nevertheless unusable. */
+  readonly issue?: string;
   readonly vikunjaUrl?: string;
   /** Masked (`maskCredential`) token prefix — never the full token. */
   readonly maskedToken?: string;
@@ -416,11 +434,17 @@ export class VaultFileStore {
   private incompleteLoadReason: string | undefined;
   /** Identity keys already warned about being on the legacy no-AAD format. */
   private readonly legacyFormatWarned = new Set<string>();
+  /** How rarely `lastUsedAt` is flushed to disk — see {@link touchLastUsed}. */
+  private readonly lastUsedFlushIntervalMs: number;
 
   constructor(
     private readonly filePath: string,
     private readonly masterKey: Buffer,
-  ) {}
+    options: { lastUsedFlushIntervalMs?: number } = {},
+  ) {
+    this.lastUsedFlushIntervalMs =
+      options.lastUsedFlushIntervalMs ?? DEFAULT_LAST_USED_FLUSH_INTERVAL_MS;
+  }
 
   private load(): Map<string, VaultRecord> {
     if (!this.cache) {
@@ -508,6 +532,51 @@ export class VaultFileStore {
   }
 
   /**
+   * Records that `identity`'s credential was just used (issue #278 —
+   * `lastUsedAt` previously had no writer anywhere in `src/` and was
+   * therefore always reported as `null`).
+   *
+   * Throttled: `getCredential` runs on every authenticated request, and a
+   * full atomic rewrite of the vault per request would be both wasteful and
+   * a write-amplification DoS lever for a busy tenant. One write per
+   * identity per {@link lastUsedFlushIntervalMs} keeps the timestamp useful
+   * ("was this credential used in the last hour/day?") at negligible cost.
+   *
+   * Never throws and never propagates a write failure: this is bookkeeping,
+   * and `getCredential`'s contract is that it always resolves.
+   *
+   * Synchronous on purpose. `provision`/`deprovision` do all of their own
+   * load-mutate-write work in one uninterrupted synchronous block after
+   * acquiring the mutex, so a synchronous write here can never interleave
+   * with one on Node's single thread — it does not need (and must not
+   * block on) the mutex.
+   */
+  private touchLastUsed(key: string, record: VaultRecord): void {
+    if (this.incompleteLoadReason !== undefined) {
+      // Never write a partial view back over the file (issue #266).
+      return;
+    }
+    const now = Date.now();
+    const previous = record.lastUsedAt === null ? Number.NaN : Date.parse(record.lastUsedAt);
+    if (Number.isFinite(previous) && now - previous < this.lastUsedFlushIntervalMs) {
+      return;
+    }
+    const updated: VaultRecord = { ...record, lastUsedAt: new Date(now).toISOString() };
+    const next = new Map(this.load());
+    next.set(key, updated);
+    try {
+      writeVaultFileAtomic(this.filePath, next);
+      this.cache = next;
+    } catch (error) {
+      // The credential itself is fine; only the usage timestamp is stale.
+      logger.warn('Failed to persist the vault lastUsedAt timestamp', {
+        identity: maskCredential(key),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * Resolves the calling identity's Vikunja credential. Never throws — a
    * missing record and an undecryptable one (wrong master key / tampered
    * data) both resolve to `null`, matching `VikunjaCredentialSource`'s
@@ -521,6 +590,7 @@ export class VaultFileStore {
     }
     try {
       const apiToken = this.decryptRecord(record, key);
+      this.touchLastUsed(key, record);
       return { apiUrl: record.vikunjaUrl, apiToken, authType: 'api-token' };
     } catch (error) {
       logger.error(
@@ -535,21 +605,47 @@ export class VaultFileStore {
     }
   }
 
-  /** `vikunja_auth status` in oidc-http mode — never reveals the raw token. */
+  /**
+   * `vikunja_auth status` in oidc-http mode — never reveals the raw token.
+   *
+   * Reports decrypt HEALTH, not mere presence in the map (issue #278):
+   * status used to answer "linked" for a record `getCredential` could not
+   * decrypt, so a user whose vault survived a master-key rotation was told
+   * everything was fine while every request failed with "no credential".
+   */
   getStatus(identity: Identity): VaultStatus {
     const key = identityKey(identity);
-    const record = this.load().get(key);
+    const map = this.load();
+    if (this.incompleteLoadReason !== undefined && !map.has(key)) {
+      // Don't claim "not provisioned" when we simply could not read the file
+      // this record may well live in (issue #266).
+      return {
+        provisioned: false,
+        issue: `The credential vault could not be fully read: ${this.incompleteLoadReason}.`,
+      };
+    }
+    const record = map.get(key);
     if (!record) {
       return { provisioned: false };
     }
     let maskedToken: string | undefined;
+    let issue: string | undefined;
     try {
       maskedToken = maskCredential(this.decryptRecord(record, key));
-    } catch {
-      maskedToken = undefined;
+    } catch (error) {
+      issue =
+        'A credential is stored for you but cannot be decrypted (wrong vault master key, ' +
+        'or a tampered/corrupted record), so it cannot be used. Run vikunja_auth ' +
+        'deprovision, then provision again.';
+      logger.warn('Vault status reports a stored-but-unusable record', {
+        identity: maskCredential(key),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     return {
-      provisioned: true,
+      provisioned: maskedToken !== undefined,
+      recordPresent: true,
+      ...(issue !== undefined ? { issue } : {}),
       vikunjaUrl: record.vikunjaUrl,
       ...(maskedToken !== undefined ? { maskedToken } : {}),
       createdAt: record.createdAt,
