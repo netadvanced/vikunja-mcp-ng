@@ -27,6 +27,8 @@ export interface VikunjaTask {
   priority?: number;
   done?: boolean;
   percent_done?: number;
+  /** Per-VIEW ordering value, only populated by a view's own task collection (`listListViewTasks`). */
+  position?: number;
   due_date?: string | null;
   related_tasks?: Record<string, VikunjaTask[]>;
 }
@@ -55,6 +57,31 @@ export interface VikunjaShare {
 }
 
 /**
+ * A team member as embedded in a team's `members[]` array (server-side
+ * `models.TeamUser`). Keyed by `username`: Vikunja's team-membership API
+ * takes a username string, never a numeric user id.
+ */
+export interface VikunjaTeamMember {
+  id: number;
+  username: string;
+  admin?: boolean;
+}
+
+/**
+ * `models.Team`. Named by `name`, not `title` -- unlike every other resource
+ * this harness verifies. `GET /teams` embeds each team's `members[]` inline
+ * (confirmed against Vikunja 2.4.0), so one list call is enough to verify
+ * existence, visibility AND membership without a per-team fetch.
+ */
+export interface VikunjaTeam {
+  id: number;
+  name: string;
+  description?: string;
+  is_public?: boolean;
+  members?: VikunjaTeamMember[];
+}
+
+/**
  * Public contract used by the verification engine and cleanup sweep. A
  * plain interface (rather than requiring the concrete `RestClient` class)
  * so unit tests can supply a lightweight fake instead of a real class
@@ -71,9 +98,19 @@ export interface VikunjaRestClient {
   listViews(projectId: number): Promise<VikunjaProjectView[]>;
   listBuckets(projectId: number): Promise<VikunjaBucket[]>;
   listShares(projectId: number): Promise<VikunjaShare[]>;
+  /**
+   * Tasks of the project's LIST view, in view order. Distinct from
+   * `listTasksInProject` (cross-project `GET /tasks` with a `project_id`
+   * filter), which returns tasks in no particular per-view order: task
+   * position is per-view state, and only the view's own task collection
+   * exposes it.
+   */
+  listListViewTasks(projectId: number): Promise<VikunjaTask[]>;
+  listTeams(): Promise<VikunjaTeam[]>;
   deleteTask(taskId: number): Promise<void>;
   deleteProject(projectId: number): Promise<void>;
   deleteLabel(labelId: number): Promise<void>;
+  deleteTeam(teamId: number): Promise<void>;
   /**
    * Seeds a label ahead of a scenario run (see scripts/battle/lib/setup.ts).
    * `PUT /labels` is the documented create endpoint (see docs/API_NOTES.md
@@ -81,6 +118,12 @@ export interface VikunjaRestClient {
    * this resource.
    */
   createLabel(title: string): Promise<VikunjaLabel>;
+  /**
+   * Seeds a team ahead of a scenario run (see scripts/battle/lib/setup.ts).
+   * `PUT /teams` is the create endpoint (`POST /teams/{id}` is the update);
+   * mirrors `createLabel`'s PUT-to-create shape.
+   */
+  createTeam(name: string, isPublic?: boolean): Promise<VikunjaTeam>;
 }
 
 export class RestClient implements VikunjaRestClient {
@@ -179,6 +222,22 @@ export class RestClient implements VikunjaRestClient {
     return this.requestOrEmpty<VikunjaShare>(`/projects/${projectId}/shares`);
   }
 
+  async listListViewTasks(projectId: number): Promise<VikunjaTask[]> {
+    const views = await this.listViews(projectId);
+    const list = views.find((v) => v.view_kind === 'list') ?? views[0];
+    if (!list) return [];
+    // Verified against Vikunja 2.4.0: a LIST view's task collection comes back
+    // already sorted by each task's `position` in that view (a brand-new task
+    // gets a server-assigned position, so the ordering is meaningful even
+    // before anything is repositioned). The kanban view's same endpoint
+    // returns buckets instead -- see `listBuckets`.
+    return this.requestOrEmpty<VikunjaTask>(`/projects/${projectId}/views/${list.id}/tasks`);
+  }
+
+  listTeams(): Promise<VikunjaTeam[]> {
+    return this.requestOrEmpty<VikunjaTeam>('/teams');
+  }
+
   deleteTask(taskId: number): Promise<void> {
     return this.request<void>('DELETE', `/tasks/${taskId}`);
   }
@@ -193,6 +252,17 @@ export class RestClient implements VikunjaRestClient {
 
   createLabel(title: string): Promise<VikunjaLabel> {
     return this.request<VikunjaLabel>('PUT', '/labels', { title });
+  }
+
+  deleteTeam(teamId: number): Promise<void> {
+    return this.request<void>('DELETE', `/teams/${teamId}`);
+  }
+
+  createTeam(name: string, isPublic?: boolean): Promise<VikunjaTeam> {
+    return this.request<VikunjaTeam>('PUT', '/teams', {
+      name,
+      ...(isPublic !== undefined && { is_public: isPublic }),
+    });
   }
 }
 

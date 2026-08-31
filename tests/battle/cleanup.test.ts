@@ -46,7 +46,13 @@ describe('cleanupByPrefix', () => {
 
     const result = await cleanupByPrefix(client, 'battle-run1-');
 
-    expect(result).toEqual({ deletedProjects: 0, deletedTasks: 0, deletedLabels: 0, errors: [] });
+    expect(result).toEqual({
+      deletedProjects: 0,
+      deletedTasks: 0,
+      deletedLabels: 0,
+      deletedTeams: 0,
+      errors: [],
+    });
   });
 
   it('deletes a prefixed task that was created into a pre-existing (non-prefixed) project', async () => {
@@ -123,7 +129,13 @@ describe('cleanupByPrefix', () => {
     client.tasksByProject[2] = [];
 
     const second = await cleanupByPrefix(client, 'battle-run1-');
-    expect(second).toEqual({ deletedProjects: 0, deletedTasks: 0, deletedLabels: 0, errors: [] });
+    expect(second).toEqual({
+      deletedProjects: 0,
+      deletedTasks: 0,
+      deletedLabels: 0,
+      deletedTeams: 0,
+      errors: [],
+    });
   });
 
   it('records a project-deletion failure as an error and continues the sweep rather than throwing', async () => {
@@ -142,6 +154,36 @@ describe('cleanupByPrefix', () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain('battle-run1-Bad');
     expect(client.deletedProjectIds).toEqual([2]);
+  });
+
+  it("deletes only prefixed teams and leaves the instance's own teams alone", async () => {
+    const client = new FakeRestClient();
+    client.teams = [
+      { id: 7, name: 'battle-run1-Design Guild' },
+      { id: 8, name: 'battle-run2-Other Guild' },
+      { id: 9, name: 'Engineering' },
+    ];
+
+    const result = await cleanupByPrefix(client, 'battle-run1-');
+
+    expect(result.deletedTeams).toBe(1);
+    expect(client.deletedTeamIds).toEqual([7]);
+  });
+
+  it('records a failed team delete as an error rather than throwing', async () => {
+    const client = new FakeRestClient();
+    client.teams = [
+      { id: 7, name: 'battle-run1-Bad Team' },
+      { id: 8, name: 'battle-run1-Good Team' },
+    ];
+    client.failDeleteTeamIds.add(7);
+
+    const result = await cleanupByPrefix(client, 'battle-run1-');
+
+    expect(result.deletedTeams).toBe(1);
+    expect(client.deletedTeamIds).toEqual([8]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain('battle-run1-Bad Team');
   });
 
   it('sweeps by the bare "battle-" root prefix across multiple distinct run ids', async () => {

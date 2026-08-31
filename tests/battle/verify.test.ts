@@ -437,6 +437,298 @@ describe('runVerification / buckets-in-order', () => {
   });
 });
 
+describe('runVerification / tasks-with-label-count max bound', () => {
+  function clientWithLabelledTasks(labelledCount: number): FakeRestClient {
+    const client = new FakeRestClient();
+    client.projects = [{ id: 1, title: 'battle-x-Q4 Rollout' }];
+    client.tasksByProject[1] = [1, 2, 3, 4, 5].map((id) => ({
+      id,
+      title: `battle-x-task-${id}`,
+      project_id: 1,
+    }));
+    for (let id = 1; id <= labelledCount; id += 1) {
+      client.labelsByTask[id] = [{ id: 90, title: 'battle-x-nearly-there' }];
+    }
+    return client;
+  }
+
+  const exactlyTwo: VerifyCheck[] = [
+    {
+      type: 'tasks-with-label-count',
+      projectTitleContains: 'Q4 Rollout',
+      labelTitleContains: 'nearly-there',
+      min: 2,
+      max: 2,
+    },
+  ];
+
+  it('passes when the labelled count is exactly on the bound', async () => {
+    const verdict = await runVerification(scenario(), exactlyTwo, clientWithLabelledTasks(2));
+    expect(verdict.passed).toBe(true);
+    expect(verdict.checks[0]?.detail).toContain('<= 2');
+  });
+
+  it('fails when too FEW tasks carry the label (an unconverted threshold matches nothing)', async () => {
+    const verdict = await runVerification(scenario(), exactlyTwo, clientWithLabelledTasks(0));
+    expect(verdict.passed).toBe(false);
+  });
+
+  it('fails when too MANY tasks carry the label (the agent gave up and labelled everything)', async () => {
+    const verdict = await runVerification(scenario(), exactlyTwo, clientWithLabelledTasks(5));
+    expect(verdict.passed).toBe(false);
+  });
+
+  it('ignores an upper bound that was not specified', async () => {
+    const checks: VerifyCheck[] = [
+      {
+        type: 'tasks-with-label-count',
+        projectTitleContains: 'Q4 Rollout',
+        labelTitleContains: 'nearly-there',
+        min: 2,
+      },
+    ];
+    const verdict = await runVerification(scenario(), checks, clientWithLabelledTasks(5));
+    expect(verdict.passed).toBe(true);
+    expect(verdict.checks[0]?.detail).not.toContain('<=');
+  });
+});
+
+describe('runVerification / task-absent-from-project', () => {
+  function client(): FakeRestClient {
+    const c = new FakeRestClient();
+    c.projects = [{ id: 1, title: 'battle-x-Sprint Triage' }];
+    return c;
+  }
+
+  it('passes when no task in the project matches the title substring', async () => {
+    const c = client();
+    c.tasksByProject[1] = [
+      { id: 1, title: 'battle-x-item-1', project_id: 1 },
+      { id: 2, title: 'battle-x-item-2', project_id: 1 },
+    ];
+    const checks: VerifyCheck[] = [
+      {
+        type: 'task-absent-from-project',
+        projectTitleContains: 'Sprint Triage',
+        titleContains: 'item-3',
+      },
+    ];
+    const verdict = await runVerification(scenario(), checks, c);
+    expect(verdict.passed).toBe(true);
+  });
+
+  it('fails when the task was re-created to paper over a partial bulk failure', async () => {
+    const c = client();
+    c.tasksByProject[1] = [
+      { id: 1, title: 'battle-x-item-1', project_id: 1 },
+      { id: 9, title: 'battle-x-item-3', project_id: 1 },
+    ];
+    const checks: VerifyCheck[] = [
+      {
+        type: 'task-absent-from-project',
+        projectTitleContains: 'Sprint Triage',
+        titleContains: 'item-3',
+      },
+    ];
+    const verdict = await runVerification(scenario(), checks, c);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('battle-x-item-3');
+  });
+
+  it('holds vacuously when the project does not exist (project-exists is the real diagnostic)', async () => {
+    const checks: VerifyCheck[] = [
+      { type: 'task-absent-from-project', projectTitleContains: 'nope', titleContains: 'item-3' },
+    ];
+    const verdict = await runVerification(scenario(), checks, new FakeRestClient());
+    expect(verdict.passed).toBe(true);
+    expect(verdict.checks[0]?.detail).toContain('vacuously');
+  });
+});
+
+describe('runVerification / task-first-in-list-view', () => {
+  function client(order: string[]): FakeRestClient {
+    const c = new FakeRestClient();
+    c.projects = [{ id: 1, title: 'battle-x-Reading List' }];
+    c.listViewTasksByProject[1] = order.map((title, i) => ({
+      id: i + 1,
+      title,
+      project_id: 1,
+      position: (i + 1) * 16384,
+    }));
+    return c;
+  }
+  const checks: VerifyCheck[] = [
+    {
+      type: 'task-first-in-list-view',
+      projectTitleContains: 'Reading List',
+      titleContains: 'chapter-1',
+    },
+  ];
+
+  it('passes when the named task heads the list view', async () => {
+    const verdict = await runVerification(
+      scenario(),
+      checks,
+      client(['battle-x-chapter-1', 'battle-x-chapter-2', 'battle-x-chapter-3']),
+    );
+    expect(verdict.passed).toBe(true);
+  });
+
+  it('fails when it sits anywhere else, and reports the observed order with positions', async () => {
+    const verdict = await runVerification(
+      scenario(),
+      checks,
+      client(['battle-x-chapter-3', 'battle-x-chapter-1']),
+    );
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('battle-x-chapter-3@16384');
+  });
+
+  it('fails when the list view is empty', async () => {
+    const verdict = await runVerification(scenario(), checks, client([]));
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('none');
+  });
+
+  it('fails cleanly when the project does not exist', async () => {
+    const other: VerifyCheck[] = [
+      { type: 'task-first-in-list-view', projectTitleContains: 'nope', titleContains: 'x' },
+    ];
+    const verdict = await runVerification(scenario(), other, new FakeRestClient());
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('no project with title containing');
+  });
+});
+
+describe('runVerification / team-exists', () => {
+  function client(): FakeRestClient {
+    const c = new FakeRestClient();
+    c.teams = [
+      {
+        id: 7,
+        name: 'battle-x-Design Chapter',
+        is_public: true,
+        members: [
+          { id: 1, username: 'e2e-test', admin: true },
+          { id: 2, username: 'e2e-mutable', admin: false },
+        ],
+      },
+    ];
+    return c;
+  }
+
+  it('passes on a bare name match', async () => {
+    const checks: VerifyCheck[] = [{ type: 'team-exists', nameContains: 'Design Chapter' }];
+    const verdict = await runVerification(scenario(), checks, client());
+    expect(verdict.passed).toBe(true);
+  });
+
+  it('fails when no team matches the name substring', async () => {
+    const checks: VerifyCheck[] = [{ type: 'team-exists', nameContains: 'Nope' }];
+    const verdict = await runVerification(scenario(), checks, client());
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('no team with name containing');
+  });
+
+  it('passes when the raw is_public matches the expected visibility', async () => {
+    const checks: VerifyCheck[] = [
+      { type: 'team-exists', nameContains: 'Design Chapter', isPublic: true },
+    ];
+    const verdict = await runVerification(scenario(), checks, client());
+    expect(verdict.passed).toBe(true);
+  });
+
+  it('fails when a partial update silently un-published the team', async () => {
+    const c = client();
+    (c.teams[0] as { is_public?: boolean }).is_public = false;
+    const checks: VerifyCheck[] = [
+      { type: 'team-exists', nameContains: 'Design Chapter', isPublic: true },
+    ];
+    const verdict = await runVerification(scenario(), checks, c);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('is_public is false, expected true');
+  });
+
+  it('treats a missing is_public as false rather than as "unasserted"', async () => {
+    const c = client();
+    delete (c.teams[0] as { is_public?: boolean }).is_public;
+    const checks: VerifyCheck[] = [
+      { type: 'team-exists', nameContains: 'Design Chapter', isPublic: true },
+    ];
+    const verdict = await runVerification(scenario(), checks, c);
+    expect(verdict.passed).toBe(false);
+  });
+
+  it('matches a member by username and asserts the admin flag', async () => {
+    const checks: VerifyCheck[] = [
+      {
+        type: 'team-exists',
+        nameContains: 'Design Chapter',
+        hasMemberUsername: 'e2e-mutable',
+        memberIsAdmin: false,
+      },
+    ];
+    const verdict = await runVerification(scenario(), checks, client());
+    expect(verdict.passed).toBe(true);
+  });
+
+  it('fails when the expected member is absent', async () => {
+    const checks: VerifyCheck[] = [
+      { type: 'team-exists', nameContains: 'Design Chapter', hasMemberUsername: 'someone-else' },
+    ];
+    const verdict = await runVerification(scenario(), checks, client());
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('expected "someone-else"');
+  });
+
+  it('fails when the member exists but is not an admin as required', async () => {
+    const checks: VerifyCheck[] = [
+      {
+        type: 'team-exists',
+        nameContains: 'Design Chapter',
+        hasMemberUsername: 'e2e-mutable',
+        memberIsAdmin: true,
+      },
+    ];
+    const verdict = await runVerification(scenario(), checks, client());
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('admin flag is false, expected true');
+  });
+
+  it('reports "none" for a team with no members array at all', async () => {
+    const c = client();
+    delete (c.teams[0] as { members?: unknown }).members;
+    const checks: VerifyCheck[] = [
+      { type: 'team-exists', nameContains: 'Design Chapter', hasMemberUsername: 'e2e-mutable' },
+    ];
+    const verdict = await runVerification(scenario(), checks, c);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('members [none]');
+  });
+});
+
+describe('runVerification / team-absent', () => {
+  it('passes when no team carries the old name (i.e. it really was a rename)', async () => {
+    const c = new FakeRestClient();
+    c.teams = [{ id: 7, name: 'battle-x-Design Chapter' }];
+    const checks: VerifyCheck[] = [{ type: 'team-absent', nameContains: 'Design Guild' }];
+    const verdict = await runVerification(scenario(), checks, c);
+    expect(verdict.passed).toBe(true);
+  });
+
+  it('fails when the original team is still there beside a newly created one', async () => {
+    const c = new FakeRestClient();
+    c.teams = [
+      { id: 7, name: 'battle-x-Design Guild' },
+      { id: 8, name: 'battle-x-Design Chapter' },
+    ];
+    const checks: VerifyCheck[] = [{ type: 'team-absent', nameContains: 'Design Guild' }];
+    const verdict = await runVerification(scenario(), checks, c);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.checks[0]?.detail).toContain('still exists');
+  });
+});
+
 describe('runVerification / overall verdict', () => {
   it('passes only when every check passes', async () => {
     const client = new FakeRestClient();

@@ -337,7 +337,7 @@ async function main(): Promise<void> {
   if (process.argv.includes('--sweep-all')) {
     log("--sweep-all: sweeping ALL 'battle-*' data, including any concurrent run's...");
     const sweep = await cleanupByPrefix(globalClient, 'battle-');
-    log(`  swept ${sweep.deletedProjects} project(s), ${sweep.deletedTasks} task(s), ${sweep.deletedLabels} label(s).`);
+    log(`  swept ${sweep.deletedProjects} project(s), ${sweep.deletedTasks} task(s), ${sweep.deletedLabels} label(s), ${sweep.deletedTeams} team(s).`);
   } else {
     log("Skipping the global 'battle-*' sweep (pass --sweep-all to collect strays from crashed runs).");
   }

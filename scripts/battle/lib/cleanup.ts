@@ -11,6 +11,12 @@
  * ended up in a pre-existing (non-prefixed) project -- e.g. an agent
  * bulk-creating into `Inbox` instead of the project it had just made -- via
  * a cross-project task sweep, not just tasks inside prefixed projects.
+ *
+ * TEAMS are swept too (by `name`, since `models.Team` has no `title`).
+ * Unlike a project or a label, a team is global to the instance rather than
+ * owned by a project, so nothing else would ever reclaim one: without this
+ * sweep every run of a team scenario would leave a permanent `battle-*` team
+ * behind on the stack.
  */
 
 import type { VikunjaRestClient } from './rest-client';
@@ -19,6 +25,7 @@ export interface CleanupResult {
   deletedProjects: number;
   deletedTasks: number;
   deletedLabels: number;
+  deletedTeams: number;
   errors: string[];
 }
 
@@ -27,6 +34,7 @@ export async function cleanupByPrefix(client: VikunjaRestClient, prefix: string)
   let deletedProjects = 0;
   let deletedTasks = 0;
   let deletedLabels = 0;
+  let deletedTeams = 0;
   const sweptProjectIds = new Set<number>();
 
   const projects = await client.listProjects();
@@ -80,5 +88,16 @@ export async function cleanupByPrefix(client: VikunjaRestClient, prefix: string)
     }
   }
 
-  return { deletedProjects, deletedTasks, deletedLabels, errors };
+  const teams = await client.listTeams();
+  for (const team of teams) {
+    if (!team.name.startsWith(prefix)) continue;
+    try {
+      await client.deleteTeam(team.id);
+      deletedTeams += 1;
+    } catch (e) {
+      errors.push(`delete team "${team.name}" (id ${team.id}): ${(e as Error).message}`);
+    }
+  }
+
+  return { deletedProjects, deletedTasks, deletedLabels, deletedTeams, errors };
 }
