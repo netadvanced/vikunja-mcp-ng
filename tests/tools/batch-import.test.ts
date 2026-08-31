@@ -245,12 +245,13 @@ describe('Batch Import Tool', () => {
         }
       }
       // EntityResolver.fetchLabels -> GET /labels (migrated to direct REST,
-      // same wave as fetchUsers). Delegated to the SAME mockClient.labels
-      // .getLabels mock every existing arrange/assert already drives. A
-      // `null`/`undefined`/non-array return is serialized straight through so
-      // EntityResolver's own defensive branches (null warn, non-array warn)
-      // still run.
-      if (method === 'GET' && url.endsWith('/labels')) {
+      // same wave as fetchUsers), now paginated (?page=N&per_page=M — see
+      // MED-10 from #294) so matched on the path alone, ignoring the query
+      // string. Delegated to the SAME mockClient.labels.getLabels mock every
+      // existing arrange/assert already drives. A `null`/`undefined`/
+      // non-array return is serialized straight through so EntityResolver's
+      // own defensive branches (null warn, non-array warn) still run.
+      if (method === 'GET' && /\/labels(\?|$)/.test(url)) {
         try {
           const labels = await mockClient.labels.getLabels({});
           return mockResponse({ text: labels === undefined ? '' : JSON.stringify(labels) });
