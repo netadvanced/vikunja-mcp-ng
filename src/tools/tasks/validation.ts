@@ -26,10 +26,16 @@ export function validateDateString(date: string, fieldName: string): void {
  * Coerce a date-only `YYYY-MM-DD` string to a full RFC3339 timestamp
  * (`YYYY-MM-DDT00:00:00Z`) before it is sent to Vikunja.
  *
- * Vikunja's API expects `due_date`/`start_date`/`end_date` as RFC3339 and
- * SILENTLY DROPS a bare date-only value — everything else in the same
- * payload persists, so a caller passing e.g. `dueDate: '2026-07-24'` loses
- * the due date with no error surfaced anywhere (issue #164). This helper
+ * Vikunja's API expects `due_date`/`start_date`/`end_date` as RFC3339. A bare
+ * date-only value on these create-family paths does NOT silently vanish:
+ * verified live against 2.4.0, it is rejected outright with **HTTP 400,
+ * code 2004** ("Invalid model provided") — the whole request fails, nothing
+ * is persisted. This repo's own issue history contains both
+ * characterizations (#164/#165 originally reported a silent drop; #167/#163
+ * pinned it down as the 400) — the 400 is what actually applies to the
+ * paths this helper normalizes for, and the "silently drops" wording above
+ * is the stale one. See docs/VIKUNJA_API_ISSUES.md #19 for the full
+ * writeup; don't re-flip this back without re-reading that. This helper
  * is the single normalization point for that coercion; already-full
  * timestamps (anything containing a `T`) are passed through unchanged, and
  * empty/undefined input is passed through as-is (validation of malformed
