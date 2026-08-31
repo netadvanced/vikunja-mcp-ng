@@ -291,40 +291,174 @@ describe('Users Tool', () => {
   });
 
   describe('update-settings subcommand', () => {
-    it('should update user settings', async () => {
-      const updatedUser = {
-        ...mockUser,
-        settings: { ...mockUser.settings, name: 'Updated Name', language: 'es' },
-      };
+    // POST /user/settings/general is a FULL-MODEL REPLACE: the server binds a
+    // fresh v1.UserSettings from the body and assigns every one of its fields
+    // onto the user, so any key the body omits is written back as its Go zero
+    // value. This tool therefore GETs /user first and merges the caller's
+    // deltas onto the current settings (docs/ENDPOINT-PLAYBOOK.md §4), which
+    // makes the call order: GET /user -> POST /user/settings/general ->
+    // GET /user (read-back).
+    const currentSettings = mockUser.settings;
+
+    /** Arrange the GET-merge-POST-GET sequence and return the POSTed body. */
+    function mockRoundTrip(readBack: unknown = mockUser): void {
       (vikunjaRestRequest as jest.Mock)
-        .mockResolvedValueOnce({ message: 'Success' })
-        .mockResolvedValueOnce(updatedUser);
+        .mockResolvedValueOnce(mockUser) // GET /user (merge base)
+        .mockResolvedValueOnce({ message: 'Success' }) // POST /user/settings/general
+        .mockResolvedValueOnce(readBack); // GET /user (read-back)
+    }
+
+    /** The body of the POST /user/settings/general call. */
+    function postedSettings(): Record<string, unknown> {
+      const calls = (vikunjaRestRequest as jest.Mock).mock.calls as unknown[][];
+      const post = calls.find((c) => c[1] === 'POST' && c[2] === '/user/settings/general') as
+        unknown[] | undefined;
+      if (!post) throw new Error('POST /user/settings/general was never called');
+      return post[3] as Record<string, unknown>;
+    }
+
+    it('merges deltas onto the CURRENT settings instead of sending a partial body', async () => {
+      mockRoundTrip({
+        ...mockUser,
+        settings: { ...currentSettings, name: 'Updated Name', language: 'es' },
+      });
 
       const result = await callTool('update-settings', {
         name: 'Updated Name',
         language: 'es',
       });
 
-      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(
-        1,
-        mockAuthManager,
-        'POST',
-        '/user/settings/general',
-        { name: 'Updated Name', language: 'es' },
-      );
-      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(2, mockAuthManager, 'GET', '/user');
-      expect(result.content[0].type).toBe('text');
+      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(1, mockAuthManager, 'GET', '/user');
+      // The wire payload carries EVERY setting, not just the two changed ones -
+      // otherwise the server would zero timezone, week_start, the reminder
+      // preferences and both discoverability flags.
+      expect(postedSettings()).toEqual({
+        ...currentSettings,
+        name: 'Updated Name',
+        language: 'es',
+      });
+      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(3, mockAuthManager, 'GET', '/user');
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
       expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('**Operation:** update-user-settings');
       expect(markdown).toContain('User settings updated successfully');
     });
 
-    it('should update all settings fields', async () => {
+    it('preserves a field the caller never mentioned (data-loss regression guard)', async () => {
+      mockRoundTrip();
+
+      await callTool('update-settings', { name: 'Only The Name' });
+
+      const body = postedSettings();
+      // Untouched fields survive the round trip at their current values.
+      expect(body.timezone).toBe('UTC');
+      expect(body.week_start).toBe(1);
+      expect(body.email_reminders_enabled).toBe(true);
+      expect(body.overdue_tasks_reminders_time).toBe('09:00');
+      expect(body.name).toBe('Only The Name');
+    });
+
+    it('drops the read-only extra_settings_links from the merged body', async () => {
       (vikunjaRestRequest as jest.Mock)
+        .mockResolvedValueOnce({
+          ...mockUser,
+          settings: { ...currentSettings, extra_settings_links: { docs: 'https://example.com' } },
+        })
         .mockResolvedValueOnce({ message: 'Success' })
         .mockResolvedValueOnce(mockUser);
+
+      await callTool('update-settings', { name: 'X' });
+
+      expect(postedSettings()).not.toHaveProperty('extra_settings_links');
+    });
+
+    it('falls back to an empty base when GET /user returns no settings object', async () => {
+      (vikunjaRestRequest as jest.Mock)
+        .mockResolvedValueOnce({ id: 1, username: 'testuser' })
+        .mockResolvedValueOnce({ message: 'Success' })
+        .mockResolvedValueOnce(mockUser);
+
+      await callTool('update-settings', { language: 'de' });
+
+      expect(postedSettings()).toEqual({ language: 'de' });
+    });
+
+    // ---------------------------------------------------------------------
+    // Previously-undeclared write fields on models.UserGeneralSettings.
+    // They were not in the tool shape at all, so Zod stripped them and the
+    // agent's request vanished with a "settings updated successfully".
+    // ---------------------------------------------------------------------
+    it('forwards defaultProjectId, discoverableByEmail and discoverableByName', async () => {
+      mockRoundTrip();
+
+      const result = await callTool('update-settings', {
+        defaultProjectId: 42,
+        discoverableByEmail: true,
+        discoverableByName: true,
+      });
+
+      const body = postedSettings();
+      expect(body.default_project_id).toBe(42);
+      expect(body.discoverable_by_email).toBe(true);
+      expect(body.discoverable_by_name).toBe(true);
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('defaultProjectId');
+      expect(markdown).toContain('discoverableByEmail');
+      expect(markdown).toContain('discoverableByName');
+    });
+
+    // The falsy cases. `discoverable_by_*` are xorm UseBool-style columns:
+    // a guard written as `if (value)` would drop exactly the "turn this OFF"
+    // request, which is the privacy-relevant direction.
+    it('forwards discoverableByEmail/Name === false (the falsy case)', async () => {
+      mockRoundTrip();
+
+      const result = await callTool('update-settings', {
+        discoverableByEmail: false,
+        discoverableByName: false,
+      });
+
+      const body = postedSettings();
+      expect(body.discoverable_by_email).toBe(false);
+      expect(body.discoverable_by_name).toBe(false);
+      expect(result.content[0].text).toContain('discoverableByEmail');
+    });
+
+    it('forwards defaultProjectId === 0 (clears the default project)', async () => {
+      mockRoundTrip();
+
+      await callTool('update-settings', { defaultProjectId: 0 });
+
+      expect(postedSettings().default_project_id).toBe(0);
+    });
+
+    it('treats an empty name as a supplied field, not a missing one', async () => {
+      mockRoundTrip();
+
+      await callTool('update-settings', { name: '' });
+
+      expect(postedSettings().name).toBe('');
+    });
+
+    it('surfaces the discoverability + default project settings on read-back', async () => {
+      mockRoundTrip({
+        ...mockUser,
+        settings: {
+          ...currentSettings,
+          discoverable_by_email: false,
+          discoverable_by_name: true,
+          default_project_id: 7,
+        },
+      });
+
+      const result = await callTool('update-settings', { discoverableByName: true });
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('discoverable_by_name');
+      expect(markdown).toContain('default_project_id');
+    });
+
+    it('should update all settings fields', async () => {
+      mockRoundTrip();
 
       const result = await callTool('update-settings', {
         name: 'New Name',
@@ -334,19 +468,14 @@ describe('Users Tool', () => {
         frontendSettings: { theme: 'dark' },
       });
 
-      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(
-        1,
-        mockAuthManager,
-        'POST',
-        '/user/settings/general',
-        {
-          name: 'New Name',
-          language: 'fr',
-          timezone: 'Europe/Paris',
-          week_start: 0,
-          frontend_settings: { theme: 'dark' },
-        },
-      );
+      expect(postedSettings()).toEqual({
+        ...currentSettings,
+        name: 'New Name',
+        language: 'fr',
+        timezone: 'Europe/Paris',
+        week_start: 0,
+        frontend_settings: { theme: 'dark' },
+      });
       const markdown = result.content[0].text;
       expect(markdown).toContain('name');
       expect(markdown).toContain('language');
@@ -354,17 +483,15 @@ describe('Users Tool', () => {
     });
 
     it('should update notification preferences', async () => {
-      (vikunjaRestRequest as jest.Mock)
-        .mockResolvedValueOnce({ message: 'Success' })
-        .mockResolvedValueOnce({
-          ...mockUser,
-          settings: {
-            ...mockUser.settings,
-            email_reminders_enabled: false,
-            overdue_tasks_reminders_enabled: true,
-            overdue_tasks_reminders_time: '08:00',
-          },
-        });
+      mockRoundTrip({
+        ...mockUser,
+        settings: {
+          ...currentSettings,
+          email_reminders_enabled: false,
+          overdue_tasks_reminders_enabled: true,
+          overdue_tasks_reminders_time: '08:00',
+        },
+      });
 
       const result = await callTool('update-settings', {
         emailRemindersEnabled: false,
@@ -372,26 +499,19 @@ describe('Users Tool', () => {
         overdueTasksRemindersTime: '08:00',
       });
 
-      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(
-        1,
-        mockAuthManager,
-        'POST',
-        '/user/settings/general',
-        {
-          email_reminders_enabled: false,
-          overdue_tasks_reminders_enabled: true,
-          overdue_tasks_reminders_time: '08:00',
-        },
-      );
+      expect(postedSettings()).toEqual({
+        ...currentSettings,
+        email_reminders_enabled: false,
+        overdue_tasks_reminders_enabled: true,
+        overdue_tasks_reminders_time: '08:00',
+      });
       const markdown = result.content[0].text;
       expect(markdown).toContain('emailRemindersEnabled');
       expect(markdown).toContain('overdueTasksRemindersEnabled');
     });
 
     it('should update mixed settings including notifications', async () => {
-      (vikunjaRestRequest as jest.Mock)
-        .mockResolvedValueOnce({ message: 'Success' })
-        .mockResolvedValueOnce(mockUser);
+      mockRoundTrip();
 
       const result = await callTool('update-settings', {
         name: 'Updated Name',
@@ -399,17 +519,12 @@ describe('Users Tool', () => {
         overdueTasksRemindersTime: '10:00',
       });
 
-      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(
-        1,
-        mockAuthManager,
-        'POST',
-        '/user/settings/general',
-        {
-          name: 'Updated Name',
-          email_reminders_enabled: true,
-          overdue_tasks_reminders_time: '10:00',
-        },
-      );
+      expect(postedSettings()).toEqual({
+        ...currentSettings,
+        name: 'Updated Name',
+        email_reminders_enabled: true,
+        overdue_tasks_reminders_time: '10:00',
+      });
       const markdown = result.content[0].text;
       expect(markdown).toContain('name');
       expect(markdown).toContain('emailRemindersEnabled');
@@ -419,22 +534,16 @@ describe('Users Tool', () => {
       await expect(callTool('update-settings')).rejects.toThrow(
         'At least one setting field is required',
       );
+      // Nothing is read or written when there is nothing to change.
+      expect(vikunjaRestRequest).not.toHaveBeenCalled();
     });
 
     it('should handle weekStart as 0', async () => {
-      (vikunjaRestRequest as jest.Mock)
-        .mockResolvedValueOnce({ message: 'Success' })
-        .mockResolvedValueOnce(mockUser);
+      mockRoundTrip();
 
       const result = await callTool('update-settings', { weekStart: 0 });
 
-      expect(vikunjaRestRequest).toHaveBeenNthCalledWith(
-        1,
-        mockAuthManager,
-        'POST',
-        '/user/settings/general',
-        { week_start: 0 },
-      );
+      expect(postedSettings()).toEqual({ ...currentSettings, week_start: 0 });
       const markdown = result.content[0].text;
       expect(markdown).toContain('weekStart');
     });

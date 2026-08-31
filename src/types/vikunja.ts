@@ -96,6 +96,11 @@ export interface User {
   timezone?: string;
   week_start?: number;
   frontend_settings?: Record<string, unknown>;
+  // Discoverability + default-project settings (models.UserGeneralSettings).
+  // Surfaced so `update-settings` can read back what it just wrote.
+  discoverable_by_email?: boolean;
+  discoverable_by_name?: boolean;
+  default_project_id?: number;
 }
 
 // Extended UserSettings interface with notification preferences

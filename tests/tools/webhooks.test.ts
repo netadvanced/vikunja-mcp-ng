@@ -23,6 +23,7 @@ import * as validationUtils from '../../src/utils/validation';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import type { Webhook } from '../../src/types/vikunja';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
+import { logger } from '../../src/utils/logger';
 import { ConfigurationManager } from '../../src/config';
 import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
@@ -708,6 +709,144 @@ describe('Webhooks Tool', () => {
       ).rejects.toThrow('HTTP 500 Server Error');
     });
 
+    // ---------------------------------------------------------------------
+    // Silent field-drop: `update` used to send `{ events }` ONLY, discarding
+    // targetUrl and secret, and then report "updated successfully".
+    //
+    // Vikunja's `models.Webhook.Update` is
+    //   s.Where("id = ?", w.ID).Cols("events").Update(w)
+    // for BOTH scopes, so target_url / secret / basic_auth_* are excluded
+    // server-side. There is no payload that makes them stick - the only
+    // honest outcome is a loud rejection.
+    // ---------------------------------------------------------------------
+    describe('rejects the create-only fields instead of silently dropping them', () => {
+      it('rejects targetUrl, naming it and pointing at delete + create', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          targetUrl: 'https://new.example.com/hook',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        const message = (error as MCPError).message;
+        expect((error as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+        expect(message).toContain('targetUrl');
+        expect(message).toContain("subcommand: 'delete'");
+        expect(message).toContain("subcommand: 'create'");
+        // Nothing may reach the wire - not even the events-validation fetch.
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('rejects secret WITHOUT ever repeating the secret value', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          secret: 'super-secret-hmac-key',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        const message = (error as MCPError).message;
+        expect(message).toContain('secret');
+        expect(message).not.toContain('super-secret-hmac-key');
+        expect(JSON.stringify((error as MCPError).details ?? {})).not.toContain(
+          'super-secret-hmac-key',
+        );
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('names BOTH fields when both are supplied', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          targetUrl: 'https://new.example.com/hook',
+          secret: 'rotated',
+        }).catch((e: unknown) => e);
+
+        expect((error as MCPError).message).toContain('targetUrl or secret');
+      });
+
+      // The falsy case a naive `if (args.secret)` guard would wave through,
+      // silently keeping the old signing key while reporting success.
+      it('rejects an EMPTY secret (falsy but supplied)', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          secret: '',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        expect((error as MCPError).message).toContain('secret');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('rejects before the "events required" check, so the message is the useful one', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          targetUrl: 'https://new.example.com/hook',
+        }).catch((e: unknown) => e);
+
+        expect((error as MCPError).message).toContain('targetUrl');
+        expect((error as MCPError).message).not.toContain('At least one event is required');
+      });
+
+      it('rejects the same way in user scope', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          scope: 'user',
+          webhookId: 5,
+          events: ['task.created'],
+          targetUrl: 'https://new.example.com/hook',
+        }).catch((e: unknown) => e);
+
+        expect((error as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+        expect((error as MCPError).message).toContain('targetUrl');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('still sends exactly { events } on the wire for a clean update', async () => {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhook }));
+
+        await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+        });
+
+        const body = JSON.parse(
+          (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+        ) as Record<string, unknown>;
+        expect(body).toEqual({ events: ['task.created'] });
+      });
+
+      it('does not claim more than "events" changed in the success message', async () => {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhook }));
+
+        const result = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+        });
+
+        expect(result.content[0].text).toContain(
+          'events is the only field this endpoint writes; target URL and secret are unchanged',
+        );
+      });
+    });
+
     it('should provide helpful error message for webhook authentication errors when updating', async () => {
       // Events fetch succeeds
       mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
@@ -1177,6 +1316,129 @@ describe('Webhooks Tool', () => {
       ).toBe(true);
 
       ConfigurationManager.reset();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // `secret` is an HMAC signing key and `target_url` can itself embed one
+  // (Slack's https://hooks.slack.com/services/T…/B…/<secret> is the canonical
+  // example). Neither may ever reach a response body, a log line, or an error.
+  // -------------------------------------------------------------------------
+  describe('credential hygiene for `secret`', () => {
+    const SECRET = 'sup3r-secret-hmac-signing-key';
+
+    it('sends the secret on the wire when creating, but never echoes it back', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      // The real server returns the bound struct as-is, secret included.
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: { ...mockWebhook, secret: SECRET } }));
+
+      const result = await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['task.created'],
+        secret: SECRET,
+      });
+
+      // Still forwarded on create - this is the one place it must be sent.
+      const sent = JSON.parse(
+        (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+      ) as Record<string, unknown>;
+      expect(sent.secret).toBe(SECRET);
+
+      // ...but redacted out of the response the agent (and its transcript) sees.
+      expect(result.content[0].text).not.toContain(SECRET);
+      expect(result.content[0].text).toContain('[REDACTED]');
+    });
+
+    it('redacts a secret leaked by a list response', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [{ ...mockWebhook, secret: SECRET }] }));
+
+      const result = await mockHandler({ subcommand: 'list', projectId: 1 });
+      expect(result.content[0].text).not.toContain(SECRET);
+    });
+
+    it('redacts a secret leaked by a get response', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [{ ...mockWebhook, secret: SECRET }] }));
+
+      const result = await mockHandler({ subcommand: 'get', projectId: 1, webhookId: 1 });
+      expect(result.content[0].text).not.toContain(SECRET);
+    });
+
+    it('never puts the secret (or the target URL) into a log line', async () => {
+      const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {});
+      const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+
+      try {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: { ...mockWebhook, secret: SECRET } }));
+
+        await mockHandler({
+          subcommand: 'create',
+          projectId: 1,
+          targetUrl: 'https://hooks.example.com/services/T1/B2/tok3n',
+          events: ['task.created'],
+          secret: SECRET,
+        });
+
+        const logged = JSON.stringify([
+          debugSpy.mock.calls,
+          infoSpy.mock.calls,
+          errorSpy.mock.calls,
+        ]);
+        expect(logged).not.toContain(SECRET);
+        expect(logged).not.toContain('tok3n');
+      } finally {
+        debugSpy.mockRestore();
+        infoSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    });
+
+    // Defensive branch in redactWebhookCredentials: vikunjaRestRequest
+    // resolves to undefined for an empty response body (the same reason
+    // `list`/`get` guard with `?? []`), so the redactor must pass a nullish
+    // webhook straight through instead of spreading it.
+    it('passes an empty (nullish) update response through untouched', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(mockResponse({}));
+
+      const result = await mockHandler({
+        subcommand: 'update',
+        projectId: 1,
+        webhookId: 1,
+        events: ['task.created'],
+      });
+
+      expect(result.content[0].text).toContain('Webhook events updated successfully');
+    });
+
+    it('never puts the secret into a log line on the FAILURE path either', async () => {
+      const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {});
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+
+      try {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValue(
+          mockResponse({ ok: false, status: 500, statusText: 'Server Error' }),
+        );
+
+        await mockHandler({
+          subcommand: 'create',
+          projectId: 1,
+          targetUrl: 'https://hooks.example.com/services/T1/B2/tok3n',
+          events: ['task.created'],
+          secret: SECRET,
+        }).catch(() => undefined);
+
+        const logged = JSON.stringify([debugSpy.mock.calls, errorSpy.mock.calls]);
+        expect(logged).not.toContain(SECRET);
+        expect(logged).not.toContain('tok3n');
+      } finally {
+        debugSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
     });
   });
 
