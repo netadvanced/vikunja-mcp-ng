@@ -281,10 +281,21 @@ export async function createProjectShare(
       body,
     );
 
+    // FIXED (audit #291 MED-17): `models.LinkSharing.password` is
+    // documented as write-only ("You can only set it, not retrieve it
+    // after the link share has been created" — the vendored OpenAPI spec's
+    // description for this field). Strip it from the response defensively
+    // rather than trust that every server build actually omits it: this
+    // response otherwise reflects exactly what the PUT returned, and the
+    // caller-supplied plaintext password has no business round-tripping
+    // back out through an MCP tool response.
+    const shareWithoutPassword: VikunjaLinkShare = { ...createdShare };
+    delete shareWithoutPassword.password;
+
     const result = createProjectResponse(
       'create_project_share',
       `Share created successfully for project ID ${projectId}`,
-      { share: createdShare },
+      { share: shareWithoutPassword },
       {
         projectId,
         shareRight: right,

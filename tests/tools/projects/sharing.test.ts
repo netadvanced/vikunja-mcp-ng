@@ -98,6 +98,33 @@ describe('project link sharing (REST-migrated)', () => {
       });
     });
 
+    it('strips password from the response even if the server echoes it back (audit #291 MED-17)', async () => {
+      // `models.LinkSharing.password` is documented write-only ("You can
+      // only set it, not retrieve it after the link share has been
+      // created"). Simulate a server that echoes it anyway and assert this
+      // tool never lets that plaintext password reach the caller.
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({
+              id: 5,
+              hash: 'abc123',
+              permission: 2,
+              name: 'Admin Share',
+              password: 'secret123',
+            }),
+          }),
+        );
+
+      const result = await createProjectShare(
+        { projectId: 1, right: 'admin', name: 'Admin Share', password: 'secret123' },
+        authManager,
+      );
+
+      expect(result.content[0].text).not.toContain('secret123');
+    });
+
     it('validates permission level', async () => {
       await expect(
         createProjectShare({ projectId: 1, right: 3 as never }, authManager),
