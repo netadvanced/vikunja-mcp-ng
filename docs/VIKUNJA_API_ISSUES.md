@@ -708,6 +708,38 @@ task-count budget, whichever is hit first, surfacing `resultComplete: false`
 and a `warnings` entry when either bound truncates the result rather than
 silently reporting a partial list as complete.
 
+**2026-08-31 follow-up (issue #268 / audit CRIT-7): two more call sites had
+the SAME bug, unpaginated.** `RestCrossProjectFilteringStrategy` (the
+primary cross-project `GET /tasks` path) and `ServerSideFilteringStrategy`
+(single-project `GET /projects/{id}/tasks` with a server-side filter) each
+issued exactly one request with a large `per_page` and never checked
+whether the page came back full. Both now paginate via the shared
+`src/utils/filtering/pagination.ts` helper — a lighter algorithm than
+`ClientSideFilteringStrategy`'s self-referential one: it compares each
+page's length against the server's cached `max_items_per_page` (or the
+documented default of 50 when that isn't cached yet) rather than spending
+an extra probe request, so the common small-result-set case still costs
+exactly one request. Same `resultComplete`/`warnings` signal on truncation.
+
+**Also confirmed LIVE against a real Vikunja 2.4.0 instance (issue #289 /
+audit HIGH-18) that the clamp is not limited to the `/tasks` and
+`/projects/{id}/tasks` handlers documented above:**
+- `GET /notifications` (`vikunja_notifications list`) is clamped the same
+  way, confirmed via the response's own `X-Pagination-*` headers.
+- `GET /tasks/{taskID}/comments` is clamped too, even though the OpenAPI
+  spec documents NO `page`/`per_page` parameters for this endpoint at all
+  (only `order_by`) — verified live: 60 comments added to one task, an
+  unpaged `GET` returned exactly 50 with `X-Pagination-Total-Pages: 2`, and
+  `?page=2` (undocumented but functional) returned the remaining 10. Both
+  now paginate via the same shared helper.
+- `GET /tasks/{taskID}/assignees`, `GET /tasks/{id}/attachments`, `GET
+  /tasks/{id}/labels`, and `GET /teams` were spot-checked (not live-verified
+  per-endpoint) and given the lighter "at minimum" fix from the same
+  helper (`describePossibleTruncation`): they stay single-request, but now
+  set `resultComplete: false` with a warning when an unpinned page comes
+  back at or above the (known or assumed) page cap, rather than staying
+  silent.
+
 ## 19. Date-Only Field Values 400 on Create, Not Silently Dropped
 
 **Status:** ℹ️ Clarification, verified live against 2.4.0 (2026-08-31);

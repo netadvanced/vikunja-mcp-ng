@@ -43,6 +43,7 @@ jest.mock('../../../src/tools/tasks/validation', () => {
 
 import { ClientSideFilteringStrategy } from '../../../src/utils/filtering/ClientSideFilteringStrategy';
 import { RestCrossProjectFilteringStrategy } from '../../../src/utils/filtering/RestCrossProjectFilteringStrategy';
+import { ServerSideFilteringStrategy } from '../../../src/utils/filtering/ServerSideFilteringStrategy';
 import type { FilteringParams, VikunjaTask } from '../../../src/utils/filtering/types';
 import type { AuthManager } from '../../../src/auth/AuthManager';
 import { vikunjaRestRequest } from '../../../src/utils/vikunja-rest';
@@ -379,6 +380,183 @@ describe('incomplete filtered results are never reported as a clean success', ()
       expect(result.metadata.resultComplete).toBe(false);
       expect(result.metadata.filteringNote).toContain('INCOMPLETE');
       expect(result.metadata.warnings?.join(' ')).toContain('60-task limit');
+    });
+
+    // Regression for issue #290 MED-7: orderBy/filterTimezone/
+    // filterIncludeNulls used to be dropped on ANY fallback cause (not just
+    // the tracked #237 chain), because the fallback's per-project GET calls
+    // always built their query with empty extras regardless of the
+    // original args.
+    it('threads orderBy/filterTimezone/filterIncludeNulls through the cross-project fallback', async () => {
+      restMock.mockImplementation((_auth: unknown, _method: string, path: string) => {
+        if (path.startsWith('/tasks?')) return Promise.reject(new Error('HTTP 400'));
+        if (path === '/projects?per_page=1000') return Promise.resolve([{ id: 1, title: 'P1' }]);
+        if (path.startsWith('/projects?')) return Promise.resolve([]);
+        return Promise.resolve([makeTask(1, 1)]);
+      });
+
+      await new RestCrossProjectFilteringStrategy().execute({
+        ...crossProjectParams(),
+        args: {
+          allProjects: true,
+          orderBy: 'desc',
+          filterTimezone: 'Europe/Zurich',
+          filterIncludeNulls: true,
+        },
+      });
+
+      const taskCall = restMock.mock.calls.find((c) =>
+        String(c[2]).startsWith('/projects/1/tasks'),
+      );
+      expect(String(taskCall?.[2])).toBe(
+        '/projects/1/tasks?page=1&per_page=1000&order_by=desc&filter_timezone=Europe%2FZurich&filter_include_nulls=true',
+      );
+    });
+
+    it('does NOT thread orderBy/filterTimezone/filterIncludeNulls into a single-project listing', async () => {
+      restMock.mockImplementation((_auth: unknown, _method: string, path: string) => {
+        if (path.startsWith('/projects/1/tasks')) return Promise.resolve([makeTask(1, 1)]);
+        return Promise.resolve([]);
+      });
+
+      await new ClientSideFilteringStrategy().execute({
+        args: { projectId: 1, orderBy: 'desc', filterTimezone: 'Europe/Zurich' },
+        filterExpression: null,
+        filterString: undefined,
+        params: { page: 1, per_page: 1000 },
+        authManager,
+      });
+
+      const taskCall = restMock.mock.calls.find((c) =>
+        String(c[2]).startsWith('/projects/1/tasks'),
+      );
+      // Single-project listing never supported these params, even
+      // pre-migration (see FilteringArgs's doc comment) — this call site is
+      // untouched by MED-7's fix.
+      expect(String(taskCall?.[2])).toBe('/projects/1/tasks?page=1&per_page=1000');
+    });
+  });
+
+  describe('the PRIMARY strategies now paginate too (issue #268 / CRIT-7)', () => {
+    /**
+     * A fake Vikunja that clamps `per_page` to `clamp` for the DIRECT
+     * `GET /tasks` and `GET /projects/{id}/tasks` paths (unlike `serverWith`
+     * above, which only serves the per-project FALLBACK aggregation).
+     */
+    function directServerWith(opts: { clamp: number; pathPrefix: string; total: number }): void {
+      restMock.mockImplementation((_auth: unknown, _method: string, path: string) => {
+        const [rawPath, rawQuery = ''] = path.split('?');
+        if (rawPath !== opts.pathPrefix) return Promise.resolve([]);
+        const query = new URLSearchParams(rawQuery);
+        const page = Number(query.get('page') ?? '1');
+        const start = (page - 1) * opts.clamp;
+        const ids = Array.from({ length: opts.total }, (_, i) => i + 1);
+        return Promise.resolve(ids.slice(start, start + opts.clamp).map((id) => makeTask(id, 1)));
+      });
+    }
+
+    it('RestCrossProjectFilteringStrategy aggregates ALL pages of a >50-item GET /tasks result', async () => {
+      directServerWith({ clamp: 50, pathPrefix: '/tasks', total: 193 });
+
+      const result = await new RestCrossProjectFilteringStrategy().execute(crossProjectParams());
+
+      expect(result.tasks).toHaveLength(193);
+      const taskCalls = restMock.mock.calls.filter((c) => String(c[2]).startsWith('/tasks'));
+      expect(taskCalls).toHaveLength(4);
+      expect(result.metadata.resultComplete).toBeUndefined();
+      expect(result.metadata.warnings).toBeUndefined();
+    });
+
+    it('RestCrossProjectFilteringStrategy stops after ONE request when the first page is short', async () => {
+      directServerWith({ clamp: 50, pathPrefix: '/tasks', total: 12 });
+
+      const result = await new RestCrossProjectFilteringStrategy().execute(crossProjectParams());
+
+      expect(result.tasks).toHaveLength(12);
+      expect(restMock.mock.calls.filter((c) => String(c[2]).startsWith('/tasks'))).toHaveLength(1);
+    });
+
+    it('RestCrossProjectFilteringStrategy honours an explicit page instead of auto-paginating', async () => {
+      directServerWith({ clamp: 50, pathPrefix: '/tasks', total: 193 });
+
+      const result = await new RestCrossProjectFilteringStrategy().execute({
+        ...crossProjectParams(),
+        args: { allProjects: true, page: 2, perPage: 50 },
+        params: { page: 2, per_page: 50 },
+      });
+
+      expect(result.tasks).toHaveLength(50);
+      expect(restMock.mock.calls.filter((c) => String(c[2]).startsWith('/tasks'))).toHaveLength(1);
+    });
+
+    it('RestCrossProjectFilteringStrategy marks the result INCOMPLETE at the task budget', async () => {
+      process.env.VIKUNJA_MAX_TASKS_LIMIT = '120';
+      directServerWith({ clamp: 50, pathPrefix: '/tasks', total: 500 });
+
+      const result = await new RestCrossProjectFilteringStrategy().execute(crossProjectParams());
+
+      expect(result.tasks).toHaveLength(120);
+      expect(result.metadata.resultComplete).toBe(false);
+      expect(result.metadata.warnings).toEqual([
+        expect.stringContaining('120-item limit (VIKUNJA_MAX_TASKS_LIMIT)'),
+      ]);
+      expect(result.metadata.filteringNote).toContain('INCOMPLETE');
+    });
+
+    it('ServerSideFilteringStrategy aggregates ALL pages of a >50-item single-project+filter result', async () => {
+      directServerWith({ clamp: 50, pathPrefix: '/projects/7/tasks', total: 120 });
+
+      const result = await new ServerSideFilteringStrategy().execute({
+        args: { projectId: 7 },
+        filterExpression: null,
+        filterString: 'priority >= 3',
+        params: {},
+        authManager,
+      });
+
+      expect(result.tasks).toHaveLength(120);
+      const taskCalls = restMock.mock.calls.filter((c) =>
+        String(c[2]).startsWith('/projects/7/tasks'),
+      );
+      expect(taskCalls).toHaveLength(3);
+      expect(result.metadata.resultComplete).toBeUndefined();
+    });
+
+    it('ServerSideFilteringStrategy stops after ONE request when the first page is short', async () => {
+      directServerWith({ clamp: 50, pathPrefix: '/projects/7/tasks', total: 12 });
+
+      const result = await new ServerSideFilteringStrategy().execute({
+        args: { projectId: 7 },
+        filterExpression: null,
+        filterString: 'priority >= 3',
+        params: {},
+        authManager,
+      });
+
+      expect(result.tasks).toHaveLength(12);
+      expect(
+        restMock.mock.calls.filter((c) => String(c[2]).startsWith('/projects/7/tasks')),
+      ).toHaveLength(1);
+    });
+
+    it('ServerSideFilteringStrategy marks the result INCOMPLETE at the task budget', async () => {
+      process.env.VIKUNJA_MAX_TASKS_LIMIT = '80';
+      directServerWith({ clamp: 50, pathPrefix: '/projects/7/tasks', total: 200 });
+
+      const result = await new ServerSideFilteringStrategy().execute({
+        args: { projectId: 7 },
+        filterExpression: null,
+        filterString: 'priority >= 3',
+        params: {},
+        authManager,
+      });
+
+      expect(result.tasks).toHaveLength(80);
+      expect(result.metadata.resultComplete).toBe(false);
+      expect(result.metadata.warnings).toEqual([
+        expect.stringContaining('80-item limit (VIKUNJA_MAX_TASKS_LIMIT)'),
+      ]);
+      expect(result.metadata.filteringNote).toContain('INCOMPLETE');
     });
   });
 
