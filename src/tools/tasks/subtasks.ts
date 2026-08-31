@@ -48,6 +48,7 @@ import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/respon
 import { CompositeOperation } from '../../utils/composite-operation';
 import { setTaskBucket } from './buckets';
 import { MAX_BULK_OPERATION_TASKS } from './constants';
+import { assertValidPercentDone, percentDoneToFraction } from '../../utils/percent-done';
 import type { components } from '../../types/generated/vikunja-openapi';
 
 /** `models.Task` per the OpenAPI spec. */
@@ -87,6 +88,21 @@ export interface CreateSubtaskArgs {
   description?: string;
   dueDate?: string;
   priority?: number;
+  /**
+   * Completion progress as a whole percentage, **0-100** (50 = 50%), the tool
+   * surface's scale — the same `percentDone` `create`/`update`/`bulk-create`
+   * take. Converted to Vikunja's 0-1 wire fraction by the shared
+   * `percentDoneToFraction` (src/utils/percent-done.ts). `vikunja_tasks`
+   * has always DECLARED `percentDone`/`startDate`/`endDate` at the top level
+   * of its schema, so a caller creating a subtask that is already partly done
+   * could send them and get no error — this composite simply never read them
+   * and the values were dropped between the MCP boundary and the API call.
+   */
+  percentDone?: number;
+  /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD'. */
+  startDate?: string;
+  /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD'. */
+  endDate?: string;
   labels?: number[];
   assignees?: number[];
   /** Optional Kanban bucket to place the new subtask into, via the existing `set-bucket` path. */
@@ -112,7 +128,11 @@ interface SubtaskCoreSpec {
   title: string;
   description?: string;
   dueDate?: string;
+  startDate?: string;
+  endDate?: string;
   priority?: number;
+  /** Whole percentage 0-100 — converted to the 0-1 wire fraction on send. */
+  percentDone?: number;
   labels?: number[];
   assignees?: number[];
   bucketId?: number;
@@ -150,7 +170,13 @@ function addSubtaskCreationSteps(
       const newTask: VikunjaTask = { title: spec.title, project_id: projectId };
       if (spec.description !== undefined) newTask.description = spec.description;
       if (spec.dueDate !== undefined) newTask.due_date = spec.dueDate;
+      if (spec.startDate !== undefined) newTask.start_date = spec.startDate;
+      if (spec.endDate !== undefined) newTask.end_date = spec.endDate;
       if (spec.priority !== undefined) newTask.priority = spec.priority;
+      // 0-100 in, 0-1 wire fraction out — the ONE shared conversion
+      // (src/utils/percent-done.ts); never hand-rolled here.
+      if (spec.percentDone !== undefined)
+        newTask.percent_done = percentDoneToFraction(spec.percentDone);
 
       let created: VikunjaTask;
       try {
@@ -314,6 +340,15 @@ export async function createSubtask(
   if (args.dueDate) {
     validateDateString(args.dueDate, 'dueDate');
   }
+  if (args.startDate) {
+    validateDateString(args.startDate, 'startDate');
+  }
+  if (args.endDate) {
+    validateDateString(args.endDate, 'endDate');
+  }
+  // Whole percentage 0-100. Checked here as well as in the Zod schema
+  // because createSubtask is exported and reachable without it.
+  if (args.percentDone !== undefined) assertValidPercentDone(args.percentDone, 'percentDone');
   if (args.labels && args.labels.length > 0) {
     args.labels.forEach((id) => validateId(id, 'label ID'));
   }
@@ -358,7 +393,10 @@ export async function createSubtask(
       title: sanitizedTitle,
       ...(sanitizedDescription !== undefined ? { description: sanitizedDescription } : {}),
       ...(args.dueDate !== undefined ? { dueDate: args.dueDate } : {}),
+      ...(args.startDate !== undefined ? { startDate: args.startDate } : {}),
+      ...(args.endDate !== undefined ? { endDate: args.endDate } : {}),
       ...(args.priority !== undefined ? { priority: args.priority } : {}),
+      ...(args.percentDone !== undefined ? { percentDone: args.percentDone } : {}),
       ...(args.labels !== undefined ? { labels: args.labels } : {}),
       ...(args.assignees !== undefined ? { assignees: args.assignees } : {}),
       ...(args.bucketId !== undefined ? { bucketId: args.bucketId } : {}),
@@ -400,7 +438,13 @@ export interface BulkCreateSubtaskSpec {
   title?: string;
   description?: string;
   dueDate?: string;
+  /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD'. */
+  startDate?: string;
+  /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD'. */
+  endDate?: string;
   priority?: number;
+  /** Whole percentage 0-100 — see CreateSubtaskArgs.percentDone. */
+  percentDone?: number;
   labels?: number[];
   assignees?: number[];
   bucketId?: number;
@@ -490,6 +534,14 @@ export async function bulkCreateSubtasks(
     if (s.dueDate) {
       validateDateString(s.dueDate, `subtasks[${index}].dueDate`);
     }
+    if (s.startDate) {
+      validateDateString(s.startDate, `subtasks[${index}].startDate`);
+    }
+    if (s.endDate) {
+      validateDateString(s.endDate, `subtasks[${index}].endDate`);
+    }
+    if (s.percentDone !== undefined)
+      assertValidPercentDone(s.percentDone, `subtasks[${index}].percentDone`);
     if (s.labels && s.labels.length > 0) {
       s.labels.forEach((id) => validateId(id, `subtasks[${index}].label ID`));
     }
@@ -503,7 +555,10 @@ export async function bulkCreateSubtasks(
       title: sanitizeString(s.title),
       ...(s.description !== undefined ? { description: sanitizeString(s.description) } : {}),
       ...(s.dueDate !== undefined ? { dueDate: s.dueDate } : {}),
+      ...(s.startDate !== undefined ? { startDate: s.startDate } : {}),
+      ...(s.endDate !== undefined ? { endDate: s.endDate } : {}),
       ...(s.priority !== undefined ? { priority: s.priority } : {}),
+      ...(s.percentDone !== undefined ? { percentDone: s.percentDone } : {}),
       ...(s.labels !== undefined ? { labels: s.labels } : {}),
       ...(s.assignees !== undefined ? { assignees: s.assignees } : {}),
       ...(s.bucketId !== undefined ? { bucketId: s.bucketId } : {}),

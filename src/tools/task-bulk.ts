@@ -14,6 +14,57 @@ import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import { percentDoneSchema } from '../utils/percent-done';
+import { strictNestedObject } from '../utils/strict-nested-object';
+import type { BulkCreateTaskData } from './tasks/bulk/BulkOperationValidator';
+
+/** One entry of `vikunja_task_bulk bulk-create`'s `tasks[]`, as Zod parses it. */
+export interface BulkCreateTaskInput {
+  title: string;
+  description?: string | undefined;
+  dueDate?: string | undefined;
+  startDate?: string | undefined;
+  endDate?: string | undefined;
+  priority?: number | undefined;
+  percentDone?: number | undefined;
+  labels?: number[] | undefined;
+  assignees?: number[] | undefined;
+  repeatAfter?: number | undefined;
+  repeatMode?: ('day' | 'week' | 'month' | 'year') | undefined;
+}
+
+/**
+ * Maps one parsed `tasks[]` entry onto the {@link BulkCreateTaskData} shape
+ * `bulkCreateTasks`/`createOneBulkTask` actually read.
+ *
+ * Rebuilt key by key (rather than spread) so `exactOptionalPropertyTypes` is
+ * satisfied — but **typed as `BulkCreateTaskData`**, which the version this
+ * replaced was not. That earlier mapping used an inline anonymous type with
+ * snake_case names (`due_date`, `repeat_after`, `repeat_mode`) that nothing
+ * downstream reads, and never copied `percentDone` at all. Four fields the
+ * schema HAD accepted were therefore dropped between the MCP boundary and the
+ * API call: the caller got a success response and a task with no due date, no
+ * repeat configuration and no progress. Naming the real type here makes any
+ * future drift a compile error instead of a silent loss.
+ *
+ * Exported for direct testing: the handler reaches `bulkCreateTasks` through a
+ * dynamic `import()`, which cannot be exercised under the CJS test runner.
+ */
+export function toBulkCreateTaskData(task: BulkCreateTaskInput): BulkCreateTaskData {
+  const mapped: BulkCreateTaskData = { title: task.title };
+  if (task.description !== undefined) mapped.description = task.description;
+  if (task.dueDate !== undefined) mapped.dueDate = task.dueDate;
+  if (task.startDate !== undefined) mapped.startDate = task.startDate;
+  if (task.endDate !== undefined) mapped.endDate = task.endDate;
+  if (task.priority !== undefined) mapped.priority = task.priority;
+  // Whole percentage 0-100 in; createOneBulkTask converts it to Vikunja's
+  // 0-1 wire fraction (src/utils/percent-done.ts).
+  if (task.percentDone !== undefined) mapped.percentDone = task.percentDone;
+  if (task.labels !== undefined) mapped.labels = task.labels;
+  if (task.assignees !== undefined) mapped.assignees = task.assignees;
+  if (task.repeatAfter !== undefined) mapped.repeatAfter = task.repeatAfter;
+  if (task.repeatMode !== undefined) mapped.repeatMode = task.repeatMode;
+  return mapped;
+}
 
 /**
  * Register task bulk operations tool
@@ -58,47 +109,54 @@ export function registerTaskBulkTool(
       viewId: z.coerce.number().optional(),
       tasks: z
         .array(
-          z.object({
-            title: z.string(),
-            description: z.string().optional(),
-            dueDate: z
-              .string()
-              .optional()
-              .describe(
-                'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
-                  '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
-                  'being sent to Vikunja.',
+          strictNestedObject(
+            {
+              title: z.string(),
+              description: z.string().optional(),
+              dueDate: z
+                .string()
+                .optional()
+                .describe(
+                  'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
+                    '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
+                    'being sent to Vikunja.',
+                ),
+              startDate: z
+                .string()
+                .optional()
+                .describe(
+                  'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
+                    '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
+                    'being sent to Vikunja.',
+                ),
+              endDate: z
+                .string()
+                .optional()
+                .describe(
+                  'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
+                    '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
+                    'being sent to Vikunja.',
+                ),
+              priority: z.number().min(0).max(5).optional(),
+              // Whole percentage 0-100 (25 = 25%), converted to Vikunja's 0-1
+              // wire fraction in createOneBulkTask — see the percentDone note in
+              // src/tools/tasks/index.ts and src/utils/percent-done.ts.
+              percentDone: percentDoneSchema.describe(
+                'Completion progress as a whole percentage between 0 and 100 (25 = 25%, ' +
+                  '100 = done). Must be an integer — 0.5 is rejected, not silently read as ' +
+                  'half a percent.',
               ),
-            startDate: z
-              .string()
-              .optional()
-              .describe(
-                'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
-                  '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
-                  'being sent to Vikunja.',
-              ),
-            endDate: z
-              .string()
-              .optional()
-              .describe(
-                'RFC3339/ISO 8601 date-time (e.g., 2024-05-24T10:00:00Z). A date-only value ' +
-                  '(e.g., 2024-05-24) is also accepted and normalized to midnight UTC before ' +
-                  'being sent to Vikunja.',
-              ),
-            priority: z.number().min(0).max(5).optional(),
-            // Whole percentage 0-100 (25 = 25%), converted to Vikunja's 0-1
-            // wire fraction in createOneBulkTask — see the percentDone note in
-            // src/tools/tasks/index.ts and src/utils/percent-done.ts.
-            percentDone: percentDoneSchema.describe(
-              'Completion progress as a whole percentage between 0 and 100 (25 = 25%, ' +
-                '100 = done). Must be an integer — 0.5 is rejected, not silently read as ' +
-                'half a percent.',
-            ),
-            labels: z.array(z.number()).optional(),
-            assignees: z.array(z.number()).optional(),
-            repeatAfter: z.number().min(0).optional(),
-            repeatMode: z.enum(['day', 'week', 'month', 'year']).optional(),
-          }),
+              labels: z.array(z.number()).optional(),
+              assignees: z.array(z.number()).optional(),
+              repeatAfter: z.number().min(0).optional(),
+              repeatMode: z.enum(['day', 'week', 'month', 'year']).optional(),
+            },
+            'a bulk-create task',
+            'projectId is a TOP-LEVEL argument, not a per-task one. Fields with no bulk-create ' +
+              'equivalent (done, hexColor, position, bucketId) belong on vikunja_tasks — ' +
+              'bulk-create the tasks here, then use vikunja_tasks update / set-bucket / ' +
+              'set-position, or vikunja_task_bulk bulk-update / bulk-set-bucket.',
+          ),
         )
         .optional(),
     },
@@ -139,31 +197,7 @@ export function registerTaskBulkTool(
                 'projectId is required for bulk create operations',
               );
             }
-            // Filter out undefined values from tasks to satisfy exactOptionalPropertyTypes
-            const filteredTasks = (args.tasks || []).map((task) => {
-              const filteredTask: {
-                title: string;
-                description?: string;
-                due_date?: string;
-                startDate?: string;
-                endDate?: string;
-                priority?: number;
-                labels?: number[];
-                assignees?: number[];
-                repeat_after?: number;
-                repeat_mode?: 'day' | 'week' | 'month' | 'year';
-              } = { title: task.title };
-              if (task.description !== undefined) filteredTask.description = task.description;
-              if (task.dueDate !== undefined) filteredTask.due_date = task.dueDate;
-              if (task.startDate !== undefined) filteredTask.startDate = task.startDate;
-              if (task.endDate !== undefined) filteredTask.endDate = task.endDate;
-              if (task.priority !== undefined) filteredTask.priority = task.priority;
-              if (task.labels !== undefined) filteredTask.labels = task.labels;
-              if (task.assignees !== undefined) filteredTask.assignees = task.assignees;
-              if (task.repeatAfter !== undefined) filteredTask.repeat_after = task.repeatAfter;
-              if (task.repeatMode !== undefined) filteredTask.repeat_mode = task.repeatMode;
-              return filteredTask;
-            });
+            const filteredTasks = (args.tasks || []).map(toBulkCreateTaskData);
 
             const filteredArgs = {
               projectId: args.projectId,

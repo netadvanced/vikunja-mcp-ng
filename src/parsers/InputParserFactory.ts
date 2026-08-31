@@ -59,6 +59,28 @@ export function parseInputData(options: ParseInputOptions): ImportedTask[] {
 }
 
 /**
+ * Every CSV column this importer understands — the exact set the per-row
+ * `switch` in {@link parseCSVInput} handles, kept beside it so the two cannot
+ * drift. Mirrors `importedTaskSchema`'s own field list minus `reminders`,
+ * which has no CSV representation.
+ */
+const CSV_SUPPORTED_HEADERS = new Set([
+  'title',
+  'description',
+  'done',
+  'dueDate',
+  'priority',
+  'labels',
+  'assignees',
+  'startDate',
+  'endDate',
+  'hexColor',
+  'percentDone',
+  'repeatAfter',
+  'repeatMode',
+]);
+
+/**
  * Parse CSV input data and return array of ImportedTask objects.
  * Extracted from batch-import.ts to improve modularity and testability.
  *
@@ -88,6 +110,25 @@ function parseCSVInput(data: string, skipErrors: boolean = false): ImportedTask[
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
       `Missing required CSV headers: ${missingHeaders.join(', ')}`,
+    );
+  }
+
+  // Reject unknown headers instead of ignoring them. The per-row `switch`
+  // below has no `default:` case, so a column this importer does not know
+  // used to be dropped without a word: the import reported every row
+  // imported and the data simply was not there. That is the same
+  // silently-dropped-field failure the JSON path already refuses —
+  // `importedTaskSchema` is `.strict()` (src/parsers/JSONParser.ts), so the
+  // identical payload as JSON errors while as CSV it succeeded-and-lost-data.
+  // `skipErrors` still opts out, matching how it governs every other
+  // validation failure on this path.
+  const unknownHeaders = headers.filter((h) => h.trim() !== '' && !CSV_SUPPORTED_HEADERS.has(h));
+  if (unknownHeaders.length > 0 && !skipErrors) {
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `Unrecognized CSV column(s): ${unknownHeaders.map((h) => `"${h}"`).join(', ')}. ` +
+        `Supported columns: ${[...CSV_SUPPORTED_HEADERS].join(', ')}. Remove the column (or ` +
+        'set skipErrors to import anyway, dropping it).',
     );
   }
 

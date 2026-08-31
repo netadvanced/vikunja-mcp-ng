@@ -969,4 +969,92 @@ describe('setupKanban', () => {
       expect(text).toContain('was requested but its bucket could not be resolved');
     });
   });
+  /**
+   * Regression guard for the silently-dropped-field bug class.
+   *
+   * A battle run asked for a project + task and "record that the task is 75%
+   * done". The model made ONE `setup-kanban` call carrying
+   * `tasks: [{ title: …, percentDone: 75 }]` — the natural, correct thing.
+   * `percentDone` was not declared on the per-task shape, Zod stripped it, the
+   * task was created at 0%, and the tool reported success. These tests assert
+   * the WIRE payload (`percent_done`, Vikunja's 0-1 fraction), not the return
+   * value, because that is where the loss actually happened.
+   */
+  describe('per-task percentDone', () => {
+    /** Wires up a minimal one-column board and returns the create-task body. */
+    async function createTaskBodyFor(task: Record<string, unknown>): Promise<unknown> {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      router.on('PUT', '/projects', () => ({ id: 91, title: 'Board' }));
+      router.on('GET', '/projects/91/views', () => [
+        { id: 15, title: 'Kanban', project_id: 91, view_kind: 'kanban' },
+      ]);
+      router.on('GET', '/projects/91/views/15/buckets', () => []);
+      router.on('PUT', '/projects/91/views/15/buckets', (_p, body) => ({
+        id: 902,
+        ...(body as Record<string, unknown>),
+      }));
+
+      const createdTasks = new Map<number, Record<string, unknown>>();
+      router.on('PUT', '/projects/91/tasks', (_p, body) => {
+        const created = { id: 6001, project_id: 91, ...(body as Record<string, unknown>) };
+        createdTasks.set(6001, created);
+        return created;
+      });
+      router.on('GET', /^\/tasks\/\d+$/, (path) => createdTasks.get(Number(path.split('/')[2])));
+      router.on('POST', /^\/projects\/91\/views\/15\/buckets\/\d+\/tasks$/, () => ({}));
+
+      await setupKanban(
+        { title: 'Board', columns: ['To Do'], tasks: [{ title: 'Ship it', ...task } as never] },
+        authManager,
+      );
+
+      return router.calls.find((c) => c.method === 'PUT' && c.path === '/projects/91/tasks')?.body;
+    }
+
+    it('sends the 0-1 wire fraction for a 75% task (the battle-run case)', async () => {
+      const body = await createTaskBodyFor({ column: 'To Do', percentDone: 75 });
+      expect((body as { percent_done?: number }).percent_done).toBe(0.75);
+    });
+
+    it('sends 0 for the 0 boundary (explicitly requested, not omitted)', async () => {
+      const body = await createTaskBodyFor({ percentDone: 0 });
+      expect(body).toHaveProperty('percent_done', 0);
+    });
+
+    it('sends 1 for the 100 boundary', async () => {
+      const body = await createTaskBodyFor({ percentDone: 100 });
+      expect((body as { percent_done?: number }).percent_done).toBe(1);
+    });
+
+    it('omits percent_done entirely when the caller did not ask for it', async () => {
+      const body = await createTaskBodyFor({});
+      expect(body).not.toHaveProperty('percent_done');
+    });
+
+    it('rejects a 0-1 fraction with the shared teaching message, before any API call', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      await expect(
+        setupKanban(
+          { title: 'Board', tasks: [{ title: 'Half done', percentDone: 0.5 } as never] },
+          authManager,
+        ),
+      ).rejects.toThrow('tasks[0].percentDone must be a whole number between 0 and 100');
+      expect(router.calls).toHaveLength(0);
+    });
+
+    it('rejects an out-of-range percentage and names the offending index', async () => {
+      await expect(
+        setupKanban(
+          {
+            title: 'Board',
+            tasks: [{ title: 'ok' }, { title: 'too much', percentDone: 101 } as never],
+          },
+          authManager,
+        ),
+      ).rejects.toThrow('tasks[1].percentDone must be a whole number between 0 and 100');
+    });
+  });
 });
