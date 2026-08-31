@@ -19,7 +19,10 @@
  *    existing `_FILE` secrets convention, `src/config/secrets.ts`), a random
  *    12-byte IV per record, and an authenticated GCM tag verified on every
  *    decrypt. A wrong key or a tampered record fails the tag check loudly
- *    (`decryptToken` throws) rather than silently returning garbage.
+ *    (`decryptToken` throws) rather than silently returning garbage. The tag
+ *    additionally covers the record's identity key and `vikunjaUrl` as GCM
+ *    AAD (`vaultRecordAad`, `keyVersion: 2`) so the plaintext fields around
+ *    the ciphertext cannot be edited or spliced either — issue #262.
  *
  * Concurrency: every mutation (`provision`/`deprovision`) is serialized
  * through a single `async-mutex` `Mutex` (matching the codebase's existing
@@ -49,7 +52,21 @@ import type { VikunjaCredential } from '../auth/CredentialSource';
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
 const KEY_LENGTH = 32;
-const CURRENT_KEY_VERSION = 1;
+
+/**
+ * Record format 1: AES-256-GCM with NO additional authenticated data, so the
+ * record's `vikunjaUrl` and its identity key were outside the GCM tag
+ * (issue #262 / CRIT-1). Still readable, never written any more.
+ */
+const KEY_VERSION_NO_AAD = 1;
+
+/**
+ * Record format 2 (current): identical crypto, but `vaultRecordAad()` —
+ * the identity key plus the record's `vikunjaUrl` — is fed to the cipher as
+ * GCM additional authenticated data, so neither can be swapped without the
+ * tag check failing.
+ */
+const CURRENT_KEY_VERSION = 2;
 
 /** One vault record's on-disk shape (docs/OIDC-RESOURCE-SERVER.md §3c file-shape table). */
 export interface VaultRecord {
@@ -167,16 +184,53 @@ export function resolveVaultPath(configuredPath: string | undefined): string | u
 }
 
 /**
+ * The GCM additional-authenticated-data (AAD) that binds a record's
+ * ciphertext to BOTH the identity that owns it and the Vikunja URL the
+ * decrypted token will be sent to (issue #262 / CRIT-1).
+ *
+ * Without it only `ciphertext/iv/authTag` are covered by the auth tag, so
+ * someone who can write the vault file but does NOT hold the master key can
+ * (a) retarget `vikunjaUrl` at a server they control and collect the
+ * victim's plaintext token on its next use, or (b) splice identity A's
+ * ciphertext trio under identity B's key and impersonate A. Both edits leave
+ * the tag valid because the tag never covered those bytes. Feeding this
+ * value to `cipher.setAAD`/`decipher.setAAD` makes either edit fail the tag
+ * check, which `getCredential` already translates into `null`.
+ *
+ * The two components are LENGTH-PREFIXED rather than just concatenated: an
+ * `identityKey` is `"<issuer>|<sub>"` and a URL can itself contain any
+ * separator character, so plain concatenation would let a crafted
+ * (issuer, sub, url) triple re-partition into a different one and collide.
+ */
+export function vaultRecordAad(identityKeyValue: string, vikunjaUrl: string): Buffer {
+  return Buffer.from(
+    `vikunja-mcp-vault/v${CURRENT_KEY_VERSION}:` +
+      `${identityKeyValue.length}:${identityKeyValue}:` +
+      `${vikunjaUrl.length}:${vikunjaUrl}`,
+    'utf-8',
+  );
+}
+
+/**
  * Encrypts `plaintext` (a Vikunja `tk_` token) with AES-256-GCM: a fresh
  * random 12-byte IV per call (D4), returning base64-encoded ciphertext/iv/
  * authTag ready to store on a `VaultRecord`.
+ *
+ * `aad`, when supplied ({@link vaultRecordAad}), is covered by the resulting
+ * authentication tag without being encrypted — that is what binds the record
+ * to its identity and `vikunjaUrl`. It is optional only so the legacy
+ * `keyVersion: 1` format stays decryptable; every new record passes one.
  */
 export function encryptToken(
   plaintext: string,
   key: Buffer,
+  aad?: Buffer,
 ): { ciphertext: string; iv: string; authTag: string } {
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  if (aad !== undefined) {
+    cipher.setAAD(aad);
+  }
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return {
@@ -193,16 +247,24 @@ export function encryptToken(
  * with — this function itself never silently returns garbage; callers that
  * must not throw (`VaultFileStore.getCredential`) catch and translate this
  * into `null` themselves.
+ *
+ * `aad` must be byte-identical to the value passed to {@link encryptToken}
+ * (i.e. {@link vaultRecordAad} for `keyVersion: 2` records, omitted for
+ * legacy `keyVersion: 1` ones) or the tag check fails.
  */
 export function decryptToken(
   record: Pick<VaultRecord, 'ciphertext' | 'iv' | 'authTag'>,
   key: Buffer,
+  aad?: Buffer,
 ): string {
   const iv = Buffer.from(record.iv, 'base64');
   const authTag = Buffer.from(record.authTag, 'base64');
   const ciphertext = Buffer.from(record.ciphertext, 'base64');
   const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(authTag);
+  if (aad !== undefined) {
+    decipher.setAAD(aad);
+  }
   const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return decrypted.toString('utf-8');
 }
@@ -308,6 +370,8 @@ export function writeVaultFileAtomic(filePath: string, records: Map<string, Vaul
 export class VaultFileStore {
   private readonly mutex = new Mutex();
   private cache: Map<string, VaultRecord> | undefined;
+  /** Identity keys already warned about being on the legacy no-AAD format. */
+  private readonly legacyFormatWarned = new Set<string>();
 
   constructor(
     private readonly filePath: string,
@@ -322,37 +386,76 @@ export class VaultFileStore {
   }
 
   /**
+   * Decrypts one record with the AAD its `keyVersion` calls for (#262).
+   *
+   * `keyVersion: 2` (current) verifies the identity+`vikunjaUrl` binding;
+   * `keyVersion: 1` predates the binding and is decrypted without AAD so a
+   * vault written by an older build keeps working across the upgrade — the
+   * operator is told (once per identity) to re-provision, which rewrites the
+   * record in the bound format. Any other `keyVersion` is a record this
+   * build cannot read: it throws like a failed tag check, and every caller
+   * already turns that into `null`/"unusable" rather than a crash.
+   */
+  private decryptRecord(record: VaultRecord, key: string): string {
+    if (record.keyVersion === CURRENT_KEY_VERSION) {
+      return decryptToken(record, this.masterKey, vaultRecordAad(key, record.vikunjaUrl));
+    }
+    if (record.keyVersion === KEY_VERSION_NO_AAD) {
+      if (!this.legacyFormatWarned.has(key)) {
+        this.legacyFormatWarned.add(key);
+        logger.warn(
+          'Vault record is in the legacy pre-AAD format (keyVersion 1); its vikunjaUrl and ' +
+            'identity binding are not covered by the authentication tag. Re-run ' +
+            'vikunja_auth provision for this identity to upgrade it.',
+          { identity: maskCredential(key) },
+        );
+      }
+      return decryptToken(record, this.masterKey);
+    }
+    throw new Error(
+      `Unsupported vault record keyVersion ${record.keyVersion} (this build reads 1 and ` +
+        `${CURRENT_KEY_VERSION}); the record was written by a newer server version.`,
+    );
+  }
+
+  /**
    * Resolves the calling identity's Vikunja credential. Never throws — a
    * missing record and an undecryptable one (wrong master key / tampered
    * data) both resolve to `null`, matching `VikunjaCredentialSource`'s
    * contract (`src/auth/CredentialSource.ts`) exactly.
    */
   getCredential(identity: Identity): VikunjaCredential | null {
-    const record = this.load().get(identityKey(identity));
+    const key = identityKey(identity);
+    const record = this.load().get(key);
     if (!record) {
       return null;
     }
     try {
-      const apiToken = decryptToken(record, this.masterKey);
+      const apiToken = this.decryptRecord(record, key);
       return { apiUrl: record.vikunjaUrl, apiToken, authType: 'api-token' };
     } catch (error) {
-      logger.error('Vault record failed to decrypt (wrong master key or corrupted record)', {
-        identity: maskCredential(identityKey(identity)),
-        error: error instanceof Error ? error.message : String(error),
-      });
+      logger.error(
+        'Vault record failed to decrypt (wrong master key, tampered vikunjaUrl/identity ' +
+          'binding, or corrupted record)',
+        {
+          identity: maskCredential(key),
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
       return null;
     }
   }
 
   /** `vikunja_auth status` in oidc-http mode — never reveals the raw token. */
   getStatus(identity: Identity): VaultStatus {
-    const record = this.load().get(identityKey(identity));
+    const key = identityKey(identity);
+    const record = this.load().get(key);
     if (!record) {
       return { provisioned: false };
     }
     let maskedToken: string | undefined;
     try {
-      maskedToken = maskCredential(decryptToken(record, this.masterKey));
+      maskedToken = maskCredential(this.decryptRecord(record, key));
     } catch {
       maskedToken = undefined;
     }
@@ -379,7 +482,14 @@ export class VaultFileStore {
       const key = identityKey(identity);
       const existing = map.get(key);
       const now = new Date().toISOString();
-      const { ciphertext, iv, authTag } = encryptToken(apiToken, this.masterKey);
+      // AAD binds the ciphertext to this identity AND this vikunjaUrl (#262):
+      // an attacker who can rewrite the file but has no master key can no
+      // longer retarget the URL or move the trio under another identity.
+      const { ciphertext, iv, authTag } = encryptToken(
+        apiToken,
+        this.masterKey,
+        vaultRecordAad(key, vikunjaUrl),
+      );
       const record: VaultRecord = {
         vikunjaUrl,
         ciphertext,

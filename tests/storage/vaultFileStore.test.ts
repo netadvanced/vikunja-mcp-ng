@@ -26,6 +26,7 @@ import {
   resolveVaultPath,
   encryptToken,
   decryptToken,
+  vaultRecordAad,
   loadVaultFile,
   writeVaultFileAtomic,
   setActiveVaultStore,
@@ -127,6 +128,52 @@ describe('encryptToken / decryptToken (AES-256-GCM round-trip)', () => {
     expect(() =>
       decryptToken({ ciphertext: tamperedCiphertext.toString('base64'), iv, authTag }, KEY),
     ).toThrow();
+  });
+});
+
+describe('vaultRecordAad (identity + vikunjaUrl binding, issue #262)', () => {
+  it('produces a different AAD for the same URL under a different identity', () => {
+    const a = vaultRecordAad('https://idp.example/realm|user-a', 'https://vikunja.example.com');
+    const b = vaultRecordAad('https://idp.example/realm|user-b', 'https://vikunja.example.com');
+    expect(a.equals(b)).toBe(false);
+  });
+
+  it('produces a different AAD for the same identity under a different URL', () => {
+    const a = vaultRecordAad('iss|sub', 'https://vikunja.example.com');
+    const b = vaultRecordAad('iss|sub', 'https://evil.example.com');
+    expect(a.equals(b)).toBe(false);
+  });
+
+  it('length-prefixes the parts so a shifted split cannot collide', () => {
+    // Naive concatenation would make these two pairs identical.
+    const a = vaultRecordAad('iss|sub', 'x/https://vikunja.example.com');
+    const b = vaultRecordAad('iss|subx', '/https://vikunja.example.com');
+    expect(a.equals(b)).toBe(false);
+  });
+});
+
+describe('encryptToken / decryptToken with AAD (issue #262)', () => {
+  const aad = vaultRecordAad('iss|sub', 'https://vikunja.example.com');
+
+  it('round-trips when the same AAD is supplied on both sides', () => {
+    const enc = encryptToken('tk_bound-token', KEY, aad);
+    expect(decryptToken(enc, KEY, aad)).toBe('tk_bound-token');
+  });
+
+  it('fails the tag check when the AAD is omitted on decrypt', () => {
+    const enc = encryptToken('tk_bound-token', KEY, aad);
+    expect(() => decryptToken(enc, KEY)).toThrow();
+  });
+
+  it('fails the tag check when a DIFFERENT AAD is supplied on decrypt', () => {
+    const enc = encryptToken('tk_bound-token', KEY, aad);
+    const otherAad = vaultRecordAad('iss|sub', 'https://evil.example.com');
+    expect(() => decryptToken(enc, KEY, otherAad)).toThrow();
+  });
+
+  it('fails the tag check when an AAD is supplied for a record encrypted without one', () => {
+    const enc = encryptToken('tk_legacy-token', KEY);
+    expect(() => decryptToken(enc, KEY, aad)).toThrow();
   });
 });
 
@@ -348,6 +395,123 @@ describe('VaultFileStore', () => {
       await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_a-real');
 
       expect(store.getCredential(IDENTITY_B)).toBeNull();
+    });
+  });
+
+  describe('file-write attacker without the master key (issue #262)', () => {
+    /** Rewrite the on-disk vault, bypassing the store's own write path. */
+    const rewrite = (mutate: (obj: Record<string, VaultRecord>) => void): void => {
+      const obj = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, VaultRecord>;
+      mutate(obj);
+      fs.writeFileSync(filePath, JSON.stringify(obj), 'utf-8');
+    };
+
+    it('writes new records in the AAD-bound format (keyVersion 2)', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+
+      const onDisk = loadVaultFile(filePath).get('https://idp.example/realm|user-a');
+      expect(onDisk?.keyVersion).toBe(2);
+    });
+
+    it('cannot retarget vikunjaUrl to an attacker-controlled server', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real-token');
+
+      rewrite((obj) => {
+        const key = 'https://idp.example/realm|user-a';
+        obj[key] = { ...obj[key]!, vikunjaUrl: 'https://exfil.attacker.example' };
+      });
+
+      // A fresh store reads the tampered file: the retarget invalidates the
+      // GCM tag, so no plaintext token is ever handed to the attacker's URL.
+      const tampered = new VaultFileStore(filePath, KEY);
+      expect(() => tampered.getCredential(IDENTITY_A)).not.toThrow();
+      expect(tampered.getCredential(IDENTITY_A)).toBeNull();
+    });
+
+    it("cannot splice identity A's ciphertext under identity B's key", async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_a-secret');
+      await store.provision(IDENTITY_B, 'https://vikunja.example.com', 'tk_b-secret');
+
+      rewrite((obj) => {
+        const a = obj['https://idp.example/realm|user-a']!;
+        const b = obj['https://idp.example/realm|user-b']!;
+        obj['https://idp.example/realm|user-b'] = {
+          ...b,
+          ciphertext: a.ciphertext,
+          iv: a.iv,
+          authTag: a.authTag,
+        };
+      });
+
+      const tampered = new VaultFileStore(filePath, KEY);
+      expect(tampered.getCredential(IDENTITY_B)).toBeNull();
+      // A's own record is untouched and still resolves normally.
+      expect(tampered.getCredential(IDENTITY_A)?.apiToken).toBe('tk_a-secret');
+    });
+  });
+
+  describe('legacy keyVersion migration (issue #262)', () => {
+    /** Write a pre-#262 record: encrypted with no AAD, `keyVersion: 1`. */
+    const writeLegacyRecord = (identityKeyValue: string, token: string): void => {
+      const enc = encryptToken(token, KEY);
+      const record: VaultRecord = {
+        vikunjaUrl: 'https://vikunja.example.com',
+        ...enc,
+        keyVersion: 1,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        lastUsedAt: null,
+      };
+      writeVaultFileAtomic(filePath, new Map([[identityKeyValue, record]]));
+    };
+
+    it('still decrypts a legacy keyVersion 1 record written by an older build', () => {
+      writeLegacyRecord('https://idp.example/realm|user-a', 'tk_legacy-token');
+
+      const store = new VaultFileStore(filePath, KEY);
+      expect(store.getCredential(IDENTITY_A)).toEqual({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_legacy-token',
+        authType: 'api-token',
+      });
+    });
+
+    it('upgrades a legacy record to the bound format on the next provision', async () => {
+      writeLegacyRecord('https://idp.example/realm|user-a', 'tk_legacy-token');
+
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_rotated-token');
+
+      const onDisk = loadVaultFile(filePath).get('https://idp.example/realm|user-a');
+      expect(onDisk?.keyVersion).toBe(2);
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_rotated-token');
+    });
+
+    it('returns null (never crashes) for a record written by a newer, unknown format', () => {
+      const enc = encryptToken('tk_future', KEY);
+      writeVaultFileAtomic(
+        filePath,
+        new Map([
+          [
+            'https://idp.example/realm|user-a',
+            {
+              vikunjaUrl: 'https://vikunja.example.com',
+              ...enc,
+              keyVersion: 99,
+              createdAt: '2026-01-01T00:00:00.000Z',
+              updatedAt: '2026-01-01T00:00:00.000Z',
+              lastUsedAt: null,
+            } satisfies VaultRecord,
+          ],
+        ]),
+      );
+
+      const store = new VaultFileStore(filePath, KEY);
+      expect(() => store.getCredential(IDENTITY_A)).not.toThrow();
+      expect(store.getCredential(IDENTITY_A)).toBeNull();
     });
   });
 
