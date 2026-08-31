@@ -361,11 +361,16 @@ describe('Auth Tool', () => {
       expect(result.content[0].text).not.toContain('serverVersion');
     });
 
-    it('should return already connected message when authenticating to same URL', async () => {
+    it('should return already connected message when reconnecting with the SAME url and token', async () => {
       // Mock getStatus to return authenticated
       mockAuthManager.getStatus.mockReturnValue({
         authenticated: true,
         apiUrl: 'https://vikunja.example.com',
+      });
+      mockAuthManager.getSession.mockReturnValue({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123',
+        authType: 'api-token',
       });
 
       const result = await callTool('connect', {
@@ -382,6 +387,65 @@ describe('Auth Tool', () => {
       expect(markdown).toContain('auth-connect');
       expect(markdown).toContain('Already connected to Vikunja');
       expect(markdown).toContain('https://vikunja.example.com');
+    });
+
+    // Issue #276: 'refresh' tells a user whose JWT expired to call connect
+    // again with a new token against the same URL. Short-circuiting on the
+    // URL alone silently dropped that token and reported success while the
+    // expired credential stayed in the session.
+    it('stores and verifies a NEW token supplied for the same url (#276)', async () => {
+      mockAuthManager.getStatus.mockReturnValue({
+        authenticated: true,
+        apiUrl: 'https://vikunja.example.com',
+      });
+      mockAuthManager.getSession.mockReturnValue({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'eyJhbGciOiJIUzI1NiJ9.expired.signature',
+        authType: 'jwt',
+      });
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      const result = await callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'eyJhbGciOiJIUzI1NiJ9.fresh.signature',
+      });
+
+      expect(mockAuthManager.connect).toHaveBeenCalledWith(
+        'https://vikunja.example.com',
+        'eyJhbGciOiJIUzI1NiJ9.fresh.signature',
+      );
+      // The new credential is verified, not just stored.
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/user',
+        undefined,
+        { ignoreRequestContext: true },
+      );
+      expect(result.content[0].text).toContain('Successfully connected to Vikunja');
+    });
+
+    it('does not short-circuit when the new token is a prefix of the stored one (#276)', async () => {
+      mockAuthManager.getStatus.mockReturnValue({
+        authenticated: true,
+        apiUrl: 'https://vikunja.example.com',
+      });
+      mockAuthManager.getSession.mockReturnValue({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123-extra',
+        authType: 'api-token',
+      });
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+      await callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123',
+      });
+
+      expect(mockAuthManager.connect).toHaveBeenCalledWith(
+        'https://vikunja.example.com',
+        'tk_test-token-123',
+      );
     });
 
     it('should throw error when apiUrl is missing', async () => {

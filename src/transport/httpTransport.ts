@@ -59,7 +59,7 @@ import {
   buildProtectedResourceMetadata,
   isProtectedResourceMetadataPath,
 } from './resourceMetadata';
-import { getOidcAuthMiddleware, type HttpRequestWithAuth } from './oidcMiddlewareSeam';
+import { getOidcAuthMiddleware } from './oidcMiddlewareSeam';
 import { getActiveEnrollmentService } from './enrollment';
 import { runWithRequestContext, takeAttachedRequestContext } from '../context/requestContext';
 import { logger } from '../utils/logger';
@@ -287,39 +287,50 @@ async function handleIncomingRequest(
     enableDnsRebindingProtection: true,
     allowedHosts: ctx.allowedHosts,
   });
-  const mcpServer = await ctx.createMcpServer();
+
+  // If the auth middleware attached a per-identity `RequestContext` (the
+  // OIDC HTTP-auth middleware does — src/transport/oidcHttpAuth.ts), open the
+  // ALS scope around BOTH building this request's server and handling the
+  // request, so every tool call, and every await it spawns, resolves
+  // credentials/rate-limit/storage keys for *this* caller
+  // (docs/OIDC-RESOURCE-SERVER.md §3d, D6). The seam's boolean-returning
+  // middleware cannot hold the scope open itself — it returns before this
+  // point — so the scope is opened here, the one place that actually drives
+  // `handleRequest`. A middleware that attaches nothing (a generic seam, or a
+  // test stub) runs with no scope, exactly as before — keeping the seam
+  // transport-agnostic.
+  //
+  // The server factory is deliberately INSIDE the scope (#270): it runs
+  // `registerTools`, whose JWT-only gate must reflect the calling identity's
+  // vaulted credential, not the process-global one. Built outside the scope
+  // (as it was), an operator's legacy `VIKUNJA_API_TOKEN` env credential
+  // decided the deny-by-default tool list for every caller.
+  const requestContext = takeAttachedRequestContext(req);
+  const serveRequest = async (): Promise<void> => {
+    const mcpServer = await ctx.createMcpServer();
+    try {
+      // Cast through `Transport`: the SDK's own `StreamableHTTPServerTransport`
+      // does not perfectly satisfy its own `Transport` interface under
+      // `exactOptionalPropertyTypes: true` — a pre-existing SDK type quirk, not
+      // a functional mismatch (see other `as unknown as` casts in this codebase
+      // for the same accommodation pattern).
+      await mcpServer.connect(transport as unknown as Transport);
+      await transport.handleRequest(req, res);
+    } finally {
+      // Tear down this request's server. `handleRequest` has already fully
+      // written the response (including any SSE stream) by the time it
+      // resolves, so closing here never truncates a reply.
+      await mcpServer.close().catch(() => undefined);
+    }
+  };
 
   try {
-    // Cast through `Transport`: the SDK's own `StreamableHTTPServerTransport`
-    // does not perfectly satisfy its own `Transport` interface under
-    // `exactOptionalPropertyTypes: true` — a pre-existing SDK type quirk, not
-    // a functional mismatch (see other `as unknown as` casts in this codebase
-    // for the same accommodation pattern).
-    await mcpServer.connect(transport as unknown as Transport);
-
-    // If the auth middleware attached a per-identity `RequestContext` (the
-    // OIDC HTTP-auth middleware does — src/transport/oidcHttpAuth.ts), open
-    // the ALS scope around `handleRequest` so every tool call, and every
-    // await it spawns, resolves credentials/rate-limit/storage keys for
-    // *this* caller (docs/OIDC-RESOURCE-SERVER.md §3d, D6). The seam's
-    // boolean-returning middleware cannot hold the scope open itself — it
-    // returns before this point — so the scope is opened here, the one place
-    // that actually drives `handleRequest`. A middleware that attaches
-    // nothing (a generic seam, or a test stub) runs with no scope, exactly as
-    // before — keeping the seam transport-agnostic.
-    const requestContext = takeAttachedRequestContext(req);
     if (requestContext) {
-      await runWithRequestContext(requestContext, () =>
-        transport.handleRequest(req as HttpRequestWithAuth, res),
-      );
+      await runWithRequestContext(requestContext, serveRequest);
     } else {
-      await transport.handleRequest(req, res);
+      await serveRequest();
     }
   } finally {
-    // Tear down this request's transport + server. `handleRequest` has
-    // already fully written the response (including any SSE stream) by the
-    // time it resolves, so closing here never truncates a reply.
     await transport.close().catch(() => undefined);
-    await mcpServer.close().catch(() => undefined);
   }
 }

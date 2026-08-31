@@ -85,6 +85,45 @@ export function getCurrentIdentity(): Identity | undefined {
 }
 
 /**
+ * The `AuthManager` whose identity governs THIS call: the ALS-bound
+ * per-identity manager when a request context is open (`oidc-http` mode),
+ * otherwise the passed process-global/closure manager (`stdio` mode, which
+ * never opens a scope, so behaviour there is byte-for-byte unchanged).
+ *
+ * This is the single rule the REST layer already applies to pick which
+ * credential goes on the wire (`resolveEffectiveAuthManager`,
+ * src/utils/vikunja-rest.ts). Issues #270/#282: the auth-*type* decisions
+ * did not follow it — tool registration (src/tools/index.ts) and the
+ * per-call JWT gates in users/export/admin/user-deletion read the
+ * process-global closure manager instead. Under a mixed deployment (legacy
+ * `VIKUNJA_URL`/`VIKUNJA_API_TOKEN` env credentials auto-connected in
+ * src/index.ts *and* `oidc-http` transport) the operator's own token then
+ * decided a deny-by-default gate for every caller: a JWT env token exposed
+ * `vikunja_admin`/`vikunja_user_deletion`/`vikunja_users`/export to
+ * identities whose own vaulted credential is a scoped `tk_*` token, and a
+ * `tk_*` env token denied them to identities entitled to them. Every such
+ * decision must resolve through here so one rule governs credential AND
+ * capability.
+ */
+export function resolveIdentityAuthManager(fallbackAuthManager: AuthManager): AuthManager {
+  return requestContextStorage.getStore()?.authManager ?? fallbackAuthManager;
+}
+
+/**
+ * The caller's effective auth type for this request, or `undefined` when the
+ * effective manager (see {@link resolveIdentityAuthManager}) holds no session
+ * — an unprovisioned OIDC identity in `oidc-http` mode, or a not-yet-
+ * connected `stdio` session. Deliberately returns `undefined` rather than
+ * throwing so registration-time gates can fail closed without a try/catch.
+ */
+export function getEffectiveAuthType(
+  fallbackAuthManager: AuthManager,
+): 'api-token' | 'jwt' | undefined {
+  const effective = resolveIdentityAuthManager(fallbackAuthManager);
+  return effective.isAuthenticated() ? effective.getAuthType() : undefined;
+}
+
+/**
  * Symbol used to stash a request-scoped `RequestContext` on an arbitrary
  * carrier object (the Node `IncomingMessage` in `oidc-http` mode) between the
  * two halves of the HTTP auth flow.
@@ -108,7 +147,9 @@ export function attachRequestContext(carrier: object, context: RequestContext): 
 }
 
 /** Read back a `RequestContext` stashed by {@link attachRequestContext}, if any. */
-export function takeAttachedRequestContext(carrier: object | undefined): RequestContext | undefined {
+export function takeAttachedRequestContext(
+  carrier: object | undefined,
+): RequestContext | undefined {
   if (!carrier) {
     return undefined;
   }

@@ -195,6 +195,21 @@ describe('Users Tool', () => {
       expect(markdown).toContain('"overdue_tasks_reminders_enabled": false');
       expect(markdown).toContain('"overdue_tasks_reminders_time": "09:00"');
     });
+
+    // The spec declares `name` on BOTH v1.UserWithSettings (top level) and
+    // its nested models.UserGeneralSettings — a real GET /user carries it in
+    // both places, so neither reading alone may be the only one that works.
+    it('reads the top-level name of a v1.UserWithSettings response (#281)', async () => {
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue({
+        ...mockUser,
+        name: 'Top Level Name',
+        settings: { ...mockUser.settings, name: undefined },
+      });
+
+      const result = await callTool('current');
+
+      expect(result.content[0].text).toContain('"name": "Top Level Name"');
+    });
   });
 
   describe('search subcommand', () => {
@@ -223,6 +238,30 @@ describe('Users Tool', () => {
       const parsed = parseMarkdown(markdown);
       expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('**Operation:** search-users');
+    });
+
+    // Issue #281: GET /users returns plain `user.User` objects — `name` is
+    // top-level and there is no `settings` key at all (see
+    // src/types/generated/vikunja-openapi.d.ts, "user.User"). Reading the
+    // name only out of `settings` dropped it from every search result.
+    it('keeps the top-level name of a plain user.User search result (#281)', async () => {
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([
+        {
+          id: 7,
+          username: 'searchtarget',
+          email: 'target@example.com',
+          name: 'Search Target',
+          created: '2025-01-01T00:00:00Z',
+          updated: '2025-01-01T00:00:00Z',
+        },
+      ]);
+
+      const result = await callTool('search', { search: 'target' });
+
+      // The list renderer prefers the display name; before the fix the name
+      // was dropped by transformUser and the username was shown instead.
+      expect(result.content[0].text).toContain('**Search Target**');
+      expect(result.content[0].text).not.toContain('**searchtarget**');
     });
 
     it('should accept pagination parameters without sending them (GET /users has no page/per_page)', async () => {

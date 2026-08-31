@@ -26,6 +26,13 @@ import { EnrollmentService, setActiveEnrollmentService } from '../../src/transpo
 import { EnrollmentTicketStore } from '../../src/transport/enrollmentTickets';
 import { ConfigurationError } from '../../src/config/types';
 import type { HttpConfig } from '../../src/config/types';
+import { AuthManager } from '../../src/auth/AuthManager';
+import {
+  attachRequestContext,
+  getCurrentIdentity,
+  getEffectiveAuthType,
+  type Identity,
+} from '../../src/context/requestContext';
 
 // Fixed, incrementing ports rather than OS-assigned port 0: the default
 // `allowedHosts` derivation (`resolveAllowedHosts`) is `host:port` from
@@ -271,6 +278,70 @@ describe('httpTransport', () => {
       });
 
       expect(res.statusCode).toBe(403);
+    });
+
+    it('builds the per-request MCP server INSIDE the identity ALS scope (#270)', async () => {
+      // Tool registration decides which JWT-only tools exist for this caller
+      // (src/tools/index.ts). Built outside the scope, that gate could only
+      // ever see the process-global manager — the deny-by-default bypass
+      // #270 describes. The factory must therefore observe the caller's
+      // identity and its per-identity AuthManager.
+      const identity: Identity = { issuer: 'https://idp.example/realm', sub: 'caller-1' };
+      const identityManager = new AuthManager();
+      identityManager.connect('https://vikunja.example/api/v1', 'tk_caller-token-1234567890');
+      // The mixed deployment shape: a legacy env credential (a JWT) on the
+      // process-global manager alongside oidc-http.
+      const globalManager = new AuthManager();
+      globalManager.connect(
+        'https://vikunja.example/api/v1',
+        'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvcCJ9.sig',
+      );
+
+      const observed: Array<{ sub?: string; authType?: string }> = [];
+      setOidcAuthMiddleware(async (req) => {
+        attachRequestContext(req, { identity, authManager: identityManager });
+        return true;
+      });
+      handle = await startHttpTransport(() => {
+        observed.push({
+          sub: getCurrentIdentity()?.sub,
+          authType: getEffectiveAuthType(globalManager),
+        });
+        return newServer();
+      }, baseHttpConfig());
+      const port = getPort(handle);
+
+      await request(port, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+      });
+
+      expect(observed).toEqual([{ sub: 'caller-1', authType: 'api-token' }]);
+    });
+
+    it('runs the server factory with no ALS scope when the middleware attaches nothing (stdio-shaped seam)', async () => {
+      const observed: Array<string | undefined> = [];
+      setOidcAuthMiddleware(async () => true);
+      handle = await startHttpTransport(() => {
+        observed.push(getCurrentIdentity()?.sub);
+        return newServer();
+      }, baseHttpConfig());
+      const port = getPort(handle);
+
+      await request(port, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+      });
+
+      expect(observed).toEqual([undefined]);
     });
 
     describe('SSO enrollment endpoint routing (issue #220)', () => {

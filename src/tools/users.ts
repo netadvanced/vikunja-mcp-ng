@@ -96,13 +96,20 @@ function transformUser(rawUser: unknown): User {
   };
 
   // GET /user returns v1.UserWithSettings: language, timezone, week_start,
-  // frontend_settings, email_reminders_enabled, overdue_tasks_reminders_enabled,
-  // overdue_tasks_reminders_time and name are nested under a `settings`
-  // sub-object (models.UserGeneralSettings), NOT flat on the top-level user
-  // object. (id, username, email, created, updated remain top-level.)
+  // frontend_settings, email_reminders_enabled, overdue_tasks_reminders_enabled
+  // and overdue_tasks_reminders_time are nested under a `settings` sub-object
+  // (models.UserGeneralSettings), NOT flat on the top-level user object.
+  // (id, username, email, created, updated remain top-level.)
   // Search results (GET /users) return plain user.User with no `settings` key,
   // so this safely falls back to an empty object for those.
   const settings: Record<string, unknown> = isUserObject(user.settings) ? user.settings : {};
+
+  // `name` is the exception (#281): the OpenAPI spec declares it top-level on
+  // BOTH user.User (search/list results, which have no `settings` key at all)
+  // and v1.UserWithSettings (where models.UserGeneralSettings repeats it).
+  // Reading it only out of `settings` dropped the display name from every
+  // search/list result. Top-level first, settings as the fallback.
+  const rawName = user.name ?? settings.name;
 
   const result = {
     id: Number(user.id) || 0,
@@ -118,7 +125,7 @@ function transformUser(rawUser: unknown): User {
     username: result.username,
     frontend_settings: result.frontend_settings as Record<string, unknown>,
     ...(user.email ? { email: safeString(user.email) } : {}),
-    ...(settings.name ? { name: safeString(settings.name) } : {}),
+    ...(rawName ? { name: safeString(rawName) } : {}),
     ...(user.created ? { created: safeString(user.created) } : {}),
     ...(user.updated ? { updated: safeString(user.updated) } : {}),
     ...(settings.language ? { language: safeString(settings.language) } : {}),
@@ -223,8 +230,9 @@ export function registerUsersTool(
     async (args) => {
       // Closure-gate precedence fix: defer to the per-request context when
       // bound (see hasRequestContext's doc comment, src/client.ts).
+      let effectiveAuthManager = authManager;
       if (hasRequestContext()) {
-        await getAuthManagerFromContext();
+        effectiveAuthManager = await getAuthManagerFromContext();
       } else if (!authManager.isAuthenticated()) {
         throw new MCPError(
           ErrorCode.AUTH_REQUIRED,
@@ -232,8 +240,10 @@ export function registerUsersTool(
         );
       }
 
-      // User operations require JWT authentication
-      if (authManager.getAuthType() !== 'jwt') {
+      // User operations require JWT authentication — of the CALLING identity
+      // (#282), never of whatever legacy env credential happens to sit on the
+      // process-global manager in oidc-http mode.
+      if (effectiveAuthManager.getAuthType() !== 'jwt') {
         throw new MCPError(
           ErrorCode.PERMISSION_DENIED,
           'User operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',

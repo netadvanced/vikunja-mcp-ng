@@ -296,7 +296,9 @@ same JWT-only gate. Module gating is applied *in addition to*, never instead of,
 check:
 
 ```typescript
-const jwtAuthenticated = authManager.isAuthenticated() && authManager.getAuthType() === 'jwt';
+// `getEffectiveAuthType` resolves the CALLER's auth type: the ALS-bound
+// per-identity manager in oidc-http mode, the process-global one in stdio.
+const jwtAuthenticated = getEffectiveAuthType(authManager) === 'jwt';
 if (jwtAuthenticated && isModuleEnabled(modules.users)) {
   registerUsersTool(server, authManager, clientFactory);
 }
@@ -328,6 +330,17 @@ session is JWT-authenticated, because the vendored OpenAPI spec scopes every
 `/user/settings/token/caldav*` operation to `JWTKeyAuth` only (no `APIKeyAuth` entry).
 Unlike `/tokens`, this is enforced at registration time, not left for the server to
 reject at runtime.
+
+**In `oidc-http` mode the JWT gate follows the caller, not the process** (issues
+#270/#282). The tool list is built per request, inside that request's identity
+scope, so the gate reads the auth type of the credential *that identity* has in
+the vault. An identity with no linked credential gets none of these tools at all.
+This matters for a mixed deployment: if legacy `VIKUNJA_URL` +
+`VIKUNJA_API_TOKEN` env variables are set alongside `oidc-http`, the operator's
+own token used to decide the gate for everyone — a JWT there exposed
+`vikunja_admin`/`vikunja_user_deletion`/`vikunja_users`/export to every caller
+including `tk_*`-vaulted ones, and a `tk_*` there denied them to callers
+entitled to them. The per-call checks inside those tools resolve the same way.
 
 ## Global Read-Only Safety Mode
 

@@ -16,6 +16,7 @@ import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import type { ModulesConfig } from '../config';
 import { ConfigurationManager, ModulesConfigSchema, isModuleEnabled } from '../config';
+import { getEffectiveAuthType } from '../context/requestContext';
 import { logger } from '../utils/logger';
 
 import { registerAuthTool } from './auth';
@@ -212,7 +213,17 @@ export function registerTools(
     // Register user and export tools conditionally (preserving backward compatibility)
     // NOTE: The permission infrastructure is available for future migration.
     // Module config can only narrow this JWT-only gate, never expand it.
-    const jwtAuthenticated = authManager.isAuthenticated() && authManager.getAuthType() === 'jwt';
+    //
+    // The gate reads the CALLER's resolved identity, not the process-global
+    // closure manager (#270): in `oidc-http` mode `registerTools` runs inside
+    // the per-request ALS scope (src/transport/httpTransport.ts opens it
+    // around the server factory), so `getEffectiveAuthType` returns the
+    // vaulted auth type of the identity this tool list is being built for.
+    // An identity with no vaulted credential yields `undefined` and gets no
+    // JWT-only tool at all — deny by default. In `stdio` mode there is no ALS
+    // scope, so this is exactly the previous
+    // `isAuthenticated() && getAuthType() === 'jwt'` on the passed manager.
+    const jwtAuthenticated = getEffectiveAuthType(authManager) === 'jwt';
     if (jwtAuthenticated && isModuleEnabled(modules.users)) {
       registerUsersTool(server, authManager, clientFactory);
     }
