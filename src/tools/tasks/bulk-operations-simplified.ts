@@ -262,6 +262,62 @@ function resolveBulkUpdateValue(field: string | undefined, value: unknown): unkn
   return value;
 }
 
+/** One task's pre-update assignee snapshot: task id -> its complete assignee id list. */
+type AssigneeSnapshot = Map<number, number[]>;
+
+/**
+ * Restore each snapshotted task's assignees to exactly its pre-update list.
+ *
+ * This is a restore-to-snapshot, not a general assign flow: `userIds` is the
+ * task's own complete pre-update assignee list, so ONE
+ * `POST /tasks/{taskID}/assignees/bulk` (`models.BulkAssignees`, REPLACE
+ * semantics) call per task sets it back to exactly that list — safe here
+ * precisely because the whole set is known, unlike the additive per-user
+ * `PUT /assignees` loop used everywhere else for general assign/unassign
+ * (where replace semantics would silently unassign everyone else — upstream
+ * issue democratize-technology/vikunja-mcp#15; see the PARKED note in
+ * docs/ENDPOINT-TAIL-RETRIAGE.md line ~87). Sequential across tasks on
+ * purpose: concurrent writes 500 with "database is locked" on SQLite backends.
+ *
+ * Failures are returned (not just logged) so a lost assignee is surfaced to
+ * the caller rather than silently swallowed — same {taskId, userId} failure
+ * surface as PR #95's `assigneeRestoreFailures` contract, populated per-task
+ * instead of per-user-per-task.
+ *
+ * Extracted to a named function (issue #267) because the restore now has TWO
+ * call sites: the native bulk path, and the per-task fallback that path can
+ * hand off to *after* the destructive `POST /tasks/bulk` has already run.
+ */
+async function restoreAssigneeSnapshot(
+  authManager: AuthManager,
+  snapshot: AssigneeSnapshot,
+): Promise<Array<{ taskId: number; userId: number }>> {
+  const failures: Array<{ taskId: number; userId: number }> = [];
+  for (const [taskId, userIds] of snapshot) {
+    const body: BulkAssignees = { assignees: userIds.map((userId) => ({ id: userId })) };
+    try {
+      await vikunjaRestRequest(authManager, 'POST', `/tasks/${taskId}/assignees/bulk`, body);
+    } catch (e) {
+      logger.warn('Could not restore assignees after bulk update', {
+        taskId,
+        userIds,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      for (const userId of userIds) {
+        failures.push({ taskId, userId });
+      }
+    }
+  }
+  return failures;
+}
+
+/** `Assignee restoration failed for task(s): ...` suffix, or '' when nothing failed. */
+function assigneeRestoreNote(failures: Array<{ taskId: number; userId: number }>): string {
+  if (failures.length === 0) return '';
+  const taskIds = [...new Set(failures.map((f) => f.taskId))];
+  return ` Assignee restoration failed for task(s): ${taskIds.join(', ')}.`;
+}
+
 // ==================== BULK UPDATE ====================
 
 /**
@@ -320,7 +376,20 @@ export async function bulkUpdateTasks(
     const taskIds = args.taskIds ?? [];
     const fieldValue = resolveBulkUpdateValue(args.field, args.value);
 
-    const perTaskUpdate = async (): Promise<{ content: Array<{ type: 'text'; text: string }> }> => {
+    /**
+     * Per-task get+merge+update fallback.
+     *
+     * `assigneeSnapshot` is the pre-update assignee state captured before the
+     * native `POST /tasks/bulk` ran. It is passed ONLY when that destructive
+     * call already happened and its assignees have not been restored yet
+     * (issue #267(b)): the honesty check downstream of the POST can throw, and
+     * this fallback then re-fetches tasks whose assignees Vikunja has already
+     * wiped — merging that empty list back would make the wipe permanent. The
+     * restore therefore has to come from the snapshot, never from a re-read.
+     */
+    const perTaskUpdate = async (
+      assigneeSnapshot?: AssigneeSnapshot,
+    ): Promise<{ content: Array<{ type: 'text'; text: string }> }> => {
       const updateResult = await processors.update.processBatches(taskIds, async (taskId) => {
         const current = await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${taskId}`);
         // Spread current task so fields not being changed survive Vikunja's full replace
@@ -338,7 +407,22 @@ export async function bulkUpdateTasks(
           const currentAssignees = (currentTask.assignees ?? [])
             .map((a) => a.id)
             .filter((id): id is number => typeof id === 'number');
-          if (args.value.length > 0) {
+          // Reconcile as a SET DIFFERENCE, never "add everything requested,
+          // then remove everything that was there" (issue #267(c)). Verified
+          // live against Vikunja 2.4.0:
+          //   - re-adding an already-assigned user returns HTTP 400 code 4021
+          //     "This user is already assigned to that task", which aborts the
+          //     whole per-task update partway through; and
+          //   - the unconditional removal loop then deleted members of the
+          //     requested set, silently unassigning users the caller had just
+          //     asked to keep.
+          // Both disappear once the overlap is excluded from both loops.
+          const requestedAssignees = args.value as number[];
+          const currentSet = new Set(currentAssignees);
+          const requestedSet = new Set(requestedAssignees);
+          const assigneesToAdd = requestedAssignees.filter((id) => !currentSet.has(id));
+          const assigneesToRemove = currentAssignees.filter((id) => !requestedSet.has(id));
+          if (assigneesToAdd.length > 0) {
             try {
               // Per-user additive assign (PUT /tasks/{taskID}/assignees, body
               // { user_id }, models.TaskAssginee) instead of the bulk endpoint,
@@ -347,7 +431,7 @@ export async function bulkUpdateTasks(
               // on purpose (post-#89 pattern sweep, mirrors the removal loop
               // directly below): concurrent per-user writes to the same task
               // risk "database is locked" 500s on SQLite-backed instances.
-              for (const userId of args.value as number[]) {
+              for (const userId of assigneesToAdd) {
                 await withRetry(
                   () =>
                     vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
@@ -366,7 +450,7 @@ export async function bulkUpdateTasks(
             }
           }
           // DELETE /tasks/{taskID}/assignees/{userID} per the OpenAPI spec — no body.
-          for (const userId of currentAssignees) {
+          for (const userId of assigneesToRemove) {
             try {
               await withRetry(
                 () =>
@@ -393,6 +477,15 @@ export async function bulkUpdateTasks(
         }
         return updated;
       });
+      // Put back whatever the already-executed native bulk call wiped. Runs
+      // before the branches below so it happens even when every per-task
+      // update failed — the assignees were destroyed by the bulk POST, not by
+      // this fallback, so a failed fallback must not leave them lost.
+      const assigneeRestoreFailures = assigneeSnapshot
+        ? await restoreAssigneeSnapshot(authManager, assigneeSnapshot)
+        : [];
+      const restoreNote = assigneeRestoreNote(assigneeRestoreFailures);
+
       if (updateResult.failed.length > 0 && updateResult.successful.length === 0) {
         const firstError = updateResult.failed[0]?.error;
         // Preserve MCPError instances with auth messages
@@ -400,25 +493,27 @@ export async function bulkUpdateTasks(
           throw firstError;
         throw new MCPError(
           ErrorCode.API_ERROR,
-          `Bulk update failed. Could not update any tasks. Failed IDs: ${updateResult.failed.map((f) => f.originalItem).join(', ')}`,
+          `Bulk update failed. Could not update any tasks. Failed IDs: ${updateResult.failed.map((f) => f.originalItem).join(', ')}${restoreNote}`,
         );
       }
       // Report partial failure honestly (mirrors bulkDeleteTasks) instead of
       // claiming every task was updated.
-      if (updateResult.failed.length > 0) {
+      if (updateResult.failed.length > 0 || assigneeRestoreFailures.length > 0) {
         const failedIds = updateResult.failed.map((f) => f.originalItem);
-        return successResponse(
-          'update-task',
-          `Bulk update partially completed. Successfully updated ${updateResult.successful.length} tasks. Failed task IDs: ${failedIds.join(', ')}`,
-          updateResult.successful,
-          {
-            count: updateResult.successful.length,
+        const summary =
+          failedIds.length > 0
+            ? `Bulk update partially completed. Successfully updated ${updateResult.successful.length} tasks. Failed task IDs: ${failedIds.join(', ')}`
+            : `Successfully updated ${updateResult.successful.length} tasks`;
+        return successResponse('update-task', `${summary}${restoreNote}`, updateResult.successful, {
+          count: updateResult.successful.length,
+          ...(failedIds.length > 0 && {
             failedCount: updateResult.failed.length,
             failedIds,
-            affectedFields: [args.field],
-            success: false,
-          },
-        );
+          }),
+          affectedFields: [args.field],
+          success: false,
+          ...(assigneeRestoreFailures.length > 0 && { assigneeRestoreFailures }),
+        });
       }
       return successResponse(
         'update-task',
@@ -443,18 +538,45 @@ export async function bulkUpdateTasks(
       return await perTaskUpdate();
     }
 
+    // Declared OUTSIDE the try so the snapshot survives into the catch: the
+    // native bulk POST below is destructive to assignees and the honesty
+    // check that follows it can throw, handing control to the per-task
+    // fallback with the wipe already committed (issue #267(b)). Holds only
+    // the tasks whose assignees still need putting back.
+    let pendingAssigneeSnapshot: AssigneeSnapshot | undefined;
+
     try {
       // Snapshot assignees first. Verified mechanism (not just observed
       // behavior): `updateTaskAssignees` runs before the `fields` gate and
       // reconciles to `values.assignees`, which is `nil` for a scalar-only
       // bulk request, triggering a full delete (`task_assignees.go`'s
       // full-delete branch) for every task in `task_ids`, regardless of
-      // `fields`.
+      // `fields`. Re-confirmed live on Vikunja 2.4.0 while fixing #267: a
+      // `fields:["priority"]` bulk update left the task's assignee list empty.
       const preFetch = await processors.update.processBatches(
         taskIds,
         async (id) => await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${id}`),
       );
-      const assigneesByTask = new Map<number, number[]>();
+
+      // A task whose snapshot read FAILED must not enter the bulk call
+      // (issue #267(a)): the endpoint would wipe its assignees and there
+      // would be nothing to restore them from, and the old code reported that
+      // silent loss as a full success. Drop those ids from the bulk set; they
+      // surface below as ordinary missing/failed ids because the server never
+      // returns them.
+      const snapshotFailedIds = preFetch.failed
+        .map((f) => f.originalItem)
+        .filter((id): id is number => typeof id === 'number');
+      const bulkTaskIds = taskIds.filter((id) => !snapshotFailedIds.includes(id));
+      if (bulkTaskIds.length === 0) {
+        throw new MCPError(
+          ErrorCode.API_ERROR,
+          'Could not read any task before the bulk update; refusing to call the ' +
+            'assignee-destructive native bulk endpoint without a restorable snapshot',
+        );
+      }
+
+      const assigneesByTask: AssigneeSnapshot = new Map<number, number[]>();
       for (const t of preFetch.successful) {
         if (!t?.id) continue;
         const ids = (t.assignees ?? [])
@@ -464,7 +586,7 @@ export async function bulkUpdateTasks(
       }
 
       const payload: BulkTask = {
-        task_ids: taskIds,
+        task_ids: bulkTaskIds,
         fields: [args.field as string],
         values: { [args.field as string]: fieldValue },
       };
@@ -475,10 +597,35 @@ export async function bulkUpdateTasks(
         payload,
       );
 
+      // The POST resolved, so the server ran `updateSingleTask` and the
+      // assignee wipe is committed. From here on the snapshot is a debt owed
+      // to the caller no matter which way the rest of this block exits — hand
+      // it to the catch below so the per-task fallback settles it if the
+      // honesty check throws (issue #267(b)). Deliberately NOT set when the
+      // POST itself throws: Vikunja runs the bulk handler in a transaction,
+      // so a failed call leaves assignees intact and restoring would be a
+      // pointless extra write.
+      pendingAssigneeSnapshot = assigneesByTask;
+
       // 2.x echoes { task_ids, fields, values, tasks }; tolerate a bare Task[] too.
       // The honesty check below is derived from THIS array — the server's own
       // account of what it updated — never from the requested taskIds.
       const updatedTasks: Task[] = Array.isArray(result) ? result : (result?.tasks ?? []);
+
+      // Re-add the assignees the bulk endpoint cleared. Runs BEFORE the
+      // honesty check on purpose (issue #267(b)): that check throws into the
+      // per-task fallback, which re-fetches each task — and a task re-read
+      // after the wipe reports an empty assignee list, so the fallback would
+      // cement the loss rather than repair it.
+      const assigneeRestoreFailures = await restoreAssigneeSnapshot(authManager, assigneesByTask);
+      // Whatever came back restored is settled; keep only the outstanding
+      // tasks so the fallback (if the honesty check throws) retries exactly
+      // those and never double-writes the rest.
+      const unrestoredTaskIds = new Set(assigneeRestoreFailures.map((f) => f.taskId));
+      pendingAssigneeSnapshot = new Map(
+        [...assigneesByTask].filter(([taskId]) => unrestoredTaskIds.has(taskId)),
+      );
+
       // Sanity-check the server actually applied the value — guards against
       // running into an older server that ignores fields/values.
       const verifiable = ['priority', 'done', 'project_id'].includes(args.field as string);
@@ -494,44 +641,13 @@ export async function bulkUpdateTasks(
 
       // A server that silently drops a subset of the requested IDs
       // (permissions, partial bulk transaction) must not be reported as a
-      // full success. Match the server-returned IDs against what was asked for.
+      // full success. Match the server-returned IDs against what was asked
+      // for — `taskIds`, not `bulkTaskIds`, so tasks withheld from the bulk
+      // call because their snapshot read failed are reported as failures too.
       const returnedIds = new Set(
         updatedTasks.map((t) => t.id).filter((id): id is number => typeof id === 'number'),
       );
       const missingIds = taskIds.filter((id) => !returnedIds.has(id));
-
-      // Re-add the assignees the bulk endpoint cleared. This is a
-      // restore-to-snapshot, not a general assign flow: `userIds` is the
-      // task's own complete pre-update assignee list, so ONE
-      // `POST /tasks/{taskID}/assignees/bulk` (`models.BulkAssignees`,
-      // REPLACE semantics) call per task sets it back to exactly that list —
-      // safe here precisely because the whole set is known, unlike the
-      // additive per-user `PUT /assignees` loop used everywhere else for
-      // general assign/unassign (where replace semantics would silently
-      // unassign everyone else — upstream issue democratize-technology/
-      // vikunja-mcp#15; see the PARKED note in docs/ENDPOINT-TAIL-RETRIAGE.md
-      // line ~87). Sequential across tasks on purpose: concurrent writes 500
-      // with "database is locked" on SQLite backends. Failures are collected
-      // (not just logged) so a lost assignee is surfaced to the caller
-      // rather than silently swallowed — same {taskId, userId} failure
-      // surface as before (PR #95's assigneeRestoreFailures contract),
-      // just populated per-task instead of per-user-per-task.
-      const assigneeRestoreFailures: Array<{ taskId: number; userId: number }> = [];
-      for (const [taskId, userIds] of assigneesByTask) {
-        const body: BulkAssignees = { assignees: userIds.map((userId) => ({ id: userId })) };
-        try {
-          await vikunjaRestRequest(authManager, 'POST', `/tasks/${taskId}/assignees/bulk`, body);
-        } catch (e) {
-          logger.warn('Could not restore assignees after bulk update', {
-            taskId,
-            userIds,
-            error: e instanceof Error ? e.message : String(e),
-          });
-          for (const userId of userIds) {
-            assigneeRestoreFailures.push({ taskId, userId });
-          }
-        }
-      }
 
       // Re-fetch when assignees were restored so the response reflects them.
       // This is presentation only — it does not feed the honesty check above,
@@ -540,7 +656,7 @@ export async function bulkUpdateTasks(
         assigneesByTask.size > 0
           ? (
               await processors.update.processBatches(
-                taskIds,
+                bulkTaskIds,
                 async (id) => await vikunjaRestRequest<Task>(authManager, 'GET', `/tasks/${id}`),
               )
             ).successful
@@ -552,6 +668,13 @@ export async function bulkUpdateTasks(
             ? `Bulk update partially completed. Successfully updated ${updatedTasks.length} tasks. Failed task IDs: ${missingIds.join(', ')}`
             : `Successfully updated ${updatedTasks.length} tasks`,
         ];
+        if (snapshotFailedIds.length > 0) {
+          messages.push(
+            `Task(s) ${snapshotFailedIds.join(', ')} were left untouched because their ` +
+              `pre-update assignee snapshot could not be read (updating them would have ` +
+              `wiped their assignees unrecoverably).`,
+          );
+        }
         if (assigneeRestoreFailures.length > 0) {
           const restoreFailedTaskIds = [...new Set(assigneeRestoreFailures.map((f) => f.taskId))];
           messages.push(
@@ -563,6 +686,7 @@ export async function bulkUpdateTasks(
           affectedFields: [args.field],
           success: false,
           ...(missingIds.length > 0 && { failedCount: missingIds.length, failedIds: missingIds }),
+          ...(snapshotFailedIds.length > 0 && { snapshotFailedIds }),
           ...(assigneeRestoreFailures.length > 0 && { assigneeRestoreFailures }),
         });
       }
@@ -580,7 +704,11 @@ export async function bulkUpdateTasks(
         error: nativeError instanceof Error ? nativeError.message : String(nativeError),
         field: args.field,
       });
-      return await perTaskUpdate();
+      return await perTaskUpdate(
+        pendingAssigneeSnapshot && pendingAssigneeSnapshot.size > 0
+          ? pendingAssigneeSnapshot
+          : undefined,
+      );
     }
   } catch (error) {
     if (error instanceof MCPError) throw error;

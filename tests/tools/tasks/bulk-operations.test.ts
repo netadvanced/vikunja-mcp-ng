@@ -427,6 +427,162 @@ describe('Bulk operations', () => {
         expect(markdown).toContain('Assignee restoration failed for task(s): 1');
       });
 
+      // Issue #267(a): the pre-update snapshot only read `preFetch.successful`,
+      // so a task whose snapshot GET failed still went into the destructive
+      // bulk call — its assignees were wiped with nothing left to restore
+      // them from, and the whole thing was reported as a full success.
+      describe('unreadable pre-update snapshot (issue #267(a))', () => {
+        const routeWithFailingSnapshot = (failingIds: number[]) => {
+          mockRest.mockImplementation(
+            async (_auth: unknown, method: string, path: string, body?: unknown) => {
+              const taskIdMatch = /^\/tasks\/(\d+)$/.exec(path);
+              if (method === 'GET' && taskIdMatch?.[1] !== undefined) {
+                const id = Number(taskIdMatch[1]);
+                if (failingIds.includes(id)) throw new Error(`snapshot read failed for ${id}`);
+                return { id, title: `Task ${id}`, done: false, assignees: [{ id: 5 }] };
+              }
+              if (method === 'POST' && path === '/tasks/bulk') {
+                const ids = (body as { task_ids: number[] }).task_ids;
+                return {
+                  task_ids: ids,
+                  tasks: ids.map((id) => ({ id, title: `Task ${id}`, done: true })),
+                };
+              }
+              if (method === 'POST' && /^\/tasks\/\d+\/assignees\/bulk$/.test(path)) {
+                return undefined;
+              }
+              throw new Error(`mockRest: unhandled ${method} ${path}`);
+            },
+          );
+        };
+
+        it('withholds a task whose snapshot read failed from the bulk payload', async () => {
+          routeWithFailingSnapshot([2]);
+
+          const result = await bulkUpdateTasks({ taskIds: [1, 2, 3], field: 'done', value: true });
+
+          const bulkCall = mockRest.mock.calls.find(
+            (call) => call[1] === 'POST' && call[2] === '/tasks/bulk',
+          );
+          expect((bulkCall?.[3] as { task_ids: number[] }).task_ids).toEqual([1, 3]);
+          // Task 2 keeps its assignees precisely because it was never sent.
+          expect(mockRest).not.toHaveBeenCalledWith(
+            expect.anything(),
+            'POST',
+            '/tasks/2/assignees/bulk',
+            expect.anything(),
+          );
+
+          const markdown = result.content[0].text;
+          expect(parseMarkdown(markdown).hasHeading(2, /Error/)).toBe(true);
+          expect(markdown).toContain('Failed task IDs: 2');
+          expect(markdown).toContain(
+            'Task(s) 2 were left untouched because their pre-update assignee snapshot could not be read',
+          );
+        });
+
+        it('falls back to the per-task path rather than running a bulk call it cannot undo', async () => {
+          routeWithFailingSnapshot([1]);
+
+          // Every snapshot read fails, so there is no restorable state at all:
+          // the native call must not run. The per-task fallback then fails too
+          // (its own GET fails), which is honest — nothing was destroyed.
+          await expect(
+            bulkUpdateTasks({ taskIds: [1], field: 'done', value: true }),
+          ).rejects.toThrow('Bulk update failed. Could not update any tasks');
+
+          expect(mockRest).not.toHaveBeenCalledWith(
+            expect.anything(),
+            'POST',
+            '/tasks/bulk',
+            expect.anything(),
+          );
+        });
+      });
+
+      // Issue #267(b): the honesty check runs AFTER the destructive bulk POST.
+      // When it throws, control passes to the per-task fallback, which
+      // re-fetches each task — and a task re-read after the wipe reports an
+      // empty assignee list, so the fallback used to cement the loss.
+      describe('honesty-check throw after the destructive bulk POST (issue #267(b))', () => {
+        it('restores the snapshot even though the bulk update is judged not applied', async () => {
+          mockRest.mockImplementation(async (_auth: unknown, method: string, path: string) => {
+            const taskIdMatch = /^\/tasks\/(\d+)$/.exec(path);
+            if (method === 'GET' && taskIdMatch?.[1] !== undefined) {
+              // After the wipe every read reports an empty assignee list.
+              const wiped = mockRest.mock.calls.some(
+                (call) => call[1] === 'POST' && call[2] === '/tasks/bulk',
+              );
+              return {
+                id: 1,
+                title: 'Task 1',
+                done: false,
+                assignees: wiped ? [] : [{ id: 5 }, { id: 7 }],
+              };
+            }
+            if (method === 'POST' && path === '/tasks/bulk') {
+              // Server echoes the task WITHOUT the requested value applied,
+              // which is what trips the honesty check.
+              return { task_ids: [1], tasks: [{ id: 1, title: 'Task 1', done: false }] };
+            }
+            if (method === 'POST' && path === '/tasks/1') {
+              return { id: 1, title: 'Task 1', done: true };
+            }
+            if (method === 'POST' && path === '/tasks/1/assignees/bulk') {
+              return undefined;
+            }
+            throw new Error(`mockRest: unhandled ${method} ${path}`);
+          });
+
+          const result = await bulkUpdateTasks({ taskIds: [1], field: 'done', value: true });
+
+          const restoreCalls = mockRest.mock.calls.filter(
+            (call) => call[1] === 'POST' && call[2] === '/tasks/1/assignees/bulk',
+          );
+          expect(restoreCalls).toHaveLength(1);
+          expect(restoreCalls[0]?.[3]).toEqual({ assignees: [{ id: 5 }, { id: 7 }] });
+          // Fallback still ran and produced an honest success.
+          expect(mockRest).toHaveBeenCalledWith(
+            expect.anything(),
+            'POST',
+            '/tasks/1',
+            expect.anything(),
+          );
+          expect(result.content[0].text).toContain('## ✅ Success');
+        });
+
+        it('retries an unrestored task in the fallback and reports it when that fails too', async () => {
+          mockRest.mockImplementation(async (_auth: unknown, method: string, path: string) => {
+            const taskIdMatch = /^\/tasks\/(\d+)$/.exec(path);
+            if (method === 'GET' && taskIdMatch?.[1] !== undefined) {
+              return { id: 1, title: 'Task 1', done: false, assignees: [{ id: 5 }] };
+            }
+            if (method === 'POST' && path === '/tasks/bulk') {
+              return { task_ids: [1], tasks: [{ id: 1, title: 'Task 1', done: false }] };
+            }
+            if (method === 'POST' && path === '/tasks/1') {
+              return { id: 1, title: 'Task 1', done: true };
+            }
+            if (method === 'POST' && path === '/tasks/1/assignees/bulk') {
+              throw new Error('database is locked');
+            }
+            throw new Error(`mockRest: unhandled ${method} ${path}`);
+          });
+
+          const result = await bulkUpdateTasks({ taskIds: [1], field: 'done', value: true });
+
+          // Once in the native path, once more from the fallback.
+          const restoreCalls = mockRest.mock.calls.filter(
+            (call) => call[1] === 'POST' && call[2] === '/tasks/1/assignees/bulk',
+          );
+          expect(restoreCalls).toHaveLength(2);
+
+          const markdown = result.content[0].text;
+          expect(parseMarkdown(markdown).hasHeading(2, /Error/)).toBe(true);
+          expect(markdown).toContain('Assignee restoration failed for task(s): 1');
+        });
+      });
+
       // `percent_done` was missing from the bulk-update field allowlist while
       // single `update` supported it — bulk-update rejected a value single
       // update accepted. The scale is a FRACTION 0-1 (0.5 = 50%), matching
@@ -559,6 +715,12 @@ describe('Bulk operations', () => {
           let sentBody: unknown;
           mockRest.mockImplementation(
             async (_auth: unknown, method: string, path: string, body?: unknown) => {
+              // The pre-update assignee snapshot GET has to succeed: a task
+              // whose snapshot cannot be read is now deliberately withheld
+              // from the bulk call (issue #267(a)).
+              if (method === 'GET' && /^\/tasks\/\d+$/.test(path)) {
+                return { id: 1, title: 'Task 1', assignees: [] };
+              }
               if (method === 'POST' && path === '/tasks/bulk') {
                 sentBody = body;
                 return {
@@ -590,6 +752,9 @@ describe('Bulk operations', () => {
           let sentBody: unknown;
           mockRest.mockImplementation(
             async (_auth: unknown, method: string, path: string, body?: unknown) => {
+              if (method === 'GET' && /^\/tasks\/\d+$/.test(path)) {
+                return { id: 1, title: 'Task 1', assignees: [] };
+              }
               if (method === 'POST' && path === '/tasks/bulk') {
                 sentBody = body;
                 return {
@@ -614,6 +779,9 @@ describe('Bulk operations', () => {
           let sentBody: unknown;
           mockRest.mockImplementation(
             async (_auth: unknown, method: string, path: string, body?: unknown) => {
+              if (method === 'GET' && /^\/tasks\/\d+$/.test(path)) {
+                return { id: 1, title: 'Task 1', assignees: [] };
+              }
               if (method === 'POST' && path === '/tasks/bulk') {
                 sentBody = body;
                 return {
@@ -747,10 +915,14 @@ describe('Bulk operations', () => {
       it('should handle assignees field', async () => {
         const mockTask = { id: 1, title: 'Task 1', assignees: [] };
 
-        mockClient.tasks.getTask
-          .mockResolvedValueOnce({ id: 1, title: 'Task 1', assignees: [] })
-          .mockResolvedValueOnce({ id: 1, title: 'Task 1', assignees: [{ id: 1 }] })
-          .mockResolvedValueOnce({ id: 1, title: 'Task 1', assignees: [{ id: 1 }] });
+        // Both reads model the task's PRE-update state: the merge GET and the
+        // reconciliation GET both run before any assignee write (the
+        // intervening POST /tasks/{id} carries the spread assignee list
+        // through unchanged). An earlier revision of this fixture returned
+        // `[{ id: 1 }]` from the second read while asking for `[1]`, which is
+        // really the issue #267(c) overlap case, not a plain assign — it is
+        // covered by its own test below.
+        mockClient.tasks.getTask.mockResolvedValue({ id: 1, title: 'Task 1', assignees: [] });
         mockClient.tasks.updateTask.mockResolvedValue(mockTask);
 
         const result = await bulkUpdateTasks({ taskIds: [1], field: 'assignees', value: [1] });
@@ -769,6 +941,60 @@ describe('Bulk operations', () => {
 
         const markdown = result.content[0].text;
         expect(markdown).toContain('## ✅ Success');
+      });
+
+      // Issue #267(c). Verified live against Vikunja 2.4.0 while writing this:
+      // `PUT /tasks/{id}/assignees` for a user who is already assigned
+      // returns HTTP 400 code 4021 "This user is already assigned to that
+      // task", so the old add-everything loop aborted the update; and the old
+      // remove-everything loop then deleted ids that were in the requested
+      // set, silently unassigning a user the caller asked to keep.
+      describe('overlapping assignee sets (issue #267)', () => {
+        const routeAssigneeUpdate = (current: number[]) => {
+          mockClient.tasks.getTask.mockResolvedValue({
+            id: 1,
+            title: 'Task 1',
+            assignees: current.map((id) => ({ id })),
+          });
+          mockClient.tasks.updateTask.mockResolvedValue({ id: 1, title: 'Task 1' });
+        };
+        const assigneeCalls = (method: 'PUT' | 'DELETE') =>
+          mockRest.mock.calls.filter(
+            (call) => call[1] === method && String(call[2]).startsWith('/tasks/1/assignees'),
+          );
+
+        it('never deletes a user who is in both the current and the requested set', async () => {
+          routeAssigneeUpdate([5, 7]);
+
+          const result = await bulkUpdateTasks({ taskIds: [1], field: 'assignees', value: [5, 9] });
+
+          // 5 is in both sets: neither re-added (400 code 4021) nor removed.
+          expect(assigneeCalls('PUT').map((c) => c[3])).toEqual([{ user_id: 9 }]);
+          expect(assigneeCalls('DELETE').map((c) => c[2])).toEqual(['/tasks/1/assignees/7']);
+          expect(result.content[0].text).toContain('## ✅ Success');
+        });
+
+        it('issues no assignee writes at all when the requested set equals the current one', async () => {
+          routeAssigneeUpdate([1]);
+
+          const result = await bulkUpdateTasks({ taskIds: [1], field: 'assignees', value: [1] });
+
+          expect(assigneeCalls('PUT')).toHaveLength(0);
+          expect(assigneeCalls('DELETE')).toHaveLength(0);
+          expect(result.content[0].text).toContain('## ✅ Success');
+        });
+
+        it('clears every assignee when an empty set is requested', async () => {
+          routeAssigneeUpdate([5, 7]);
+
+          await bulkUpdateTasks({ taskIds: [1], field: 'assignees', value: [] });
+
+          expect(assigneeCalls('PUT')).toHaveLength(0);
+          expect(assigneeCalls('DELETE').map((c) => c[2])).toEqual([
+            '/tasks/1/assignees/5',
+            '/tasks/1/assignees/7',
+          ]);
+        });
       });
 
       it('should handle authentication errors in assignee operations', async () => {
