@@ -548,6 +548,32 @@ rather than returning garbage), plus the associated Vikunja URL and
 created/updated/last-used timestamps. The raw token is never logged and the tool
 responses only ever show a masked prefix.
 
+#### Run exactly one server process per vault file
+
+`oidc-http` mode is designed and tested as a **single process**. Running two or more
+server processes against the same `VIKUNJA_MCP_VAULT_PATH` (a scaled-out Compose/Swarm
+service, two replicas behind a load balancer, a rolling deploy where old and new
+containers overlap) is **not supported** and will lose data silently.
+
+The vault is a single JSON file that each process loads into memory once and rewrites in
+full on every mutation, serialized by an in-process mutex. That mutex is per process, so
+two processes can interleave their read-modify-write cycles: both load the same file,
+both write their whole map back, and the second write erases the first process's
+provisioning. The same single-process assumption runs through the rest of `oidc-http`
+mode, and none of it is shared state a second process could join:
+
+- **Enrollment tickets** (`/enroll`) live in memory, so a ticket minted by one process
+  cannot be redeemed by another and one-click SSO fails at random.
+- **Per-identity rate limiting** counts per process, so N replicas mean N times the
+  intended ceiling.
+- **Circuit-breaker state** and cached clients are per process, so failure handling
+  degrades unevenly.
+
+Scale vertically instead. If horizontal scaling is ever needed, it is a design change
+(shared credential store, shared ticket store, shared rate-limit backend), not a
+configuration option — sticky sessions do not make the vault safe, because provisioning
+writes the whole file, not one record.
+
 Self-service commands (all via the `vikunja_auth` tool, oidc-http mode only):
 
 - **`provision`**: `{ apiToken, vikunjaUrl? }`. Validates the token against the live

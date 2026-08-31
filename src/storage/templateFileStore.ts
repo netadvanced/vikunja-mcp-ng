@@ -21,6 +21,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../utils/logger';
+import { fsyncPath } from './fsync';
 
 /**
  * A single persisted template entry. `data` is an opaque JSON-serialized
@@ -137,6 +138,11 @@ export function loadTemplatesFile(filePath: string): PersistedTemplateRecord[] {
  *
  * Creates the parent directory if it doesn't exist yet, so a fresh Docker
  * volume mount works without a separate provisioning step.
+ *
+ * The temp file is `fsync`ed before the rename and the directory after it
+ * (issue #293 / LOW-10) — atomic-on-rename only orders the change within the
+ * page cache, so without the flush a power loss right after a "saved"
+ * template can still leave an empty or truncated file behind.
  */
 export function writeTemplatesFileAtomic(
   filePath: string,
@@ -146,5 +152,11 @@ export function writeTemplatesFileAtomic(
   fs.mkdirSync(dir, { recursive: true });
   const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
   fs.writeFileSync(tmpPath, JSON.stringify(records, null, 2), 'utf-8');
+  fsyncPath(tmpPath, 'r+');
   fs.renameSync(tmpPath, filePath);
+  try {
+    fsyncPath(dir, 'r');
+  } catch {
+    // Best-effort: opening a directory for fsync isn't portable (Windows).
+  }
 }

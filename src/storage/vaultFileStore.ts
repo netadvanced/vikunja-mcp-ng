@@ -19,13 +19,25 @@
  *    existing `_FILE` secrets convention, `src/config/secrets.ts`), a random
  *    12-byte IV per record, and an authenticated GCM tag verified on every
  *    decrypt. A wrong key or a tampered record fails the tag check loudly
- *    (`decryptToken` throws) rather than silently returning garbage.
+ *    (`decryptToken` throws) rather than silently returning garbage. The tag
+ *    additionally covers the record's identity key and `vikunjaUrl` as GCM
+ *    AAD (`vaultRecordAad`, `keyVersion: 2`) so the plaintext fields around
+ *    the ciphertext cannot be edited or spliced either — issue #262.
  *
  * Concurrency: every mutation (`provision`/`deprovision`) is serialized
  * through a single `async-mutex` `Mutex` (matching the codebase's existing
  * thread-safety convention — see `src/client.ts`, `src/storage/
  * SimpleFilterStorage.ts`), so two concurrent provisions/deprovisions can
  * never interleave their read-modify-write cycle and tear the file.
+ *
+ * That mutex covers concurrent *requests*, not concurrent *processes*: two
+ * servers sharing one vault file would each rewrite the whole map and the
+ * later write would erase the earlier one's provisioning. No file locking is
+ * added because a second process is out of scope by design — enrollment
+ * tickets, rate-limit counters and circuit-breaker state are process-local
+ * too, so a second replica breaks those first. `oidc-http` mode is
+ * single-process; see docs/CONFIGURATION.md ("Run exactly one server process
+ * per vault file") and docs/OIDC-RESOURCE-SERVER.md §3(c).
  *
  * `getCredential` — the method the `VikunjaCredentialSource` interface
  * requires (`src/auth/CredentialSource.ts`) — is deliberately synchronous
@@ -44,12 +56,34 @@ import { maskCredential } from '../utils/security';
 import { ConfigurationError } from '../config/types';
 import { readSecretEnv } from '../config/secrets';
 import { identityKey, type Identity } from '../context/requestContext';
+import { fsyncPath } from './fsync';
 import type { VikunjaCredential } from '../auth/CredentialSource';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
 const KEY_LENGTH = 32;
-const CURRENT_KEY_VERSION = 1;
+
+/**
+ * Record format 1: AES-256-GCM with NO additional authenticated data, so the
+ * record's `vikunjaUrl` and its identity key were outside the GCM tag
+ * (issue #262 / CRIT-1). Still readable, never written any more.
+ */
+const KEY_VERSION_NO_AAD = 1;
+
+/**
+ * Record format 2 (current): identical crypto, but `vaultRecordAad()` —
+ * the identity key plus the record's `vikunjaUrl` — is fed to the cipher as
+ * GCM additional authenticated data, so neither can be swapped without the
+ * tag check failing.
+ */
+const CURRENT_KEY_VERSION = 2;
+
+/**
+ * How often a record's `lastUsedAt` is actually flushed to disk (issue
+ * #278). `getCredential` runs per request, so the timestamp is throttled to
+ * at most one vault write per identity per interval.
+ */
+const DEFAULT_LAST_USED_FLUSH_INTERVAL_MS = 60_000;
 
 /** One vault record's on-disk shape (docs/OIDC-RESOURCE-SERVER.md §3c file-shape table). */
 export interface VaultRecord {
@@ -65,7 +99,18 @@ export interface VaultRecord {
 
 /** Status shape returned by `vikunja_auth status` in oidc-http mode. */
 export interface VaultStatus {
+  /**
+   * Whether this identity has a credential that actually WORKS — a stored
+   * record whose decrypt succeeds. A record that is present but
+   * undecryptable (master key rotated/mismatched, tampered binding) reports
+   * `false` here, because every request using it fails exactly as if nothing
+   * were linked; `recordPresent` + `issue` explain the difference (#278).
+   */
   readonly provisioned: boolean;
+  /** True when a record exists for this identity, decryptable or not. */
+  readonly recordPresent?: boolean;
+  /** Human-readable reason a present record is nevertheless unusable. */
+  readonly issue?: string;
   readonly vikunjaUrl?: string;
   /** Masked (`maskCredential`) token prefix — never the full token. */
   readonly maskedToken?: string;
@@ -167,16 +212,53 @@ export function resolveVaultPath(configuredPath: string | undefined): string | u
 }
 
 /**
+ * The GCM additional-authenticated-data (AAD) that binds a record's
+ * ciphertext to BOTH the identity that owns it and the Vikunja URL the
+ * decrypted token will be sent to (issue #262 / CRIT-1).
+ *
+ * Without it only `ciphertext/iv/authTag` are covered by the auth tag, so
+ * someone who can write the vault file but does NOT hold the master key can
+ * (a) retarget `vikunjaUrl` at a server they control and collect the
+ * victim's plaintext token on its next use, or (b) splice identity A's
+ * ciphertext trio under identity B's key and impersonate A. Both edits leave
+ * the tag valid because the tag never covered those bytes. Feeding this
+ * value to `cipher.setAAD`/`decipher.setAAD` makes either edit fail the tag
+ * check, which `getCredential` already translates into `null`.
+ *
+ * The two components are LENGTH-PREFIXED rather than just concatenated: an
+ * `identityKey` is `"<issuer>|<sub>"` and a URL can itself contain any
+ * separator character, so plain concatenation would let a crafted
+ * (issuer, sub, url) triple re-partition into a different one and collide.
+ */
+export function vaultRecordAad(identityKeyValue: string, vikunjaUrl: string): Buffer {
+  return Buffer.from(
+    `vikunja-mcp-vault/v${CURRENT_KEY_VERSION}:` +
+      `${identityKeyValue.length}:${identityKeyValue}:` +
+      `${vikunjaUrl.length}:${vikunjaUrl}`,
+    'utf-8',
+  );
+}
+
+/**
  * Encrypts `plaintext` (a Vikunja `tk_` token) with AES-256-GCM: a fresh
  * random 12-byte IV per call (D4), returning base64-encoded ciphertext/iv/
  * authTag ready to store on a `VaultRecord`.
+ *
+ * `aad`, when supplied ({@link vaultRecordAad}), is covered by the resulting
+ * authentication tag without being encrypted — that is what binds the record
+ * to its identity and `vikunjaUrl`. It is optional only so the legacy
+ * `keyVersion: 1` format stays decryptable; every new record passes one.
  */
 export function encryptToken(
   plaintext: string,
   key: Buffer,
+  aad?: Buffer,
 ): { ciphertext: string; iv: string; authTag: string } {
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  if (aad !== undefined) {
+    cipher.setAAD(aad);
+  }
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return {
@@ -193,18 +275,41 @@ export function encryptToken(
  * with — this function itself never silently returns garbage; callers that
  * must not throw (`VaultFileStore.getCredential`) catch and translate this
  * into `null` themselves.
+ *
+ * `aad` must be byte-identical to the value passed to {@link encryptToken}
+ * (i.e. {@link vaultRecordAad} for `keyVersion: 2` records, omitted for
+ * legacy `keyVersion: 1` ones) or the tag check fails.
  */
 export function decryptToken(
   record: Pick<VaultRecord, 'ciphertext' | 'iv' | 'authTag'>,
   key: Buffer,
+  aad?: Buffer,
 ): string {
   const iv = Buffer.from(record.iv, 'base64');
   const authTag = Buffer.from(record.authTag, 'base64');
   const ciphertext = Buffer.from(record.ciphertext, 'base64');
   const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(authTag);
+  if (aad !== undefined) {
+    decipher.setAAD(aad);
+  }
   const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return decrypted.toString('utf-8');
+}
+
+/** {@link loadVaultFileWithStatus}'s result: the records plus how trustworthy they are. */
+export interface VaultLoadResult {
+  /** Every record that loaded cleanly. Possibly empty. */
+  readonly records: Map<string, VaultRecord>;
+  /**
+   * `undefined` when the load is a faithful view of the file (including the
+   * legitimately-empty "file does not exist yet" case). Otherwise a short
+   * human-readable reason why `records` is known to be INCOMPLETE — the
+   * file could not be read, was not parseable, or held entries that had to
+   * be dropped. A caller must never write `records` back over the file in
+   * that state: the write would make the loss permanent (issue #266).
+   */
+  readonly incompleteReason?: string;
 }
 
 /**
@@ -213,20 +318,28 @@ export function decryptToken(
  * volume yet) or a malformed one (not JSON, not an object, individual
  * malformed entries) all fall back to an empty (or partially-empty) vault
  * with a warning logged — matching `loadTemplatesFile`'s defensive posture.
+ *
+ * Unlike `loadTemplatesFile`, the *reason* matters here, because a vault
+ * holds other people's credentials: everything except "the file isn't there
+ * yet" is reported as `incompleteReason` so `VaultFileStore` can refuse to
+ * write an incomplete map back over the real file (issue #266).
  */
-export function loadVaultFile(filePath: string): Map<string, VaultRecord> {
+export function loadVaultFileWithStatus(filePath: string): VaultLoadResult {
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, 'utf-8');
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT') {
-      logger.warn('Failed to read credential vault file, starting with an empty vault', {
-        filePath,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    if (code === 'ENOENT') {
+      // Not a failure: a fresh deployment has no vault file yet.
+      return { records: new Map() };
     }
-    return new Map();
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn('Failed to read credential vault file, starting with an empty vault', {
+      filePath,
+      error: message,
+    });
+    return { records: new Map(), incompleteReason: `the vault file could not be read (${message})` };
   }
 
   let parsed: unknown;
@@ -237,14 +350,14 @@ export function loadVaultFile(filePath: string): Map<string, VaultRecord> {
       filePath,
       error: error instanceof Error ? error.message : String(error),
     });
-    return new Map();
+    return { records: new Map(), incompleteReason: 'the vault file is not valid JSON' };
   }
 
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     logger.warn('Credential vault file did not contain a JSON object, starting with an empty vault', {
       filePath,
     });
-    return new Map();
+    return { records: new Map(), incompleteReason: 'the vault file is not a JSON object' };
   }
 
   const map = new Map<string, VaultRecord>();
@@ -260,8 +373,23 @@ export function loadVaultFile(filePath: string): Map<string, VaultRecord> {
       totalEntries: entries.length,
       validEntries: map.size,
     });
+    return {
+      records: map,
+      incompleteReason:
+        `the vault file contained ${entries.length - map.size} malformed ` +
+        `entr${entries.length - map.size === 1 ? 'y' : 'ies'} that had to be dropped`,
+    };
   }
-  return map;
+  return { records: map };
+}
+
+/**
+ * {@link loadVaultFileWithStatus} without the load status — the plain
+ * "give me the records" reader. Prefer the status-returning variant anywhere
+ * the result may be written back (issue #266).
+ */
+export function loadVaultFile(filePath: string): Map<string, VaultRecord> {
+  return loadVaultFileWithStatus(filePath).records;
 }
 
 /**
@@ -287,7 +415,22 @@ export function writeVaultFileAtomic(filePath: string, records: Map<string, Vaul
   // process umask before the chmod below — defense in depth on top of the
   // post-rename chmod.
   fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  // Flush the temp file's contents to the physical device BEFORE the rename
+  // (issue #293 / LOW-10). Without this, `writeFileSync` + `renameSync` only
+  // guarantees ordering within the page cache: a power loss seconds after a
+  // "successful" provision can leave the renamed file empty or truncated,
+  // silently losing every credential in the vault.
+  fsyncPath(tmpPath, 'r+');
   fs.renameSync(tmpPath, filePath);
+  // ...and flush the directory entry itself, so the rename survives too.
+  // Best-effort: opening a directory for fsync is not supported everywhere
+  // (notably Windows), and a durable file with an unflushed rename is still
+  // strictly better than neither.
+  try {
+    fsyncPath(dir, 'r');
+  } catch {
+    // Intentionally ignored — see above.
+  }
   try {
     fs.chmodSync(filePath, 0o600);
   } catch {
@@ -308,17 +451,154 @@ export function writeVaultFileAtomic(filePath: string, records: Map<string, Vaul
 export class VaultFileStore {
   private readonly mutex = new Mutex();
   private cache: Map<string, VaultRecord> | undefined;
+  /**
+   * Set when {@link load} produced a map that is known NOT to be the whole
+   * file (unreadable file, unparseable JSON, dropped entries). While set,
+   * every mutation refuses to write — see {@link assertWritable} (#266).
+   */
+  private incompleteLoadReason: string | undefined;
+  /** Identity keys already warned about being on the legacy no-AAD format. */
+  private readonly legacyFormatWarned = new Set<string>();
+  /** How rarely `lastUsedAt` is flushed to disk — see {@link touchLastUsed}. */
+  private readonly lastUsedFlushIntervalMs: number;
 
   constructor(
     private readonly filePath: string,
     private readonly masterKey: Buffer,
-  ) {}
+    options: { lastUsedFlushIntervalMs?: number } = {},
+  ) {
+    this.lastUsedFlushIntervalMs =
+      options.lastUsedFlushIntervalMs ?? DEFAULT_LAST_USED_FLUSH_INTERVAL_MS;
+  }
 
   private load(): Map<string, VaultRecord> {
     if (!this.cache) {
-      this.cache = loadVaultFile(this.filePath);
+      const result = loadVaultFileWithStatus(this.filePath);
+      this.cache = result.records;
+      this.incompleteLoadReason = result.incompleteReason;
     }
     return this.cache;
+  }
+
+  /**
+   * Guards every write path (issue #266).
+   *
+   * The cache is populated once and never invalidated, so a single failed or
+   * partial load — an EACCES on a mis-permissioned volume, an EIO, a
+   * half-written file — would otherwise become the process's permanent idea
+   * of the vault's contents. The next `provision` writes the WHOLE map back,
+   * which would silently delete every identity that failed to load. Refusing
+   * to write keeps a read-side outage from turning into permanent data loss:
+   * already-provisioned users whose records did load keep working, and the
+   * operator gets an actionable error instead of a wiped vault.
+   *
+   * Recovery is deliberately an explicit operator action (fix the
+   * permissions, or move the damaged file aside) followed by a restart —
+   * never something a tool call can trigger on a tenant's behalf.
+   */
+  private assertWritable(): void {
+    this.load();
+    if (this.incompleteLoadReason !== undefined) {
+      logger.error('Refusing to write the credential vault after an incomplete load', {
+        filePath: this.filePath,
+        reason: this.incompleteLoadReason,
+      });
+      throw new Error(
+        `The credential vault cannot be updated right now: ${this.incompleteLoadReason}. ` +
+          'Writing would overwrite the vault with an incomplete view and permanently ' +
+          'destroy the records that failed to load. An operator must repair or move aside ' +
+          'the vault file and restart the server.',
+      );
+    }
+  }
+
+  /**
+   * Whether this process's view of the vault is known to be incomplete
+   * (issue #266) — writes are refused while true. Exposed for `readyz`-style
+   * health reporting and for `getStatus`'s honesty about why an identity
+   * looks unprovisioned.
+   */
+  isDegraded(): boolean {
+    this.load();
+    return this.incompleteLoadReason !== undefined;
+  }
+
+  /**
+   * Decrypts one record with the AAD its `keyVersion` calls for (#262).
+   *
+   * `keyVersion: 2` (current) verifies the identity+`vikunjaUrl` binding;
+   * `keyVersion: 1` predates the binding and is decrypted without AAD so a
+   * vault written by an older build keeps working across the upgrade — the
+   * operator is told (once per identity) to re-provision, which rewrites the
+   * record in the bound format. Any other `keyVersion` is a record this
+   * build cannot read: it throws like a failed tag check, and every caller
+   * already turns that into `null`/"unusable" rather than a crash.
+   */
+  private decryptRecord(record: VaultRecord, key: string): string {
+    if (record.keyVersion === CURRENT_KEY_VERSION) {
+      return decryptToken(record, this.masterKey, vaultRecordAad(key, record.vikunjaUrl));
+    }
+    if (record.keyVersion === KEY_VERSION_NO_AAD) {
+      if (!this.legacyFormatWarned.has(key)) {
+        this.legacyFormatWarned.add(key);
+        logger.warn(
+          'Vault record is in the legacy pre-AAD format (keyVersion 1); its vikunjaUrl and ' +
+            'identity binding are not covered by the authentication tag. Re-run ' +
+            'vikunja_auth provision for this identity to upgrade it.',
+          { identity: maskCredential(key) },
+        );
+      }
+      return decryptToken(record, this.masterKey);
+    }
+    throw new Error(
+      `Unsupported vault record keyVersion ${record.keyVersion} (this build reads 1 and ` +
+        `${CURRENT_KEY_VERSION}); the record was written by a newer server version.`,
+    );
+  }
+
+  /**
+   * Records that `identity`'s credential was just used (issue #278 —
+   * `lastUsedAt` previously had no writer anywhere in `src/` and was
+   * therefore always reported as `null`).
+   *
+   * Throttled: `getCredential` runs on every authenticated request, and a
+   * full atomic rewrite of the vault per request would be both wasteful and
+   * a write-amplification DoS lever for a busy tenant. One write per
+   * identity per {@link lastUsedFlushIntervalMs} keeps the timestamp useful
+   * ("was this credential used in the last hour/day?") at negligible cost.
+   *
+   * Never throws and never propagates a write failure: this is bookkeeping,
+   * and `getCredential`'s contract is that it always resolves.
+   *
+   * Synchronous on purpose. `provision`/`deprovision` do all of their own
+   * load-mutate-write work in one uninterrupted synchronous block after
+   * acquiring the mutex, so a synchronous write here can never interleave
+   * with one on Node's single thread — it does not need (and must not
+   * block on) the mutex.
+   */
+  private touchLastUsed(key: string, record: VaultRecord): void {
+    if (this.incompleteLoadReason !== undefined) {
+      // Never write a partial view back over the file (issue #266).
+      return;
+    }
+    const now = Date.now();
+    const previous = record.lastUsedAt === null ? Number.NaN : Date.parse(record.lastUsedAt);
+    if (Number.isFinite(previous) && now - previous < this.lastUsedFlushIntervalMs) {
+      return;
+    }
+    const updated: VaultRecord = { ...record, lastUsedAt: new Date(now).toISOString() };
+    const next = new Map(this.load());
+    next.set(key, updated);
+    try {
+      writeVaultFileAtomic(this.filePath, next);
+      this.cache = next;
+    } catch (error) {
+      // The credential itself is fine; only the usage timestamp is stale.
+      logger.warn('Failed to persist the vault lastUsedAt timestamp', {
+        identity: maskCredential(key),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -328,36 +608,69 @@ export class VaultFileStore {
    * contract (`src/auth/CredentialSource.ts`) exactly.
    */
   getCredential(identity: Identity): VikunjaCredential | null {
-    const record = this.load().get(identityKey(identity));
+    const key = identityKey(identity);
+    const record = this.load().get(key);
     if (!record) {
       return null;
     }
     try {
-      const apiToken = decryptToken(record, this.masterKey);
+      const apiToken = this.decryptRecord(record, key);
+      this.touchLastUsed(key, record);
       return { apiUrl: record.vikunjaUrl, apiToken, authType: 'api-token' };
     } catch (error) {
-      logger.error('Vault record failed to decrypt (wrong master key or corrupted record)', {
-        identity: maskCredential(identityKey(identity)),
-        error: error instanceof Error ? error.message : String(error),
-      });
+      logger.error(
+        'Vault record failed to decrypt (wrong master key, tampered vikunjaUrl/identity ' +
+          'binding, or corrupted record)',
+        {
+          identity: maskCredential(key),
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
       return null;
     }
   }
 
-  /** `vikunja_auth status` in oidc-http mode — never reveals the raw token. */
+  /**
+   * `vikunja_auth status` in oidc-http mode — never reveals the raw token.
+   *
+   * Reports decrypt HEALTH, not mere presence in the map (issue #278):
+   * status used to answer "linked" for a record `getCredential` could not
+   * decrypt, so a user whose vault survived a master-key rotation was told
+   * everything was fine while every request failed with "no credential".
+   */
   getStatus(identity: Identity): VaultStatus {
-    const record = this.load().get(identityKey(identity));
+    const key = identityKey(identity);
+    const map = this.load();
+    if (this.incompleteLoadReason !== undefined && !map.has(key)) {
+      // Don't claim "not provisioned" when we simply could not read the file
+      // this record may well live in (issue #266).
+      return {
+        provisioned: false,
+        issue: `The credential vault could not be fully read: ${this.incompleteLoadReason}.`,
+      };
+    }
+    const record = map.get(key);
     if (!record) {
       return { provisioned: false };
     }
     let maskedToken: string | undefined;
+    let issue: string | undefined;
     try {
-      maskedToken = maskCredential(decryptToken(record, this.masterKey));
-    } catch {
-      maskedToken = undefined;
+      maskedToken = maskCredential(this.decryptRecord(record, key));
+    } catch (error) {
+      issue =
+        'A credential is stored for you but cannot be decrypted (wrong vault master key, ' +
+        'or a tampered/corrupted record), so it cannot be used. Run vikunja_auth ' +
+        'deprovision, then provision again.';
+      logger.warn('Vault status reports a stored-but-unusable record', {
+        identity: maskCredential(key),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     return {
-      provisioned: true,
+      provisioned: maskedToken !== undefined,
+      recordPresent: true,
+      ...(issue !== undefined ? { issue } : {}),
       vikunjaUrl: record.vikunjaUrl,
       ...(maskedToken !== undefined ? { maskedToken } : {}),
       createdAt: record.createdAt,
@@ -371,15 +684,26 @@ export class VaultFileStore {
    * across a re-provision (token swap) while bumping `updatedAt`. Callers
    * MUST validate the token (round-trip against Vikunja) before calling
    * this — the vault itself has no way to check a token is real.
+   *
+   * Throws without writing anything when this process's view of the vault is
+   * incomplete (issue #266).
    */
   async provision(identity: Identity, vikunjaUrl: string, apiToken: string): Promise<void> {
     const release = await this.mutex.acquire();
     try {
+      this.assertWritable();
       const map = this.load();
       const key = identityKey(identity);
       const existing = map.get(key);
       const now = new Date().toISOString();
-      const { ciphertext, iv, authTag } = encryptToken(apiToken, this.masterKey);
+      // AAD binds the ciphertext to this identity AND this vikunjaUrl (#262):
+      // an attacker who can rewrite the file but has no master key can no
+      // longer retarget the URL or move the trio under another identity.
+      const { ciphertext, iv, authTag } = encryptToken(
+        apiToken,
+        this.masterKey,
+        vaultRecordAad(key, vikunjaUrl),
+      );
       const record: VaultRecord = {
         vikunjaUrl,
         ciphertext,
@@ -390,24 +714,42 @@ export class VaultFileStore {
         updatedAt: now,
         lastUsedAt: existing?.lastUsedAt ?? null,
       };
-      map.set(key, record);
-      writeVaultFileAtomic(this.filePath, map);
+      // Write first, swap the in-memory view in only once the write landed
+      // (issue #277). Mutating `map` up front meant a thrown write left the
+      // record live in memory but absent from disk: the caller was told the
+      // credential was stored, it worked until the next restart, and then
+      // silently vanished. A copy keeps the failure atomic in both places.
+      const next = new Map(map);
+      next.set(key, record);
+      writeVaultFileAtomic(this.filePath, next);
+      this.cache = next;
     } finally {
       release();
     }
   }
 
-  /** Deletes `identity`'s record, if any. Idempotent — returns whether a record actually existed. */
+  /**
+   * Deletes `identity`'s record, if any. Idempotent — returns whether a
+   * record actually existed. Throws without writing anything when this
+   * process's view of the vault is incomplete (issue #266).
+   */
   async deprovision(identity: Identity): Promise<boolean> {
     const release = await this.mutex.acquire();
     try {
+      this.assertWritable();
       const map = this.load();
       const key = identityKey(identity);
-      const existed = map.delete(key);
-      if (existed) {
-        writeVaultFileAtomic(this.filePath, map);
+      if (!map.has(key)) {
+        return false;
       }
-      return existed;
+      // Mirror of provision's ordering (issue #277): deleting from the live
+      // map before the write meant a thrown write reported the credential as
+      // removed while it stayed on disk and came back on the next restart.
+      const next = new Map(map);
+      next.delete(key);
+      writeVaultFileAtomic(this.filePath, next);
+      this.cache = next;
+      return true;
     } finally {
       release();
     }

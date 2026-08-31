@@ -26,7 +26,9 @@ import {
   resolveVaultPath,
   encryptToken,
   decryptToken,
+  vaultRecordAad,
   loadVaultFile,
+  loadVaultFileWithStatus,
   writeVaultFileAtomic,
   setActiveVaultStore,
   getActiveVaultStore,
@@ -130,6 +132,52 @@ describe('encryptToken / decryptToken (AES-256-GCM round-trip)', () => {
   });
 });
 
+describe('vaultRecordAad (identity + vikunjaUrl binding, issue #262)', () => {
+  it('produces a different AAD for the same URL under a different identity', () => {
+    const a = vaultRecordAad('https://idp.example/realm|user-a', 'https://vikunja.example.com');
+    const b = vaultRecordAad('https://idp.example/realm|user-b', 'https://vikunja.example.com');
+    expect(a.equals(b)).toBe(false);
+  });
+
+  it('produces a different AAD for the same identity under a different URL', () => {
+    const a = vaultRecordAad('iss|sub', 'https://vikunja.example.com');
+    const b = vaultRecordAad('iss|sub', 'https://evil.example.com');
+    expect(a.equals(b)).toBe(false);
+  });
+
+  it('length-prefixes the parts so a shifted split cannot collide', () => {
+    // Naive concatenation would make these two pairs identical.
+    const a = vaultRecordAad('iss|sub', 'x/https://vikunja.example.com');
+    const b = vaultRecordAad('iss|subx', '/https://vikunja.example.com');
+    expect(a.equals(b)).toBe(false);
+  });
+});
+
+describe('encryptToken / decryptToken with AAD (issue #262)', () => {
+  const aad = vaultRecordAad('iss|sub', 'https://vikunja.example.com');
+
+  it('round-trips when the same AAD is supplied on both sides', () => {
+    const enc = encryptToken('tk_bound-token', KEY, aad);
+    expect(decryptToken(enc, KEY, aad)).toBe('tk_bound-token');
+  });
+
+  it('fails the tag check when the AAD is omitted on decrypt', () => {
+    const enc = encryptToken('tk_bound-token', KEY, aad);
+    expect(() => decryptToken(enc, KEY)).toThrow();
+  });
+
+  it('fails the tag check when a DIFFERENT AAD is supplied on decrypt', () => {
+    const enc = encryptToken('tk_bound-token', KEY, aad);
+    const otherAad = vaultRecordAad('iss|sub', 'https://evil.example.com');
+    expect(() => decryptToken(enc, KEY, otherAad)).toThrow();
+  });
+
+  it('fails the tag check when an AAD is supplied for a record encrypted without one', () => {
+    const enc = encryptToken('tk_legacy-token', KEY);
+    expect(() => decryptToken(enc, KEY, aad)).toThrow();
+  });
+});
+
 describe('loadVaultFile / writeVaultFileAtomic', () => {
   let tmpDir: string;
   let filePath: string;
@@ -187,6 +235,64 @@ describe('loadVaultFile / writeVaultFileAtomic', () => {
   it('a non-ENOENT read error is instead tolerated (returns empty)', () => {
     // Directory read attempts throw EISDIR, not ENOENT.
     expect(loadVaultFile(tmpDir).size).toBe(0);
+  });
+
+  describe('loadVaultFileWithStatus reports whether the load is complete (issue #266)', () => {
+    it('reports a missing file as complete (fresh deployment), not a failure', () => {
+      const result = loadVaultFileWithStatus(filePath);
+      expect(result.records.size).toBe(0);
+      expect(result.incompleteReason).toBeUndefined();
+    });
+
+    it('reports a clean read of a well-formed file as complete', () => {
+      const record: VaultRecord = {
+        vikunjaUrl: 'https://vikunja.example.com',
+        ciphertext: 'x',
+        iv: 'y',
+        authTag: 'z',
+        keyVersion: 2,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        lastUsedAt: null,
+      };
+      writeVaultFileAtomic(filePath, new Map([['issuer|good', record]]));
+
+      const result = loadVaultFileWithStatus(filePath);
+      expect(result.records.size).toBe(1);
+      expect(result.incompleteReason).toBeUndefined();
+    });
+
+    it('reports an unreadable file as incomplete', () => {
+      // A directory read attempt throws EISDIR, not ENOENT.
+      const result = loadVaultFileWithStatus(tmpDir);
+      expect(result.incompleteReason).toMatch(/could not be read/);
+    });
+
+    it('reports invalid JSON as incomplete', () => {
+      fs.writeFileSync(filePath, '{ not valid json', 'utf-8');
+      expect(loadVaultFileWithStatus(filePath).incompleteReason).toMatch(/not valid JSON/);
+    });
+
+    it('reports a non-object document as incomplete', () => {
+      fs.writeFileSync(filePath, JSON.stringify([1, 2, 3]), 'utf-8');
+      expect(loadVaultFileWithStatus(filePath).incompleteReason).toMatch(/not a JSON object/);
+    });
+
+    it('reports dropped malformed entries as incomplete, and counts them', () => {
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ 'issuer|bad': { vikunjaUrl: 'missing other fields' } }),
+        'utf-8',
+      );
+      expect(loadVaultFileWithStatus(filePath).incompleteReason).toMatch(/1 malformed entry/);
+
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ 'issuer|bad1': {}, 'issuer|bad2': {} }),
+        'utf-8',
+      );
+      expect(loadVaultFileWithStatus(filePath).incompleteReason).toMatch(/2 malformed entries/);
+    });
   });
 
   it('writes atomically: temp file in the same directory, then rename', () => {
@@ -351,6 +457,123 @@ describe('VaultFileStore', () => {
     });
   });
 
+  describe('file-write attacker without the master key (issue #262)', () => {
+    /** Rewrite the on-disk vault, bypassing the store's own write path. */
+    const rewrite = (mutate: (obj: Record<string, VaultRecord>) => void): void => {
+      const obj = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, VaultRecord>;
+      mutate(obj);
+      fs.writeFileSync(filePath, JSON.stringify(obj), 'utf-8');
+    };
+
+    it('writes new records in the AAD-bound format (keyVersion 2)', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+
+      const onDisk = loadVaultFile(filePath).get('https://idp.example/realm|user-a');
+      expect(onDisk?.keyVersion).toBe(2);
+    });
+
+    it('cannot retarget vikunjaUrl to an attacker-controlled server', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real-token');
+
+      rewrite((obj) => {
+        const key = 'https://idp.example/realm|user-a';
+        obj[key] = { ...obj[key]!, vikunjaUrl: 'https://exfil.attacker.example' };
+      });
+
+      // A fresh store reads the tampered file: the retarget invalidates the
+      // GCM tag, so no plaintext token is ever handed to the attacker's URL.
+      const tampered = new VaultFileStore(filePath, KEY);
+      expect(() => tampered.getCredential(IDENTITY_A)).not.toThrow();
+      expect(tampered.getCredential(IDENTITY_A)).toBeNull();
+    });
+
+    it("cannot splice identity A's ciphertext under identity B's key", async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_a-secret');
+      await store.provision(IDENTITY_B, 'https://vikunja.example.com', 'tk_b-secret');
+
+      rewrite((obj) => {
+        const a = obj['https://idp.example/realm|user-a']!;
+        const b = obj['https://idp.example/realm|user-b']!;
+        obj['https://idp.example/realm|user-b'] = {
+          ...b,
+          ciphertext: a.ciphertext,
+          iv: a.iv,
+          authTag: a.authTag,
+        };
+      });
+
+      const tampered = new VaultFileStore(filePath, KEY);
+      expect(tampered.getCredential(IDENTITY_B)).toBeNull();
+      // A's own record is untouched and still resolves normally.
+      expect(tampered.getCredential(IDENTITY_A)?.apiToken).toBe('tk_a-secret');
+    });
+  });
+
+  describe('legacy keyVersion migration (issue #262)', () => {
+    /** Write a pre-#262 record: encrypted with no AAD, `keyVersion: 1`. */
+    const writeLegacyRecord = (identityKeyValue: string, token: string): void => {
+      const enc = encryptToken(token, KEY);
+      const record: VaultRecord = {
+        vikunjaUrl: 'https://vikunja.example.com',
+        ...enc,
+        keyVersion: 1,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        lastUsedAt: null,
+      };
+      writeVaultFileAtomic(filePath, new Map([[identityKeyValue, record]]));
+    };
+
+    it('still decrypts a legacy keyVersion 1 record written by an older build', () => {
+      writeLegacyRecord('https://idp.example/realm|user-a', 'tk_legacy-token');
+
+      const store = new VaultFileStore(filePath, KEY);
+      expect(store.getCredential(IDENTITY_A)).toEqual({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_legacy-token',
+        authType: 'api-token',
+      });
+    });
+
+    it('upgrades a legacy record to the bound format on the next provision', async () => {
+      writeLegacyRecord('https://idp.example/realm|user-a', 'tk_legacy-token');
+
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_rotated-token');
+
+      const onDisk = loadVaultFile(filePath).get('https://idp.example/realm|user-a');
+      expect(onDisk?.keyVersion).toBe(2);
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_rotated-token');
+    });
+
+    it('returns null (never crashes) for a record written by a newer, unknown format', () => {
+      const enc = encryptToken('tk_future', KEY);
+      writeVaultFileAtomic(
+        filePath,
+        new Map([
+          [
+            'https://idp.example/realm|user-a',
+            {
+              vikunjaUrl: 'https://vikunja.example.com',
+              ...enc,
+              keyVersion: 99,
+              createdAt: '2026-01-01T00:00:00.000Z',
+              updatedAt: '2026-01-01T00:00:00.000Z',
+              lastUsedAt: null,
+            } satisfies VaultRecord,
+          ],
+        ]),
+      );
+
+      const store = new VaultFileStore(filePath, KEY);
+      expect(() => store.getCredential(IDENTITY_A)).not.toThrow();
+      expect(store.getCredential(IDENTITY_A)).toBeNull();
+    });
+  });
+
   describe('getStatus', () => {
     it('reports provisioned: false for an unlinked identity', () => {
       const store = new VaultFileStore(filePath, KEY);
@@ -369,6 +592,157 @@ describe('VaultFileStore', () => {
       expect(status.createdAt).toBeDefined();
       expect(status.updatedAt).toBeDefined();
       expect(status.lastUsedAt).toBeNull();
+    });
+  });
+
+  describe('getStatus honesty about decrypt health (issue #278)', () => {
+    it('does not claim provisioned for a record it cannot decrypt', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real-token');
+
+      // Same vault file, different master key — the post-rotation situation.
+      const wrongKeyStore = new VaultFileStore(filePath, OTHER_KEY);
+      const status = wrongKeyStore.getStatus(IDENTITY_A);
+
+      // getCredential returns null, so status must not say "linked".
+      expect(wrongKeyStore.getCredential(IDENTITY_A)).toBeNull();
+      expect(status.provisioned).toBe(false);
+      // ...but it must still explain that a record exists and why it is unusable.
+      expect(status.recordPresent).toBe(true);
+      expect(status.issue).toMatch(/cannot be decrypted/);
+      expect(status.maskedToken).toBeUndefined();
+    });
+
+    it('does not claim "not provisioned" when the vault file could not be read', () => {
+      const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation(() => {
+        const error = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      });
+      try {
+        const store = new VaultFileStore(filePath, KEY);
+        const status = store.getStatus(IDENTITY_A);
+        expect(status.provisioned).toBe(false);
+        expect(status.issue).toMatch(/could not be fully read/);
+      } finally {
+        readSpy.mockRestore();
+      }
+    });
+
+    it('still reports a healthy record as provisioned with a masked token', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real-token-1234567890');
+
+      const status = store.getStatus(IDENTITY_A);
+      expect(status.provisioned).toBe(true);
+      expect(status.recordPresent).toBe(true);
+      expect(status.issue).toBeUndefined();
+      expect(status.maskedToken).toBe('tk_r...');
+    });
+  });
+
+  describe('lastUsedAt is actually written on use (issue #278)', () => {
+    it('stamps lastUsedAt the first time the credential is resolved', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      expect(store.getStatus(IDENTITY_A).lastUsedAt).toBeNull();
+
+      const before = Date.now();
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_real');
+
+      const stamped = store.getStatus(IDENTITY_A).lastUsedAt;
+      expect(stamped).not.toBeNull();
+      expect(Date.parse(stamped!)).toBeGreaterThanOrEqual(before - 1000);
+    });
+
+    it('persists lastUsedAt to disk, not just to the in-memory cache', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      store.getCredential(IDENTITY_A);
+
+      const freshStore = new VaultFileStore(filePath, KEY);
+      expect(freshStore.getStatus(IDENTITY_A).lastUsedAt).not.toBeNull();
+    });
+
+    it('throttles the write: repeated resolves inside the interval rewrite nothing', async () => {
+      const store = new VaultFileStore(filePath, KEY, { lastUsedFlushIntervalMs: 60_000 });
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      store.getCredential(IDENTITY_A);
+      const firstStamp = store.getStatus(IDENTITY_A).lastUsedAt;
+
+      const writeSpy = jest.spyOn(fs, 'writeFileSync');
+      try {
+        for (let i = 0; i < 25; i += 1) {
+          expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_real');
+        }
+        expect(writeSpy).not.toHaveBeenCalled();
+      } finally {
+        writeSpy.mockRestore();
+      }
+      expect(store.getStatus(IDENTITY_A).lastUsedAt).toBe(firstStamp);
+    });
+
+    it('refreshes the stamp again once the interval has elapsed', async () => {
+      const store = new VaultFileStore(filePath, KEY, { lastUsedFlushIntervalMs: 0 });
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      store.getCredential(IDENTITY_A);
+      const firstStamp = store.getStatus(IDENTITY_A).lastUsedAt;
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      store.getCredential(IDENTITY_A);
+
+      expect(store.getStatus(IDENTITY_A).lastUsedAt).not.toBe(firstStamp);
+    });
+
+    it('rewrites a corrupt (unparseable) lastUsedAt rather than trusting it', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, VaultRecord>;
+      const key = 'https://idp.example/realm|user-a';
+      onDisk[key] = { ...onDisk[key]!, lastUsedAt: 'not-a-timestamp' };
+      fs.writeFileSync(filePath, JSON.stringify(onDisk), 'utf-8');
+
+      const freshStore = new VaultFileStore(filePath, KEY, { lastUsedFlushIntervalMs: 60_000 });
+      freshStore.getCredential(IDENTITY_A);
+      expect(freshStore.getStatus(IDENTITY_A).lastUsedAt).not.toBe('not-a-timestamp');
+    });
+
+    it('never fails a credential lookup because the timestamp write failed', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+
+      const writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+        throw new Error('simulated disk full');
+      });
+      try {
+        expect(() => store.getCredential(IDENTITY_A)).not.toThrow();
+        expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_real');
+      } finally {
+        writeSpy.mockRestore();
+      }
+    });
+
+    it('does not write the timestamp back when the load was incomplete', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_real');
+      // Append a malformed sibling entry so the next load is partial.
+      const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+      onDisk['https://idp.example/realm|user-broken'] = { vikunjaUrl: 'incomplete' };
+      fs.writeFileSync(filePath, JSON.stringify(onDisk), 'utf-8');
+
+      const degraded = new VaultFileStore(filePath, KEY);
+      const writeSpy = jest.spyOn(fs, 'writeFileSync');
+      try {
+        // The credential still resolves — a partial load must not lock out
+        // the identities that DID load.
+        expect(degraded.getCredential(IDENTITY_A)?.apiToken).toBe('tk_real');
+        expect(writeSpy).not.toHaveBeenCalled();
+      } finally {
+        writeSpy.mockRestore();
+      }
+      // The malformed sibling is still on disk, untouched.
+      const after = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+      expect(after['https://idp.example/realm|user-broken']).toEqual({ vikunjaUrl: 'incomplete' });
     });
   });
 
@@ -422,6 +796,160 @@ describe('VaultFileStore', () => {
 
       expect(store.getCredential(IDENTITY_A)).toBeNull();
       expect(store.getCredential(IDENTITY_B)?.apiToken).toBe('tk_b');
+    });
+  });
+
+  describe('memory and disk never diverge on a failed write (issue #277)', () => {
+    it('a failed provision write leaves nothing behind in memory', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_a');
+
+      const writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+        throw new Error('simulated disk full');
+      });
+      try {
+        await expect(
+          store.provision(IDENTITY_B, 'https://vikunja.example.com', 'tk_b'),
+        ).rejects.toThrow('simulated disk full');
+      } finally {
+        writeSpy.mockRestore();
+      }
+
+      // B was never persisted, so it must not be usable in memory either —
+      // otherwise it works until the next restart and then vanishes.
+      expect(store.getCredential(IDENTITY_B)).toBeNull();
+      expect(store.getStatus(IDENTITY_B).provisioned).toBe(false);
+      // A's record is untouched, in memory and on disk.
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_a');
+      expect(loadVaultFile(filePath).has('https://idp.example/realm|user-a')).toBe(true);
+    });
+
+    it('a failed re-provision write keeps the previously stored token live', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_old');
+
+      const writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+        throw new Error('simulated disk full');
+      });
+      try {
+        await expect(
+          store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_new'),
+        ).rejects.toThrow('simulated disk full');
+      } finally {
+        writeSpy.mockRestore();
+      }
+
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_old');
+    });
+
+    it('a failed deprovision write leaves the record live in memory too', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_a');
+
+      const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation(() => {
+        throw new Error('simulated rename failure');
+      });
+      try {
+        await expect(store.deprovision(IDENTITY_A)).rejects.toThrow('simulated rename failure');
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      // The credential is still on disk, so it must still be in memory —
+      // reporting it removed would be a lie that a restart undoes.
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_a');
+      expect(loadVaultFile(filePath).has('https://idp.example/realm|user-a')).toBe(true);
+    });
+  });
+
+  describe('incomplete load never becomes the write-back source of truth (issue #266)', () => {
+    const validRecord = (ciphertext: string): VaultRecord => ({
+      vikunjaUrl: 'https://vikunja.example.com',
+      ciphertext,
+      iv: 'aXY=',
+      authTag: 'dGFn',
+      keyVersion: 2,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null,
+    });
+
+    it('refuses to provision when the vault file could not be read at all', async () => {
+      const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation(() => {
+        const error = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      });
+      const store = new VaultFileStore(filePath, KEY);
+      try {
+        expect(store.isDegraded()).toBe(true);
+        await expect(
+          store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_new'),
+        ).rejects.toThrow(/cannot be updated right now/);
+      } finally {
+        readSpy.mockRestore();
+      }
+      // Nothing was written: the store never created the file.
+      expect(fs.existsSync(filePath)).toBe(false);
+    });
+
+    it('refuses to deprovision when the vault file could not be read at all', async () => {
+      const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation(() => {
+        const error = new Error('EIO: i/o error') as NodeJS.ErrnoException;
+        error.code = 'EIO';
+        throw error;
+      });
+      const store = new VaultFileStore(filePath, KEY);
+      try {
+        await expect(store.deprovision(IDENTITY_A)).rejects.toThrow(/cannot be updated right now/);
+      } finally {
+        readSpy.mockRestore();
+      }
+      expect(fs.existsSync(filePath)).toBe(false);
+    });
+
+    it('refuses to provision when the vault file is not valid JSON', async () => {
+      fs.writeFileSync(filePath, '{ half-written', 'utf-8');
+      const store = new VaultFileStore(filePath, KEY);
+
+      await expect(
+        store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_new'),
+      ).rejects.toThrow(/not valid JSON/);
+      // The damaged file is left exactly as it was, for the operator to inspect.
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('{ half-written');
+    });
+
+    it("does not destroy other identities' records when some entries were dropped", async () => {
+      // The CRIT-5 scenario: one entry fails validation, so the load is
+      // partial; the next provision used to write that partial map back.
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({
+          'https://idp.example/realm|user-a': validRecord('a-ciphertext'),
+          'https://idp.example/realm|user-broken': { vikunjaUrl: 'only-this-field' },
+        }),
+        'utf-8',
+      );
+
+      const store = new VaultFileStore(filePath, KEY);
+      expect(store.isDegraded()).toBe(true);
+      await expect(
+        store.provision(IDENTITY_B, 'https://vikunja.example.com', 'tk_b'),
+      ).rejects.toThrow(/malformed entr/);
+
+      const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+      expect(Object.keys(onDisk).sort()).toEqual([
+        'https://idp.example/realm|user-a',
+        'https://idp.example/realm|user-broken',
+      ]);
+    });
+
+    it('treats a missing file as a clean empty vault, not a failed load', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      expect(store.isDegraded()).toBe(false);
+
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_fresh');
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_fresh');
     });
   });
 
@@ -579,6 +1107,73 @@ describe('writeVaultFileAtomic byte-level secret hygiene', () => {
   it('leaves no temp file behind after a successful write', () => {
     writeVaultFileAtomic(filePath, new Map());
     expect(fs.readdirSync(dir)).toEqual(['vault.json']);
+  });
+
+  describe('durability (issue #293 / LOW-10)', () => {
+    it('fsyncs the temp file before the rename, and the directory after it', () => {
+      const fsyncSpy = jest.spyOn(fs, 'fsyncSync');
+      const renameSpy = jest.spyOn(fs, 'renameSync');
+      try {
+        writeVaultFileAtomic(filePath, new Map());
+
+        expect(fsyncSpy).toHaveBeenCalledTimes(2);
+        const renameOrder = renameSpy.mock.invocationCallOrder[0]!;
+        expect(fsyncSpy.mock.invocationCallOrder[0]!).toBeLessThan(renameOrder);
+        expect(fsyncSpy.mock.invocationCallOrder[1]!).toBeGreaterThan(renameOrder);
+      } finally {
+        fsyncSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+    });
+
+    it('leaves the previous vault intact when the temp file cannot be flushed', () => {
+      const record: VaultRecord = {
+        vikunjaUrl: 'https://vikunja.example.com',
+        ciphertext: 'original',
+        iv: 'y',
+        authTag: 'z',
+        keyVersion: 2,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        lastUsedAt: null,
+      };
+      writeVaultFileAtomic(filePath, new Map([['issuer|user', record]]));
+
+      const fsyncSpy = jest.spyOn(fs, 'fsyncSync').mockImplementation(() => {
+        throw new Error('simulated fsync failure');
+      });
+      const renameSpy = jest.spyOn(fs, 'renameSync');
+      try {
+        expect(() =>
+          writeVaultFileAtomic(filePath, new Map([['issuer|other', record]])),
+        ).toThrow('simulated fsync failure');
+        expect(renameSpy).not.toHaveBeenCalled();
+      } finally {
+        fsyncSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+
+      expect(loadVaultFile(filePath).get('issuer|user')).toEqual(record);
+    });
+
+    it('tolerates a platform that cannot fsync a directory', () => {
+      const realOpen = fs.openSync;
+      const openSpy = jest.spyOn(fs, 'openSync').mockImplementation(((
+        target: string,
+        flags: string,
+      ) => {
+        if (flags === 'r') {
+          throw new Error('EISDIR: simulated Windows behaviour');
+        }
+        return (realOpen as (t: string, f: string) => number)(target, flags);
+      }) as unknown as typeof fs.openSync);
+      try {
+        expect(() => writeVaultFileAtomic(filePath, new Map())).not.toThrow();
+      } finally {
+        openSpy.mockRestore();
+      }
+      expect(fs.existsSync(filePath)).toBe(true);
+    });
   });
 
   it('never persists the plaintext token anywhere in the file bytes', () => {
