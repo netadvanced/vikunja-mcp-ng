@@ -51,14 +51,38 @@ export interface RequestContext {
 const requestContextStorage = new AsyncLocalStorage<RequestContext>();
 
 /**
- * Stable string key for an identity: `"<issuer>|<sub>"`. Matches the vault's
- * on-disk record key from §3c (`"<issuer>|<sub>"`) exactly, and is reused
- * everywhere global state is re-keyed by identity (rate-limiter buckets,
- * filter/template storage session ids) so every re-keyed store shares one
- * canonical tenancy key.
+ * Escapes a single identity component (`issuer` or `sub`) so it can be
+ * joined with `|` into an {@link identityKey} without the delimiter itself
+ * being ambiguous. `\` is escaped first (to `\\`), then `|` (to `\|`) - the
+ * standard order for a backslash-escaping scheme, so an already-escaped
+ * `\|` in the input can never be misread as a literal `|` after escaping.
+ */
+function escapeIdentityComponent(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+}
+
+/**
+ * Stable string key for an identity: `"<issuer>|<sub>"`, with each
+ * component escaped (see {@link escapeIdentityComponent}) so a `|` inside
+ * either component can never be misread as the delimiter.
+ *
+ * #292 LOW-11: with today's single allowlisted issuer this was already
+ * collision-free in practice, but plain concatenation meant a future
+ * second issuer containing `|` (or a `sub` crafted to contain one) could
+ * collide with another identity's key - e.g. `issuer` = `"a|b"`, `sub` =
+ * `"c"` would produce the same unescaped key as `issuer` = `"a"`, `sub` =
+ * `"b|c"`. Escaping closes that off structurally rather than relying on
+ * the issuer allowlist to keep doing it by accident.
+ *
+ * Matches the vault's on-disk record key from §3c (`"<issuer>|<sub>"`)
+ * exactly for every value in use today (neither component contains `\` or
+ * `|` for the one allowlisted issuer), and is reused everywhere global
+ * state is re-keyed by identity (rate-limiter buckets, filter/template
+ * storage session ids) so every re-keyed store shares one canonical
+ * tenancy key.
  */
 export function identityKey(identity: Identity): string {
-  return `${identity.issuer}|${identity.sub}`;
+  return `${escapeIdentityComponent(identity.issuer)}|${escapeIdentityComponent(identity.sub)}`;
 }
 
 /**
