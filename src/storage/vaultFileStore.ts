@@ -30,6 +30,15 @@
  * SimpleFilterStorage.ts`), so two concurrent provisions/deprovisions can
  * never interleave their read-modify-write cycle and tear the file.
  *
+ * That mutex covers concurrent *requests*, not concurrent *processes*: two
+ * servers sharing one vault file would each rewrite the whole map and the
+ * later write would erase the earlier one's provisioning. No file locking is
+ * added because a second process is out of scope by design — enrollment
+ * tickets, rate-limit counters and circuit-breaker state are process-local
+ * too, so a second replica breaks those first. `oidc-http` mode is
+ * single-process; see docs/CONFIGURATION.md ("Run exactly one server process
+ * per vault file") and docs/OIDC-RESOURCE-SERVER.md §3(c).
+ *
  * `getCredential` — the method the `VikunjaCredentialSource` interface
  * requires (`src/auth/CredentialSource.ts`) — is deliberately synchronous
  * (Node's `crypto` decrypt calls are sync), so it never throws: a missing
