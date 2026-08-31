@@ -41,7 +41,7 @@ Rough costs observed while building this harness (Claude Code 2.1.214,
 |---|---|---|
 | Cheapest scenario (`single-task-smoke`) | haiku | ~$0.07 |
 | Cheapest scenario (`single-task-smoke`) | sonnet | typically a few times the haiku cost |
-| Full scenario library (13 scenarios), one model | sonnet | expect several dollars — run scenarios individually first if you're cost-sensitive |
+| Full scenario library (21 scenarios), one model | sonnet | expect several dollars — run scenarios individually first if you're cost-sensitive |
 
 Always start with `npm run battle -- --list` (free) and a single cheap
 scenario before running `--all`.
@@ -124,6 +124,14 @@ running against a real account instead of the disposable stack):
   the after-sweep for
   one scenario when you want to inspect the result in the Vikunja UI --
   clean it up yourself afterward, or just let the next run's sweep catch it.
+- **Teams are swept separately from everything else**, by `name` rather than
+  `title` (`scripts/battle/lib/cleanup.ts`'s `cleanupByPrefix`). Unlike a
+  project or a label, a team is global to the Vikunja instance rather than
+  owned by a project -- a project-scoped sweep would never reclaim one, and
+  every `battle-*` team scenario would leave a permanent team behind on the
+  shared e2e stack. `cleanupByPrefix` now also lists and deletes every team
+  whose `name` starts with the run's prefix, before and after the scenario,
+  the same as everything else it sweeps.
 - The stack itself is never brought up, torn down, or version-switched by
   this harness — unlike `scripts/test-matrix.ts`, it assumes the stack is
   already up (`npm run e2e:up`) and only ever talks to it over HTTP.
@@ -163,7 +171,8 @@ transcript that revealed it).
 ## The scenario library
 
 `scripts/battle/scenarios/*.json`, each validated against `ScenarioSchema`
-(`scripts/battle/types.ts`) at load time. Currently 14 scenarios:
+(`scripts/battle/types.ts`) at load time. Currently 21 scenarios (verify with
+`npm run battle -- --list`, which is free):
 
 | id | optimal | probes |
 |---|---|---|
@@ -173,14 +182,21 @@ transcript that revealed it).
 | `share-project-by-user` | 3 | project link-sharing discoverability |
 | `subtask-breakdown` | 3 | subtask creation (Vikunja has no first-class subtask resource — it's a task relation under the hood). Re-baselined 2026-07-25 from 5 to 3: `bulk-create-subtasks` reaches the same end state in one call instead of one `create-subtask` call per subtask — see "Re-baselining `optimalCallCount`" below |
 | `bulk-create-subtasks` | 3 | bulk-create-subtasks composite discoverability vs. one `create-subtask` call per subtask |
-| `bulk-priority-bump` | 3 | bulk-edit discoverability vs. one-call-per-task |
+| `bulk-priority-bump` | 3 | bulk-edit discoverability vs. one-call-per-task. See the 2026-08-31 outstanding-work note below the friction table: its recorded optimum predates the columns-less `setup-kanban` form and is reported as likely stale (should be 2, not 3), but has not been re-derived yet — tracked against issue #202 |
 | `bulk-set-bucket` | 1 | bulk-set-bucket composite discoverability vs. moving each task into its Kanban column one at a time. Re-baselined 2026-07-25 from 9 to 1: this scenario's prompt is a verbatim match for `setup-kanban` (PR #175) — see "Re-baselining `optimalCallCount`" below |
 | `labels-due-date-combo` | 1 | label creation + application + due dates combined in one ask, now solved by `setup-kanban`'s columns-less form (issue #185): `title` + `tasks` (each carrying `labels`/`dueDate`), no `columns` — one call, zero Kanban structure touched. PR #179 briefly re-baselined this to 1 via a fabricated placeholder column instead; reverted 2026-07-25 (netadvanced/vikunja-mcp#28 T1). Re-baselined to 1 again 2026-07-27 for the unrelated, legitimate reason above — see "Re-baselining `optimalCallCount`" below |
 | `single-task-smoke` | 2 | deliberately the simplest, most deterministic scenario — use this one for a first try or a live-smoke proof (see the note on `optimalCallCount` below — it is no longer necessarily the global minimum by raw call count, but remains the designated smoke-test scenario) |
 | `mixed-priority-batch` | 2 | varying a per-item field within a single batch-creation call |
-| `percent-done-scale` | 2 | the `percentDone` scale (decision 22): the prompt says "75% done" in plain English and the verify check reads the RAW REST field, which Vikunja stores as `0.75` — so it fails if the 0-100 -> 0-1 conversion in `src/utils/percent-done.ts` is removed (75 stored) or applied twice (0.0075 stored). Optimum derived from the current schemas: create-project (1) + create-task with `percentDone` in the same call (1) = 2; `setup-kanban`'s per-task shape has no `percentDone`, so it cannot collapse this to 1 and is deliberately not credited |
+| `percent-done-scale` | 1 | the `percentDone` scale (decision 22): the prompt says "75% done" in plain English and the verify check reads the RAW REST field, which Vikunja stores as `0.75` — so it fails if the 0-100 -> 0-1 conversion in `src/utils/percent-done.ts` is removed (75 stored) or applied twice (0.0075 stored). Re-baselined from 2 to 1 (issue #236): `setup-kanban`'s per-task shape now declares `percentDone`, so `setup-kanban` with `title` + `tasks: [{title, percentDone: 75}]` and no `columns` reaches this end state in one call — see the scenario's own `description` for the full re-derivation |
+| `percent-done-update` | 3 | the `percentDone` scale on the UPDATE path (a separate call site from create): create-project (1) + create-task with an initial `percentDone` (1) + `vikunja_tasks update` with a revised `percentDone` (1) = 3. The revision is prescribed as a sequence (25% then 60%), so creating at the final value outright is not a faithful solve and is not credited |
+| `percent-done-bulk-update` | 2 | the `percentDone` scale on `vikunja_task_bulk bulk-update`'s generic `field`/`value` pair (`field: 'percent_done'`), a code path invisible from the tool schema. `setup-kanban` columns-less (1) + `bulk-update` with `taskIds` + `field: 'percent_done'` (1) = 2 |
+| `percent-done-filter-threshold` | 4 | the `percentDone` scale inside the filter DSL (`percent_done > 50` vs. the wire's `0.75`-shaped values) — the one leak that produces no error, just an empty result set. create-project (1) + bulk-create with per-task `percentDone` (1) + `list` with a `filter` (1) + `apply-label` with `taskIds` (1) = 4 |
 | `existing-label-reuse` | 3 | applying an already-existing label (find-then-apply path — seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open) |
 | `project-rename-share` | 3 | project create + rename + share-by-name in one prompt — probes the `title`-vs-`name` field-naming footgun (`vikunja_projects`' flat args object has both) and exercises the share-by-name composite (`create-share` with a `name`) |
+| `task-position-after-create` | 2 | the teaching error shipped in PR #229: `position` is rejected on `vikunja_tasks create` (task order is per-view state, written through `set-position`), and this scenario measures whether that error actually teaches the agent the right subcommand instead of causing a retry. `setup-kanban` columns-less (1) + `set-position` (1) = 2 |
+| `bulk-update-partial-failure` | 3 | what the tool surface does when part of a bulk operation cannot succeed (a stale task id inside a `bulk-update` call) — measures whether the honest partial-failure report is preserved or papered over by fabricating a replacement for the deleted task. `setup-kanban` columns-less (1) + `delete` on the cancelled item (1) + `bulk-update` on the survivors (1) = 3 |
+| `team-rename-keeps-visibility` | 2 | regression guard for PR #230: `POST /teams/{id}` is a full-model replace, and a rename-only update body used to silently un-publish a public team. Team is seeded (not agent-created) so the scenario actually exercises the update path. `vikunja_teams list`/`search` to resolve the id (1) + `update` with `id` + `name` (1) = 2 |
+| `team-create-with-admin-member` | 2 | team `isPublic` on CREATE (only became settable in PR #230) plus membership keyed by USERNAME, never a numeric user id, with an admin flag set in the same call as `members add`. `teams create` with `isPublic: true` (1) + `members add` with `username` + `admin: true` (1) = 2 |
 
 ### Live evidence runs
 
@@ -244,14 +260,25 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
   // an already-existing label -- see existing-label-reuse.json). Every
   // string field supports {{prefix}} the same as verify checks do, so
   // seeded data is swept by the same prefix-based cleanup as everything
-  // else. Currently one action type: { "type": "create-label", "title": "..." }.
+  // else. Two action types currently: { "type": "create-label", "title": "..." }
+  // and { "type": "create-team", "name": "...", "isPublic": true } -- the
+  // latter seeds a team the agent must FIND and modify (see
+  // team-rename-keeps-visibility.json), for the same reason create-label
+  // seeds a label existing-label-reuse.json must find rather than create.
   "setup": [{ "type": "create-label", "title": "{{prefix}}existing-tag" }],
   "verify": [
     { "type": "project-exists", "titleContains": "{{prefix}}Demo" }
     // ... see scripts/battle/types.ts's VerifyCheck union for every
     // available check type (min-tasks-in-project, min-buckets-in-project,
-    // tasks-field-match-count, tasks-due-date-in-range, label-exists,
-    // tasks-with-label-count, task-has-subtasks, project-has-share).
+    // buckets-with-tasks-count, buckets-in-order, tasks-field-match-count,
+    // tasks-due-date-in-range, label-exists, tasks-with-label-count (with an
+    // optional `max` upper bound, for scenarios where over-matching is as
+    // wrong as under-matching), task-has-subtasks, task-absent-from-project
+    // (proves a dishonest recovery wasn't fabricated), task-first-in-list-view
+    // (reads a project's actual list-view task order), project-has-share,
+    // team-exists (with optional isPublic/hasMemberUsername/memberIsAdmin),
+    // and team-absent (proves a rename happened rather than a second team
+    // being created alongside the original).
   ]
 }
 ```
@@ -400,6 +427,44 @@ invents nothing.
    If the optimum is genuinely 1, say so plainly rather than padding it back
    up for the sake of a "more interesting" ratio — but "genuinely 1" must
    survive rule 3's test first.
+
+### Full-library run, 2026-08-31 (13 scenarios, pre-#235 library)
+
+A haiku full-library run against the 13-scenario library that predates issue
+#235's seven additions (this run happened before that PR landed, so it does
+not cover `team-rename-keeps-visibility`, `team-create-with-admin-member`,
+`task-position-after-create`, `percent-done-update`,
+`percent-done-bulk-update`, `percent-done-filter-threshold`,
+`bulk-update-partial-failure`, or the re-baselined `percent-done-scale`):
+**13/13 passed, total cost $0.4555, zero validation errors, zero retries, and
+zero wrong-tool attempts** across the whole run.
+
+**Do not read this as an improvement over the 2026-07-28 baseline** — it
+isn't one, and issue #202 is still open. Call-count changes versus that
+baseline: `bulk-create-subtasks` 3 → 2, `bulk-priority-bump` 2 → 1,
+`filter-high-priority-search` 2 → 3; the other ten scenarios were unchanged.
+The `filter-high-priority-search` regression is single-run noise — nothing in
+that area of the tool surface changed between the two runs — and is recorded
+as such rather than investigated as a regression.
+
+Issue #202's shape shifted rather than improved: **still 7 of the 13
+scenarios beat their own recorded `optimalCallCount`, but not the same 7** —
+`filter-high-priority-search` dropped out of that set on this run,
+`bulk-create-subtasks` joined it. A scenario beating its own optimum is not
+good news by itself (see the re-baselining policy above): it means the
+recorded optimum is stale, not that the tool surface got better.
+
+Two re-derivations are on record from this same round of evidence:
+
+- `percent-done-scale`'s optimum was re-derived 2 → 1 by issue #236 (see the
+  scenario table above) — **done**, reflected in `percent-done-scale.json`.
+- `bulk-priority-bump`'s optimum is reported as **stale and likely wrong**:
+  it should plausibly be 2, not the currently recorded 3, because that
+  scenario's optimum was last re-verified on 2026-07-25, which predates the
+  columns-less `setup-kanban` form that shipped on 2026-07-27 (issue #185).
+  **This has NOT been re-derived yet** — it is outstanding work, tracked
+  against issue #202, not a claim this document is making about the current
+  `bulk-priority-bump.json` file.
 
 ## Testing the harness itself (no live Claude needed)
 
