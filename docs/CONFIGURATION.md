@@ -659,6 +659,61 @@ democratize-technology/vikunja-mcp#97.
 VIKUNJA_BULK_WRITE_CONCURRENCY=1   # default; raise ONLY on non-SQLite backends
 ```
 
+## Task Loading Limits (`VIKUNJA_MAX_TASKS_LIMIT`)
+
+`VIKUNJA_MAX_TASKS_LIMIT` is a single, shared budget with two call sites:
+
+1. **Post-load memory validation** (`src/utils/memory.ts`,
+   `validateTaskCountLimit`) — a V8-specific memory estimate that warns, and
+   above `1.5x` the limit throws, once a listing's task count is known.
+2. **Per-project aggregation while a listing is still loading**
+   (`src/utils/filtering/ClientSideFilteringStrategy.ts`) — the fallback path
+   used for cross-project ("all projects" / no `projectId`) task listings when
+   the direct `GET /tasks` strategy is unavailable or fails. This path pages
+   through every accessible project's own `GET /projects/{id}/tasks` (issue
+   #225: Vikunja clamps `per_page` to `service.maxitemsperpage`, default 50,
+   so a single unpaginated call silently dropped everything past the first
+   page) and through `GET /projects` itself (a user with more than 50
+   projects was previously only ever aggregated over the first 50). Both loops
+   are bounded by the SAME `VIKUNJA_MAX_TASKS_LIMIT` value, treated as one
+   shared task-count budget across every project fetched during the
+   aggregation, **plus** a fixed ceiling of 500 pages per collection
+   (`MAX_PAGES_PER_PROJECT`) so a server that keeps returning full pages (or a
+   pathological page size) can never page forever.
+
+- **Env var**: `VIKUNJA_MAX_TASKS_LIMIT`
+- **Default**: `10000`
+- **Accepted values**: a positive integer, capped at `50000`
+- **Invalid values**: non-numeric, non-integer, zero, or negative logs a
+  warning and falls back to the default; a value above the cap is clamped to
+  `50000` with a warning — same fallback shape as
+  `VIKUNJA_BULK_WRITE_CONCURRENCY` above.
+
+**When a bound is hit, the partial result is kept, not discarded** — a
+truncated aggregation across projects the user can access is still more
+useful than an error — but it is never reported as a plain, complete success.
+Hitting either bound (the task budget or the 500-page ceiling, on either the
+project list or a project's own task list) sets two fields on the listing's
+response metadata:
+
+- `resultComplete: false` — the returned set is a KNOWN subset of what was
+  asked for, as opposed to a filter that legitimately matched nothing.
+- `warnings: string[]` — human-readable notes on what was skipped (which
+  project ids failed outright, which project's task list was cut off at the
+  limit, or that the project list itself was cut off), one entry per cause.
+
+`vikunja_tasks list`'s summary line surfaces this directly rather than
+burying it in metadata alone: an incomplete listing renders `INCOMPLETE
+RESULT — <warnings>` in the `Found N tasks...` line the caller already reads.
+This exists because the failure mode being fixed (issues #225/#227) was never
+an exception — it was a plausible-looking answer with no error at all. A
+caller asking "what is tagged X so I know what to act on" must be able to
+tell "nothing matched" from "here is part of the answer".
+
+```env
+VIKUNJA_MAX_TASKS_LIMIT=10000   # optional, default 10000, max 50000
+```
+
 ## Default Response Verbosity
 
 `vikunja_tasks` and `vikunja_projects` responses are shaped by a `Verbosity` level
@@ -803,7 +858,7 @@ VIKUNJA_MCP_TEMPLATES_FILE=/path/to/templates.json   # optional; see Templates P
 ### Bulk Operation Variables
 ```env
 VIKUNJA_BULK_WRITE_CONCURRENCY=1     # optional, default 1 (sequential), max 10; see Bulk Write Concurrency
-VIKUNJA_MAX_TASKS_LIMIT=10000        # optional, default 10000, max 50000; memory guard for large task loads
+VIKUNJA_MAX_TASKS_LIMIT=10000        # optional, default 10000, max 50000; see Task Loading Limits
 ```
 
 ### Transport Variables

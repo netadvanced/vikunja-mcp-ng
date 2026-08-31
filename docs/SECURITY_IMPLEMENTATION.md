@@ -155,13 +155,80 @@ them as available primitives, not as active defenses.
 
 ### Log Masking
 
-`sanitizeLogData()` in `src/utils/security.ts` composes the two layers. String
-values that look like credentials — JWT shape, `tk_*`, `ghp_*`, AWS key IDs,
-database URIs, `Bearer`/`Basic` headers, PEM blocks — are replaced by
-`maskCredential()` output; everything else is passed through `sanitizeString()`.
-If sanitization throws, the value becomes `[SANITIZATION_FAILED]` so a hostile
-string can never break logging. Object keys are matched against a sensitive-key
-pattern list with Unicode-bypass normalization and a memoization cache.
+**Redaction happens centrally, inside `src/utils/logger.ts`, not at each call
+site.** `Logger.log()` runs every argument through `sanitizeLogArgs()` (from
+`src/utils/security.ts`), then runs the fully rendered message string through
+`redactSecretsInText()` as a textual backstop, and only then writes the line —
+all of it *after* the level gate, so a suppressed level (e.g. `logger.debug`
+when `LOG_LEVEL` is `info`) costs nothing: nothing is cloned, walked, or
+scanned. This closed a real leak (PR #241, `fix/logger-credential-redaction`):
+webhook `secret` and `targetUrl` values were being written to `logger.error`
+calls verbatim, and ERROR is the level emitted by default with no
+configuration at all — the exact production configuration every deployment
+starts in. Because the fix is centralized in the logger, individual call
+sites (webhook error handlers included) no longer need to remember to strip
+their own credentials before logging — the previous model, where every call
+site was independently responsible for that, is exactly what let the leak
+through in the first place.
+
+**Two sanitizers, deliberately not one.** `src/utils/security.ts` exports
+both, and they exist separately on purpose:
+
+| Function | Used by | Behavior |
+|---|---|---|
+| `sanitizeLogData()` | Config serialization (`createSecureLogConfig`) | **Strict**: after credential masking, every remaining string is also run through the input-sanitization layer (`sanitizeString()`), which *rejects* content that looks dangerous. |
+| `sanitizeForLogging()` (and `sanitizeLogArgs()`, which maps it over a call's variadic args) | `Logger.log()` for every log line | **Log-safe**: the same credential masking, minus the rejection layer. |
+
+Wiring `sanitizeLogData` (the strict one) directly into the logger was tried
+and rejected: stderr is not an HTML sink, so the injection-rejection behavior
+buys no security there, while it actively breaks ordinary diagnostics — an
+`Error` object has non-enumerable `message`/`stack` properties, so a strict
+generic object walk reduces it to `{}`; and any string over `MAX_STRING_LENGTH`
+(1000 characters — routine for a stack trace or a large payload) becomes the
+literal string `[SANITIZATION_FAILED]` instead of the diagnostic it was
+supposed to be. `sanitizeForLogging()` keeps the credential masking but drops
+that rejection layer, and additionally unwraps `Error` instances into a plain
+`{name, message, stack, ...ownProps}` object first so nothing is lost to the
+non-enumerable-property problem.
+
+**What redaction catches, beyond matching on key names.** Sensitive object
+keys (`secret`, `token`, `password`, `apiKey`, `user`, `email`, and similar —
+see `SENSITIVE_KEY_PATTERNS` in `src/utils/security.ts`) are replaced with
+`[REDACTED]`, or with `maskCredential()`'s masked-prefix form when the value
+itself is long or recognizably credential-shaped (JWT, `tk_*`, `ghp_*`, AWS
+key IDs, database URIs, `Bearer`/`Basic` headers, PEM blocks). Beyond key-name
+matching, `redactSecretsInText()` — the textual backstop applied to every
+rendered log line, and reused directly by the structural pass wherever a
+sensitive value is itself a URL — additionally catches:
+
+- **Secrets embedded in a URL path** (e.g. a Slack incoming-webhook URL,
+  whose last path segment *is* the credential)
+- **URL userinfo** (`https://user:pass@host/...`)
+- **Sensitive query-string values** (`?token=...`, `?api_key=...`)
+- **Credentials embedded in prose**, not just structured fields — a
+  `name=value`-shaped substring inside a plain message string, where the name
+  reads as a credential
+
+These are exactly the shapes a key-name-only check misses: a webhook
+`targetUrl` is not itself a "secret" field, but the credential can live
+inside the URL string it holds.
+
+**Operator-visible consequence.** Some fields that previously rendered in
+full now render as `[REDACTED]` in log output — most notably `user`. This is
+intentional (the field name matches the sensitive-key patterns tuned for
+credential-adjacent identifiers), not a bug; if a deployment relies on `user`
+appearing in logs for auditing, do not work around this by re-broadening the
+call site — file it as a redaction-policy question instead.
+
+**A cycle-detection fix rode along in the same PR.** The recursive sanitizer
+tracks visited objects in a `WeakSet` to guard against infinite recursion on
+a truly cyclic object. Before PR #241, the same *non-cyclic* object appearing
+twice in a tree (e.g. the same error object nested at two different keys) was
+incorrectly reported as `[Circular Reference]` — the visited-set entry was
+never removed after finishing that branch. It is now removed once a
+branch's traversal completes, so only genuine cycles are collapsed; the same
+object appearing twice in a non-cyclic tree is rendered in full at each
+occurrence.
 
 ### Test-Only Methods on AuthManager
 
