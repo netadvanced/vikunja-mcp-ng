@@ -21,7 +21,7 @@ This server exposes Vikunja as **27 tools** (~150 subcommands), each covering on
 |---|---|
 | **2.4.0** | Aligned and tested — the version CI and the e2e stacks run against |
 | **2.3.0** | Minimum supported; the floor for the v1 API |
-| 2.5.0 | Released upstream, **not yet supported or tested here** — no code in this server targets it yet |
+| 2.5.0, 2.6.0 | Released upstream, **neither is supported or tested here** — no code in this server targets them yet. 2.6.0 (2026-08-31) is primarily a security release (18 fixes) |
 | < 2.3.0 | Not supported |
 
 The server talks to Vikunja's **v1 API**. Vikunja's v2 API is tracked as [issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184) and is not started.

@@ -26,7 +26,7 @@ This server exposes Vikunja as **27 tools** (~150 subcommands) — a session too
 
 OIDC mode shipped in `0.7.0-beta.0`/`0.7.0-beta.1`. It has been field-tested against a real gateway + identity provider + Vikunja, but has not yet seen sustained production use — see the [OIDC setup manual](../docs/OIDC-SETUP.md) and the [resource-server design and threat model](../docs/OIDC-RESOURCE-SERVER.md).
 
-**Vikunja compatibility:** aligned and tested against **2.4.0**, minimum supported **2.3.0** (the v1 API floor). Vikunja **2.5.0 has been released upstream but is not yet supported or tested here** — nothing in `src/` targets it. The v1 API is what this server speaks; **v2 adoption is [issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184), on the 0.8.0 milestone, and has not started.** Node 22+ only.
+**Vikunja compatibility:** aligned and tested against **2.4.0**, minimum supported **2.3.0** (the v1 API floor). Vikunja **2.5.0 and 2.6.0 have both been released upstream but neither is supported or tested here** — nothing in `src/` targets them. (2.6.0, released 2026-08-31, is primarily a security release — 18 fixes.) The v1 API is what this server speaks; **v2 adoption is [issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184), on the 0.8.0 milestone, and has not started.** Node 22+ only.
 
 ## See it in action
 
