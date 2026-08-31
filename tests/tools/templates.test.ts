@@ -984,12 +984,15 @@ describe('Templates Tool', () => {
         projectName: 'New Project',
       });
 
-      // Should still succeed even if labels fail
+      // #271 (CRIT-10): a label-attach failure must never be swallowed —
+      // the task itself was created, but the response must be honest that
+      // instantiation did not fully succeed.
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain('## ✅ Success');
-      expect(markdown).toContain('**Operation:** instantiate-template');
-      expect(markdown).toContain('1'); // Should show 1 created task
+      expect(markdown).toContain('## ❌ Error');
+      expect(markdown).toContain('Template instantiation partially completed');
+      expect(markdown).toContain('Failed to attach labels');
+      expect(markdown).toContain('Label not found');
+      expect(markdown).toContain('**FailedCount**:\n1');
     });
 
     it('should throw error if required params missing', async () => {
@@ -1082,12 +1085,16 @@ describe('Templates Tool', () => {
         projectName: 'New Project',
       });
 
-      // Should still succeed but report the failure
+      // #271 (CRIT-10): a per-task creation failure must flip
+      // metadata.success to false and be visible in the response, not just
+      // logged and buried in a `failedTasks` count nobody reads.
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain('## ✅ Success');
-      expect(markdown).toContain('**Operation:** instantiate-template');
-      expect(markdown).toContain('1'); // Should show created and failed task counts
+      expect(markdown).toContain('## ❌ Error');
+      expect(markdown).toContain('Template instantiation partially completed');
+      expect(markdown).toContain('1/2 tasks created');
+      expect(markdown).toContain('Failed tasks');
+      expect(markdown).toContain('Task creation failed');
+      expect(markdown).toContain('**FailedCount**:\n1');
     });
 
     it('should handle unexpected errors', async () => {

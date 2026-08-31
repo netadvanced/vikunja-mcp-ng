@@ -594,8 +594,16 @@ export function registerTemplatesTool(
                 templateId: args.id,
               });
 
-              // Create tasks from template
+              // Create tasks from template. Both a task-creation failure and
+              // a label-attach failure are collected below (not just
+              // logged) so the response can be honest about the outcome —
+              // see #271 (CRIT-10): previously every per-task error was
+              // `logger.warn`-only, label failures were swallowed entirely,
+              // and the response always read as a clean success even when
+              // zero tasks were created.
               const createdTasks: VikunjaTask[] = [];
+              const taskFailures: Array<{ title: string; error: string }> = [];
+              const labelFailures: Array<{ taskId: number; title: string; error: string }> = [];
               for (const taskTemplate of template.tasks) {
                 try {
                   const taskData: VikunjaTask = {
@@ -637,6 +645,11 @@ export function registerTemplatesTool(
                         labels: taskTemplate.labels,
                         error: labelError,
                       });
+                      labelFailures.push({
+                        taskId: createdTask.id ?? 0,
+                        title: taskTemplate.title,
+                        error: labelError instanceof Error ? labelError.message : String(labelError),
+                      });
                     }
                   }
                 } catch (taskError) {
@@ -644,18 +657,65 @@ export function registerTemplatesTool(
                     taskTitle: taskTemplate.title,
                     error: taskError,
                   });
+                  taskFailures.push({
+                    title: taskTemplate.title,
+                    error: taskError instanceof Error ? taskError.message : String(taskError),
+                  });
                 }
               }
 
+              // Honest partial-failure reporting, following the same
+              // pattern `setup-kanban` (src/tools/projects/kanban-setup.ts)
+              // and the task bulk paths already use correctly: never claim
+              // success when something the caller asked for did not land.
+              // The fully-successful message is left byte-identical to
+              // before this fix.
+              const partial = taskFailures.length > 0 || labelFailures.length > 0;
+              const baseMessage = `Project "${newProject.title}" created from template "${template.name}"`;
+              const detailParts: string[] = [];
+              if (taskFailures.length > 0) {
+                detailParts.push(
+                  `Failed tasks: ${taskFailures.map((t) => `"${t.title}" (${t.error})`).join('; ')}.`,
+                );
+              }
+              if (labelFailures.length > 0) {
+                detailParts.push(
+                  `Failed to attach labels: ${labelFailures
+                    .map((l) => `task ${l.taskId} "${l.title}" (${l.error})`)
+                    .join('; ')}.`,
+                );
+              }
+              const summaryLine = partial
+                ? `Template instantiation partially completed: ${baseMessage}, ` +
+                  `${createdTasks.length}/${template.tasks.length} tasks created.`
+                : baseMessage;
+              const message =
+                detailParts.length > 0 ? `${summaryLine} ${detailParts.join(' ')}` : summaryLine;
+
+              const failures = [
+                ...taskFailures.map((t) => ({ type: 'task' as const, title: t.title, error: t.error })),
+                ...labelFailures.map((l) => ({
+                  type: 'label' as const,
+                  taskId: l.taskId,
+                  title: l.title,
+                  error: l.error,
+                })),
+              ];
+
               const response = createStandardResponse(
                 'instantiate-template',
-                `Project "${newProject.title}" created from template "${template.name}"`,
+                message,
                 {
                   project: newProject,
                   createdTasks: createdTasks.length,
-                  failedTasks: template.tasks.length - createdTasks.length,
+                  failedTasks: taskFailures.length,
                 },
-                { templateId: args.id, templateName: template.name },
+                {
+                  templateId: args.id,
+                  templateName: template.name,
+                  success: !partial,
+                  ...(partial && { failures, failedCount: failures.length }),
+                },
               );
 
               return {
