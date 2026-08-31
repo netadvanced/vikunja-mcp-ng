@@ -659,6 +659,29 @@ democratize-technology/vikunja-mcp#97.
 VIKUNJA_BULK_WRITE_CONCURRENCY=1   # default; raise ONLY on non-SQLite backends
 ```
 
+## Default Response Verbosity
+
+`vikunja_tasks` and `vikunja_projects` responses are shaped by a `Verbosity` level
+(`minimal` | `standard` | `detailed` | `complete`, `src/transforms/base.ts`) that controls
+how many fields come back — fewer fields for a quick list, more for a deep inspection. Most
+callers never think about this: a per-call `verbosity` argument (where a tool exposes one)
+always wins, and absent that, the default is `standard`.
+
+- **Env var**: `VIKUNJA_RESPONSE_VERBOSITY` — changes the *default* every tool call falls
+  back to when it doesn't pass `verbosity` explicitly, without needing a per-call override
+  everywhere. This is unrelated to config-file settings; it is read directly from
+  `process.env` (`getDefaultVerbosity()` in `src/transforms/base.ts`), not part of
+  `ApplicationConfig`, so it has no config-file key and is not subject to the env-vs-file
+  precedence rules elsewhere on this page.
+- **Accepted values**: `minimal`, `standard`, `detailed`, `complete` — matched
+  case-insensitively, surrounding whitespace trimmed.
+- **Default / invalid values**: unset, empty, or anything that doesn't match one of the four
+  values above silently falls back to `standard` — never a startup error.
+
+```env
+VIKUNJA_RESPONSE_VERBOSITY=detailed   # optional, default standard
+```
+
 ## Secrets Management
 
 **The config file is for non-sensitive settings only.** It's designed to be safe to
@@ -863,6 +886,11 @@ EXPORT_TOOL_TIMEOUT=600000
 ### Feature Flag Variables
 ```env
 VIKUNJA_ENABLE_SERVER_SIDE_FILTERING=true
+```
+
+### Response Verbosity Variable
+```env
+VIKUNJA_RESPONSE_VERBOSITY=standard   # optional, default standard; see Default Response Verbosity
 ```
 
 ## Usage Patterns
