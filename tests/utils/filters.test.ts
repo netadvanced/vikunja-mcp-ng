@@ -22,6 +22,7 @@ import {
   groupToDslString,
   expressionToDslString,
   parseFilterString,
+  apiFilterStringToDslString,
   FilterBuilder,
   SecurityValidator,
   FILTER_FIELD_ALIASES,
@@ -248,7 +249,11 @@ describe('Consolidated Filter Utilities', () => {
       // src/utils/filters.ts and the matching evaluateCondition switch in
       // src/tools/tasks/filtering/evaluators.ts used for client-side evaluation.
       it.each<[FilterCondition['field'], string, FilterCondition['value'], string]>([
-        ['percentDone', '>=', 75, 'percent_done >= 75'],
+        // percentDone also rescales: 75 (the DSL's whole-percentage scale)
+        // becomes 0.75, the fraction Vikunja actually stores. Without this a
+        // filter of `percentDone > 50` matched nothing, silently, because no
+        // stored value ever exceeds 1.
+        ['percentDone', '>=', 75, 'percent_done >= 0.75'],
         ['dueDate', '<', 'now', 'due_date < now'],
         ['startDate', '>=', '2024-01-01', 'start_date >= 2024-01-01'],
         ['endDate', '<=', '2024-12-31', 'end_date <= 2024-12-31'],
@@ -302,8 +307,24 @@ describe('Consolidated Filter Utilities', () => {
 
         const result = expressionToString(expression);
         expect(result).toBe(
-          '(due_date < now && start_date >= 2024-01-01 && end_date <= 2024-12-31 && done_at != now && percent_done >= 50 && project_id = 4)',
+          '(due_date < now && start_date >= 2024-01-01 && end_date <= 2024-12-31 && done_at != now && percent_done >= 0.5 && project_id = 4)',
         );
+      });
+
+      it('rescales every value in a percentDone "in" list', () => {
+        expect(
+          conditionToString({ field: 'percentDone', operator: 'in', value: [25, 50, 100] }),
+        ).toBe('percent_done in 0.25, 0.5, 1');
+      });
+
+      it('leaves an unparseable percentDone value alone rather than emitting NaN', () => {
+        expect(
+          conditionToString({
+            field: 'percentDone',
+            operator: '=',
+            value: 'not-a-number' as unknown as number,
+          }),
+        ).toBe('percent_done = not-a-number');
       });
 
       it('translates the field name for "in"/"not in" operators too', () => {
@@ -476,7 +497,7 @@ describe('Consolidated Filter Utilities', () => {
       // functions are genuinely serving different purposes rather than one
       // having quietly become a no-op alias of the other.
       expect(expressionToString(expression)).toBe(
-        '(due_date < now && start_date >= 2024-01-01 && end_date <= 2024-12-31 && done_at != now && percent_done >= 50 && project_id = 4)',
+        '(due_date < now && start_date >= 2024-01-01 && end_date <= 2024-12-31 && done_at != now && percent_done >= 0.5 && project_id = 4)',
       );
     });
   });
@@ -547,7 +568,17 @@ describe('Consolidated Filter Utilities', () => {
       }
     };
 
-    it.each(Object.keys(FIELD_TYPES) as FilterField[])(
+    // percentDone is deliberately excluded from the value-identity sweep below
+    // and covered by its own round-trip test: expressionToString rescales it
+    // from the DSL's 0-100 percentage to Vikunja's 0-1 fraction, so re-parsing
+    // that output as if it were user input is a category error, not a
+    // round trip. apiFilterStringToDslString is the function that closes the
+    // loop for it — see the dedicated describe block below.
+    const IDENTITY_ROUND_TRIP_FIELDS = (Object.keys(FIELD_TYPES) as FilterField[]).filter(
+      (field) => field !== 'percentDone',
+    );
+
+    it.each(IDENTITY_ROUND_TRIP_FIELDS)(
       'round-trips a single-condition %s filter through the API-casing serializer',
       (field) => {
         const operator = FIELD_TYPES[field] === 'array' ? 'in' : '=';
@@ -564,6 +595,53 @@ describe('Consolidated Filter Utilities', () => {
         );
       },
     );
+
+    describe('apiFilterStringToDslString (reading a filter string back off the server)', () => {
+      it('rescales percent_done to the DSL 0-100 scale and camelCases the field', () => {
+        expect(apiFilterStringToDslString('percent_done >= 0.75')).toBe('percentDone >= 75');
+      });
+
+      it('rescales without rounding a legitimately fractional threshold', () => {
+        expect(apiFilterStringToDslString('percent_done > 0.335')).toBe('percentDone > 33.5');
+      });
+
+      it('returns a filter that never mentions percentDone byte-identically', () => {
+        // Deliberately conservative: no reformatting, no normalization, no
+        // re-quoting of somebody else's filter for no reason.
+        const untouched = 'due_date < now+14d && priority>=4';
+        expect(apiFilterStringToDslString(untouched)).toBe(untouched);
+      });
+
+      it('returns an unparseable percent_done filter unchanged rather than throwing', () => {
+        // A saved filter may have been authored in the Vikunja web UI in
+        // syntax this parser does not model. Best effort, never an error on a
+        // pure read.
+        const weird = 'percent_done ??? 0.5';
+        expect(apiFilterStringToDslString(weird)).toBe(weird);
+      });
+
+      it('rescales percentDone inside a multi-condition expression, leaving the rest alone', () => {
+        expect(apiFilterStringToDslString('percent_done >= 0.5 && priority >= 4')).toBe(
+          '(percentDone >= 50 && priority >= 4)',
+        );
+      });
+    });
+
+    it('round-trips percentDone through the scale-aware pair (to wire and back)', () => {
+      const expression = new FilterBuilder().where('percentDone', '>=', 75).build();
+
+      const serialized = expressionToString(expression);
+      expect(serialized).toBe('percent_done >= 0.75');
+
+      const backToDsl = apiFilterStringToDslString(serialized);
+      expect(backToDsl).toBe('percentDone >= 75');
+
+      const reparsed = parseFilterString(backToDsl);
+      expect(reparsed.error).toBeUndefined();
+      expect(reparsed.expression?.groups[0]?.conditions[0]).toEqual(
+        expression.groups[0]?.conditions[0],
+      );
+    });
 
     it('round-trips a multi-condition group (adds parens, preserves both conditions)', () => {
       const expression: FilterExpression = {

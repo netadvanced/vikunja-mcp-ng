@@ -26,6 +26,7 @@ import { setTaskLabels } from '../../utils/label-bulk';
 import { BatchProcessor } from '../../utils/performance/batch-processor';
 import type { components } from '../../types/generated/vikunja-openapi';
 import { convertRepeatConfiguration, applyFieldUpdate, normalizeDateForApi } from './validation';
+import { percentDoneToFraction } from '../../utils/percent-done';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
 import { AUTH_ERROR_MESSAGES, REPEAT_MODE_MAP } from './constants';
 import { bulkOperationValidator } from './bulk/BulkOperationValidator';
@@ -231,10 +232,24 @@ const successResponse = (
 /**
  * Resolve bulk-update field value for Vikunja's updateTask payload.
  * Native bulk API used a numeric repeat_mode map; keep that conversion when merging.
+ *
+ * This is the single conversion point for the whole bulk-update path: its
+ * return value feeds BOTH the native `POST /tasks/bulk` payload's `values`
+ * and the per-task fallback's `applyFieldUpdate` merge, so every wire-shape
+ * translation (repeat_mode enum, date normalization, and the percent_done
+ * percentage -> fraction scale) belongs here and nowhere downstream.
  */
 function resolveBulkUpdateValue(field: string | undefined, value: unknown): unknown {
   if (field === 'repeat_mode' && typeof value === 'string') {
     return REPEAT_MODE_MAP[value] ?? value;
+  }
+  // percent_done crosses our boundary as a whole percentage 0-100 (the same
+  // scale as `percentDone` everywhere else, even though this path names the
+  // field by its raw snake_case API spelling) and reaches Vikunja as the 0-1
+  // wire fraction. BulkOperationValidator has already rejected anything that
+  // is not an integer 0-100 by the time this runs.
+  if (field === 'percent_done' && typeof value === 'number') {
+    return percentDoneToFraction(value);
   }
   // Coerce date-only 'YYYY-MM-DD' values to RFC3339 - Vikunja silently
   // drops a bare date-only due_date/start_date/end_date (issue #164).
@@ -676,8 +691,9 @@ export async function createOneBulkTask(
     newTask.start_date = normalizeDateForApi(t.startDate) ?? t.startDate;
   if (t.endDate !== undefined) newTask.end_date = normalizeDateForApi(t.endDate) ?? t.endDate;
   if (t.priority !== undefined) newTask.priority = t.priority;
-  // Fraction 0-1, not a 0-100 percentage — see BulkCreateTaskData.percentDone.
-  if (t.percentDone !== undefined) newTask.percent_done = t.percentDone;
+  // Whole percentage 0-100 in (see BulkCreateTaskData.percentDone), 0-1 wire
+  // fraction out.
+  if (t.percentDone !== undefined) newTask.percent_done = percentDoneToFraction(t.percentDone);
   if (t.repeatAfter !== undefined || t.repeatMode !== undefined) {
     const rc = convertRepeatConfiguration(t.repeatAfter, t.repeatMode);
     if (rc.repeat_after !== undefined) newTask.repeat_after = rc.repeat_after;

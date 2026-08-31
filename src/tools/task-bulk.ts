@@ -13,6 +13,7 @@ import { getAuthManagerFromContext, hasRequestContext, setGlobalClientFactory } 
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
+import { percentDoneSchema } from '../utils/percent-done';
 
 /**
  * Register task bulk operations tool
@@ -47,7 +48,9 @@ export function registerTaskBulkTool(
         .describe(
           "The new value for 'field'. For due_date/start_date/end_date, a RFC3339/ISO 8601 " +
             'date-time (e.g., 2024-05-24T10:00:00Z) or a date-only value (e.g., 2024-05-24), ' +
-            'which is normalized to midnight UTC before being sent to Vikunja.',
+            'which is normalized to midnight UTC before being sent to Vikunja. For ' +
+            'percent_done, a whole percentage 0-100 (75 = 75%, 100 = done) — the same scale ' +
+            'as percentDone everywhere else on this tool surface; 0.75 is rejected.',
         ),
       projectId: z.number().optional(), // Add projectId for bulk-create; also optional override for bulk-set-bucket
       // bulk-set-bucket fields
@@ -83,18 +86,14 @@ export function registerTaskBulkTool(
                   'being sent to Vikunja.',
               ),
             priority: z.number().min(0).max(5).optional(),
-            // Completion progress as a FRACTION 0-1 (0.25 = 25%), matching
-            // Vikunja's wire contract — see the percentDone note in
-            // src/tools/tasks/index.ts. NOT a 0-100 percentage.
-            percentDone: z
-              .number()
-              .min(0)
-              .max(1)
-              .optional()
-              .describe(
-                'Completion progress as a FRACTION between 0 and 1 (0.25 = 25%) — not a ' +
-                  '0-100 percentage.',
-              ),
+            // Whole percentage 0-100 (25 = 25%), converted to Vikunja's 0-1
+            // wire fraction in createOneBulkTask — see the percentDone note in
+            // src/tools/tasks/index.ts and src/utils/percent-done.ts.
+            percentDone: percentDoneSchema.describe(
+              'Completion progress as a whole percentage between 0 and 100 (25 = 25%, ' +
+                '100 = done). Must be an integer — 0.5 is rejected, not silently read as ' +
+                'half a percent.',
+            ),
             labels: z.array(z.number()).optional(),
             assignees: z.array(z.number()).optional(),
             repeatAfter: z.number().min(0).optional(),

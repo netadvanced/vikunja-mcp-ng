@@ -30,7 +30,8 @@ const task = (overrides: Partial<Task> = {}): Task =>
     description: 'Quarterly numbers',
     done: false,
     priority: 3,
-    percent_done: 25,
+    // Wire value: Vikunja stores progress as a 0-1 fraction (25%).
+    percent_done: 0.25,
     project_id: 7,
     ...overrides,
   }) as Task;
@@ -231,13 +232,37 @@ describe('evaluateCondition', () => {
     );
   });
 
-  it('evaluates `percentDone`, defaulting a missing value to 0', () => {
-    expect(evaluateCondition(task({ percent_done: 50 }), condition('percentDone', '>', 25))).toBe(
-      true,
-    );
+  // The filter DSL carries percentDone on the tool surface's 0-100 scale; the
+  // task itself carries Vikunja's 0-1 fraction. The comparison happens in wire
+  // space (threshold / 100), so `percentDone > 25` means "more than a quarter
+  // done" — before the percentage-scale change it meant "more than 2500% done"
+  // and matched nothing.
+  it('evaluates `percentDone` against the 0-100 threshold, defaulting a missing value to 0', () => {
+    const halfDone = task({ percent_done: 0.5 });
+    expect(evaluateCondition(halfDone, condition('percentDone', '>', 25))).toBe(true);
+    expect(evaluateCondition(halfDone, condition('percentDone', '>', 75))).toBe(false);
+    expect(evaluateCondition(halfDone, condition('percentDone', '=', 50))).toBe(true);
     expect(
       evaluateCondition(task({ percent_done: undefined }), condition('percentDone', '=', 0)),
     ).toBe(true);
+  });
+
+  it('matches an exact percentage whose fraction is not representable cleanly', () => {
+    // 7 / 100 lands on the same double the API stored for 7%; scaling the
+    // task's fraction UP instead (0.07 * 100 === 7.000000000000001) would make
+    // this equality miss.
+    expect(evaluateCondition(task({ percent_done: 0.07 }), condition('percentDone', '=', 7))).toBe(
+      true,
+    );
+  });
+
+  it('treats a 100% task as complete rather than as 1%', () => {
+    expect(evaluateCondition(task({ percent_done: 1 }), condition('percentDone', '=', 100))).toBe(
+      true,
+    );
+    expect(evaluateCondition(task({ percent_done: 1 }), condition('percentDone', '=', 1))).toBe(
+      false,
+    );
   });
 
   it('evaluates `project`, defaulting a missing project to 0', () => {

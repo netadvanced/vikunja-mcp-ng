@@ -162,6 +162,7 @@ describe('TaskCreationService', () => {
       hexColor: '#ff0000',
       repeatAfter: 3600,
       repeatMode: 1, // week
+      // ImportedTask.percentDone is a whole percentage 0-100.
       percentDone: 50,
     };
   });
@@ -174,7 +175,7 @@ describe('TaskCreationService', () => {
         title: 'Test Task',
         done: false,
         priority: 3,
-        percent_done: 50,
+        percent_done: 0.5,
       } as Task;
 
       // createBaseTask PUT succeeds; the label-bulk POST resolves via the
@@ -209,7 +210,8 @@ describe('TaskCreationService', () => {
         title: 'Test Task',
         done: false,
         priority: 3,
-        percent_done: 50,
+        // 50% in, Vikunja's 0-1 wire fraction out.
+        percent_done: 0.5,
         description: 'Test description',
         due_date: '2024-12-31',
         start_date: '2024-01-01',

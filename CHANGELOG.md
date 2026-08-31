@@ -8,6 +8,47 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: `percentDone` is now a whole percentage 0-100 (integers only), everywhere
+  on the tool surface.** It was a fraction 0-1 — Vikunja's wire contract for
+  `models.Task.percent_done`. It still is on the wire; this server now converts in both
+  directions at its boundary (`src/utils/percent-done.ts`) instead of making agents
+  memorize it.
+  **What breaks:** any caller passing a fraction. `percentDone: 0.5` is now a validation
+  error (with a message that names the scale: *"percentDone must be a whole number between
+  0 and 100 — use 50 for 50%"*), and — the one silent change — **`percentDone: 1` now means
+  1%, not 100%**. Use `100`.
+  **Why now:** the fraction leaked an implementation detail agents had to memorize (a real
+  Claude session recorded the 0-1 scale in its list of "gotchas" — a memory that dies with
+  the session and transfers to no other MCP client), Vikunja's own human-facing scale is
+  0-100, two independent upstream contributors
+  (democratize-technology/vikunja-mcp#94, #82) assumed 0-100, and the integer requirement
+  is a safety property: under 0-1, an agent writing `percentDone: 1` meaning "done"
+  silently wrote 1% with no error. Cheap on `0.7.0-beta`, expensive after issue #183
+  declares the tool surface stable at 1.0. Full reasoning and revisit condition:
+  decision 22 in [docs/ROADMAP.md](docs/ROADMAP.md) §3.
+  **Scope — one scale, no exceptions:** `vikunja_tasks` `create`/`update`/`bulk-create`,
+  `vikunja_task_bulk` `bulk-create` and `bulk-update`'s raw `percent_done` field,
+  `vikunja_batch_import` (JSON and CSV), and `percentDone` inside a filter string —
+  including saved filters, which are stored on the Vikunja server in its own scale and
+  converted back to 0-100 when read, so `get` → edit → `update` round-trips instead of
+  rescaling twice.
+
+### Fixed (breaking-change follow-ons)
+
+- **Task progress was displayed as the raw fraction next to a `%` sign** — a half-done task
+  rendered as `**Progress:** 0.5%` and a finished one as `1%`. It now renders on the same
+  0-100 scale the tool surface accepts (nearest whole percent; a sub-percent value stored by
+  another Vikunja client is rounded, halves up).
+- **`vikunja_batch_import` wrote `percentDone` to the wire unconverted.** Its schema has
+  always validated the field as 0-100, but the value was passed straight through to
+  `percent_done`, so importing a task at 75% stored `75` — 75x out of range and silently
+  accepted by Vikunja.
+- **A `percentDone` filter matched nothing, silently.** `percentDone > 50` was sent to the
+  server as `percent_done > 50`, compared against a column whose values never exceed `1`.
+  Both the server-side filter string and the client-side evaluator now rescale.
+
 ### Added
 
 - **Task fields that only worked on update now work on create too.** `percentDone` is
@@ -20,12 +61,14 @@ pre-1.0 semantics — see [docs/RELEASING.md](docs/RELEASING.md) for what that m
   **not** deleted. `position` on `create` is now rejected with a pointer to `set-position`
   rather than silently ignored — task position is per-view state owned by a dedicated
   endpoint that has no meaningful default for a brand-new task.
-  **Scale note, recorded so nobody "fixes" it:** `percentDone` is a **fraction 0-1**
-  (0.5 = 50%), not 0-100. Verified in go-vikunja — `PercentDone float64`
-  (`pkg/models/tasks.go`), the frontend's own picker stores `[0, 0.1, … 1]`
-  (`PercentDoneSelect.vue`), and every display site renders `percentDone * 100`.
-  Surfaced by democratize-technology/vikunja-mcp#94 (@joyjit) and #82 (@Alex-Blanes),
-  whose "0-100" wording describes their i18n input scale, not the wire contract.
+  **Scale note:** this entry originally recorded `percentDone` as a fraction 0-1,
+  matching Vikunja's wire contract. That is superseded within this same unreleased
+  cycle — see the **BREAKING** entry below: the tool surface now takes a whole
+  percentage 0-100 and converts at the boundary. The wire really is a fraction
+  (`PercentDone float64`, `pkg/models/tasks.go`; the frontend picker stores
+  `[0, 0.1, … 1]` in `PercentDoneSelect.vue`); that is now an implementation detail
+  this server keeps to itself. democratize-technology/vikunja-mcp#94 (@joyjit) and
+  #82 (@Alex-Blanes) read the interface as 0-100, which is now what it is.
 - **`vikunja_teams` can set `is_public`** on `create` and `update` via a new `isPublic`
   field — `models.Team.is_public` ("defines whether the team should be publicly
   discoverable when sharing a project") was in the vendored 2.4.0 spec and passed through

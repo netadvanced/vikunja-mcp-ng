@@ -8,6 +8,7 @@ import type { AuthManager } from '../../../auth/AuthManager';
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import { getTaskViaRest } from '../../../utils/task-rest-transport';
 import { validateDateString, validateId, convertRepeatConfiguration } from '../validation';
+import { assertValidPercentDone, percentDoneToFraction } from '../../../utils/percent-done';
 import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { RETRY_CONFIG } from '../../../utils/retry';
 import { setTaskLabels } from '../../../utils/label-bulk';
@@ -35,6 +36,11 @@ export interface UpdateTaskArgs {
   startDate?: string;
   endDate?: string;
   priority?: number;
+  /**
+   * Completion progress as a whole percentage, **0-100** (50 = 50%), the
+   * tool surface's scale. Converted to Vikunja's 0-1 wire fraction before it
+   * reaches the API — see `src/utils/percent-done.ts`.
+   */
   percentDone?: number;
   done?: boolean;
   /** Move the task to another project (merged into full-model update). */
@@ -88,6 +94,13 @@ export async function updateTask(
     }
     if (args.endDate) {
       validateDateString(args.endDate, 'endDate');
+    }
+
+    // percentDone is a whole percentage 0-100 on this tool surface. Guarded
+    // here as well as in the Zod schema because updateTask is exported and
+    // reachable from callers that never see the schema.
+    if (args.percentDone !== undefined) {
+      assertValidPercentDone(args.percentDone);
     }
 
     // Validate project move target if provided
@@ -255,7 +268,13 @@ async function analyzeUpdateState(
     affectedFields.push('end_date');
   if (args.priority !== undefined && args.priority !== currentTask.priority)
     affectedFields.push('priority');
-  if (args.percentDone !== undefined && args.percentDone !== currentTask.percent_done)
+  // args.percentDone is a 0-100 percentage; currentTask.percent_done is the
+  // 0-1 wire fraction. Compare in wire space so "already 75%" is correctly
+  // reported as unchanged instead of always looking different.
+  if (
+    args.percentDone !== undefined &&
+    percentDoneToFraction(args.percentDone) !== currentTask.percent_done
+  )
     affectedFields.push('percentDone');
   if (args.done !== undefined && args.done !== currentTask.done) affectedFields.push('done');
   if (args.projectId !== undefined && args.projectId !== currentTask.project_id)
@@ -301,7 +320,10 @@ function buildUpdateData(currentTask: VikunjaTask, args: UpdateTaskArgs): Vikunj
     ...(args.startDate !== undefined && { start_date: args.startDate }),
     ...(args.endDate !== undefined && { end_date: args.endDate }),
     ...(args.priority !== undefined && { priority: args.priority }),
-    ...(args.percentDone !== undefined && { percent_done: args.percentDone }),
+    // 0-100 percentage in, 0-1 fraction on the wire.
+    ...(args.percentDone !== undefined && {
+      percent_done: percentDoneToFraction(args.percentDone),
+    }),
     ...(args.done !== undefined && { done: args.done }),
     // Move between projects — must be part of the full-model payload or Vikunja ignores it
     ...(args.projectId !== undefined && { project_id: args.projectId }),

@@ -1,0 +1,19 @@
+{
+  "id": "percent-done-scale",
+  "title": "Task progress expressed as a percentage",
+  "description": "Regression guard for the percentDone scale (decision 22, docs/ROADMAP.md §3). The prompt says \"75% done\" in plain English; the verify check reads the RAW REST field, which Vikunja stores as the 0-1 fraction 0.75. It therefore fails if the conversion in src/utils/percent-done.ts is ever removed or doubled: passing 75 straight through would store 75, and converting twice would store 0.0075. It also probes whether an agent reaches for the plain-English percentage at all now that the tool surface takes 0-100 integers — the old 0-1 fraction contract was a memorized gotcha, and a model that has not memorized it used to write `percentDone: 75` and silently get 7500%. optimalCallCount derivation from the CURRENT tool schemas: vikunja_projects create (1) + vikunja_tasks create with title and percentDone set in the SAME call (1) = 2. setup-kanban (PR #175) cannot collapse this to 1: its per-task shape (src/tools/projects/index.ts) accepts title/column/description/priority/dueDate/startDate/endDate/labels/assignees but NOT percentDone, so it cannot reach this end state in one call — no credit given, per docs/BATTLE-TESTING.md's re-baselining policy. Re-derive this number if percentDone is ever added to a project-provisioning composite.",
+  "promptTemplate": "Create a project called \"{{prefix}}Release Prep\" with a task called \"{{prefix}}draft release notes\", and record that the task is 75% done.",
+  "optimalCallCount": 2,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Release Prep" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Release Prep", "min": 1 },
+    {
+      "type": "tasks-field-match-count",
+      "projectTitleContains": "{{prefix}}Release Prep",
+      "field": "percent_done",
+      "op": "eq",
+      "value": 0.75,
+      "min": 1
+    }
+  ]
+}

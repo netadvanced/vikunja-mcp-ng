@@ -3,6 +3,7 @@ import type { TaskCreationData } from '../types';
 import { MCPError, ErrorCode } from '../types';
 import { isAuthenticationError } from '../utils/auth-error-handler';
 import { setTaskLabels } from '../utils/label-bulk';
+import { percentDoneToFraction } from '../utils/percent-done';
 import type { ImportedTask } from '../parsers/InputParserFactory';
 import type { EntityResolutionResult } from './EntityResolver';
 import type { AuthManager } from '../auth/AuthManager';
@@ -198,7 +199,12 @@ export class TaskCreationService {
       title: task.title,
       done: task.done || false,
       priority: task.priority || 0,
-      percent_done: task.percentDone || 0,
+      // ImportedTask.percentDone is a whole percentage 0-100 (importedTaskSchema
+      // has always validated it that way); TaskCreationData.percent_done is the
+      // 0-1 wire field. The conversion was missing, so importing a task at 75%
+      // sent `percent_done: 75` — 75x out of range, silently accepted by
+      // Vikunja. See src/utils/percent-done.ts.
+      percent_done: percentDoneToFraction(task.percentDone || 0),
     };
 
     // Only add description if it's not undefined

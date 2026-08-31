@@ -139,8 +139,12 @@ export function applyFieldUpdate(task: Task, field: string | undefined, value: u
     case 'priority':
       task.priority = value as number;
       break;
-    // Fraction 0-1 (0.5 = 50%), matching models.Task.percent_done — see the
-    // percentDone note in ./index.ts.
+    // Already the 0-1 wire fraction by the time it gets here. The tool
+    // surface's scale is a whole percentage 0-100; the single conversion for
+    // the bulk-update path happens upstream in `resolveBulkUpdateValue`
+    // (./bulk-operations-simplified.ts), because that same resolved value
+    // also goes straight into the native POST /tasks/bulk payload. Converting
+    // again here would halve it a second time — see src/utils/percent-done.ts.
     case 'percent_done':
     case 'percentDone':
       task.percent_done = value as number;

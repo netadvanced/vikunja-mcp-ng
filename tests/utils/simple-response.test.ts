@@ -21,7 +21,12 @@ describe('simple-response - Task Formatting', () => {
         done: false,
         priority: 5,
         due_date: '2025-01-30T17:00:00Z',
-        percent_done: 25,
+        // Wire value: Vikunja stores progress as a 0-1 fraction. The tool
+        // surface renders it as a whole percentage (0.25 -> "25%"). This test
+        // previously set 25 here and still asserted "25%" — it passed only
+        // because the formatter printed the raw number next to a % sign, which
+        // is exactly the display bug the percentage-scale change fixed.
+        percent_done: 0.25,
         labels: [{ id: 1, title: 'urgent', hex_color: '#ff0000' }],
         assignees: [{ id: 1, username: 'johndoe', email: 'john@example.com' }],
         repeat_after: 0,
@@ -223,6 +228,48 @@ describe('simple-response - Task Formatting', () => {
       expect(result).toContain('urgent');
       expect(result).toContain('bug');
       expect(result).toContain('frontend');
+    });
+
+    it.each([
+      [0.01, '**Progress:** 1%'],
+      [0.5, '**Progress:** 50%'],
+      [0.75, '**Progress:** 75%'],
+      [1, '**Progress:** 100%'],
+    ])('renders the wire fraction %f as %s', (fraction, expected) => {
+      // Regression for the display bug this scale change fixed: the formatter
+      // printed the raw fraction next to a `%` sign, so a half-done task read
+      // as "Progress: 0.5%" and a finished one as "Progress: 1%".
+      const task: Task = {
+        id: 1,
+        project_id: 5,
+        title: 'Progress bar',
+        done: false,
+        priority: 0,
+        percent_done: fraction,
+        repeat_after: 0,
+      };
+
+      const result = formatSuccessMessage('list-tasks', 'Found 1 task', { tasks: [task] });
+
+      expect(result).toContain(expected);
+    });
+
+    it('rounds a sub-percent value stored by another Vikunja client', () => {
+      const task: Task = {
+        id: 1,
+        project_id: 5,
+        title: 'Odd progress',
+        done: false,
+        priority: 0,
+        // Vikunja's own web-UI slider can store a value this tool surface
+        // would never accept as input.
+        percent_done: 0.336,
+        repeat_after: 0,
+      };
+
+      const result = formatSuccessMessage('list-tasks', 'Found 1 task', { tasks: [task] });
+
+      expect(result).toContain('**Progress:** 34%');
     });
 
     it('should not display fields when they are falsy', () => {

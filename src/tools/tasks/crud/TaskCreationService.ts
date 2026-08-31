@@ -11,6 +11,7 @@ import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { withRetry, RETRY_CONFIG } from '../../../utils/retry';
 import { transformApiError, handleFetchError } from '../../../utils/error-handler';
 import { sanitizeString } from '../../../utils/validation';
+import { assertValidPercentDone, percentDoneToFraction } from '../../../utils/percent-done';
 import { AUTH_ERROR_MESSAGES } from '../constants';
 import {
   validateDateString,
@@ -35,9 +36,10 @@ export interface CreateTaskArgs {
   endDate?: string;
   priority?: number;
   /**
-   * Completion fraction, **0-1** (0.5 = 50%) — the wire contract, not a
-   * percentage. See the `percentDone` note on the Zod schema in
-   * `../index.ts` for the go-vikunja evidence behind that range.
+   * Completion progress as a whole percentage, **0-100** (50 = 50%), the
+   * tool surface's scale. Converted to Vikunja's 0-1 wire fraction by
+   * `percentDoneToFraction` on the way out — see `src/utils/percent-done.ts`
+   * and the `percentDone` note on the Zod schema in `../index.ts`.
    */
   percentDone?: number;
   labels?: number[];
@@ -144,14 +146,11 @@ export async function createTask(
       );
     }
 
-    // percentDone is a FRACTION 0-1 on the wire (0.5 = 50%), not 0-100 — see
-    // the schema note in ../index.ts. Guard here too, since createTask is also
-    // reachable from callers that don't go through the Zod schema.
-    if (args.percentDone !== undefined && (args.percentDone < 0 || args.percentDone > 1)) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'percentDone must be between 0 and 1 (a fraction, e.g. 0.5 for 50%)',
-      );
+    // percentDone is a whole percentage 0-100 on this tool surface (50 = 50%)
+    // — see the schema note in ../index.ts. Guarded here too, since createTask
+    // is also reachable from callers that don't go through the Zod schema.
+    if (args.percentDone !== undefined) {
+      assertValidPercentDone(args.percentDone);
     }
 
     // Build the initial task object with sanitized values
@@ -174,7 +173,9 @@ export async function createTask(
     if (args.endDate !== undefined)
       newTask.end_date = normalizeDateForApi(args.endDate) ?? args.endDate;
     if (args.priority !== undefined) newTask.priority = args.priority;
-    if (args.percentDone !== undefined) newTask.percent_done = args.percentDone;
+    // 0-100 percentage in, 0-1 fraction on the wire.
+    if (args.percentDone !== undefined)
+      newTask.percent_done = percentDoneToFraction(args.percentDone);
 
     // Handle repeat configuration. The generated `models.Task.repeat_mode`
     // type (0 | 1 | 2) matches the real API, unlike the legacy client's

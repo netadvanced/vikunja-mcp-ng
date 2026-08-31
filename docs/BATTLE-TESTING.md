@@ -163,7 +163,7 @@ transcript that revealed it).
 ## The scenario library
 
 `scripts/battle/scenarios/*.json`, each validated against `ScenarioSchema`
-(`scripts/battle/types.ts`) at load time. Currently 13 scenarios:
+(`scripts/battle/types.ts`) at load time. Currently 14 scenarios:
 
 | id | optimal | probes |
 |---|---|---|
@@ -178,6 +178,7 @@ transcript that revealed it).
 | `labels-due-date-combo` | 1 | label creation + application + due dates combined in one ask, now solved by `setup-kanban`'s columns-less form (issue #185): `title` + `tasks` (each carrying `labels`/`dueDate`), no `columns` — one call, zero Kanban structure touched. PR #179 briefly re-baselined this to 1 via a fabricated placeholder column instead; reverted 2026-07-25 (netadvanced/vikunja-mcp#28 T1). Re-baselined to 1 again 2026-07-27 for the unrelated, legitimate reason above — see "Re-baselining `optimalCallCount`" below |
 | `single-task-smoke` | 2 | deliberately the simplest, most deterministic scenario — use this one for a first try or a live-smoke proof (see the note on `optimalCallCount` below — it is no longer necessarily the global minimum by raw call count, but remains the designated smoke-test scenario) |
 | `mixed-priority-batch` | 2 | varying a per-item field within a single batch-creation call |
+| `percent-done-scale` | 2 | the `percentDone` scale (decision 22): the prompt says "75% done" in plain English and the verify check reads the RAW REST field, which Vikunja stores as `0.75` — so it fails if the 0-100 -> 0-1 conversion in `src/utils/percent-done.ts` is removed (75 stored) or applied twice (0.0075 stored). Optimum derived from the current schemas: create-project (1) + create-task with `percentDone` in the same call (1) = 2; `setup-kanban`'s per-task shape has no `percentDone`, so it cannot collapse this to 1 and is deliberately not credited |
 | `existing-label-reuse` | 3 | applying an already-existing label (find-then-apply path — seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open) |
 | `project-rename-share` | 3 | project create + rename + share-by-name in one prompt — probes the `title`-vs-`name` field-naming footgun (`vikunja_projects`' flat args object has both) and exercises the share-by-name composite (`create-share` with a `name`) |
 

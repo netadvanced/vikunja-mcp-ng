@@ -1075,7 +1075,7 @@ describe('Tasks Tool', () => {
         description: 'Updated Description',
         dueDate: '2025-01-01T00:00:00Z',
         priority: 3,
-        percentDone: 0.5,
+        percentDone: 50,
         done: true,
       };
       mockClient.tasks.getTask.mockResolvedValueOnce(mockTask).mockResolvedValueOnce(updatedTask);
@@ -1087,7 +1087,8 @@ describe('Tasks Tool', () => {
         description: 'Updated Description',
         dueDate: '2025-01-01T00:00:00Z',
         priority: 3,
-        percentDone: 0.5,
+        // Whole percentage on the tool surface...
+        percentDone: 50,
         done: true,
       });
 
@@ -1097,6 +1098,7 @@ describe('Tasks Tool', () => {
         description: 'Updated Description',
         due_date: '2025-01-01T00:00:00Z',
         priority: 3,
+        // ...and Vikunja's 0-1 fraction on the wire.
         percent_done: 0.5,
         done: true,
       });

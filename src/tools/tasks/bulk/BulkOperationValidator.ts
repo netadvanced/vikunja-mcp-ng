@@ -5,6 +5,7 @@
 import { MCPError, ErrorCode } from '../../../types';
 import { validateDateString, validateId } from '../validation';
 import { MAX_BULK_OPERATION_TASKS, REPEAT_MODE_MAP } from '../constants';
+import { isValidPercentDone, percentDoneScaleError } from '../../../utils/percent-done';
 
 export interface BulkUpdateArgs {
   taskIds?: number[];
@@ -24,9 +25,10 @@ export interface BulkCreateTaskData {
   endDate?: string;
   priority?: number;
   /**
-   * Completion fraction, **0-1** (0.5 = 50%) — Vikunja's wire contract, not a
-   * 0-100 percentage. See the `percentDone` note on the Zod schema in
-   * `../index.ts`.
+   * Completion progress as a whole percentage, **0-100** (50 = 50%), the tool
+   * surface's scale. Converted to Vikunja's 0-1 wire fraction in
+   * `createOneBulkTask` — see `src/utils/percent-done.ts` and the
+   * `percentDone` note on the Zod schema in `../index.ts`.
    */
   percentDone?: number;
   labels?: number[];
@@ -161,10 +163,12 @@ export const bulkOperationValidator = {
     const allowedFields = [
       'done',
       'priority',
-      // Fraction 0-1 (0.5 = 50%), matching models.Task.percent_done — see the
-      // percentDone note in ../index.ts. This was missing while `update`
-      // supported the field, so bulk-update rejected a value single update
-      // accepted.
+      // Takes the same whole-percentage 0-100 scale as `percentDone`
+      // everywhere else on this tool surface, even though this path is
+      // addressed by its raw snake_case API name — one scale, no exception to
+      // remember. Converted to the 0-1 wire fraction in
+      // `resolveBulkUpdateValue`. This field was missing here while `update`
+      // supported it, so bulk-update rejected a value single update accepted.
       'percent_done',
       'due_date',
       'start_date',
@@ -191,11 +195,8 @@ export const bulkOperationValidator = {
     }
 
     if (args.field === 'percent_done' && typeof args.value === 'number') {
-      if (args.value < 0 || args.value > 1) {
-        throw new MCPError(
-          ErrorCode.VALIDATION_ERROR,
-          'percent_done must be between 0 and 1 (a fraction, e.g. 0.5 for 50%)',
-        );
+      if (!isValidPercentDone(args.value)) {
+        throw new MCPError(ErrorCode.VALIDATION_ERROR, percentDoneScaleError('percent_done'));
       }
     }
 
@@ -328,16 +329,13 @@ export const bulkOperationValidator = {
         task.labels.forEach((id) => validateId(id, `tasks[${index}].label ID`));
       }
 
-      // Fraction 0-1, not 0-100 — see BulkCreateTaskData.percentDone. Checked
+      // Whole percentage 0-100 — see BulkCreateTaskData.percentDone. Checked
       // here as well as in the Zod schema because createOneBulkTask/
       // bulkCreateTasks are exported and reachable without it.
-      if (
-        task.percentDone !== undefined &&
-        (typeof task.percentDone !== 'number' || task.percentDone < 0 || task.percentDone > 1)
-      ) {
+      if (task.percentDone !== undefined && !isValidPercentDone(task.percentDone)) {
         throw new MCPError(
           ErrorCode.VALIDATION_ERROR,
-          `tasks[${index}].percentDone must be between 0 and 1 (a fraction, e.g. 0.5 for 50%)`,
+          percentDoneScaleError(`tasks[${index}].percentDone`),
         );
       }
     });
