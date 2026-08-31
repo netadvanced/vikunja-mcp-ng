@@ -88,6 +88,18 @@ export class EntityResolver {
   }
 
   /**
+   * Number of labels requested per `GET /labels` page while paginating. The
+   * loop stops once a page comes back with fewer than this many items (or
+   * empty), which is the standard "last page" signal for this API — there's
+   * no total-count header exposed through `vikunjaRestRequest` to check
+   * instead (it returns only the parsed body).
+   */
+  private static readonly LABELS_PAGE_SIZE = 50;
+
+  /** Hard cap on pages fetched, guarding against an API that never signals "last page". */
+  private static readonly LABELS_MAX_PAGES = 100;
+
+  /**
    * Fetch labels from the API with robust error handling
    *
    * Handles multiple edge cases:
@@ -96,6 +108,11 @@ export class EntityResolver {
    * - Network errors
    * - Auth errors (less common for labels than users)
    *
+   * Paginates through every page of `GET /labels` (MED-10 from #294):
+   * previously only the first page was ever read, so a project with more
+   * labels than fit on one page had its later labels silently misreported
+   * as "not found" during import, even though they exist.
+   *
    * @param authManager - Active auth manager holding the session credentials
    * @param result - The result object to update with fetched labels
    */
@@ -103,33 +120,46 @@ export class EntityResolver {
     authManager: AuthManager,
     result: EntityResolutionResult,
   ): Promise<void> {
+    const allLabels: VikunjaLabel[] = [];
     try {
-      // GET /labels per the OpenAPI spec (models.Label[]).
-      const labelsResponse = await vikunjaRestRequest<VikunjaLabel[]>(
-        authManager,
-        'GET',
-        '/labels',
-      );
+      for (let page = 1; page <= EntityResolver.LABELS_MAX_PAGES; page++) {
+        // GET /labels per the OpenAPI spec (models.Label[]), paginated via
+        // its documented page/per_page query params.
+        const labelsResponse = await vikunjaRestRequest<VikunjaLabel[]>(
+          authManager,
+          'GET',
+          `/labels?page=${page}&per_page=${EntityResolver.LABELS_PAGE_SIZE}`,
+        );
 
-      // Handle potential null/undefined response
-      if (!labelsResponse) {
-        logger.warn('Labels response is null/undefined');
-        result.projectLabels = [];
-        return;
+        // Handle potential null/undefined response
+        if (!labelsResponse) {
+          if (page === 1) {
+            logger.warn('Labels response is null/undefined');
+          }
+          break;
+        }
+
+        // Handle non-array responses
+        if (!Array.isArray(labelsResponse)) {
+          if (page === 1) {
+            logger.warn('Labels response is not an array', {
+              responseType: typeof labelsResponse,
+              response: labelsResponse,
+            });
+          }
+          break;
+        }
+
+        allLabels.push(...labelsResponse);
+
+        // Fewer items than requested (including zero) means this was the
+        // last page.
+        if (labelsResponse.length < EntityResolver.LABELS_PAGE_SIZE) {
+          break;
+        }
       }
 
-      // Handle non-array responses
-      if (!Array.isArray(labelsResponse)) {
-        logger.warn('Labels response is not an array', {
-          responseType: typeof labelsResponse,
-          response: labelsResponse,
-        });
-        result.projectLabels = [];
-        return;
-      }
-
-      // Valid response
-      result.projectLabels = labelsResponse;
+      result.projectLabels = allLabels;
       logger.debug('Labels fetched', {
         count: result.projectLabels.length,
         labels: result.projectLabels.map((l): { id: number; title: string } => ({
@@ -142,8 +172,10 @@ export class EntityResolver {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
-      result.projectLabels = [];
-      // Continue without labels mapping
+      // Preserve whatever labels were successfully paged in before the
+      // failing request — partial results are still useful, matching the
+      // "continue, best-effort" behavior fetchUsers already follows.
+      result.projectLabels = allLabels;
     }
   }
 
