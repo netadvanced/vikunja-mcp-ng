@@ -196,6 +196,12 @@ describe('Assignee operations', () => {
       expect(markdown).toContain('not persisted');
       expect(markdown).toContain('JWT authentication');
       expect(markdown).toContain('1, 2');
+      // MED-13 regression guard: a failed verification must render under a
+      // failure header, not the success header — response.success = false
+      // must actually reach the formatted markdown, not just the in-memory
+      // response object.
+      expect(markdown).not.toContain('## ✅ Success');
+      expect(markdown).toMatch(/## ❌|error/i);
     });
 
     it('should not warn and should fail open when verification re-fetch errors', async () => {

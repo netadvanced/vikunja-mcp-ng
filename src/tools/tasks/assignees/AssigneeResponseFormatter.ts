@@ -49,9 +49,17 @@ export const AssigneeResponseFormatter = {
   formatMcpResponse(response: StandardTaskResponse): {
     content: Array<{ type: 'text'; text: string }>;
   } {
-    // Create proper AORP response instead of casting StandardTaskResponse
+    // Create proper AORP response instead of casting StandardTaskResponse.
+    // `success` MUST be carried through explicitly: createStandardResponse
+    // (createTaskResponse in response-factory.ts) reads metadata.success to
+    // decide whether to render the ✅/❌ header, defaulting to `true` when
+    // it's absent. Without this, a caller that flips response.success to
+    // false after formatAssignResponse (e.g. on a failed post-assign
+    // verification) would have that failure silently dropped here and the
+    // response would still render under a success header.
     const metadata: ResponseMetadata = {
       timestamp: response.metadata?.timestamp || new Date().toISOString(),
+      success: response.success,
       ...(response.metadata?.count !== undefined ? { count: response.metadata.count } : {}),
       ...(response.metadata?.affectedFields
         ? { affectedFields: response.metadata.affectedFields }
