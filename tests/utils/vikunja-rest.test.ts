@@ -970,5 +970,35 @@ describe('vikunja-rest helper', () => {
         vikunjaRestMultipartRequest(authManager, 'PUT', '/tasks/1/attachments', makeForm()),
       ).rejects.toThrow('Vikunja REST request failed (PUT /tasks/1/attachments): ECONNREFUSED');
     });
+
+    // Regression: LOW-15 (#296). This path used to omit the `preRequest`
+    // marker the JSON raw path sets on the same class of error — latent
+    // while retries default to off, but a multipart PUT opted into retries
+    // would then fall back to the unsafe default predicate.
+    it('marks a connection-refused network error as preRequest, like the JSON helper', async () => {
+      const econnrefused = Object.assign(new Error('connect ECONNREFUSED'), {
+        code: 'ECONNREFUSED',
+      });
+      mockFetch.mockRejectedValueOnce(econnrefused);
+
+      await expect(
+        vikunjaRestMultipartRequest(authManager, 'PUT', '/tasks/1/attachments', makeForm()),
+      ).rejects.toMatchObject({
+        details: expect.objectContaining({ preRequest: true }),
+      });
+    });
+
+    it('does not mark a non-pre-request network error (e.g. ECONNRESET) as preRequest', async () => {
+      const econnreset = Object.assign(new Error('read ECONNRESET'), {
+        code: 'ECONNRESET',
+      });
+      mockFetch.mockRejectedValueOnce(econnreset);
+
+      await expect(
+        vikunjaRestMultipartRequest(authManager, 'PUT', '/tasks/1/attachments', makeForm()),
+      ).rejects.toMatchObject({
+        details: expect.objectContaining({ preRequest: false }),
+      });
+    });
   });
 });

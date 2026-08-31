@@ -583,7 +583,16 @@ async function vikunjaRestMultipartRequestRaw(
     throw new MCPError(
       ErrorCode.API_ERROR,
       `Vikunja REST request failed (${method} ${path}): ${describeRequestError(error)}`,
-      { transient: isTransientNetworkError(error) },
+      {
+        transient: isTransientNetworkError(error),
+        // LOW-15 (#296): this path was missing the same `preRequest` marker
+        // the JSON raw path sets above — latent while retries default to
+        // off, but without it a caller that opts a multipart PUT into
+        // retries falls back to `isPreRequestNetworkError`'s ambiguous-error
+        // handling (never retry) instead of correctly recognizing a
+        // connection that never reached the server.
+        preRequest: isPreRequestNetworkError(error),
+      },
     );
   }
 
