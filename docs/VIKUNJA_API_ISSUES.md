@@ -40,6 +40,7 @@ as unknown until it gets the same live-verification treatment 2.4.0 has had.
 | 17 | `labels` filter matches ids, not titles | ✅ Resolved (title-to-id resolution shipped) |
 | 18 | `per_page` silently clamped to `service.maxitemsperpage` (default 50) | ℹ️ By design upstream, client now paginates instead of over-requesting |
 | 19 | Date-only field values 400 on create, not silently dropped | ℹ️ Clarification, corrects a stale in-repo comment |
+| 20 | Label/assignee attach: 2xx is not proof, but every shape we send errors loudly | ℹ️ Clarification, disproves the LOW-22 audit suspicion |
 
 ## 1. SQL-Like Filter Syntax Not Supported
 
@@ -737,6 +738,57 @@ coerces date-only and SQL-ish space-separated date strings to RFC3339 before
 they reach the wire, applied on `create-subtask`, `bulk-create-subtasks`,
 `vikunja_batch_import` and template `instantiate`.
 
+## 20. Label/Assignee Attach: A 2xx Is Not Proof, But Every Shape We Send Errors Loudly
+
+**Status:** ℹ️ Clarification, verified live against 2.4.0/sqlite (2026-09-01).
+Disproves the concrete exploit claimed by audit finding LOW-22 (issue #295)
+while confirming the failure *mode* it describes.
+
+**The suspicion:** `create-subtask` / `bulk-create` treat an HTTP 2xx on the
+label/assignee attach `PUT` as proof the attach happened, with no read-back.
+If Vikunja could accept-and-ignore such a call, a task would be reported as
+created-with-labels while carrying none.
+
+**What the live probe found.** Every call shape this codebase actually sends
+is validated server-side and fails loudly, so a 2xx does mean the write
+landed:
+
+| Call | Result |
+|---|---|
+| `PUT /tasks/{id}/labels` `{label_id: N}`, valid | 201, echoes `{label_id, created}`, read-back confirms |
+| `PUT /tasks/{id}/labels`, label already on task | **400** code 8001 "This label already exists on the task." |
+| `PUT /tasks/{id}/labels`, nonexistent label | **404** code 8002 "This label does not exist." |
+| `PUT /tasks/{id}/assignees` `{user_id: N}`, valid | 201, echoes `{user_id, created}`, read-back confirms |
+| `PUT /tasks/{id}/assignees`, user already assigned | **400** code 4021 "This user is already assigned to that task." |
+| `PUT /tasks/{id}/assignees`, nonexistent user | **404** code 1005 "The user does not exist." |
+| `PUT /tasks/{id}/assignees`, user without project access | **403** code 7003 "This user does not have access to the project." |
+| `POST /tasks/{id}/labels/bulk` `{labels:[{id}]}` | 201, read-back confirms the exact set |
+| `POST /tasks/{id}/labels/bulk` with a bogus label id | **404** code 8002 |
+
+**But the failure mode is real, on shapes we do not send.** Two calls answer
+2xx and persist nothing:
+
+- `POST /tasks/{id}/labels/bulk` with the **legacy `label_ids` body** answers
+  **201** with `{"labels": null}` and writes nothing. This is the drift
+  already documented on `setTaskLabels` (`src/utils/label-bulk.ts`) — the
+  reason that helper sends `{labels:[{id}]}` — and it is the historical proof
+  that a 201 here is not self-evidently a success.
+- `PUT /tasks/{id}/labels` with an **empty body** answers **201** with
+  `{"label_id": 0}`.
+
+**Conclusion:** LOW-22 is not currently exploitable, so no read-back was
+added (an extra GET per subtask for a gap that cannot be reproduced is not a
+trade worth making). The standing rule this evidence supports is the one
+already in force: **verify the request body shape against the vendored
+OpenAPI spec, never against a client library's types** — body-shape drift, not
+a missing read-back, is what turns these endpoints into silent no-ops.
+
+**Note on the assignee duplicate (400 code 4021):** this one is not just
+documentation. It is the server-side half of issue #267(c) — bulk-update's
+per-task assignee path used to re-add every requested id without excluding
+those already assigned, so an overlapping set aborted the update mid-flight.
+Fixed by reconciling as a set difference.
+
 ## Recommendations for Vikunja Maintainers
 
 Trimmed to what is **still open** upstream (the filter-syntax, team-API, bulk
@@ -785,3 +837,11 @@ clamp to `service.maxitemsperpage` affecting both `GET /projects` and `GET
 /projects/{id}/tasks` (#18), and a correction of a stale "silently drops"
 comment for date-only field values, which actually 400 (code 2004) on create
 endpoints (#19).*
+
+*Updated 2026-09-01: added item #20, the label/assignee attach contract,
+probed live against the 2.4.0/sqlite stack while triaging audit finding
+LOW-22 (issue #295). The same session re-confirmed on 2.4.0 that a
+scalar-only `POST /tasks/bulk` (`fields:["priority"]`) still empties the
+task's assignee list, and that `POST /tasks/{id}/assignees/bulk` restores it
+— the mechanism the snapshot/restore workaround in
+`src/tools/tasks/bulk-operations-simplified.ts` depends on (issue #267).*
