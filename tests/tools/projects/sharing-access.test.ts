@@ -318,7 +318,7 @@ describe('direct project sharing (users & teams)', () => {
       expect(calls[1][1]?.method).toBe('PUT');
       // Exact-match resolution: username "alice" must not be confused with "alice2".
       expect(JSON.parse(calls[1][1]?.body as string)).toEqual({ username: 'alice', permission: 1 });
-      expect(calls[2][0]).toBe('https://vikunja.test/api/v1/projects/1/users');
+      expect(calls[2][0]).toBe('https://vikunja.test/api/v1/projects/1/users?per_page=200&page=1');
       expect(calls[2][1]?.method ?? 'GET').toBe('GET');
 
       expect(result.content[0].text).toContain('Shared project 1 with user "alice" (permission 1)');
@@ -397,6 +397,38 @@ describe('direct project sharing (users & teams)', () => {
       expect(compensateCall[1].method).toBe('DELETE');
     });
 
+    it('atomic:true does NOT revoke a grant that landed on a later verification page (audit #291 MED-3)', async () => {
+      const page1 = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, username: `user${i + 1}` }));
+      mockFetch
+        // 1) resolve-user
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice' }]) }),
+        )
+        // 2) add-user
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }),
+        )
+        // 3) verify-membership page 1: full page, alice not on it
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(page1) }))
+        // 4) verify-membership page 2: short page, alice IS on it
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice', permission: 1 }]) }),
+        );
+
+      const result = await shareProjectWithUser(
+        { projectId: 1, username: 'alice', right: 'write', atomic: true },
+        authManager,
+      );
+
+      // Exactly 4 calls: resolve, add, verify page 1, verify page 2 — no
+      // DELETE compensation call, because the grant did in fact succeed.
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      expect(mockFetch.mock.calls[3][0]).toBe(
+        'https://vikunja.test/api/v1/projects/1/users?per_page=200&page=2',
+      );
+      expect(result.content[0].text).toContain('Shared project 1 with user "alice"');
+    });
+
     it('requires a non-empty username and a permission level', async () => {
       await expect(
         shareProjectWithUser({ projectId: 1, username: '', right: 'read' }, authManager),
@@ -439,7 +471,7 @@ describe('direct project sharing (users & teams)', () => {
       expect(calls[0][0]).toBe('https://vikunja.test/api/v1/teams?s=Engineering');
       expect(calls[1][0]).toBe('https://vikunja.test/api/v1/projects/1/teams');
       expect(JSON.parse(calls[1][1]?.body as string)).toEqual({ team_id: 7, permission: 2 });
-      expect(calls[2][0]).toBe('https://vikunja.test/api/v1/projects/1/teams');
+      expect(calls[2][0]).toBe('https://vikunja.test/api/v1/projects/1/teams?per_page=200&page=1');
 
       expect(result.content[0].text).toContain(
         'Shared project 1 with team "Engineering" (permission 2)',
@@ -478,6 +510,34 @@ describe('direct project sharing (users & teams)', () => {
       const compensateCall = mockFetch.mock.calls[3] as [string, RequestInit];
       expect(compensateCall[0]).toBe('https://vikunja.test/api/v1/projects/1/teams/7');
       expect(compensateCall[1].method).toBe('DELETE');
+    });
+
+    it('atomic:true does NOT revoke a grant that landed on a later verification page (audit #291 MED-3)', async () => {
+      const page1 = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, name: `Team ${i + 1}` }));
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ team_id: 7, permission: 1 }) }),
+        )
+        // verify-membership page 1: full page, Engineering not on it
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(page1) }))
+        // verify-membership page 2: short page, Engineering IS on it
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering', permission: 1 }]) }),
+        );
+
+      const result = await shareProjectWithTeam(
+        { projectId: 1, teamName: 'Engineering', right: 'write', atomic: true },
+        authManager,
+      );
+
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      expect(mockFetch.mock.calls[3][0]).toBe(
+        'https://vikunja.test/api/v1/projects/1/teams?per_page=200&page=2',
+      );
+      expect(result.content[0].text).toContain('Shared project 1 with team "Engineering"');
     });
 
     it('requires a non-empty team name', async () => {
