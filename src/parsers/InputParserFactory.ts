@@ -1,5 +1,5 @@
 import { MCPError, ErrorCode } from '../types';
-import { parseCSVLine } from './CSVParser';
+import { parseCSVLine, splitCSVRows } from './CSVParser';
 import { parseJSONInput, importedTaskSchema, type ImportedTask } from './JSONParser';
 import { logger } from '../utils/logger';
 
@@ -92,8 +92,10 @@ const CSV_SUPPORTED_HEADERS = new Set([
 function parseCSVInput(data: string, skipErrors: boolean = false): ImportedTask[] {
   const tasks: ImportedTask[] = [];
 
-  // Split into lines and filter out empty lines
-  const lines = data.split('\n').filter((line) => line.trim());
+  // Split into logical CSV rows (quote-aware — see splitCSVRows's doc
+  // comment for why this must run before, not on top of, a naive '\n'
+  // split) and filter out blank ones.
+  const lines = splitCSVRows(data).filter((line) => line.trim());
   if (lines.length < 2) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,

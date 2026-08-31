@@ -242,6 +242,57 @@ Task 1,invalid_priority`;
         expect(() => parseInputData(options)).toThrow(MCPError);
         expect(() => parseInputData(options)).toThrow('Invalid task data at row 2');
       });
+
+      describe('RFC 4180 multiline quoted fields (issue #275)', () => {
+        it('should keep an embedded newline inside a quoted field as part of that one row, not a new row', () => {
+          // A quoted `description` spanning two physical lines is one CSV
+          // record with two lines of text in one field — NOT two records.
+          // Before the fix, splitting on '\n' before quote-aware parsing
+          // tore this into a spurious extra (invalid) task.
+          const csvData =
+            'title,description\n' +
+            '"Multi-line task","line1\nline2"\n' +
+            'Second task,Normal desc';
+
+          const options: ParseInputOptions = {
+            format: 'csv',
+            data: csvData,
+          };
+
+          const result = parseInputData(options);
+
+          expect(result).toHaveLength(2);
+          expect(result[0]).toEqual({
+            title: 'Multi-line task',
+            description: 'line1\nline2',
+          });
+          expect(result[1]).toEqual({
+            title: 'Second task',
+            description: 'Normal desc',
+          });
+        });
+
+        it('should handle a quoted field spanning three or more physical lines', () => {
+          const csvData = 'title,description\n' + '"Task A","one\ntwo\nthree"\n' + 'Task B,short';
+
+          const result = parseInputData({ format: 'csv', data: csvData });
+
+          expect(result).toHaveLength(2);
+          expect(result[0]?.description).toBe('one\ntwo\nthree');
+          expect(result[1]?.title).toBe('Task B');
+        });
+
+        it('should handle multiple rows each with their own multiline quoted field', () => {
+          const csvData =
+            'title,description\n' + '"Task A","first\nsecond"\n' + '"Task B","third\nfourth"';
+
+          const result = parseInputData({ format: 'csv', data: csvData });
+
+          expect(result).toHaveLength(2);
+          expect(result[0]).toEqual({ title: 'Task A', description: 'first\nsecond' });
+          expect(result[1]).toEqual({ title: 'Task B', description: 'third\nfourth' });
+        });
+      });
     });
 
     describe('Error handling and validation', () => {
