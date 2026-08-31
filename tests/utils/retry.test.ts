@@ -343,6 +343,36 @@ describe('retry utility', () => {
       expect(circuitBreakerRegistry.get(name)).toBe(first);
     });
 
+    // Regression: LOW-16 (#296). The #199 fix above disambiguates a collision
+    // by appending `operation.name`, which is '' for every anonymous
+    // function — so a THIRD distinct anonymous operation colliding under the
+    // same `name` used to land on the SAME disambiguated key as the second
+    // one and silently reuse its breaker (running the wrong action). Three
+    // distinct anonymous operations sharing one base name must each get
+    // their own breaker and each run their own code.
+    it('disambiguates a THIRD distinct anonymous operation colliding on the same name (#296 LOW-16)', async () => {
+      const name = `test-breaker-triple-anon-${Math.random()}`;
+      const firstOperation = async (): Promise<string> => 'first';
+      const secondOperation = async (): Promise<string> => 'second';
+      const thirdOperation = async (): Promise<string> => 'third';
+
+      const first = createCircuitBreaker(firstOperation, name);
+      const second = createCircuitBreaker(secondOperation, name);
+      const third = createCircuitBreaker(thirdOperation, name);
+
+      expect(second).not.toBe(first);
+      expect(third).not.toBe(first);
+      expect(third).not.toBe(second);
+      await expect(first.fire()).resolves.toBe('first');
+      await expect(second.fire()).resolves.toBe('second');
+      await expect(third.fire()).resolves.toBe('third');
+
+      // Calling again with the SAME third operation must return the SAME
+      // (third) breaker rather than minting yet another one.
+      const thirdAgain = createCircuitBreaker(thirdOperation, name);
+      expect(thirdAgain).toBe(third);
+    });
+
     // Companion to the #199 fix: `withNamedRetry` pools calls behind ONE
     // breaker per name (that is the whole point of `withTaskRetry(...,
     // 'create')`), so every caller necessarily passes a different closure.
