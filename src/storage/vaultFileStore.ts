@@ -269,26 +269,49 @@ export function decryptToken(
   return decrypted.toString('utf-8');
 }
 
+/** {@link loadVaultFileWithStatus}'s result: the records plus how trustworthy they are. */
+export interface VaultLoadResult {
+  /** Every record that loaded cleanly. Possibly empty. */
+  readonly records: Map<string, VaultRecord>;
+  /**
+   * `undefined` when the load is a faithful view of the file (including the
+   * legitimately-empty "file does not exist yet" case). Otherwise a short
+   * human-readable reason why `records` is known to be INCOMPLETE — the
+   * file could not be read, was not parseable, or held entries that had to
+   * be dropped. A caller must never write `records` back over the file in
+   * that state: the write would make the loss permanent (issue #266).
+   */
+  readonly incompleteReason?: string;
+}
+
 /**
  * Load the vault file into an in-memory `Map` keyed by `identityKey()`
  * (`"<issuer>|<sub>"`). Never throws: a missing file (fresh deployment / no
  * volume yet) or a malformed one (not JSON, not an object, individual
  * malformed entries) all fall back to an empty (or partially-empty) vault
  * with a warning logged — matching `loadTemplatesFile`'s defensive posture.
+ *
+ * Unlike `loadTemplatesFile`, the *reason* matters here, because a vault
+ * holds other people's credentials: everything except "the file isn't there
+ * yet" is reported as `incompleteReason` so `VaultFileStore` can refuse to
+ * write an incomplete map back over the real file (issue #266).
  */
-export function loadVaultFile(filePath: string): Map<string, VaultRecord> {
+export function loadVaultFileWithStatus(filePath: string): VaultLoadResult {
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, 'utf-8');
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT') {
-      logger.warn('Failed to read credential vault file, starting with an empty vault', {
-        filePath,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    if (code === 'ENOENT') {
+      // Not a failure: a fresh deployment has no vault file yet.
+      return { records: new Map() };
     }
-    return new Map();
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn('Failed to read credential vault file, starting with an empty vault', {
+      filePath,
+      error: message,
+    });
+    return { records: new Map(), incompleteReason: `the vault file could not be read (${message})` };
   }
 
   let parsed: unknown;
@@ -299,14 +322,14 @@ export function loadVaultFile(filePath: string): Map<string, VaultRecord> {
       filePath,
       error: error instanceof Error ? error.message : String(error),
     });
-    return new Map();
+    return { records: new Map(), incompleteReason: 'the vault file is not valid JSON' };
   }
 
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     logger.warn('Credential vault file did not contain a JSON object, starting with an empty vault', {
       filePath,
     });
-    return new Map();
+    return { records: new Map(), incompleteReason: 'the vault file is not a JSON object' };
   }
 
   const map = new Map<string, VaultRecord>();
@@ -322,8 +345,23 @@ export function loadVaultFile(filePath: string): Map<string, VaultRecord> {
       totalEntries: entries.length,
       validEntries: map.size,
     });
+    return {
+      records: map,
+      incompleteReason:
+        `the vault file contained ${entries.length - map.size} malformed ` +
+        `entr${entries.length - map.size === 1 ? 'y' : 'ies'} that had to be dropped`,
+    };
   }
-  return map;
+  return { records: map };
+}
+
+/**
+ * {@link loadVaultFileWithStatus} without the load status — the plain
+ * "give me the records" reader. Prefer the status-returning variant anywhere
+ * the result may be written back (issue #266).
+ */
+export function loadVaultFile(filePath: string): Map<string, VaultRecord> {
+  return loadVaultFileWithStatus(filePath).records;
 }
 
 /**
@@ -370,6 +408,12 @@ export function writeVaultFileAtomic(filePath: string, records: Map<string, Vaul
 export class VaultFileStore {
   private readonly mutex = new Mutex();
   private cache: Map<string, VaultRecord> | undefined;
+  /**
+   * Set when {@link load} produced a map that is known NOT to be the whole
+   * file (unreadable file, unparseable JSON, dropped entries). While set,
+   * every mutation refuses to write — see {@link assertWritable} (#266).
+   */
+  private incompleteLoadReason: string | undefined;
   /** Identity keys already warned about being on the legacy no-AAD format. */
   private readonly legacyFormatWarned = new Set<string>();
 
@@ -380,9 +424,54 @@ export class VaultFileStore {
 
   private load(): Map<string, VaultRecord> {
     if (!this.cache) {
-      this.cache = loadVaultFile(this.filePath);
+      const result = loadVaultFileWithStatus(this.filePath);
+      this.cache = result.records;
+      this.incompleteLoadReason = result.incompleteReason;
     }
     return this.cache;
+  }
+
+  /**
+   * Guards every write path (issue #266).
+   *
+   * The cache is populated once and never invalidated, so a single failed or
+   * partial load — an EACCES on a mis-permissioned volume, an EIO, a
+   * half-written file — would otherwise become the process's permanent idea
+   * of the vault's contents. The next `provision` writes the WHOLE map back,
+   * which would silently delete every identity that failed to load. Refusing
+   * to write keeps a read-side outage from turning into permanent data loss:
+   * already-provisioned users whose records did load keep working, and the
+   * operator gets an actionable error instead of a wiped vault.
+   *
+   * Recovery is deliberately an explicit operator action (fix the
+   * permissions, or move the damaged file aside) followed by a restart —
+   * never something a tool call can trigger on a tenant's behalf.
+   */
+  private assertWritable(): void {
+    this.load();
+    if (this.incompleteLoadReason !== undefined) {
+      logger.error('Refusing to write the credential vault after an incomplete load', {
+        filePath: this.filePath,
+        reason: this.incompleteLoadReason,
+      });
+      throw new Error(
+        `The credential vault cannot be updated right now: ${this.incompleteLoadReason}. ` +
+          'Writing would overwrite the vault with an incomplete view and permanently ' +
+          'destroy the records that failed to load. An operator must repair or move aside ' +
+          'the vault file and restart the server.',
+      );
+    }
+  }
+
+  /**
+   * Whether this process's view of the vault is known to be incomplete
+   * (issue #266) — writes are refused while true. Exposed for `readyz`-style
+   * health reporting and for `getStatus`'s honesty about why an identity
+   * looks unprovisioned.
+   */
+  isDegraded(): boolean {
+    this.load();
+    return this.incompleteLoadReason !== undefined;
   }
 
   /**
@@ -474,10 +563,14 @@ export class VaultFileStore {
    * across a re-provision (token swap) while bumping `updatedAt`. Callers
    * MUST validate the token (round-trip against Vikunja) before calling
    * this — the vault itself has no way to check a token is real.
+   *
+   * Throws without writing anything when this process's view of the vault is
+   * incomplete (issue #266).
    */
   async provision(identity: Identity, vikunjaUrl: string, apiToken: string): Promise<void> {
     const release = await this.mutex.acquire();
     try {
+      this.assertWritable();
       const map = this.load();
       const key = identityKey(identity);
       const existing = map.get(key);
@@ -507,10 +600,15 @@ export class VaultFileStore {
     }
   }
 
-  /** Deletes `identity`'s record, if any. Idempotent — returns whether a record actually existed. */
+  /**
+   * Deletes `identity`'s record, if any. Idempotent — returns whether a
+   * record actually existed. Throws without writing anything when this
+   * process's view of the vault is incomplete (issue #266).
+   */
   async deprovision(identity: Identity): Promise<boolean> {
     const release = await this.mutex.acquire();
     try {
+      this.assertWritable();
       const map = this.load();
       const key = identityKey(identity);
       const existed = map.delete(key);

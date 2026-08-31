@@ -28,6 +28,7 @@ import {
   decryptToken,
   vaultRecordAad,
   loadVaultFile,
+  loadVaultFileWithStatus,
   writeVaultFileAtomic,
   setActiveVaultStore,
   getActiveVaultStore,
@@ -234,6 +235,64 @@ describe('loadVaultFile / writeVaultFileAtomic', () => {
   it('a non-ENOENT read error is instead tolerated (returns empty)', () => {
     // Directory read attempts throw EISDIR, not ENOENT.
     expect(loadVaultFile(tmpDir).size).toBe(0);
+  });
+
+  describe('loadVaultFileWithStatus reports whether the load is complete (issue #266)', () => {
+    it('reports a missing file as complete (fresh deployment), not a failure', () => {
+      const result = loadVaultFileWithStatus(filePath);
+      expect(result.records.size).toBe(0);
+      expect(result.incompleteReason).toBeUndefined();
+    });
+
+    it('reports a clean read of a well-formed file as complete', () => {
+      const record: VaultRecord = {
+        vikunjaUrl: 'https://vikunja.example.com',
+        ciphertext: 'x',
+        iv: 'y',
+        authTag: 'z',
+        keyVersion: 2,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        lastUsedAt: null,
+      };
+      writeVaultFileAtomic(filePath, new Map([['issuer|good', record]]));
+
+      const result = loadVaultFileWithStatus(filePath);
+      expect(result.records.size).toBe(1);
+      expect(result.incompleteReason).toBeUndefined();
+    });
+
+    it('reports an unreadable file as incomplete', () => {
+      // A directory read attempt throws EISDIR, not ENOENT.
+      const result = loadVaultFileWithStatus(tmpDir);
+      expect(result.incompleteReason).toMatch(/could not be read/);
+    });
+
+    it('reports invalid JSON as incomplete', () => {
+      fs.writeFileSync(filePath, '{ not valid json', 'utf-8');
+      expect(loadVaultFileWithStatus(filePath).incompleteReason).toMatch(/not valid JSON/);
+    });
+
+    it('reports a non-object document as incomplete', () => {
+      fs.writeFileSync(filePath, JSON.stringify([1, 2, 3]), 'utf-8');
+      expect(loadVaultFileWithStatus(filePath).incompleteReason).toMatch(/not a JSON object/);
+    });
+
+    it('reports dropped malformed entries as incomplete, and counts them', () => {
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ 'issuer|bad': { vikunjaUrl: 'missing other fields' } }),
+        'utf-8',
+      );
+      expect(loadVaultFileWithStatus(filePath).incompleteReason).toMatch(/1 malformed entry/);
+
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ 'issuer|bad1': {}, 'issuer|bad2': {} }),
+        'utf-8',
+      );
+      expect(loadVaultFileWithStatus(filePath).incompleteReason).toMatch(/2 malformed entries/);
+    });
   });
 
   it('writes atomically: temp file in the same directory, then rename', () => {
@@ -586,6 +645,97 @@ describe('VaultFileStore', () => {
 
       expect(store.getCredential(IDENTITY_A)).toBeNull();
       expect(store.getCredential(IDENTITY_B)?.apiToken).toBe('tk_b');
+    });
+  });
+
+  describe('incomplete load never becomes the write-back source of truth (issue #266)', () => {
+    const validRecord = (ciphertext: string): VaultRecord => ({
+      vikunjaUrl: 'https://vikunja.example.com',
+      ciphertext,
+      iv: 'aXY=',
+      authTag: 'dGFn',
+      keyVersion: 2,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null,
+    });
+
+    it('refuses to provision when the vault file could not be read at all', async () => {
+      const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation(() => {
+        const error = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      });
+      const store = new VaultFileStore(filePath, KEY);
+      try {
+        expect(store.isDegraded()).toBe(true);
+        await expect(
+          store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_new'),
+        ).rejects.toThrow(/cannot be updated right now/);
+      } finally {
+        readSpy.mockRestore();
+      }
+      // Nothing was written: the store never created the file.
+      expect(fs.existsSync(filePath)).toBe(false);
+    });
+
+    it('refuses to deprovision when the vault file could not be read at all', async () => {
+      const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation(() => {
+        const error = new Error('EIO: i/o error') as NodeJS.ErrnoException;
+        error.code = 'EIO';
+        throw error;
+      });
+      const store = new VaultFileStore(filePath, KEY);
+      try {
+        await expect(store.deprovision(IDENTITY_A)).rejects.toThrow(/cannot be updated right now/);
+      } finally {
+        readSpy.mockRestore();
+      }
+      expect(fs.existsSync(filePath)).toBe(false);
+    });
+
+    it('refuses to provision when the vault file is not valid JSON', async () => {
+      fs.writeFileSync(filePath, '{ half-written', 'utf-8');
+      const store = new VaultFileStore(filePath, KEY);
+
+      await expect(
+        store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_new'),
+      ).rejects.toThrow(/not valid JSON/);
+      // The damaged file is left exactly as it was, for the operator to inspect.
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('{ half-written');
+    });
+
+    it("does not destroy other identities' records when some entries were dropped", async () => {
+      // The CRIT-5 scenario: one entry fails validation, so the load is
+      // partial; the next provision used to write that partial map back.
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({
+          'https://idp.example/realm|user-a': validRecord('a-ciphertext'),
+          'https://idp.example/realm|user-broken': { vikunjaUrl: 'only-this-field' },
+        }),
+        'utf-8',
+      );
+
+      const store = new VaultFileStore(filePath, KEY);
+      expect(store.isDegraded()).toBe(true);
+      await expect(
+        store.provision(IDENTITY_B, 'https://vikunja.example.com', 'tk_b'),
+      ).rejects.toThrow(/malformed entr/);
+
+      const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+      expect(Object.keys(onDisk).sort()).toEqual([
+        'https://idp.example/realm|user-a',
+        'https://idp.example/realm|user-broken',
+      ]);
+    });
+
+    it('treats a missing file as a clean empty vault, not a failed load', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      expect(store.isDegraded()).toBe(false);
+
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_fresh');
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_fresh');
     });
   });
 
