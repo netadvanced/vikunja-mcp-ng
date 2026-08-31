@@ -1,7 +1,7 @@
 # Vikunja API Implementation Notes
 
 Implementation details and API quirks discovered while building and testing
-against real Vikunja servers — the "why it's written that way" companion to
+against real Vikunja servers: the "why it's written that way" companion to
 [docs/API-COVERAGE.md](API-COVERAGE.md)'s per-endpoint status. Read this before
 touching endpoint code; the procedure itself is in
 [docs/ENDPOINT-PLAYBOOK.md](ENDPOINT-PLAYBOOK.md).
@@ -18,7 +18,7 @@ The `/user` endpoint fails with authentication errors despite using a token that
 - The same token works for projects, tasks, teams, and the rest
 
 **Root cause:** user-scoped endpoints accept JWT session tokens, not `tk_*`
-API tokens — see [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #2 for the
+API tokens; see [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #2 for the
 full write-up. It is not a per-instance misconfiguration or a server bug to
 report to the operator.
 
@@ -34,7 +34,7 @@ report to the operator.
 ### Task Object Properties
 
 1. **`project_id` (wire) vs `projectId` (tool argument)**: the API itself is
-   snake_case only — `models.Task` in the vendored spec
+   snake_case only: `models.Task` in the vendored spec
    (`docs/vikunja-openapi.json`) has `project_id` and **no** `projectId`
    property, in either direction. The camelCase `projectId` you see in this
    server is purely the MCP tool-argument name (`src/tools/tasks/index.ts`),
@@ -71,19 +71,19 @@ report to the operator.
   silently drop.** Verified live against Vikunja 2.4.0: `PUT
   /projects/{id}/tasks` and the other task-create endpoints reject a
   date-only `due_date`/`start_date`/`end_date` with HTTP 400, code **2004**
-  ("Invalid model provided" — `ErrCodeInvalidModel`, `pkg/models/error.go:202`
+  ("Invalid model provided", `ErrCodeInvalidModel`, `pkg/models/error.go:202`
   in the go-vikunja source). `normalizeDateForApi`
   (`src/tools/tasks/validation.ts`) coerces the date-only and SQL-ish
   space-separated forms to RFC3339 before they reach the wire, on
   `vikunja_tasks` `create`, `bulk-create`, `create-subtask` and
   `bulk-create-subtasks`, on `vikunja_batch_import`, and on template
   `instantiate`. (`vikunja_task_bulk update`'s date `values` and filter-string
-  date literals go through the same helper — see `resolveBulkUpdateValue` and
+  date literals go through the same helper; see `resolveBulkUpdateValue` and
   `src/utils/filters.ts`.) **Known gap:** `vikunja_tasks update` does not run
-  this coercion yet — an agent-supplied date-only value on `update` still
+  this coercion yet. An agent-supplied date-only value on `update` still
   fails, tracked as a follow-up (see tracking issue #28). The doc comment on
   `normalizeDateForApi` itself (`src/tools/tasks/validation.ts:29-32`) still
-  says the value is "SILENTLY DROP[PED]" — that characterization predates
+  says the value is "SILENTLY DROP[PED]". That characterization predates
   this live verification and is now known-stale; the 400 above is what
   actually happens on create paths. See
   [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #19.
@@ -96,7 +96,7 @@ report to the operator.
 ### Project Operations
 
 1. **Full-Model-Replace Update Endpoint**: `POST /projects/{id}` replaces the
-   entire project — any field omitted from the request body is cleared
+   entire project. Any field omitted from the request body is cleared
    server-side. `updateProject`, `archiveProject`, `unarchiveProject`, and
    `moveProject` all build their payload by merging the desired changes onto
    the *current* project (fetched first) via `buildProjectUpdatePayload`
@@ -107,7 +107,7 @@ report to the operator.
    untouched like the other fields.
 
 2. **`is_favorite` Is a Second, Different Full-Replace Trap**: `is_favorite`
-   never even reaches xorm's column layer — `Project.IsFavorite` is tagged
+   never even reaches xorm's column layer: `Project.IsFavorite` is tagged
    `xorm:"-"` (not a real column, `pkg/models/project.go:69`), so it is
    immune to the `UseBool` mechanism documented for teams (see "Team
    Operations" below and
@@ -118,12 +118,12 @@ report to the operator.
    favorites table; the symmetric `addToFavorites` call fires when it flips
    from `false` to `true` (`pkg/models/project.go:1083-1096`). Because the
    handler binds the request body into a fresh struct, an update that simply
-   omits `is_favorite` binds it to Go's zero value (`false`) — indistinguishable
-   from an explicit unfavorite — so any partial update silently unfavorited
+   omits `is_favorite` binds it to Go's zero value (`false`), indistinguishable
+   from an explicit unfavorite, so any partial update silently unfavorited
    the project. **Same symptom as the team `UseBool` case (an omitted
    boolean acts like an explicit `false`), same fetch-merge fix, but a
    completely different server-side mechanism** (a side-effect on a separate
-   favorites association, not a forced column write) — worth keeping distinct
+   favorites association, not a forced column write). Worth keeping distinct
    so the `UseBool` lesson isn't over-generalized to "every silently-wiped
    boolean is a `UseBool` column." `buildProjectUpdatePayload`
    (`src/tools/projects/crud.ts`) fetches the current project and carries its
@@ -131,18 +131,18 @@ report to the operator.
    both mechanisms with the one merge.
 
 3. **List Pagination Has No Total Count**: `GET /projects` returns a bare
-   array (`models.Project[]` in the vendored spec) — there is no
+   array (`models.Project[]` in the vendored spec). There is no
    `{data, total}` envelope on the v1 API. Total item and page counts are not
    knowable from the response body, so `vikunja_projects list` reports
    `hasMore` (derived from whether a full page came back) instead of a
    fabricated `totalPages`/`totalItems`. (Vikunja's **v2** list endpoints do
-   wrap results in `{items, total, ...}`, but no call site routes to `/api/v2`
-   — see "Session Capability Detection" below.)
+   wrap results in `{items, total, ...}`, but no call site routes to `/api/v2`;
+   see "Session Capability Detection" below.)
 
    **`per_page` is silently clamped server-side**, independent of the above:
    `GET /projects` (and `GET /projects/{id}/tasks`, see "Bulk Operations"
    below) clamp any requested `per_page` down to `service.maxitemsperpage`
-   — default **50** — in the server's generic `ReadAllWeb` list handler
+   (default **50**) in the server's generic `ReadAllWeb` list handler
    (`pkg/web/handler/read_all.go:83-91`, `pkg/config/config.go:349` in
    go-vikunja), which both `GET /projects` and `GET /projects/{id}/tasks`
    route through (`a.GET("/projects/:project/tasks",
@@ -152,25 +152,25 @@ report to the operator.
    `fetchAllProjects` (`src/tools/projects/crud.ts:201-215`, used for
    hierarchy/breadcrumb/move-cycle validation) used to make one
    `per_page=1000` call and silently truncate on instances with more than
-   1000 projects for exactly this reason — a bug found in passing while
+   1000 projects for exactly this reason. A bug found in passing while
    fixing the equivalent task-listing clamp in #244, unrelated to that PR's
    own scope. It now walks `page` in `FETCH_ALL_PROJECTS_PAGE_SIZE`-sized
    (200) chunks until a short page signals the end, bounded by
    `FETCH_ALL_PROJECTS_MAX_PAGES` (50) as a safety valve. See
    [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #18.
 
-4. **Kanban "Done" Bucket**: `models.Bucket` has no `is_done_bucket` field —
-   the done bucket is designated by `done_bucket_id` on the `ProjectView`
+4. **Kanban "Done" Bucket**: `models.Bucket` has no `is_done_bucket` field.
+   The done bucket is designated by `done_bucket_id` on the `ProjectView`
    (`GET /projects/{id}/views`), not on the bucket itself. `list-buckets`
    resolves `isDoneBucket` by comparing each bucket's id against the
    Kanban view's `done_bucket_id`. When an explicit `viewId` is passed
    (skipping view auto-resolution), that view's `done_bucket_id` isn't
-   fetched — `isDoneBucket` falls back to `false` in that case rather than
+   fetched, so `isDoneBucket` falls back to `false` in that case rather than
    spending an extra request on it.
 
 5. **`id` vs `projectId` on `vikunja_projects`**: the flat args schema has
    both `id` (used by CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds
-   subcommands) and `projectId` (used by the sharing-domain subcommands —
+   subcommands) and `projectId` (used by the sharing-domain subcommands:
    `create-share`, `share-with-user`, `list-project-users`, etc.) as sibling
    fields, which is a first-guess footgun: an agent reaching for `projectId`
    on e.g. `list-buckets` gets `Project ID is required`. `registerProjectsTool`
@@ -178,7 +178,7 @@ report to the operator.
    `id` on every subcommand in the `id`-domain group (`PROJECT_ID_ALIAS_SUBCOMMANDS`),
    applied once up front before the switch dispatch; an explicit `id` always
    wins when both are supplied. The sharing-domain subcommands are
-   deliberately excluded from this alias — they already use `projectId` for
+   deliberately excluded from this alias: they already use `projectId` for
    this purpose.
 
 ### Project Sharing
@@ -186,14 +186,14 @@ report to the operator.
 Project sharing allows creating public or private links to share projects with external users.
 
 1. **Share Properties (request body, `POST /projects/{id}/shares`)**:
-   - `permission`: Permission level (0=Read, 1=Write, 2=Admin) — the tool-level
+   - `permission`: Permission level (0=Read, 1=Write, 2=Admin); the tool-level
      `right` argument (`'read'|'write'|'admin'|0|1|2`) is mapped to this field
    - `password`: Optional password protection
-   - `name`: User-defined label for managing shares — the tool-level argument
+   - `name`: User-defined label for managing shares; the tool-level argument
      is also called `name` (not `label`)
    - `project_id` is taken from the URL path, not the body
    - There is **no** `expires`, `password_enabled`, or `shares` field on
-     `models.LinkSharing` — the removed `node-vikunja` client's bundled type
+     `models.LinkSharing`. The removed `node-vikunja` client's bundled type
      included them, but the real API (and the tool's `CreateShareRequest`)
      does not. `expires`
      as a per-share expiration and `shares` as a share count are not
@@ -216,7 +216,7 @@ Project sharing allows creating public or private links to share projects with e
 
 ### Project Views
 
-1. **Not truly "full-model-replace" — an explicit `Cols(...)` allowlist,
+1. **Not truly "full-model-replace": an explicit `Cols(...)` allowlist,
    which is a more dangerous shape**: `POST /projects/{project}/views/{id}`
    *behaves* like the project/team full-replace endpoints (a partial body
    loses data), but the mechanism is different and worth being precise
@@ -224,54 +224,54 @@ Project sharing allows creating public or private links to share projects with e
    go-vikunja) writes with a hard-coded
    `Cols("title", "view_kind", "filter", "position",
    "bucket_configuration_mode", "bucket_configuration",
-   "default_bucket_id", "done_bucket_id")` — **not** a bare
+   "default_bucket_id", "done_bucket_id")`, **not** a bare
    `.Update(pv)` relying on xorm's zero-value column skip. `Cols(...)`
    forces every named column to be written regardless of its zero value,
    the same override mechanism as `UseBool` (see "Team Operations" below and
    [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) §3a) but applied to
-   an entire column list instead of one boolean — so a partial body doesn't
-   just risk one flag, it resets a view's `position` to `0` and blanks its
+   an entire column list instead of one boolean, so a partial body doesn't
+   just risk one flag: it resets a view's `position` to `0` and blanks its
    `filter` on every field in that list the caller omits. `update-view` and
    the `set-done-bucket` composite both fetch the current view first and
    merge requested changes onto it (`buildViewUpdatePayload` in
    `src/tools/projects/views.ts`) rather than sending a bare partial object,
    which happens to close this the same way a true full-replace endpoint
-   would — but the underlying hazard is `Cols(...)`, not the zero-value skip
+   would. But the underlying hazard is `Cols(...)`, not the zero-value skip
    `UseBool`/`Cols` are usually contrasted against. See
    [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #15.
 
 2. **Setting the Done Bucket**: `models.Bucket` has no `is_done_bucket`
-   field — the done bucket is `done_bucket_id` on the `ProjectView`
+   field. The done bucket is `done_bucket_id` on the `ProjectView`
    (see "Kanban 'Done' Bucket" above, which covers *reading* it via
    `list-buckets`). `set-done-bucket` is the only way to *set* it: resolve
    the Kanban view (auto-resolved from the project, or an explicit
    `viewId`), fetch-merge-POST the `done_bucket_id` change, then verify the
    response actually reflects the requested bucket before reporting
-   success — a mismatch (e.g. a stale `updated` snapshot on a concurrently
+   success. A mismatch (e.g. a stale `updated` snapshot on a concurrently
    edited view) raises an `API_ERROR` rather than silently claiming success.
 
 3. **Per-View Task Listing Shape**: `GET /projects/{id}/views/{view}/tasks`
    (`list-view-tasks`) declares a flat `models.Task[]` response schema for
    every view kind, but the endpoint's own spec description says a Kanban
-   view instead returns "a list of buckets containing the tasks" — i.e. the
+   view instead returns "a list of buckets containing the tasks": the
    real response for a Kanban view is bucket-shaped (each item carrying a
    nested `tasks` array), not task-shaped. This can't be confirmed against
    a live server from spec text alone, so `list-view-tasks` passes the
    response through unmodified rather than guessing a shape and silently
-   coercing it — callers should check for a `tasks` field on each returned
+   coercing it. Callers should check for a `tasks` field on each returned
    item to tell which shape they got back.
 
 ### Kanban Buckets
 
 1. **Full-Model-Replace Update Endpoint**: `POST
    /projects/{projectID}/views/{view}/buckets/{bucketID}` replaces the
-   entire `models.Bucket` (title has `minLength: 1` in the spec — an empty
+   entire `models.Bucket` (title has `minLength: 1` in the spec; an empty
    body would be rejected). `update-bucket` fetches the bucket list first
    (which doubles as `bucketTitle` resolution, see below) and merges
    requested changes onto the matched bucket before POSTing.
 
 2. **Resolve-by-Title**: `update-bucket` and `delete-bucket` accept either a
-   numeric `bucketId` or a `bucketTitle` string — the same
+   numeric `bucketId` or a `bucketTitle` string, the same
    resolve-by-name-internally shape as `setTaskBucket`
    (`src/tools/tasks/buckets.ts`). `bucketId` wins when both are supplied.
    Resolution failure (no bucket with that id/title in the view) raises
@@ -285,7 +285,7 @@ Project sharing allows creating public or private links to share projects with e
 4. **`vikunja_tasks update`'s `bucketId` Is Not a `models.Task` Field**:
    moving a task into a bucket is a dedicated action endpoint (`POST
    /projects/{project}/views/{view}/buckets/{bucket}/tasks`), not a field on
-   the full-model task update payload — `models.Task.bucket_id` exists in the
+   the full-model task update payload. `models.Task.bucket_id` exists in the
    spec but is documented as populated only "when the task is accessed via a
    view with buckets", so it can't be diffed the way `due_date`/`priority`
    are. `TaskUpdateService.updateTask` therefore calls the shared
@@ -294,11 +294,11 @@ Project sharing allows creating public or private links to share projects with e
    `bucket_id` into `buildUpdateData`'s merge. It runs after any same-call
    `projectId` move, so bucket resolution (when `projectId`/`viewId` are
    omitted) sees the task's new project, not its old one. `bucketId` is
-   reported in `affectedFields` unconditionally like `labels`/`assignees` —
-   if the move itself fails, the whole `update` call throws before that
+   reported in `affectedFields` unconditionally like `labels`/`assignees`.
+   If the move itself fails, the whole `update` call throws before that
    response is ever returned, so the field list stays honest. Before this
    fix, `update`'s schema accepted `bucketId` but nothing read it, so it was
-   silently dropped (battle-tested friction — see tracking issue #28, item
+   silently dropped (battle-tested friction; see tracking issue #28, item
    E1).
 
 ### Team Operations
@@ -307,14 +307,14 @@ Project sharing allows creating public or private links to share projects with e
    /teams/{id}` follows the same full-model-replace convention as projects,
    views, and buckets above, but is more dangerous: go-vikunja writes
    `is_public` with xorm's `UseBool`, which forces that one column to be
-   written even when `false` — bypassing the zero-value skip that made
+   written even when `false`, bypassing the zero-value skip that made
    omitting other fields (like `description`) look harmless. An update that
    omitted `is_public` therefore silently un-published a public team.
    `vikunja_teams update` fetches the team first and merges requested
    changes onto it via `buildTeamUpdatePayload` (`src/tools/teams.ts`), the
    same fetch-merge-POST shape `buildProjectUpdatePayload` uses for projects.
    Full write-up, verified against the go-vikunja source, is in
-   [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) §3a — including the
+   [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) §3a, including the
    generalized "watch for `UseBool` on any full-replace endpoint" lesson, and
    why team **membership** writes (add/remove/admin-toggle) are a different,
    unaffected shape and should not be "fixed" the same way.
@@ -322,11 +322,11 @@ Project sharing allows creating public or private links to share projects with e
 2. **Member Addressing Is By Username, Not Id**: the vendored spec annotates
    the admin-toggle route's path segment as `@Param userID path int true "User
    ID"`, but the actual go-vikunja route binds that segment to the member's
-   *username* (`TeamMember.Username` carries a `param:"user"` struct tag) —
+   *username* (`TeamMember.Username` carries a `param:"user"` struct tag);
    see [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #3 for the route
    registration and struct-tag citations. The general rule this establishes:
    **when the vendored OpenAPI spec and the Go handler disagree, the handler
-   wins** — verify against the handler source, not the spec text.
+   wins**. Verify against the handler source, not the spec text.
 
 ### User Settings
 
@@ -337,14 +337,14 @@ Project sharing allows creating public or private links to share projects with e
    `DiscoverableByEmail`, `DiscoverableByName`,
    `OverdueTasksRemindersEnabled`, `DefaultProjectID`, `WeekStart`,
    `Language`, `Timezone`, `OverdueTasksRemindersTime`, `FrontendSettings`)
-   onto the user record and calls `user2.UpdateUser(s, user, true)` — the
+   onto the user record and calls `user2.UpdateUser(s, user, true)`; the
    third argument is `forceOverride`. There is no zero-value skip at all
-   here (this isn't a `UseBool`/`Cols` case — it's a plain assignment plus a
+   here (this isn't a `UseBool`/`Cols` case; it's a plain assignment plus a
    forced-override update), so a partial body wipes name, language,
    timezone, week start, default project, both discoverability flags and
    reminder preferences on every call that doesn't resend them all.
    Additionally, `OverdueTasksRemindersTime` is tagged
-   `valid:"time,required"` (`user_settings.go:52`) — omit it and the request
+   `valid:"time,required"` (`user_settings.go:52`). Omit it and the request
    400s outright, even before the wipe would happen. `vikunja_users
    update-settings` fetches the current settings first and merges requested
    changes onto them (`src/tools/users.ts`) before POSTing, the same
@@ -358,14 +358,14 @@ Project sharing allows creating public or private links to share projects with e
 1. **`vikunja_webhooks update` Can Only Ever Change `events`**: unlike every
    other "full-replace" endpoint in this file, `Webhook.Update`
    (`pkg/models/webhooks.go:261-273` in go-vikunja) is neither a full
-   replace nor a partial merge — it's a hard-coded single-column write,
+   replace nor a partial merge. It's a hard-coded single-column write,
    `s.Where("id = ?", w.ID).Cols("events").Update(w)`. The handler's own doc
    comment says as much: "Change a webhook target's events. You cannot
    change other values of a webhook." `targetUrl`, `secret`,
    `basicAuthUser` and `basicAuthPassword` are therefore permanently fixed
    at creation; there is no server-side path that will ever change them, so
    no client-side fetch-merge can fix this the way it fixes the
-   teams/projects/views cases above — the only way to change them is
+   teams/projects/views cases above. The only way to change them is
    delete-and-recreate. `vikunja_webhooks update` rejects all four outright
    (`src/tools/webhooks.ts`) rather than accepting them and silently
    discarding the change, and its success message no longer implies more was
@@ -382,8 +382,8 @@ Project sharing allows creating public or private links to share projects with e
 The update operation uses diff-based logic for efficiency:
 1. Get current assignees
 2. Calculate additions and removals
-3. Remove users no longer assigned — one `DELETE /tasks/{taskID}/assignees/{userID}` each
-4. Add new users — one `PUT /tasks/{taskID}/assignees` (body `{user_id}`) each
+3. Remove users no longer assigned: one `DELETE /tasks/{taskID}/assignees/{userID}` each
+4. Add new users: one `PUT /tasks/{taskID}/assignees` (body `{user_id}`) each
 
 This minimizes work compared to replacing the whole list. Note the adds are
 deliberately **not** batched through `POST /tasks/{taskID}/assignees/bulk`:
@@ -409,8 +409,8 @@ verb and `POST` is the **update** verb (see "Full-Model-Replace Update
 Endpoint" under "Project Operations" above for the update side). That
 inversion matters beyond naming: it means the HTTP method alone tells
 `vikunjaRestRequest` whether a write is safe to retry. A 5xx response, or a
-connection reset mid-flight, does not prove a create failed — the row may
-already be persisted server-side with only the response lost — so blindly
+connection reset mid-flight, does not prove a create failed. The row may
+already be persisted server-side with only the response lost, so blindly
 retrying it would silently create a duplicate task/project/label/comment.
 `shouldRetryNonIdempotentWrite` (`src/utils/vikunja-rest.ts`) therefore
 retries a `PUT` only on HTTP 429 or a connection failure that *proves* the
@@ -418,13 +418,13 @@ request bytes never reached the server (refused / unresolved / handshake
 timeout); every other method keeps the standard 5xx/429/transient-network
 retry policy. The full rationale, the retry-preset table, and the "revisit if
 Vikunja ever gains an idempotency key" escape hatch live in
-[docs/ARCHITECTURE.md](ARCHITECTURE.md)'s "Retry Logic" section — this entry
+[docs/ARCHITECTURE.md](ARCHITECTURE.md)'s "Retry Logic" section. This entry
 exists mainly so the create/update verb inversion sits next to this file's
 other verb- and field-mapping notes.
 
 ## MCP-Specific Limitations
 
-1. **File Attachments — upload works, download can't return bytes**:
+1. **File Attachments: upload works, download can't return bytes**:
    - **Uploading is implemented.** `vikunja_tasks attach`
      (`src/tools/tasks/attach.ts`) posts `multipart/form-data` to
      `PUT /tasks/{id}/attachments` via `vikunjaRestMultipartRequest`, taking
@@ -433,7 +433,7 @@ other verb- and field-mapping notes.
      (`src/tools/tasks/attachments.ts`) are implemented too.
    - **Downloading the bytes is not, and won't be.** MCP has no binary/file
      delivery channel, so `download-attachment` returns the direct download
-     URL plus the auth header the caller needs to fetch it themselves —
+     URL plus the auth header the caller needs to fetch it themselves,
      the same honest shape as `vikunja_download_user_export`. The same
      limitation is why avatar/background *image* endpoints stay parked
      ([docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md)).
@@ -467,7 +467,7 @@ other verb- and field-mapping notes.
 
 1. **Mock Isolation**: all HTTP goes through `vikunjaRestRequest` /
    `vikunjaRestMultipartRequest` (`src/utils/vikunja-rest.ts`), so that module
-   is what tests mock. No test mocks `node-vikunja` any more — the dependency
+   is what tests mock. No test mocks `node-vikunja` any more. The dependency
    is gone from `package.json`; the remaining mentions in `tests/` are
    migration comments only.
 2. **Type Safety**: some tests use `any` for mocks; typed mocks derived from
@@ -486,11 +486,11 @@ other verb- and field-mapping notes.
 
 2. **Bulk Update**: Updates the same field across multiple tasks
    - **Scalar fields go through Vikunja's native `POST /tasks/bulk`**
-     (`models.BulkTask` — `{task_ids, fields, values}`) as **one** request
+     (`models.BulkTask`: `{task_ids, fields, values}`) as **one** request
      (landed in PR #89). Allowlist: `done`, `priority`, `percent_done`,
      `due_date`, `start_date`, `end_date`, `project_id`, `repeat_after`,
      `repeat_mode` (`BulkOperationValidator.validateFieldConstraints`, which
-     also allows `assignees`/`labels` — those take the per-task path below,
+     also allows `assignees`/`labels`, but those take the per-task path below,
      not the native endpoint). `percent_done` takes the whole-percentage
      0-100 scale `percentDone` uses everywhere else and is converted to the
      0-1 wire fraction in `resolveBulkUpdateValue`.
@@ -499,7 +499,7 @@ other verb- and field-mapping notes.
      are surfaced as `assigneeRestoreFailures`, not swallowed.
    - `assignees` / `labels` as the bulk field, and the fallback for servers
      that don't honor `fields`/`values`, still use the per-task
-     `GET`+merge+`POST` path — O(n) API calls there.
+     `GET`+merge+`POST` path: O(n) API calls there.
    - See [docs/API-COVERAGE.md](API-COVERAGE.md)'s `POST /tasks/bulk` row for the full
      verified contract.
 
@@ -514,7 +514,7 @@ other verb- and field-mapping notes.
 - Vikunja exposes exactly three native bulk endpoints: `POST /tasks/bulk`
   (used by `bulk-update` for scalar fields), `POST /tasks/{id}/labels/bulk`
   (used by create/update via `setTaskLabels`) and
-  `POST /tasks/{id}/assignees/bulk` (replace-semantics — used *only* for the
+  `POST /tasks/{id}/assignees/bulk` (replace-semantics, used *only* for the
   post-bulk-update assignee restore, never for a general assign flow).
 - There is **no** native bulk *create* or bulk *delete*; those two remain
   client-side loops making individual API calls.
@@ -522,7 +522,7 @@ other verb- and field-mapping notes.
   concurrent creates 500 with "database is locked" on SQLite-backed servers
   at or below the old 2.3.0 floor. Vikunja 2.4.0 advertises
   `concurrent_writes: true` and is now the floor, but sequential is retained
-  pending durable multi-release evidence — see the `create` `BatchProcessor`
+  pending durable multi-release evidence; see the `create` `BatchProcessor`
   comment in `src/tools/tasks/bulk-operations-simplified.ts`.
 - Consider rate limiting when processing large batches.
 
@@ -539,17 +539,17 @@ other verb- and field-mapping notes.
 Tracked as netadvanced/vikunja-mcp#28, "api-version-detect".
 
 `src/utils/capabilities.ts` caches a per-session `VikunjaCapabilities` snapshot
-(`{ serverVersion, features, hasV2Api }`) — the `GET /info` payload already
+(`{ serverVersion, features, hasV2Api }`), the `GET /info` payload already
 fetched by `vikunja_auth.connect`'s verification step, plus a one-time
-best-effort `GET /api/v2/openapi.json` probe — surfaced read-only via
+best-effort `GET /api/v2/openapi.json` probe, surfaced read-only via
 `vikunja_auth`'s `status` and `info` subcommands. **No tool currently branches
-on `hasV2Api` or issues any `/api/v2/*` request** — this is only a seam future
+on `hasV2Api` or issues any `/api/v2/*` request**. This is only a seam future
 v2 fast-paths can consult without an extra round trip.
 
 Ground truth confirmed live against the e2e harness's `2.4.0` Vikunja stack
 (`npm run e2e:up`, `VIKUNJA_VERSION=2.4.0` default): `GET /api/v2/openapi.json`
-already returns `200` with a real OpenAPI schema on that version —
-`curl http://localhost:33456/api/v2/openapi.json` — so `hasV2Api: true` is the
+already returns `200` with a real OpenAPI schema on that version
+(`curl http://localhost:33456/api/v2/openapi.json`), so `hasV2Api: true` is the
 *correct* detection result there, not "v2 doesn't exist yet." A v2 schema
 being publishable does not mean this server's v1 request paths are ready to
 be replaced by it; do not treat `hasV2Api: true` as a green light to start
@@ -558,9 +558,9 @@ shape against the vendored v2 OpenAPI spec, the same way `docs/API_NOTES.md`
 already requires for v1.
 
 **Version note (2026-08-31):** Vikunja 2.5.0 and 2.6.0 have since been
-released upstream (2.6.0 on 2026-08-31, primarily a security release — 18
+released upstream (2.6.0 on 2026-08-31, primarily a security release, 18
 fixes). Neither is this project's floor nor its aligned/tested
-default (both 2.4.0, above) — nothing in `src/` targets them, and no claim in this
+default (both 2.4.0, above). Nothing in `src/` targets them, and no claim in this
 file has been re-verified against either. Treat 2.5- and 2.6-specific
 behavior as unknown rather than assuming it matches 2.4.0, until it gets the
 same live-verification treatment 2.4.0 received here.
@@ -609,14 +609,14 @@ The Vikunja API supports SQL-like filter syntax as documented. Filters should be
 ### `labels` Filters Match IDs, Not Titles
 
 The `labels` filter field matches on numeric label **ids** server-side, not
-label titles — `filter=labels in 'HU'` 400s
+label titles: `filter=labels in 'HU'` 400s
 (`{"code":4019,"message":"The task filter value 'HU' for field 'labels' is
 invalid."}`), while `filter=labels in 100` (a real label id) works. This is
 non-obvious because every other commonly-filtered field (`title`, filters on
 enum-like strings) accepts the human-readable form. `resolveLabelTitlesInExpression`
 (`src/tools/tasks/filtering/FilterValidator.ts`) resolves label titles to ids
-once — server-side by fetching the caller's labels and matching case-insensitively
-— feeding the resolved ids into both the wire filter string and the
+once, server-side, by fetching the caller's labels and matching case-insensitively,
+feeding the resolved ids into both the wire filter string and the
 client-side fallback evaluator. Before this fix the client-side fallback
 matched nothing either: `evaluateCondition` ran `Number(value)` on a title
 string, producing `NaN`, which cannot equal any label id
@@ -628,28 +628,28 @@ title is now a loud error naming the unresolved label(s), not a silent
 **Correction to a prior hypothesis:** issue #227 originally hypothesized that
 list endpoints return `labels: null` even when a task has labels, forcing
 label filtering to always miss. **This was wrong, verified live against
-2.4.0** — list endpoints (`GET /tasks/all`, `GET /projects/{id}/tasks`, etc.)
+2.4.0.** List endpoints (`GET /tasks/all`, `GET /projects/{id}/tasks`, etc.)
 correctly populate the `labels` array when a task has labels; a `labels:
 null` in a response means the task genuinely has none. The real bug was the
 id/title mismatch above. Anyone re-investigating a "labels filter matches
 nothing" report should check the filter value's type (title vs id) before
-suspecting the list response shape — chasing the `labels: null` theory cost
+suspecting the list response shape. Chasing the `labels: null` theory cost
 real investigation time on #227.
 
 ## Related Documents
 
-- [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) — upstream API bugs/quirks worth reporting, with per-issue status.
-- [docs/API-COVERAGE.md](API-COVERAGE.md) — authoritative per-endpoint implementation status and the verified request/response contracts.
-- [docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md) — why the remaining 44 unimplemented operations are parked or ruled out, each with a reopening trigger.
-- [docs/ENDPOINT-PLAYBOOK.md](ENDPOINT-PLAYBOOK.md) — the procedure to follow before touching endpoint code.
+- [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md): upstream API bugs/quirks worth reporting, with per-issue status.
+- [docs/API-COVERAGE.md](API-COVERAGE.md): authoritative per-endpoint implementation status and the verified request/response contracts.
+- [docs/ENDPOINT-TAIL-RETRIAGE.md](ENDPOINT-TAIL-RETRIAGE.md): why the remaining 44 unimplemented operations are parked or ruled out, each with a reopening trigger.
+- [docs/ENDPOINT-PLAYBOOK.md](ENDPOINT-PLAYBOOK.md): the procedure to follow before touching endpoint code.
 
 ---
 
-*Last updated: 2026-08-03 — re-verified against current `src/` and the vendored `v2.4.0` spec: corrected the `project_id`/`projectId` note, the file-attachment limitation (upload ships; only byte delivery is blocked), and the bulk-operations section (`POST /tasks/bulk` is native and used); removed `node-vikunja` framing left over from the direct-REST migration.*
+*Last updated: 2026-08-03. Re-verified against current `src/` and the vendored `v2.4.0` spec: corrected the `project_id`/`projectId` note, the file-attachment limitation (upload ships; only byte delivery is blocked), and the bulk-operations section (`POST /tasks/bulk` is native and used); removed `node-vikunja` framing left over from the direct-REST migration.*
 
 *Updated 2026-08-31: added "Team Operations" (full-model-replace + the
 `UseBool` public/private trap, and the spec-vs-handler member-addressing
-mismatch — both cross-linked to `docs/VIKUNJA_API_ISSUES.md`), added "Create
+mismatch, both cross-linked to `docs/VIKUNJA_API_ISSUES.md`), added "Create
 Retries and Idempotency" cross-linking `docs/ARCHITECTURE.md`'s Retry Logic
 section, and noted Vikunja 2.5.0 and 2.6.0 exist upstream but are unverified
 against this codebase.*
@@ -660,8 +660,8 @@ Operations"; corrected the "Project Views" full-model-replace entry to name
 the actual mechanism (`Cols(...)` allowlist, not a bare struct update);
 added "User Settings" (`POST /user/settings/general` forced full-replace)
 and "Webhooks" (`Webhook.Update`'s `events`-only write) as new sections;
-corrected "Date Handling" — a bare date-only value 400s (code 2004) on
-create endpoints rather than silently dropping, which corrects a stale
+corrected "Date Handling" (a bare date-only value 400s, code 2004, on
+create endpoints rather than silently dropping), which corrects a stale
 comment still sitting in `src/tools/tasks/validation.ts`; and added the
 `labels` filter id-vs-title gotcha (with the corrected #227 "labels: null"
 hypothesis) to "Filter Implementation Notes." All new claims verified
