@@ -613,6 +613,25 @@ instead of the default `stdio` transport. It:
    `vikunja_templates list`, which exercise the session-storage read path) →
    a second identity provisioned and calling tools concurrently (step (d4))
    → `vikunja_auth deprovision`.
+5. **By default, also runs the one-click SSO enrollment lane** (issue #220,
+   steps `(f0)`–`(f6)`, see [docs/CONFIGURATION.md](CONFIGURATION.md#one-click-sso-enrollment-optional-enroll-section)
+   for what enrollment is). Before step 2 above, it reconfigures the e2e
+   target's Vikunja container via the `docker-compose.oidc.yml` overlay
+   (`VIKUNJA_E2E_OIDC=1` passed to `docker/e2e/bootstrap.sh`) to add one
+   OpenID provider pointing at this lane's own mock IdP, then exercises the
+   real chain end to end: MCP `/enroll` → mock-IdP authorize → MCP
+   `/enroll/callback` → Vikunja's real `POST /auth/openid/{key}/callback`
+   (real token exchange, real first-login account auto-creation) → real
+   `GET /routes` → real `PUT /tokens` → vault — plus a replayed-callback
+   rejection (`f5`, single-use ticket) and a forwarded-link identity-pinning
+   check (`f6`, a different validated identity cannot claim another user's
+   IdP session). A `finally` block always restores the e2e target to its
+   plain (no-OpenID) container afterward — even on failure — so no other
+   lane or session is left pointed at a provider whose mock IdP no longer
+   exists. Set `MCP_E2E_SKIP_ENROLL=1` to skip this lane and its container
+   reconfiguration entirely, running only the classic provisioning steps
+   (a)–(e) above — useful when iterating on those steps alone, since the
+   enrollment lane's container swap adds real time to every run.
 
 Run it against the local stack:
 
