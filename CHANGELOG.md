@@ -8,6 +8,8 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+## [0.7.0-beta.2] - 2026-09-01
+
 **A correctness pass over the whole write surface, and one breaking change.** Nearly every
 entry below shares a single shape: the tool reported success while what you asked for did
 not happen. A field you sent was silently dropped. A partial update wiped settings you never
