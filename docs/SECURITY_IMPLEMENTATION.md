@@ -1,7 +1,7 @@
 # Input Sanitization
 
-User-supplied strings that reach Vikunja — task titles and descriptions above
-all — pass through a rejection-based sanitization layer in
+User-supplied strings that reach Vikunja (task titles and descriptions above
+all) pass through a rejection-based sanitization layer in
 [`src/utils/validation.ts`](../src/utils/validation.ts). This page documents what
 that layer actually blocks, what it deliberately lets through, and which code
 paths call it. It is the input-validation half of the security architecture; the
@@ -11,7 +11,7 @@ and is summarized under [Log masking](#log-masking) below.
 Every claim here was re-checked against `src/` on 2026-08-03. Where an earlier
 version of this document described protections that were never implemented, or
 were removed from the code since, the claim has been deleted rather than left
-standing — see [What is deliberately not blocked](#what-is-deliberately-not-blocked).
+standing. See [What is deliberately not blocked](#what-is-deliberately-not-blocked).
 
 **The model is rejection, not escaping.** `sanitizeString()` throws
 `MCPError(VALIDATION_ERROR, 'String contains potentially dangerous content')` when
@@ -44,18 +44,18 @@ state bugs with the `g` flag.
 
 Narrow by design (see [What is deliberately not blocked](#what-is-deliberately-not-blocked)):
 
-- **Time-based and blind attacks** — `WAITFOR DELAY`, `SLEEP(`, `BENCHMARK(`, `DBMS_PIPE.RECEIVE_MESSAGE`
-- **Boolean-based blind injection** — `' OR '1'='1`-shaped input. The pattern
+- **Time-based and blind attacks**: `WAITFOR DELAY`, `SLEEP(`, `BENCHMARK(`, `DBMS_PIPE.RECEIVE_MESSAGE`
+- **Boolean-based blind injection**: `' OR '1'='1`-shaped input. The pattern
   requires a quote immediately after `OR`/`AND` plus an `=` comparison, so
   ordinary prose like "Fix bug or issue" and "Cost or budget = 500" passes.
-- **Extended stored procedures** — `XP_*`, `SP_*`
+- **Extended stored procedures**: `XP_*`, `SP_*`
 
 ### Command Injection
 
-- **Network and shell commands** — `wget`, `curl`, `nc`, `netcat`, `telnet`, `ssh`, `ftp`, `sftp`
-- **Destructive filesystem commands** — `rm -rf`, `del /s`, `format`, `fdisk`, `mkfs`
-- **Command substitution** — `$(command)` and `` `command` ``
-- **Redirection** — `>/dev/null`, `2>&1`, `||`
+- **Network and shell commands**: `wget`, `curl`, `nc`, `netcat`, `telnet`, `ssh`, `ftp`, `sftp`
+- **Destructive filesystem commands**: `rm -rf`, `del /s`, `format`, `fdisk`, `mkfs`
+- **Command substitution**: `$(command)` and `` `command` ``
+- **Redirection**: `>/dev/null`, `2>&1`, `||`
 
 ### Path Traversal
 
@@ -74,7 +74,7 @@ Filter-manipulation constructs: `*)(&`, `*)(…*)`, `(|(…)|)`, `(!(…))`.
 
 ### NoSQL Injection
 
-MongoDB operator patterns `$gt`, `$lt`, `$ne`, `$where`, `$regex` — matched both
+MongoDB operator patterns `$gt`, `$lt`, `$ne`, `$where`, `$regex`, matched both
 raw (`$gt:`) and as quoted JSON keys (`"$gt":`), so `JSON.stringify` output does
 not slip past.
 
@@ -116,7 +116,7 @@ scripting or DOM-execution vector are rejected. See the explanatory comment at
 `src/utils/validation.ts:203-210`.
 
 **No HTML entity encoding is applied.** Removed in `f2b0b93` for the same
-reason — the destination is a JSON API, not a rendered page.
+reason: the destination is a JSON API, not a rendered page.
 
 The residual accepted here is that input which merely *mentions* SQL keywords or
 shell metacharacters reaches Vikunja as data. That is safe at a JSON REST
@@ -140,7 +140,7 @@ boundary and is not a gap to be closed by re-broadening the patterns.
 for imports from `utils/validation` returns `sanitizeString`, `validateId` and
 `validateAndConvertId` and nothing else. `validateValue`, `safeJsonStringify`,
 `safeJsonParse` and the filter-expression validators are exported and covered by
-tests, but have **no caller anywhere in `src/`** — production filter parsing and
+tests, but have **no caller anywhere in `src/`**. Production filter parsing and
 validation goes through [`src/utils/filters.ts`](../src/utils/filters.ts)
 (`parseFilterString`, `SecurityValidator`, its own Zod schemas) instead. Treat
 them as available primitives, not as active defenses.
@@ -158,16 +158,16 @@ them as available primitives, not as active defenses.
 **Redaction happens centrally, inside `src/utils/logger.ts`, not at each call
 site.** `Logger.log()` runs every argument through `sanitizeLogArgs()` (from
 `src/utils/security.ts`), then runs the fully rendered message string through
-`redactSecretsInText()` as a textual backstop, and only then writes the line —
+`redactSecretsInText()` as a textual backstop, and only then writes the line,
 all of it *after* the level gate, so a suppressed level (e.g. `logger.debug`
 when `LOG_LEVEL` is `info`) costs nothing: nothing is cloned, walked, or
 scanned. This closed a real leak (PR #241, `fix/logger-credential-redaction`):
 webhook `secret` and `targetUrl` values were being written to `logger.error`
 calls verbatim, and ERROR is the level emitted by default with no
-configuration at all — the exact production configuration every deployment
-starts in. Because the fix is centralized in the logger, individual call
+configuration at all, which is the exact production configuration every
+deployment starts in. Because the fix is centralized in the logger, individual call
 sites (webhook error handlers included) no longer need to remember to strip
-their own credentials before logging — the previous model, where every call
+their own credentials before logging. The previous model, where every call
 site was independently responsible for that, is exactly what let the leak
 through in the first place.
 
@@ -181,10 +181,10 @@ both, and they exist separately on purpose:
 
 Wiring `sanitizeLogData` (the strict one) directly into the logger was tried
 and rejected: stderr is not an HTML sink, so the injection-rejection behavior
-buys no security there, while it actively breaks ordinary diagnostics — an
+buys no security there, while it actively breaks ordinary diagnostics: an
 `Error` object has non-enumerable `message`/`stack` properties, so a strict
 generic object walk reduces it to `{}`; and any string over `MAX_STRING_LENGTH`
-(1000 characters — routine for a stack trace or a large payload) becomes the
+(1000 characters, routine for a stack trace or a large payload) becomes the
 literal string `[SANITIZATION_FAILED]` instead of the diagnostic it was
 supposed to be. `sanitizeForLogging()` keeps the credential masking but drops
 that rejection layer, and additionally unwraps `Error` instances into a plain
@@ -192,20 +192,20 @@ that rejection layer, and additionally unwraps `Error` instances into a plain
 non-enumerable-property problem.
 
 **What redaction catches, beyond matching on key names.** Sensitive object
-keys (`secret`, `token`, `password`, `apiKey`, `user`, `email`, and similar —
+keys (`secret`, `token`, `password`, `apiKey`, `user`, `email`, and similar;
 see `SENSITIVE_KEY_PATTERNS` in `src/utils/security.ts`) are replaced with
 `[REDACTED]`, or with `maskCredential()`'s masked-prefix form when the value
 itself is long or recognizably credential-shaped (JWT, `tk_*`, `ghp_*`, AWS
 key IDs, database URIs, `Bearer`/`Basic` headers, PEM blocks). Beyond key-name
-matching, `redactSecretsInText()` — the textual backstop applied to every
+matching, `redactSecretsInText()` (the textual backstop applied to every
 rendered log line, and reused directly by the structural pass wherever a
-sensitive value is itself a URL — additionally catches:
+sensitive value is itself a URL) additionally catches:
 
 - **Secrets embedded in a URL path** (e.g. a Slack incoming-webhook URL,
   whose last path segment *is* the credential)
 - **URL userinfo** (`https://user:pass@host/...`)
 - **Sensitive query-string values** (`?token=...`, `?api_key=...`)
-- **Credentials embedded in prose**, not just structured fields — a
+- **Credentials embedded in prose**, not just structured fields: a
   `name=value`-shaped substring inside a plain message string, where the name
   reads as a credential
 
@@ -214,17 +214,17 @@ These are exactly the shapes a key-name-only check misses: a webhook
 inside the URL string it holds.
 
 **Operator-visible consequence.** Some fields that previously rendered in
-full now render as `[REDACTED]` in log output — most notably `user`. This is
+full now render as `[REDACTED]` in log output, most notably `user`. This is
 intentional (the field name matches the sensitive-key patterns tuned for
 credential-adjacent identifiers), not a bug; if a deployment relies on `user`
 appearing in logs for auditing, do not work around this by re-broadening the
-call site — file it as a redaction-policy question instead.
+call site. File it as a redaction-policy question instead.
 
 **A cycle-detection fix rode along in the same PR.** The recursive sanitizer
 tracks visited objects in a `WeakSet` to guard against infinite recursion on
 a truly cyclic object. Before PR #241, the same *non-cyclic* object appearing
 twice in a tree (e.g. the same error object nested at two different keys) was
-incorrectly reported as `[Circular Reference]` — the visited-set entry was
+incorrectly reported as `[Circular Reference]`, because the visited-set entry was
 never removed after finishing that branch. It is now removed once a
 branch's traversal completes, so only genuine cycles are collapsed; the same
 object appearing twice in a non-cyclic tree is rendered in full at each
@@ -239,8 +239,8 @@ private `validateTestEnvironment()` guard first, which throws unless
 `JEST_WORKER_ID` is set or `NODE_ENV` is `test` or `development`. The methods
 therefore ship in `dist/` but are inert in a production process.
 
-The richer testing surface — `getTestUserId`, `getTestTokenExpiry`,
-`updateSessionProperty`, and the `TestableAuthManager` interface and factories —
+The richer testing surface (`getTestUserId`, `getTestTokenExpiry`,
+`updateSessionProperty`, and the `TestableAuthManager` interface and factories)
 lives entirely in `tests/utils/test-utils.ts`, monkey-patched onto instances at
 test time, and is never shipped.
 
@@ -275,7 +275,7 @@ Related suites: `security.test.ts`, `security-integration.test.ts`,
 `filters-security.test.ts`, `filters-redos-security.test.ts`.
 
 Coverage of `src/utils/validation.ts` measured across the full suite on
-2026-08-03 — the file is exercised well beyond the sanitization suite alone:
+2026-08-03; the file is exercised well beyond the sanitization suite alone:
 
 ```text
 File            | % Stmts | % Branch | % Funcs | % Lines
@@ -287,8 +287,8 @@ Repo-wide thresholds and the ratcheting policy live in [CLAUDE.md](../CLAUDE.md)
 ## Performance
 
 Patterns are recompiled per call rather than cached, trading a little throughput
-for freedom from `lastIndex` state bugs. Rejection is early — the first matching
-pattern throws — so hostile input costs less than clean input.
+for freedom from `lastIndex` state bugs. Rejection is early (the first matching
+pattern throws), so hostile input costs less than clean input.
 `security-performance.test.ts` asserts sub-100ms processing for typical inputs.
 The sensitive-key normalization cache in `security.ts` is unbounded by design and
 exposes `clearSecurityCache()` and `getSecurityCacheStats()` for long-running
@@ -296,14 +296,14 @@ processes.
 
 ## Standards Mapping
 
-- **OWASP Top 10** — A03 Injection, A05 Security Misconfiguration
-- **CWE** — CWE-79 (XSS), CWE-78 (OS command injection), CWE-22 (path traversal),
+- **OWASP Top 10**: A03 Injection, A05 Security Misconfiguration
+- **CWE**: CWE-79 (XSS), CWE-78 (OS command injection), CWE-22 (path traversal),
   CWE-94 (code injection), CWE-1321 (prototype pollution). CWE-89 (SQL injection)
   is addressed **partially and intentionally**: blind and time-based patterns
   only, per [What is deliberately not blocked](#what-is-deliberately-not-blocked).
 
 ## See Also
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — where this layer sits in the request path
-- [RATE_LIMITING.md](RATE_LIMITING.md) — the DoS-protection half of the middleware story
-- [CONFIGURATION.md](CONFIGURATION.md) — secrets handling and the `_FILE` convention
+- [ARCHITECTURE.md](ARCHITECTURE.md): where this layer sits in the request path
+- [RATE_LIMITING.md](RATE_LIMITING.md): the DoS-protection half of the middleware story
+- [CONFIGURATION.md](CONFIGURATION.md): secrets handling and the `_FILE` convention
