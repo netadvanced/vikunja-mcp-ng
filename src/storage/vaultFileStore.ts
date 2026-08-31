@@ -47,6 +47,7 @@ import { maskCredential } from '../utils/security';
 import { ConfigurationError } from '../config/types';
 import { readSecretEnv } from '../config/secrets';
 import { identityKey, type Identity } from '../context/requestContext';
+import { fsyncPath } from './fsync';
 import type { VikunjaCredential } from '../auth/CredentialSource';
 
 const ALGORITHM = 'aes-256-gcm';
@@ -405,7 +406,22 @@ export function writeVaultFileAtomic(filePath: string, records: Map<string, Vaul
   // process umask before the chmod below — defense in depth on top of the
   // post-rename chmod.
   fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  // Flush the temp file's contents to the physical device BEFORE the rename
+  // (issue #293 / LOW-10). Without this, `writeFileSync` + `renameSync` only
+  // guarantees ordering within the page cache: a power loss seconds after a
+  // "successful" provision can leave the renamed file empty or truncated,
+  // silently losing every credential in the vault.
+  fsyncPath(tmpPath, 'r+');
   fs.renameSync(tmpPath, filePath);
+  // ...and flush the directory entry itself, so the rename survives too.
+  // Best-effort: opening a directory for fsync is not supported everywhere
+  // (notably Windows), and a durable file with an unflushed rename is still
+  // strictly better than neither.
+  try {
+    fsyncPath(dir, 'r');
+  } catch {
+    // Intentionally ignored — see above.
+  }
   try {
     fs.chmodSync(filePath, 0o600);
   } catch {

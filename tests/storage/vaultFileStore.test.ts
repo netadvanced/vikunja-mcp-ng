@@ -1109,6 +1109,73 @@ describe('writeVaultFileAtomic byte-level secret hygiene', () => {
     expect(fs.readdirSync(dir)).toEqual(['vault.json']);
   });
 
+  describe('durability (issue #293 / LOW-10)', () => {
+    it('fsyncs the temp file before the rename, and the directory after it', () => {
+      const fsyncSpy = jest.spyOn(fs, 'fsyncSync');
+      const renameSpy = jest.spyOn(fs, 'renameSync');
+      try {
+        writeVaultFileAtomic(filePath, new Map());
+
+        expect(fsyncSpy).toHaveBeenCalledTimes(2);
+        const renameOrder = renameSpy.mock.invocationCallOrder[0]!;
+        expect(fsyncSpy.mock.invocationCallOrder[0]!).toBeLessThan(renameOrder);
+        expect(fsyncSpy.mock.invocationCallOrder[1]!).toBeGreaterThan(renameOrder);
+      } finally {
+        fsyncSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+    });
+
+    it('leaves the previous vault intact when the temp file cannot be flushed', () => {
+      const record: VaultRecord = {
+        vikunjaUrl: 'https://vikunja.example.com',
+        ciphertext: 'original',
+        iv: 'y',
+        authTag: 'z',
+        keyVersion: 2,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        lastUsedAt: null,
+      };
+      writeVaultFileAtomic(filePath, new Map([['issuer|user', record]]));
+
+      const fsyncSpy = jest.spyOn(fs, 'fsyncSync').mockImplementation(() => {
+        throw new Error('simulated fsync failure');
+      });
+      const renameSpy = jest.spyOn(fs, 'renameSync');
+      try {
+        expect(() =>
+          writeVaultFileAtomic(filePath, new Map([['issuer|other', record]])),
+        ).toThrow('simulated fsync failure');
+        expect(renameSpy).not.toHaveBeenCalled();
+      } finally {
+        fsyncSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+
+      expect(loadVaultFile(filePath).get('issuer|user')).toEqual(record);
+    });
+
+    it('tolerates a platform that cannot fsync a directory', () => {
+      const realOpen = fs.openSync;
+      const openSpy = jest.spyOn(fs, 'openSync').mockImplementation(((
+        target: string,
+        flags: string,
+      ) => {
+        if (flags === 'r') {
+          throw new Error('EISDIR: simulated Windows behaviour');
+        }
+        return (realOpen as (t: string, f: string) => number)(target, flags);
+      }) as unknown as typeof fs.openSync);
+      try {
+        expect(() => writeVaultFileAtomic(filePath, new Map())).not.toThrow();
+      } finally {
+        openSpy.mockRestore();
+      }
+      expect(fs.existsSync(filePath)).toBe(true);
+    });
+  });
+
   it('never persists the plaintext token anywhere in the file bytes', () => {
     const key = crypto.randomBytes(32);
     const token = 'tk_this-must-never-appear-on-disk';
