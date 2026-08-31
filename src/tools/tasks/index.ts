@@ -249,8 +249,39 @@ export function registerTasksTool(
           'Must be an integer — 0.5 is rejected, not silently read as half a percent. ' +
           'Accepted by create, update, bulk-create, create-subtask and bulk-create-subtasks.',
       ),
+      // models.Task.hex_color — a real create AND update field (Vikunja's
+      // createTask normalizes and inserts it; hex_color is in the update
+      // path's column allowlist). batch-import has always accepted a per-task
+      // hexColor, so leaving it undeclared here meant the same field worked in
+      // one entry point and silently vanished in another. '' clears the color.
+      hexColor: z
+        .string()
+        .regex(
+          /^(#[0-9A-Fa-f]{6})?$/,
+          "hexColor must be #RRGGBB (e.g. #4287f5), or '' to clear the task color",
+        )
+        .optional()
+        .describe(
+          "Task color as #RRGGBB (e.g. #4287f5), or '' to clear it. Accepted by create and " +
+            'update. Not a per-task field on bulk-create/bulk-create-subtasks — create the ' +
+            'tasks, then update.',
+        ),
       labels: z.array(z.number()).optional(),
       assignees: z.array(z.number()).optional(),
+      // apply-label only: label titles to get-or-create-then-attach, merged
+      // with `labels` (deduped) — the same field vikunja_task_labels declares
+      // and the same one applyLabels has always read. Undeclared here, Zod
+      // stripped it: a call passing BOTH labels and labelTitles silently lost
+      // the titles, and a titles-only call failed with a message insisting no
+      // titles had been given. See src/utils/label-ensure.ts.
+      labelTitles: z
+        .array(z.string().min(1))
+        .optional()
+        .describe(
+          'apply-label only: label titles to attach by name. Each title is get-or-created and ' +
+            'attached in ONE call (no separate lookup), merged with any ids in `labels`. ' +
+            'remove-label takes ids only.',
+        ),
       // Kanban bucket fields (set-bucket, bulk-set-bucket subcommands).
       // z.coerce tolerates MCP clients whose cached tool schema predates
       // these params and therefore send them as strings over JSON-RPC.
@@ -321,7 +352,18 @@ export function registerTasksTool(
       search: z.string().optional(),
       // List specific filters
       allProjects: z.boolean().optional(),
-      done: z.boolean().optional(),
+      // Dual-purpose: a completion filter on `list`, and the task's done state
+      // on create/update. create declared it and never sent it, so "create
+      // this task, already done" silently created an open task.
+      done: z
+        .boolean()
+        .optional()
+        .describe(
+          'On create/update: whether the task is done. On list: filters by completion state. ' +
+            'Note that a task created with done: true has no done_at timestamp (Vikunja only ' +
+            'stamps done_at when a task is UPDATED to done), so it will not match doneAt ' +
+            'filters — create it open and update it to done if you need that timestamp.',
+        ),
       // GET /tasks query params honored for cross-project listing (direct
       // REST — see RestCrossProjectFilteringStrategy). Single-project
       // listing (ClientSideFilteringStrategy/ServerSideFilteringStrategy)
@@ -577,6 +619,20 @@ export function registerTasksTool(
             return applyLabels(args, authManager);
 
           case 'remove-label':
+            // `labelTitles` is an apply-label-only field: removeLabels only
+            // ever reads ids. Now that the flat schema declares labelTitles,
+            // an agent that learned it from apply-label would otherwise have
+            // its titles silently ignored here — reject instead, naming the
+            // field and the way to do what it wanted (the same treatment
+            // `position` gets on create).
+            if (args.labelTitles !== undefined && args.labelTitles.length > 0) {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'labelTitles is not supported by remove-label — removal takes label ids only, ' +
+                  'so a title here would be silently ignored. Look the ids up with ' +
+                  'list-labels (or vikunja_labels list) and pass them as `labels`.',
+              );
+            }
             return removeLabels(args, authManager);
 
           case 'list-labels':
