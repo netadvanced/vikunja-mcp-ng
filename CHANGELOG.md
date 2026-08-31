@@ -8,6 +8,8 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+## [0.7.0-beta.2] - 2026-09-01
+
 **A correctness pass over the whole write surface, and one breaking change.** Nearly every
 entry below shares a single shape: the tool reported success while what you asked for did
 not happen. A field you sent was silently dropped. A partial update wiped settings you never
@@ -380,56 +382,6 @@ supported Vikunja is now 2.4.0**. 2.3.0 is no longer supported.
   matrix now records that Vikunja **2.5.0 and 2.6.0 are released upstream and neither
   supported nor tested here**, with 2.4.0 as both the floor and the aligned, tested target
   (the floor raise itself is under **Changed**, above).
-
-
-## [0.7.0-beta.2] - 2026-08-31
-
-_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._
-
-### Added
-
-- weekly upstream watch for Vikunja main (#250)
-- support Basic Auth webhook credentials, reject changed reuse fields
-- expose percentDone as an integer percentage 0-100
-- close create-path field gaps and add a bulk-write concurrency knob
-
-### Fixed
-
-- stop reporting wrong or partial filtered listings as success
-- normalize dates on subtask, batch-import, and template-instantiate creates
-- redact credentials centrally in the logger
-- stop silently dropping done, hexColor, labelTitles and subtask repeat fields
-- stop silently dropping project/view write fields
-- stop silently dropping webhook targetUrl/secret and user settings
-- stop silently dropping agent-supplied fields on write paths
-- read-then-merge team updates, stop silently unpublishing teams
-- never retry an ambiguous create — it silently duplicates
-
-### Documentation
-
-- rewrite ROADMAP and VIKUNJA_API_ISSUES prose to remove em dashes
-- remove em dashes from CHANGELOG.md and CLAUDE.md prose
-- rewrite em-dash-heavy prose in reference docs
-- rewrite em dash prose in TOOLS.md and API_NOTES.md
-- remove em dashes from CONFIGURATION and LOCAL-TESTING prose
-- rewrite both front pages in a plainer voice
-- correct stale CI/coverage/attribution claims and document the upstream watcher
-- correct bulk-update, percentDone release status, update date gap
-- record today's API gotchas (user settings, webhooks, view Cols, favorites, filters, pagination)
-- curate the unreleased section and sync the tool reference
-- bring §2 current and record the 2026-08 decisions
-- refresh battle-testing, security, and configuration docs for today's PRs
-- correct version notes for 2.5.0 and 2.6.0 upstream releases
-- correct compatibility matrix for 2.5.0 and 2.6.0 upstream releases
-- settle the team admin-route spec/handler mismatch, generalize gotchas
-- document VIKUNJA_RESPONSE_VERBOSITY and the OIDC e2e enrollment lane
-- bring both READMEs current for 0.7.0-beta.1
-
-### Chores
-
-- raise minimum supported Vikunja 2.3.0 -> 2.4.0
-- raise ratcheted gate in lockstep with honest coverage
-- probe teams, task position, percentDone paths and bulk honesty
 
 ## [0.7.0-beta.1] - 2026-08-14
 
