@@ -1,0 +1,204 @@
+# ---------------------------------------------------------------------------
+# Weekly upstream watch — rolling triage of Vikunja work IN PROGRESS (issue #250).
+#
+# Vikunja 2.6.0 shipped 17 breaking changes for a client doing what we do, while
+# the v1 OpenAPI surface moved by exactly ONE operation. Waiting for release tags
+# turns that into archaeology, and diffing `swagger.json` finds almost nothing —
+# the signal lives in pkg/models/**, pkg/routes/**, permission files, migrations
+# and security fixes. So: watch upstream `main`, weekly, and append what matters
+# to one rolling tracking issue.
+#
+# SCHEDULE + DISPATCH ONLY. This does not run on pushes or PRs — the owner's
+# "only releases run CI" rule (see release.yml) is untouched by this file.
+#
+# SILENCE WHEN THERE IS NOTHING. A run that finds nothing relevant posts nothing.
+# A tracker that says "nothing to report" every week gets muted, and then it is
+# worse than nothing.
+#
+# THE WATERMARK LIVES IN THE ISSUE BODY, as an HTML marker line. Not an Actions
+# cache (evicted after 7 days unread — this job runs every 7 days, so it would
+# sit exactly on the eviction boundary), and not a committed file (this repo
+# forbids direct commits to `main`). It is advanced ONLY after the digest has
+# actually been posted, so a failed run re-examines its window instead of
+# skipping it. Worst case is a duplicate section; a silently lost week is not on
+# the table. `scripts/lib/upstream-watch.ts` documents the reasoning in full.
+#
+# SECRETS: NONE REQUIRED. Everything below works with the default GITHUB_TOKEN.
+# The agent-triage stage is opt-in: with `ANTHROPIC_API_KEY` present it runs,
+# without it the deterministic digest is still produced and posted and the run
+# says triage was skipped. It never fails and never silently no-ops.
+#
+# Scheduled workflows are disabled by GitHub after 60 days of repository
+# inactivity, and can be re-enabled from the Actions tab.
+# ---------------------------------------------------------------------------
+
+name: Upstream watch
+
+on:
+  schedule:
+    # Mondays, 06:17 UTC. Off the hour on purpose: GitHub's scheduler queues
+    # everything submitted for :00 and delays it under load.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: 'Ignore the stored watermark and scan this many days back (manual runs only; leave empty to use the watermark)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Produce the digest but post nothing and do not advance the watermark'
+        required: false
+        default: false
+        type: boolean
+
+# Least privilege: read the repo to run the script, write issues to append the
+# digest and stamp the watermark. Nothing else — no contents:write, no packages.
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+env:
+  TRACKER_ISSUE: '250'
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Secrets cannot be read in a step `if:`; hoist the presence check here.
+      HAS_TRIAGE_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' && 'true' || 'false' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Read the stored watermark from the tracking issue
+        run: |
+          set -euo pipefail
+          gh issue view "$TRACKER_ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > issue-body.md
+          if grep -q 'upstream-watch:watermark' issue-body.md; then
+            echo "::notice::Watermark found in issue #${TRACKER_ISSUE}."
+          else
+            echo "::notice::No watermark in issue #${TRACKER_ISSUE} — this run is bounded to a fixed lookback."
+          fi
+
+      - name: Scan upstream main
+        id: scan
+        env:
+          LOOKBACK_DAYS: ${{ inputs.lookback_days }}
+        run: |
+          set -euo pipefail
+
+          # The note is rendered into the digest footer, so a reader of issue
+          # #250 can always tell whether a section was agent-triaged.
+          if [[ "$HAS_TRIAGE_KEY" == "true" ]]; then
+            NOTE="Agent triage: enabled for this run."
+          else
+            NOTE="Agent triage skipped — no ANTHROPIC_API_KEY on this repository. The digest below is the deterministic scan only."
+          fi
+
+          ARGS=(--state-file issue-body.md --json-out digest.json --md-out digest.md --note "$NOTE")
+          if [[ -n "${LOOKBACK_DAYS:-}" ]]; then
+            ARGS+=(--lookback-days "$LOOKBACK_DAYS")
+          fi
+
+          # 0 = nothing relevant, 10 = findings, anything else = the run failed.
+          # Only the third may advance nothing and fail the job.
+          set +e
+          npm run --silent watch:upstream -- "${ARGS[@]}"
+          CODE=$?
+          set -e
+
+          case "$CODE" in
+            0)  echo "::notice::Nothing relevant upstream this week — posting nothing, by design." ;;
+            10) echo "::notice::Findings to report." ;;
+            *)  echo "::error::upstream-watch failed (exit ${CODE}). The watermark stays where it is; next run re-examines this window."
+                exit "$CODE" ;;
+          esac
+
+      - name: Job summary
+        if: always() && hashFiles('digest.md') != ''
+        run: cat digest.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the digest as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-watch-digest
+          path: |
+            digest.json
+            digest.md
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # -----------------------------------------------------------------------
+      # EXTENSION POINT — agent triage.
+      #
+      # This is where each relevant commit gets mapped onto OUR call sites and
+      # classified (breaks us / changes behaviour we rely on / new capability /
+      # no impact) with a proposed stage. Implementing that prompt is deliberately
+      # NOT part of this PR; what is guaranteed here is that its absence changes
+      # nothing about the rest of the run.
+      #
+      # A future implementation reads digest.json, and rewrites digest.md with
+      # the classification folded in, BEFORE the posting step below.
+      # -----------------------------------------------------------------------
+      - name: Agent triage (opt-in)
+        if: steps.scan.outputs.status == 'findings' && env.HAS_TRIAGE_KEY == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          echo "::notice::ANTHROPIC_API_KEY is present but the triage stage is not implemented yet (see #250); posting the deterministic digest unchanged."
+
+      - name: Note that triage was skipped
+        if: steps.scan.outputs.status == 'findings' && env.HAS_TRIAGE_KEY != 'true'
+        run: echo "::notice::Agent triage skipped — no ANTHROPIC_API_KEY configured. The deterministic digest is posted as-is."
+
+      - name: Append the digest to the tracking issue
+        id: post
+        if: steps.scan.outputs.status == 'findings' && inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          gh issue comment "$TRACKER_ISSUE" --repo "$GITHUB_REPOSITORY" --body-file digest.md
+          echo "::notice::Appended ${{ steps.scan.outputs.count }} finding(s) to issue #${TRACKER_ISSUE}."
+
+      # Runs only when every step above succeeded (`success()` is implied by an
+      # `if:` without a status function) — so a failed scan or a failed post
+      # leaves the watermark untouched and the window is re-examined next week.
+      # The body is re-read here rather than reusing the copy from before the
+      # comment, so a human edit made in between is not clobbered.
+      - name: Advance the watermark
+        if: steps.scan.outputs.next_watermark_sha != '' && inputs.dry_run != true
+        env:
+          SHA: ${{ steps.scan.outputs.next_watermark_sha }}
+          DATE: ${{ steps.scan.outputs.next_watermark_date }}
+        run: |
+          set -euo pipefail
+          gh issue view "$TRACKER_ISSUE" --repo "$GITHUB_REPOSITORY" --json body --jq .body > issue-body.now.md
+          npm run --silent watch:upstream -- \
+            --write-watermark \
+            --state-file issue-body.now.md \
+            --watermark "$SHA" \
+            --watermark-date "$DATE" \
+            --out issue-body.next.md
+          gh issue edit "$TRACKER_ISSUE" --repo "$GITHUB_REPOSITORY" --body-file issue-body.next.md
+          echo "::notice::Watermark advanced to ${SHA}."
+
+      - name: Dry run — nothing was posted
+        if: inputs.dry_run == true
+        run: |
+          echo "::notice::Dry run — digest produced (status=${{ steps.scan.outputs.status }}); issue #${TRACKER_ISSUE} untouched and the watermark left where it was."
