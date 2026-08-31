@@ -42,7 +42,7 @@ import { MCPError, ErrorCode } from '../../types';
 import { vikunjaRestRequest } from '../../utils/vikunja-rest';
 import { getTaskViaRest } from '../../utils/task-rest-transport';
 import { validateId, sanitizeString } from '../../utils/validation';
-import { validateDateString } from './validation';
+import { convertRepeatConfiguration, validateDateString, validateHexColor } from './validation';
 import { transformApiError } from '../../utils/error-handler';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
 import { CompositeOperation } from '../../utils/composite-operation';
@@ -103,6 +103,31 @@ export interface CreateSubtaskArgs {
   startDate?: string;
   /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD'. */
   endDate?: string;
+  /**
+   * Repeat interval, in the unit named by `repeatMode` (seconds when no mode
+   * is given) — the same pair `create` takes, converted by the shared
+   * `convertRepeatConfiguration`.
+   *
+   * `vikunja_tasks` DECLARES `repeatAfter`/`repeatMode` at the top level of
+   * its flat schema, so a caller creating a recurring subtask could always
+   * send them and get a success response — this composite simply never read
+   * them, and the recurrence was lost between the MCP boundary and the API
+   * call. A subtask is a plain `models.Task`, and `PUT /projects/{id}/tasks`
+   * validates and stores `repeat_after`/`repeat_mode` like any other task, so
+   * the fix is to forward them rather than reject them.
+   */
+  repeatAfter?: number;
+  /** Unit for `repeatAfter` — see that field. */
+  repeatMode?: 'day' | 'week' | 'month' | 'year';
+  /**
+   * Create the subtask already marked done. Same server behaviour (and same
+   * empty-`done_at` caveat) as `create` — see `CreateTaskArgs.done`.
+   * Declared on the flat tool schema, so it has to be honoured here or it
+   * would be a silent drop.
+   */
+  done?: boolean;
+  /** Subtask colour, `#RRGGBB` or `''` — see `CreateTaskArgs.hexColor`. */
+  hexColor?: string;
   labels?: number[];
   assignees?: number[];
   /** Optional Kanban bucket to place the new subtask into, via the existing `set-bucket` path. */
@@ -133,6 +158,11 @@ interface SubtaskCoreSpec {
   priority?: number;
   /** Whole percentage 0-100 — converted to the 0-1 wire fraction on send. */
   percentDone?: number;
+  /** Repeat interval in `repeatMode` units — see CreateSubtaskArgs.repeatAfter. */
+  repeatAfter?: number;
+  repeatMode?: 'day' | 'week' | 'month' | 'year';
+  done?: boolean;
+  hexColor?: string;
   labels?: number[];
   assignees?: number[];
   bucketId?: number;
@@ -177,6 +207,18 @@ function addSubtaskCreationSteps(
       // (src/utils/percent-done.ts); never hand-rolled here.
       if (spec.percentDone !== undefined)
         newTask.percent_done = percentDoneToFraction(spec.percentDone);
+      // Explicit-undefined: `done: false` and `hexColor: ''` are real values.
+      if (spec.done !== undefined) newTask.done = spec.done;
+      if (spec.hexColor !== undefined) newTask.hex_color = spec.hexColor;
+      // Same conversion `create` uses (unit -> seconds, mode -> the numeric
+      // enum): never a second hand-rolled copy of it.
+      if (spec.repeatAfter !== undefined || spec.repeatMode !== undefined) {
+        const repeatConfig = convertRepeatConfiguration(spec.repeatAfter, spec.repeatMode);
+        if (repeatConfig.repeat_after !== undefined)
+          newTask.repeat_after = repeatConfig.repeat_after;
+        if (repeatConfig.repeat_mode !== undefined)
+          newTask.repeat_mode = repeatConfig.repeat_mode as 0 | 1 | 2;
+      }
 
       let created: VikunjaTask;
       try {
@@ -349,6 +391,7 @@ export async function createSubtask(
   // Whole percentage 0-100. Checked here as well as in the Zod schema
   // because createSubtask is exported and reachable without it.
   if (args.percentDone !== undefined) assertValidPercentDone(args.percentDone, 'percentDone');
+  if (args.hexColor !== undefined) validateHexColor(args.hexColor);
   if (args.labels && args.labels.length > 0) {
     args.labels.forEach((id) => validateId(id, 'label ID'));
   }
@@ -397,6 +440,10 @@ export async function createSubtask(
       ...(args.endDate !== undefined ? { endDate: args.endDate } : {}),
       ...(args.priority !== undefined ? { priority: args.priority } : {}),
       ...(args.percentDone !== undefined ? { percentDone: args.percentDone } : {}),
+      ...(args.repeatAfter !== undefined ? { repeatAfter: args.repeatAfter } : {}),
+      ...(args.repeatMode !== undefined ? { repeatMode: args.repeatMode } : {}),
+      ...(args.done !== undefined ? { done: args.done } : {}),
+      ...(args.hexColor !== undefined ? { hexColor: args.hexColor } : {}),
       ...(args.labels !== undefined ? { labels: args.labels } : {}),
       ...(args.assignees !== undefined ? { assignees: args.assignees } : {}),
       ...(args.bucketId !== undefined ? { bucketId: args.bucketId } : {}),

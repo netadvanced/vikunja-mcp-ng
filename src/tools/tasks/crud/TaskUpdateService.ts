@@ -7,7 +7,12 @@ import { MCPError, ErrorCode } from '../../../types';
 import type { AuthManager } from '../../../auth/AuthManager';
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import { getTaskViaRest } from '../../../utils/task-rest-transport';
-import { validateDateString, validateId, convertRepeatConfiguration } from '../validation';
+import {
+  validateDateString,
+  validateHexColor,
+  validateId,
+  convertRepeatConfiguration,
+} from '../validation';
 import { assertValidPercentDone, percentDoneToFraction } from '../../../utils/percent-done';
 import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { RETRY_CONFIG } from '../../../utils/retry';
@@ -43,6 +48,16 @@ export interface UpdateTaskArgs {
    */
   percentDone?: number;
   done?: boolean;
+  /**
+   * Task colour, `#RRGGBB`, or `''` to clear it.
+   *
+   * `hex_color` is in `updateSingleTask`'s column allowlist and Vikunja
+   * deliberately maps an empty value back onto the task, so both setting and
+   * clearing are real, server-backed operations — see `validateHexColor` in
+   * `../validation`. Undeclared here until now, which meant a caller
+   * recolouring a task got a success response and no colour change.
+   */
+  hexColor?: string;
   /** Move the task to another project (merged into full-model update). */
   projectId?: number;
   labels?: number[];
@@ -101,6 +116,12 @@ export async function updateTask(
     // reachable from callers that never see the schema.
     if (args.percentDone !== undefined) {
       assertValidPercentDone(args.percentDone);
+    }
+
+    // `hexColor: ''` clears the colour, so this is an explicit undefined
+    // check rather than a truthiness guard.
+    if (args.hexColor !== undefined) {
+      validateHexColor(args.hexColor);
     }
 
     // Validate project move target if provided
@@ -250,6 +271,7 @@ async function analyzeUpdateState(
   if (currentTask.priority !== undefined) previousState.priority = currentTask.priority;
   if (currentTask.done !== undefined) previousState.done = currentTask.done;
   if (currentTask.percent_done !== undefined) previousState.percent_done = currentTask.percent_done;
+  if (currentTask.hex_color !== undefined) previousState.hex_color = currentTask.hex_color;
   if (currentTask.project_id !== undefined) previousState.project_id = currentTask.project_id;
   if (currentTask.repeat_after !== undefined) previousState.repeat_after = currentTask.repeat_after;
   if (currentTask.repeat_mode !== undefined) previousState.repeat_mode = currentTask.repeat_mode;
@@ -277,6 +299,15 @@ async function analyzeUpdateState(
   )
     affectedFields.push('percentDone');
   if (args.done !== undefined && args.done !== currentTask.done) affectedFields.push('done');
+  // Vikunja stores hex_color WITHOUT the leading '#' (utils.NormalizeHex), so
+  // the stored '4287f5' is compared against the caller's '#4287f5' with the
+  // '#' stripped — otherwise a no-op recolour would always look like a change.
+  if (
+    args.hexColor !== undefined &&
+    args.hexColor.replace(/^#/, '').toLowerCase() !==
+      (currentTask.hex_color ?? '').replace(/^#/, '').toLowerCase()
+  )
+    affectedFields.push('hexColor');
   if (args.projectId !== undefined && args.projectId !== currentTask.project_id)
     affectedFields.push('projectId');
   if (args.repeatAfter !== undefined && args.repeatAfter !== currentTask.repeat_after)
@@ -325,6 +356,9 @@ function buildUpdateData(currentTask: VikunjaTask, args: UpdateTaskArgs): Vikunj
       percent_done: percentDoneToFraction(args.percentDone),
     }),
     ...(args.done !== undefined && { done: args.done }),
+    // Explicit-undefined so `hexColor: ''` reaches the wire as an empty
+    // hex_color, which is how Vikunja clears a task colour.
+    ...(args.hexColor !== undefined && { hex_color: args.hexColor }),
     // Move between projects — must be part of the full-model payload or Vikunja ignores it
     ...(args.projectId !== undefined && { project_id: args.projectId }),
     // Handle repeat configuration for updates. The generated

@@ -51,6 +51,33 @@ export function normalizeDateForApi(date: string | undefined): string | undefine
 }
 
 /**
+ * Validates a task `hexColor` (`models.Task.hex_color`).
+ *
+ * Accepts `#RRGGBB` — the same spelling `vikunja_projects` and
+ * `vikunja_labels` already require — and, additionally, the empty string,
+ * which is the ONLY way to clear a colour: Vikunja's task update explicitly
+ * maps an empty `hex_color` back onto the stored task (`if t.HexColor == ""
+ * { ot.HexColor = "" }`, pkg/models/tasks.go), so `hexColor: ''` is a real
+ * caller intent and must not be mistaken for "not supplied". Everything on
+ * this path therefore tests `!== undefined`, never truthiness.
+ *
+ * The server itself is laxer (`utils.NormalizeHex` just strips a leading `#`
+ * and truncates to 6 chars, so `zzzzzz` would be stored verbatim); this
+ * rejects malformed input up front rather than writing a colour no client can
+ * render.
+ */
+export function validateHexColor(hexColor: string, fieldName = 'hexColor'): void {
+  if (hexColor === '') return;
+  if (!/^#[0-9A-Fa-f]{6}$/.test(hexColor)) {
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `Invalid ${fieldName} format. Expected #RRGGBB (e.g. #4287f5, #FF0000), ` +
+        `or '' to clear the color.`,
+    );
+  }
+}
+
+/**
  * Validates that an ID is a positive integer
  * @deprecated Use validateSharedId from '../../../utils/validation' instead
  */

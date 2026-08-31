@@ -15,6 +15,7 @@ import { assertValidPercentDone, percentDoneToFraction } from '../../../utils/pe
 import { AUTH_ERROR_MESSAGES } from '../constants';
 import {
   validateDateString,
+  validateHexColor,
   validateId,
   convertRepeatConfiguration,
   normalizeDateForApi,
@@ -42,6 +43,36 @@ export interface CreateTaskArgs {
    * and the `percentDone` note on the Zod schema in `../index.ts`.
    */
   percentDone?: number;
+  /**
+   * Create the task already marked done ("log this, it's finished").
+   *
+   * Genuinely honoured by the server at create time: `createTask`
+   * (pkg/models/tasks.go) inserts the whole task struct — `done` included —
+   * and `setTaskInBucketInViews` even routes a `done: true` task straight
+   * into the Kanban view's Done bucket instead of the default one. So this is
+   * forwarded rather than rejected (the `position` treatment below), because
+   * the API really does back it.
+   *
+   * One server-side wart the caller should know about: `done_at` is only ever
+   * written by `updateDone`, which the create path never calls, so a task
+   * created done has an empty `done_at` and will not match a `doneAt` filter.
+   * `done_at` is system-controlled and cannot be set via the API
+   * (models.Task, docs/vikunja-openapi.json), so the only way to get a
+   * populated `done_at` is to create the task open and then `update` it to
+   * done.
+   */
+  done?: boolean;
+  /**
+   * Task colour, `#RRGGBB`. `''` explicitly means "no colour".
+   *
+   * `models.Task.hex_color` is a real create/update field — Vikunja's
+   * `createTask` normalises it (`utils.NormalizeHex`, which strips the `#`)
+   * and inserts it with the rest of the task, and `hex_color` is in the
+   * update path's column allowlist. It was already accepted per-task by
+   * batch-import (`importedTaskSchema`), so leaving it unknown here made the
+   * same field work in one entry point and vanish in another.
+   */
+  hexColor?: string;
   labels?: number[];
   assignees?: number[];
   repeatAfter?: number;
@@ -146,6 +177,12 @@ export async function createTask(
       );
     }
 
+    // `hexColor: ''` is a legitimate value (no colour), so this is an
+    // explicit undefined check — a truthiness guard would silently drop it.
+    if (args.hexColor !== undefined) {
+      validateHexColor(args.hexColor);
+    }
+
     // percentDone is a whole percentage 0-100 on this tool surface (50 = 50%)
     // — see the schema note in ../index.ts. Guarded here too, since createTask
     // is also reachable from callers that don't go through the Zod schema.
@@ -173,6 +210,14 @@ export async function createTask(
     if (args.endDate !== undefined)
       newTask.end_date = normalizeDateForApi(args.endDate) ?? args.endDate;
     if (args.priority !== undefined) newTask.priority = args.priority;
+    // `done` and `hexColor` are both forwarded on an explicit-undefined
+    // check: `done: false` and `hexColor: ''` are meaningful values, and a
+    // `if (args.done)` guard would drop exactly those. `done` was declared on
+    // the tool schema and honoured by update/batch-import but never copied
+    // here, so "create this task already done" created an open task and
+    // reported success.
+    if (args.done !== undefined) newTask.done = args.done;
+    if (args.hexColor !== undefined) newTask.hex_color = args.hexColor;
     // 0-100 percentage in, 0-1 fraction on the wire.
     if (args.percentDone !== undefined)
       newTask.percent_done = percentDoneToFraction(args.percentDone);
