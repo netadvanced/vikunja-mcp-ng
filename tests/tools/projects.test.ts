@@ -10,6 +10,7 @@
  * every write test also asserts the outgoing request body.
  */
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AuthManager } from '../../src/auth/AuthManager';
 import { registerProjectsTool } from '../../src/tools/projects';
@@ -1571,6 +1572,129 @@ describe('Projects Tool', () => {
         ...projects[0],
         parent_project_id: 2,
       });
+    });
+  });
+
+  /**
+   * `isFavorite` silent-drop guard (`models.Project.is_favorite`).
+   *
+   * The field was undeclared on create/update, so an agent asking to
+   * "create this project and star it" had `isFavorite` stripped by Zod and
+   * got a success response for a project that was never favorited.
+   *
+   * It is also the UseBool-shaped hazard from docs/VIKUNJA_API_ISSUES.md
+   * §3a: go-vikunja's `UpdateProject` reads the flag off the request body
+   * and DELETES the favorites row whenever it is false, so a partial update
+   * body would unfavorite the project on every unrelated edit. These tests
+   * assert the wire body, including the falsy `false`.
+   */
+  describe('isFavorite (project create/update)', () => {
+    it('forwards is_favorite: true on create', async () => {
+      routeFetch({ 'PUT /projects': mockResponse({ body: mockProject }) });
+
+      await callTool('create', { title: 'Starred', isFavorite: true });
+
+      expect(bodyOf('PUT', '/projects')).toEqual({ title: 'Starred', is_favorite: true });
+    });
+
+    it('forwards is_favorite: false on create instead of dropping it as falsy', async () => {
+      routeFetch({ 'PUT /projects': mockResponse({ body: mockProject }) });
+
+      await callTool('create', { title: 'Plain', isFavorite: false });
+
+      expect(bodyOf('PUT', '/projects')).toEqual({ title: 'Plain', is_favorite: false });
+    });
+
+    it('omits is_favorite entirely when the caller did not ask for it', async () => {
+      routeFetch({ 'PUT /projects': mockResponse({ body: mockProject }) });
+
+      await callTool('create', { title: 'Plain' });
+
+      expect(bodyOf('PUT', '/projects')).not.toHaveProperty('is_favorite');
+    });
+
+    it('accepts isFavorite as the ONLY update field', async () => {
+      const favorited = { ...mockProject, is_favorite: false };
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: favorited }),
+        'POST /projects/1': mockResponse({ body: { ...favorited, is_favorite: true } }),
+      });
+
+      await callTool('update', { id: 1, isFavorite: true });
+
+      expect(bodyOf('POST', '/projects/1')).toEqual({ ...favorited, is_favorite: true });
+    });
+
+    it('sends is_favorite: false when unfavoriting (the falsy case)', async () => {
+      const favorited = { ...mockProject, is_favorite: true };
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: favorited }),
+        'POST /projects/1': mockResponse({ body: { ...favorited, is_favorite: false } }),
+      });
+
+      await callTool('update', { id: 1, isFavorite: false });
+
+      expect(bodyOf('POST', '/projects/1')).toHaveProperty('is_favorite', false);
+    });
+
+    it('preserves an existing favorite through an unrelated title update', async () => {
+      // Regression guard: without the fetch-merge, `is_favorite` would be
+      // absent from the body, and UpdateProject would silently unfavorite.
+      const favorited = { ...mockProject, is_favorite: true };
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: favorited }),
+        'POST /projects/1': mockResponse({ body: { ...favorited, title: 'Renamed' } }),
+      });
+
+      await callTool('update', { id: 1, title: 'Renamed' });
+
+      expect(bodyOf('POST', '/projects/1')).toHaveProperty('is_favorite', true);
+    });
+  });
+
+  /**
+   * Schema-declaration guard. Every field in this PR was lost the same way:
+   * the handler would have forwarded it, but the Zod shape never declared
+   * it, so `z.object(...).parse()` stripped the key before the handler ever
+   * saw it. These assert the registered shape itself, which the
+   * handler-level tests (which bypass Zod) cannot.
+   */
+  describe('tool schema declares the fields the handlers forward', () => {
+    function registeredShape(): Record<string, z.ZodTypeAny> {
+      const call = mockServer.tool.mock.calls[0] as unknown[];
+      return call[2] as Record<string, z.ZodTypeAny>;
+    }
+
+    it.each(['isFavorite', 'filter', 'bucketConfiguration', 'position'])('declares %s', (field) => {
+      expect(registeredShape()).toHaveProperty(field);
+    });
+
+    it('keeps isFavorite: false, filter, position: 0 and bucketConfiguration through parsing', () => {
+      const parsed = z.object(registeredShape()).parse({
+        subcommand: 'update',
+        id: 1,
+        isFavorite: false,
+        position: 0,
+        filter: 'done = false',
+        bucketConfiguration: [{ title: 'Urgent', filter: 'priority >= 4' }],
+      });
+
+      expect(parsed).toMatchObject({
+        isFavorite: false,
+        position: 0,
+        filter: 'done = false',
+        bucketConfiguration: [{ title: 'Urgent', filter: 'priority >= 4' }],
+      });
+    });
+
+    it('rejects an unknown key inside a bucketConfiguration entry rather than dropping it', () => {
+      expect(() =>
+        z.object(registeredShape()).parse({
+          subcommand: 'create-view',
+          id: 1,
+          bucketConfiguration: [{ title: 'Urgent', viewKind: 'kanban' }],
+        }),
+      ).toThrow(/viewKind/);
     });
   });
 

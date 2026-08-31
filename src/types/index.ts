@@ -112,6 +112,12 @@ export interface CreateProjectRequest {
   color?: string;
   hex_color?: string;
   is_archived?: boolean;
+  /**
+   * Per-user favorite flag. `models.Project.is_favorite` is not a project
+   * column — go-vikunja's `CreateProject`/`UpdateProject` translate it into
+   * an insert/delete on the `favorites` table for the CALLING user.
+   */
+  is_favorite?: boolean;
 }
 
 export interface UpdateProjectRequest {

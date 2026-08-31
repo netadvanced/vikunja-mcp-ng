@@ -970,6 +970,58 @@ describe('setupKanban', () => {
     });
   });
   /**
+   * `hexColor` silent-drop guard.
+   *
+   * `hexColor` is declared on the `vikunja_projects` shape and honored by
+   * `create`/`update`, but setup-kanban's new-project body only ever carried
+   * title/description/parent_project_id — so "create a red project with
+   * these tasks" reported success with a colorless project.
+   */
+  describe('new-project hexColor', () => {
+    it('forwards hex_color (lowercased) on the create call', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('PUT', '/projects', () => ({ id: 77, title: 'Red' }));
+
+      await setupKanban({ title: 'Red', hexColor: '#FF0000' }, authManager);
+
+      const body = router.calls.find((c) => c.method === 'PUT' && c.path === '/projects')?.body;
+      expect(body).toEqual({ title: 'Red', hex_color: '#ff0000' });
+    });
+
+    it('omits hex_color when the caller did not ask for a color', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('PUT', '/projects', () => ({ id: 78, title: 'Plain' }));
+
+      await setupKanban({ title: 'Plain' }, authManager);
+
+      const body = router.calls.find((c) => c.method === 'PUT' && c.path === '/projects')?.body;
+      expect(body).not.toHaveProperty('hex_color');
+    });
+
+    it('rejects a malformed hex color before any API call', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      await expect(setupKanban({ title: 'Bad', hexColor: 'red' }, authManager)).rejects.toThrow(
+        'Invalid hex color format',
+      );
+      expect(router.calls).toHaveLength(0);
+    });
+
+    it('REJECTS hexColor alongside an existing id, pointing at vikunja_projects update', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      await expect(setupKanban({ id: 42, hexColor: '#00ff00' }, authManager)).rejects.toThrow(
+        /hexColor only applies when setup-kanban CREATES a project[\s\S]*vikunja_projects update/,
+      );
+      expect(router.calls).toHaveLength(0);
+    });
+  });
+
+  /**
    * Regression guard for the silently-dropped-field bug class.
    *
    * A battle run asked for a project + task and "record that the task is 75%
