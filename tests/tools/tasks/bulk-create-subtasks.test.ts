@@ -260,13 +260,19 @@ describe('bulkCreateSubtasks', () => {
     });
 
     it('applies labels/assignees and places the subtask into a Kanban bucket, in order', async () => {
+      const createdWithLabel = { id: 42, title: 'A', project_id: 5, labels: [{ id: 7 }] };
+      const createdWithLabelAndAssignee = { ...createdWithLabel, assignees: [{ id: 3 }] };
       mockFetch
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
         .mockResolvedValueOnce(
           mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }),
         ) // create-task
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-labels: label 7
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdWithLabel) })) // verify-labels: GET /tasks/42
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-assignees: user 3
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify(createdWithLabelAndAssignee) }),
+        ) // verify-assignees: GET /tasks/42
         .mockResolvedValueOnce(
           mockResponse({
             text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
@@ -281,7 +287,7 @@ describe('bulkCreateSubtasks', () => {
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // set-bucket POST
         .mockResolvedValueOnce(
           mockResponse({ text: JSON.stringify(parentTaskWithChildren([42])) }),
-        ); // verify
+        ); // verify-relation
 
       await bulkCreateSubtasks(
         { parentTaskId: 1, subtasks: [{ title: 'A', labels: [7], assignees: [3], bucketId: 9 }] },
@@ -291,10 +297,50 @@ describe('bulkCreateSubtasks', () => {
       const calls = mockFetch.mock.calls as [string, RequestInit?][];
       expect(calls[2][0]).toBe('https://vikunja.test/api/v1/tasks/42/labels');
       expect(JSON.parse(calls[2][1]?.body as string)).toEqual({ label_id: 7 });
-      expect(calls[3][0]).toBe('https://vikunja.test/api/v1/tasks/42/assignees');
-      expect(JSON.parse(calls[3][1]?.body as string)).toEqual({ user_id: 3 });
-      expect(calls[5][0]).toBe('https://vikunja.test/api/v1/projects/5/views');
-      expect(calls[6][0]).toBe('https://vikunja.test/api/v1/projects/5/views/11/buckets/9/tasks');
+      expect(calls[3][0]).toBe('https://vikunja.test/api/v1/tasks/42');
+      expect(calls[3][1]?.method ?? 'GET').toBe('GET');
+      expect(calls[4][0]).toBe('https://vikunja.test/api/v1/tasks/42/assignees');
+      expect(JSON.parse(calls[4][1]?.body as string)).toEqual({ user_id: 3 });
+      expect(calls[5][0]).toBe('https://vikunja.test/api/v1/tasks/42');
+      expect(calls[5][1]?.method ?? 'GET').toBe('GET');
+      expect(calls[7][0]).toBe('https://vikunja.test/api/v1/projects/5/views');
+      expect(calls[8][0]).toBe('https://vikunja.test/api/v1/projects/5/views/11/buckets/9/tasks');
+    });
+
+    it('fails the subtask (but not the whole batch) when a label attach PUT reports success but the label does not persist (LOW-22)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }),
+        ) // create-task
+        .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-labels: label 7 (PUT reports 200)
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5, labels: [] }) }),
+        ) // verify-labels: re-read shows it never persisted
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ id: 43, title: 'B', project_id: 5 }) }),
+        ) // subtask B: create-task
+        .mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({ task_id: 1, other_task_id: 43, relation_kind: 'subtask' }),
+          }),
+        ) // subtask B: create-relation
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify(parentTaskWithChildren([43])) }),
+        ); // subtask B: verify-relation
+
+      const result = await bulkCreateSubtasks(
+        {
+          parentTaskId: 1,
+          subtasks: [{ title: 'A', labels: [7] }, { title: 'B' }],
+        },
+        authManager,
+      );
+
+      const text = result.content[0].text;
+      expect(text).toContain('partially completed');
+      expect(text).toContain('Successfully created and related 1 of 2 subtask(s)');
+      expect(text).toContain('Failed indexes: 0');
     });
   });
 

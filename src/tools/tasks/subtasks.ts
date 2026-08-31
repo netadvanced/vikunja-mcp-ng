@@ -280,6 +280,34 @@ function addSubtaskCreationSteps(
         }
       },
     });
+    op.addStep<undefined, undefined>({
+      name: 'verify-labels',
+      execute: async () => {
+        // HTTP 200 on the attach PUT above is not proof the label actually
+        // persisted — the sibling assignee path already works around a live
+        // Vikunja quirk (see AssigneeOperationsService's verifyAssignees /
+        // "known Vikunja API limitation with API token auth") where a write
+        // that reports success silently doesn't stick. Re-read the task and
+        // confirm every requested label actually landed rather than trusting
+        // the PUT's status code alone.
+        const taskId = createdTaskId as number;
+        let created: VikunjaTask;
+        try {
+          created = await getTaskViaRest(authManager, taskId);
+        } catch (error) {
+          rethrow(error, undefined, 'Failed to verify subtask labels');
+        }
+        const actualIds = new Set((created.labels ?? []).map((l) => l.id));
+        const missing = labelIds.filter((id) => !actualIds.has(id));
+        if (missing.length > 0) {
+          throw new MCPError(
+            ErrorCode.INTERNAL_ERROR,
+            `Subtask ${taskId} was created but label(s) [${missing.join(', ')}] did not appear ` +
+              `on the task after the attach PUT reported success — the attach may not have persisted.`,
+          );
+        }
+      },
+    });
   }
 
   if (spec.assignees && spec.assignees.length > 0) {
@@ -298,6 +326,31 @@ function addSubtaskCreationSteps(
           await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
             user_id: userId,
           });
+        }
+      },
+    });
+    op.addStep<undefined, undefined>({
+      name: 'verify-assignees',
+      execute: async () => {
+        // Same silent-failure mode assignUsers already guards against
+        // (verifyAssignees in AssigneeOperationsService.ts) — an HTTP 200 on
+        // PUT /tasks/{taskID}/assignees is not proof the assignment
+        // persisted. Re-read the task rather than trusting the status code.
+        const taskId = createdTaskId as number;
+        let created: VikunjaTask;
+        try {
+          created = await getTaskViaRest(authManager, taskId);
+        } catch (error) {
+          rethrow(error, undefined, 'Failed to verify subtask assignees');
+        }
+        const actualIds = new Set((created.assignees ?? []).map((a) => a.id));
+        const missing = assigneeIds.filter((id) => !actualIds.has(id));
+        if (missing.length > 0) {
+          throw new MCPError(
+            ErrorCode.INTERNAL_ERROR,
+            `Subtask ${taskId} was created but assignee(s) [${missing.join(', ')}] did not appear ` +
+              `on the task after the attach PUT reported success — the attach may not have persisted.`,
+          );
         }
       },
     });
