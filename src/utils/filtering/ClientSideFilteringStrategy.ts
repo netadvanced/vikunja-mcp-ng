@@ -159,8 +159,22 @@ async function fetchProjectTasks(
       // in one response — nothing more to fetch.
       if (pageSize === 0) break;
       if (serverPageCap !== undefined && pageSize < serverPageCap) {
-        collected.push(...page.slice(0, Math.max(0, budget.remaining)));
-        budget.remaining = Math.max(0, budget.remaining - page.length);
+        // The whole project fits in this one page — but the budget can
+        // still cut it short. Sibling branch below (`page.length >
+        // budget.remaining`, a few lines down) sets `truncated`/warnings
+        // when that happens; this branch must too (issue #290 MED-6).
+        if (page.length > budget.remaining) {
+          collected.push(...page.slice(0, budget.remaining));
+          budget.remaining = 0;
+          budget.truncated = true;
+          budget.warnings.push(
+            `Project ${projectId}: stopped loading at the ${getMaxTasksLimit()}-task limit ` +
+              `(VIKUNJA_MAX_TASKS_LIMIT); more tasks exist that are not in this result.`,
+          );
+        } else {
+          collected.push(...page);
+          budget.remaining -= page.length;
+        }
         break;
       }
     }

@@ -162,6 +162,33 @@ describe('incomplete filtered results are never reported as a clean success', ()
       );
     });
 
+    // Regression for issue #290 MED-6: the first-page-short branch above
+    // (server cap known, project fits in one page) clamps to the remaining
+    // budget just like its sibling branch a few lines below it in the
+    // source, but used to do so WITHOUT setting `truncated`/`warnings` —
+    // the one gap in an otherwise-honest accounting scheme.
+    it('flags truncation when the budget cuts short a first page that would otherwise fit in one request', async () => {
+      process.env.VIKUNJA_MAX_TASKS_LIMIT = '5';
+      serverWith({ clamp: 50, projects: [7], tasksPerProject: { 7: 12 } });
+
+      const result = await new ClientSideFilteringStrategy().execute({
+        ...crossProjectParams(),
+        authManager: authManagerWithPageCap(50),
+      });
+
+      // Still only one request (the whole project fit in page 1), but only
+      // 5 of the 12 tasks made it into the result.
+      expect(result.tasks).toHaveLength(5);
+      expect(
+        restMock.mock.calls.filter((c) => String(c[2]).startsWith('/projects/7/tasks')),
+      ).toHaveLength(1);
+      expect(result.metadata.resultComplete).toBe(false);
+      expect(result.metadata.warnings).toEqual([
+        expect.stringContaining('5-task limit (VIKUNJA_MAX_TASKS_LIMIT)'),
+      ]);
+      expect(result.metadata.filteringNote).toContain('INCOMPLETE');
+    });
+
     it('probes one extra page when the server page cap is unknown, and still stops', async () => {
       serverWith({ clamp: 50, projects: [7], tasksPerProject: { 7: 12 } });
 
