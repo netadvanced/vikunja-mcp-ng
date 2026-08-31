@@ -57,7 +57,15 @@ Each tool is one Vikunja domain, registered once in `src/tools/index.ts`:
   `applyRateLimiting` in `src/middleware/direct-middleware.ts`): per-tool-category limits;
   currently wired on `vikunja_auth`
 - **Credential masking** (`src/utils/security.ts`): tokens and URLs are masked in logs and
-  error messages
+  error messages. Redaction is centrally wired into `Logger.log`
+  (`src/utils/logger.ts`) — every call site is covered without remembering
+  to sanitize its own arguments — as a structural key-name pass
+  (`sanitizeLogArgs`) plus a textual backstop over the rendered line
+  (`redactSecretsInText`) for credentials interpolated into a message
+  literal, both applied only after the log-level gate so a suppressed level
+  costs nothing. See [SECURITY_IMPLEMENTATION.md](SECURITY_IMPLEMENTATION.md)
+  for the full redaction-coverage writeup (what key-name matching alone
+  cannot see: URL paths, URL userinfo, sensitive query values).
 
 ### Storage
 - `src/storage/SimpleFilterStorage.ts` — session-isolated, mutex-guarded in-memory filter storage

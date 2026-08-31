@@ -29,6 +29,13 @@ as unknown until it gets the same live-verification treatment 2.4.0 has had.
 | 10 | `filter` param ignored | ❓ Unverified on supported versions (only ever seen on 0.22.1) |
 | 11 | Bucket `position: 0` indistinguishable from omitted | ⚠️ Open upstream — workaround shipped |
 | 12 | Project archive/unarchive validation | ✅ Resolved (endpoint is full-model-replace) |
+| 13 | `POST /user/settings/general` forced full-replace | ✅ Resolved (fetch-merge workaround shipped) |
+| 14 | `Webhook.Update` only ever writes `events` | ℹ️ By design upstream — client now rejects the no-op fields |
+| 15 | Project view update writes a `Cols(...)` allowlist, not a true full replace | ✅ Resolved (fetch-merge workaround shipped) |
+| 16 | Project `is_favorite` reset by omission (separate mechanism from #3a) | ✅ Resolved (fetch-merge workaround shipped) |
+| 17 | `labels` filter matches ids, not titles | ✅ Resolved (title-to-id resolution shipped) |
+| 18 | `per_page` silently clamped to `service.maxitemsperpage` (default 50) | ℹ️ By design upstream — client now paginates instead of over-requesting |
+| 19 | Date-only field values 400 on create, not silently dropped | ℹ️ Clarification — corrects a stale in-repo comment |
 
 ## 1. SQL-Like Filter Syntax Not Supported
 
@@ -513,6 +520,218 @@ not just "include the title". See
 full-model-replace convention, which applies equally to project views and
 Kanban buckets.
 
+## 13. `POST /user/settings/general` Forced Full-Replace
+
+**Status:** ✅ Resolved client-side (2026-08-31), verified against go-vikunja
+source (v2.3.0). Same family as #3a's team `UseBool` trap and #16's project
+favorites trap, but its own distinct mechanism — no zero-value skip is
+involved at all here.
+
+**Root cause:** `UpdateGeneralUserSettings`
+(`pkg/routes/api/v1/user_settings.go:175-235`) binds the request body into an
+**empty** `UserSettings{}` struct, then unconditionally copies every field
+onto the loaded user record — `Name`, `EmailRemindersEnabled`,
+`DiscoverableByEmail`, `DiscoverableByName`, `OverdueTasksRemindersEnabled`,
+`DefaultProjectID`, `WeekStart`, `Language`, `Timezone`,
+`OverdueTasksRemindersTime`, `FrontendSettings` — and calls
+`user2.UpdateUser(s, user, true)`, where the third argument is
+`forceOverride`. There is no server-side merge and no zero-value protection
+of any kind: a partial body silently resets name, language, timezone, week
+start, default project, both discoverability flags and reminder preferences
+to their zero values on every call. `UserSettings.OverdueTasksRemindersTime`
+additionally carries `valid:"time,required"`
+(`pkg/routes/api/v1/user_settings.go:52`), so omitting it 400s the request
+outright — a caller can't even avoid the wipe by leaving that one field out.
+
+**Impact (before the fix):** any `vikunja_users update-settings` call that
+didn't resend the caller's entire settings block silently wiped the rest.
+
+**Resolution:** `vikunja_users update-settings` (`src/tools/users.ts`)
+fetches the current settings first and merges only the caller-supplied
+fields onto them before POSTing — the same fetch-merge-POST shape as
+projects, teams, and views — and always carries
+`overdue_tasks_reminders_time` forward from the fetched settings so the
+required-field 400 can never be triggered by omission.
+
+## 14. `Webhook.Update` Can Only Ever Change `events`
+
+**Status:** ℹ️ By design upstream, not a bug — but easy to assume otherwise
+from the endpoint's name and its shared shape with the "full-replace"
+endpoints elsewhere in this file. Client-side guard shipped 2026-08-31.
+
+**Description:** `Webhook.Update` (`pkg/models/webhooks.go:261-273`) is
+neither a full-model replace nor a partial merge — it is a hard-coded
+single-column write: `s.Where("id = ?", w.ID).Cols("events").Update(w)`. The
+handler's own doc comment states the constraint explicitly: "Change a
+webhook target's events. You cannot change other values of a webhook."
+`targetUrl` and `secret` are fixed permanently at creation; no server-side
+code path will ever persist a change to them via this endpoint, so — unlike
+every other item in this file — a client-side fetch-merge cannot "fix" this,
+because the server itself discards those fields on write regardless of what
+is sent.
+
+**Impact (before the fix):** `vikunja_webhooks update` accepted `targetUrl`/
+`secret` arguments and reported success, silently implying they had changed
+when only `events` ever did.
+
+**Resolution:** `vikunja_webhooks update` (`src/tools/webhooks.ts`) rejects
+`targetUrl`/`secret` outright with a message pointing at delete-and-recreate,
+and its success message no longer implies more than `events` was updated.
+
+## 15. Project View Update Writes a `Cols(...)` Allowlist, Not a True Full Replace
+
+**Status:** ✅ Resolved client-side (2026-08-31); mechanism corrected from an
+earlier ("just like the project/team full-replace endpoints") characterization
+in `docs/API_NOTES.md`.
+
+**Root cause:** `ProjectView.Update` (`pkg/models/project_view.go:412-439`)
+writes with an explicit
+`Cols("title", "view_kind", "filter", "position", "bucket_configuration_mode",
+"bucket_configuration", "default_bucket_id", "done_bucket_id")` rather than a
+bare `.Update(pv)` that would rely on xorm's zero-value column skip.
+`Cols(...)` is the same forcing mechanism as `UseBool` (see §3a) — it
+overrides the zero-value skip for every column it names — applied here to a
+whole list of columns instead of one boolean. A partial body therefore resets
+a view's `position` to `0` and blanks its `filter` (and any other
+listed-but-omitted field) rather than leaving them untouched.
+
+**Impact (before the fix):** a targeted `update-view` call touching only
+e.g. `title` would reset the view's `position` and `filter`.
+
+**Resolution:** `update-view` and the `set-done-bucket` composite
+(`src/tools/projects/views.ts`) fetch the current view first and merge
+requested changes onto it (`buildViewUpdatePayload`) before POSTing —
+functionally the same shape as a true full-replace fix, even though the
+underlying server-side hazard is a `Cols(...)` allowlist rather than a bare
+struct write.
+
+## 16. Project `is_favorite` Reset By Omission — a Second Mechanism, Not `UseBool`
+
+**Status:** ✅ Resolved client-side (2026-08-31). Same *symptom* as §3a's team
+`is_public` trap (an omitted boolean acts like an explicit `false`) but a
+genuinely different *mechanism* — do not treat this as "another `UseBool`
+column," it isn't one.
+
+**Root cause:** `Project.IsFavorite` is tagged `xorm:"-"`
+(`pkg/models/project.go:69`) — it is not a persisted column at all, so it
+cannot be affected by `UseBool`/`Cols` in the way #3a and #15 describe.
+Instead, `UpdateProject` (`pkg/models/project.go:1003` onward) reads the
+project's current favorite state via `isFavorite(...)` and then calls
+`addToFavorites`/`removeFromFavorite` as a side effect
+(`pkg/models/project.go:1083-1096`) whenever the incoming
+`project.IsFavorite` differs from the stored state — specifically,
+`removeFromFavorite` fires whenever the bound value is `false` and the
+project was previously a favorite. Because the update handler binds the
+request body into a fresh struct, an update that simply omits `is_favorite`
+binds it to Go's zero value (`false`), which is indistinguishable from an
+explicit unfavorite request.
+
+**Impact (before the fix):** any `vikunja_projects update` call that didn't
+explicitly resend `isFavorite: true` silently unfavorited a favorited
+project.
+
+**Resolution:** `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`)
+fetches the current project and carries its `isFavorite` value forward
+unless the caller explicitly supplies a different one — the same
+fetch-merge-POST pattern used for #3a, closing both mechanisms with one
+merge despite their different root causes.
+
+## 17. `labels` Filter Matches Label IDs, Not Titles
+
+**Status:** ✅ Resolved client-side (2026-08-31), title-to-id resolution
+verified live against 2.4.0.
+
+**Description:** the Vikunja filter DSL documents filtering by label the way
+every other filterable field works (a human-readable value), but the
+`labels` filter field actually matches on the label's numeric **id**.
+`filter=labels in 'HU'` (a label title) returns HTTP 400, code 4019:
+`"The task filter value 'HU' for field 'labels' is invalid."` — while
+`filter=labels in 100` (a real label id) works correctly.
+
+**Impact (before the fix, issue #227):** any filter written the "obvious"
+way, with a label title, either 400'd server-side or — worse — silently
+matched zero tasks when the client-side fallback ran `Number('HU')`,
+producing `NaN`, which cannot equal any label id
+(`src/tools/tasks/filtering/evaluators.ts:93-101`).
+
+**Resolution:** `resolveLabelTitlesInExpression`
+(`src/tools/tasks/filtering/FilterValidator.ts`) resolves label titles to ids
+once per filter evaluation (fetching the caller's labels and matching
+case-insensitively), feeding the resolved ids into both the server-bound
+filter string and the client-side fallback evaluator. An unresolvable label
+title now raises a named error rather than silently returning zero results.
+
+**Correction to a hypothesis in the original issue:** #227 also hypothesized
+that list endpoints return `labels: null` even for tasks that have labels,
+which would have made label filtering impossible to fix client-side at all.
+**This was checked and found wrong, live against 2.4.0** — list endpoints do
+populate the `labels` array correctly; `labels: null` means the task
+genuinely has none. Anyone revisiting a "label filter matches nothing"
+report should suspect the id/title mismatch above before the response shape.
+
+## 18. `per_page` Silently Clamped to `service.maxitemsperpage` (Default 50)
+
+**Status:** ℹ️ By design upstream, not a bug — but the silence (no error, no
+response metadata) makes it easy to build a client that thinks it requested
+everything and got everything. Client-side handling shipped 2026-08-31.
+
+**Description:** Vikunja's generic `ReadAllWeb` list handler
+(`pkg/web/handler/read_all.go:83-91`) clamps any requested `per_page` down to
+`service.maxitemsperpage` (default **50**, `pkg/config/config.go:349`) with
+no error and no response signal beyond a short page. Both `GET /projects`
+and `GET /projects/{id}/tasks` route through this same handler
+(`a.GET("/projects/:project/tasks", taskCollectionHandler.ReadAllWeb)`,
+`pkg/routes/routes.go:512`), so both are affected identically.
+
+**Impact (before the fix):** `fetchAllProjects`
+(`src/tools/projects/crud.ts`, used for hierarchy/breadcrumb/move-cycle
+validation) made a single `per_page=1000` call and silently covered only the
+first 50 projects on any instance with more. The equivalent per-project task
+aggregation used by filtering had the same bug for `GET
+/projects/{id}/tasks`, discovered and fixed in the same pass (#244) —
+unrelated to that PR's own primary scope (filter correctness), but found
+because both call sites make the same assumption about `per_page`.
+
+**Resolution:** both call sites now paginate — `fetchAllProjects` walks
+`page` in `FETCH_ALL_PROJECTS_PAGE_SIZE`-sized (200) chunks until a short
+page signals the end (bounded by `FETCH_ALL_PROJECTS_MAX_PAGES` = 50 as a
+safety valve), and the task-aggregation path in
+`src/utils/filtering/ClientSideFilteringStrategy.ts` paginates per project up
+to `MAX_PAGES_PER_PROJECT` (500) or a shared `VIKUNJA_MAX_TASKS_LIMIT`
+task-count budget, whichever is hit first, surfacing `resultComplete: false`
+and a `warnings` entry when either bound truncates the result rather than
+silently reporting a partial list as complete.
+
+## 19. Date-Only Field Values 400 on Create, Not Silently Dropped
+
+**Status:** ℹ️ Clarification, verified live against 2.4.0 (2026-08-31) —
+corrects a stale characterization still present in this repo's own code
+comments.
+
+**Description:** a bare date-only value (e.g. `2026-09-01`, without a time
+component) sent for `due_date`/`start_date`/`end_date` on a task-create
+endpoint (verified on `PUT /projects/{id}/tasks`) is rejected with HTTP 400,
+code **2004** (`ErrCodeInvalidModel`, `pkg/models/error.go:202`) — "Invalid
+model provided." It does not silently drop the field while accepting the
+rest of the payload.
+
+**Why this needed stating explicitly:** `normalizeDateForApi`'s own doc
+comment in this repo (`src/tools/tasks/validation.ts:29-32`) still says
+Vikunja "SILENTLY DROPS a bare date-only value" — a characterization that
+predates this live verification (issues #167/#163 for the create-path fix,
+#225 for the related filter-literal 400 under code 4019) and is now known
+inaccurate for create endpoints specifically. The 400-not-drop behavior is
+what `src/tools/tasks/subtasks.ts:207-213`'s comment correctly describes.
+Both comments live in the same code path family; only the older one is
+stale. `vikunja_tasks update`'s date fields are NOT yet covered by the same
+coercion (tracked separately, see tracking issue #28) — that gap is a real
+open item, distinct from this clarification.
+
+**Resolution:** `normalizeDateForApi` (`src/tools/tasks/validation.ts`)
+coerces date-only and SQL-ish space-separated date strings to RFC3339 before
+they reach the wire, applied on `create-subtask`, `bulk-create-subtasks`,
+`vikunja_batch_import` and template `instantiate`.
+
 ## Recommendations for Vikunja Maintainers
 
 Trimmed to what is **still open** upstream (the filter-syntax, team-API, bulk
@@ -547,3 +766,17 @@ verified-against version added.*
 `UseBool`-on-full-replace lesson so it reads as a pattern to watch for, not
 just an incident report. Noted that Vikunja 2.5.0 and 2.6.0 exist upstream
 but are unverified here.*
+
+*Updated 2026-08-31 (second pass, same day): added items #13-#19, each
+verified against go-vikunja source (`~/Projects/vikunja`, pinned v2.3.0) with
+file:line citations, not just observed behavior — `POST /user/settings/general`
+forced full-replace (#13), `Webhook.Update`'s hard-coded `events`-only write
+(#14), the project-view update's `Cols(...)` allowlist mechanism corrected
+from an earlier "full replace" characterization (#15), project `is_favorite`
+as a second, mechanistically distinct reset-by-omission trap alongside §3a's
+`UseBool` case (#16), the `labels` filter id-vs-title mismatch plus a
+correction of #227's wrong "labels: null" hypothesis (#17), the `per_page`
+clamp to `service.maxitemsperpage` affecting both `GET /projects` and `GET
+/projects/{id}/tasks` (#18), and a correction of a stale "silently drops"
+comment for date-only field values, which actually 400 (code 2004) on create
+endpoints (#19).*

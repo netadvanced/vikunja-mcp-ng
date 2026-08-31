@@ -67,6 +67,23 @@ report to the operator.
 - Example: `2024-05-24T10:00:00Z`
 - Invalid dates will cause validation errors
 - Timezone information is preserved
+- **A bare date-only value (`2026-09-01`) 400s on create, it does not
+  silently drop.** Verified live against Vikunja 2.4.0: `PUT
+  /projects/{id}/tasks` and the other task-create endpoints reject a
+  date-only `due_date`/`start_date`/`end_date` with HTTP 400, code **2004**
+  ("Invalid model provided" — `ErrCodeInvalidModel`, `pkg/models/error.go:202`
+  in the go-vikunja source). `normalizeDateForApi`
+  (`src/tools/tasks/validation.ts`) coerces the date-only and SQL-ish
+  space-separated forms to RFC3339 before they reach the wire, on
+  `create-subtask`, `bulk-create-subtasks`, `vikunja_batch_import` and
+  template `instantiate`. **Known gap:** `vikunja_tasks update` does not run
+  this coercion yet — an agent-supplied date-only value on `update` still
+  fails, tracked as a follow-up (see tracking issue #28). The doc comment on
+  `normalizeDateForApi` itself (`src/tools/tasks/validation.ts:29-32`) still
+  says the value is "SILENTLY DROP[PED]" — that characterization predates
+  this live verification and is now known-stale; the 400 above is what
+  actually happens on create paths. See
+  [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #19.
 
 ### ID Validation
 
@@ -86,7 +103,31 @@ report to the operator.
    set explicitly (to the new parent, or `0` for root) rather than left
    untouched like the other fields.
 
-2. **List Pagination Has No Total Count**: `GET /projects` returns a bare
+2. **`is_favorite` Is a Second, Different Full-Replace Trap**: `is_favorite`
+   never even reaches xorm's column layer — `Project.IsFavorite` is tagged
+   `xorm:"-"` (not a real column, `pkg/models/project.go:69`), so it is
+   immune to the `UseBool` mechanism documented for teams (see "Team
+   Operations" below and
+   [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) §3a). Instead,
+   `UpdateProject` reads the *current* favorite state and, whenever the
+   incoming `project.IsFavorite` is `false` and the project was previously a
+   favorite, calls `removeFromFavorite` to delete its row from the
+   favorites table; the symmetric `addToFavorites` call fires when it flips
+   from `false` to `true` (`pkg/models/project.go:1083-1096`). Because the
+   handler binds the request body into a fresh struct, an update that simply
+   omits `is_favorite` binds it to Go's zero value (`false`) — indistinguishable
+   from an explicit unfavorite — so any partial update silently unfavorited
+   the project. **Same symptom as the team `UseBool` case (an omitted
+   boolean acts like an explicit `false`), same fetch-merge fix, but a
+   completely different server-side mechanism** (a side-effect on a separate
+   favorites association, not a forced column write) — worth keeping distinct
+   so the `UseBool` lesson isn't over-generalized to "every silently-wiped
+   boolean is a `UseBool` column." `buildProjectUpdatePayload`
+   (`src/tools/projects/crud.ts`) fetches the current project and carries its
+   `isFavorite` forward unless the caller explicitly overrides it, closing
+   both mechanisms with the one merge.
+
+3. **List Pagination Has No Total Count**: `GET /projects` returns a bare
    array (`models.Project[]` in the vendored spec) — there is no
    `{data, total}` envelope on the v1 API. Total item and page counts are not
    knowable from the response body, so `vikunja_projects list` reports
@@ -95,7 +136,27 @@ report to the operator.
    wrap results in `{items, total, ...}`, but no call site routes to `/api/v2`
    — see "Session Capability Detection" below.)
 
-3. **Kanban "Done" Bucket**: `models.Bucket` has no `is_done_bucket` field —
+   **`per_page` is silently clamped server-side**, independent of the above:
+   `GET /projects` (and `GET /projects/{id}/tasks`, see "Bulk Operations"
+   below) clamp any requested `per_page` down to `service.maxitemsperpage`
+   — default **50** — in the server's generic `ReadAllWeb` list handler
+   (`pkg/web/handler/read_all.go:83-91`, `pkg/config/config.go:349` in
+   go-vikunja), which both `GET /projects` and `GET /projects/{id}/tasks`
+   route through (`a.GET("/projects/:project/tasks",
+   taskCollectionHandler.ReadAllWeb)`, `pkg/routes/routes.go:512`). A caller asking for `per_page=1000` silently gets 50 back
+   with no error and no indication a clamp happened; the only client-visible
+   signal is a full-looking page that is shorter than requested.
+   `fetchAllProjects` (`src/tools/projects/crud.ts:201-215`, used for
+   hierarchy/breadcrumb/move-cycle validation) used to make one
+   `per_page=1000` call and silently truncate on instances with more than
+   1000 projects for exactly this reason — a bug found in passing while
+   fixing the equivalent task-listing clamp in #244, unrelated to that PR's
+   own scope. It now walks `page` in `FETCH_ALL_PROJECTS_PAGE_SIZE`-sized
+   (200) chunks until a short page signals the end, bounded by
+   `FETCH_ALL_PROJECTS_MAX_PAGES` (50) as a safety valve. See
+   [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #18.
+
+4. **Kanban "Done" Bucket**: `models.Bucket` has no `is_done_bucket` field —
    the done bucket is designated by `done_bucket_id` on the `ProjectView`
    (`GET /projects/{id}/views`), not on the bucket itself. `list-buckets`
    resolves `isDoneBucket` by comparing each bucket's id against the
@@ -104,7 +165,7 @@ report to the operator.
    fetched — `isDoneBucket` falls back to `false` in that case rather than
    spending an extra request on it.
 
-4. **`id` vs `projectId` on `vikunja_projects`**: the flat args schema has
+5. **`id` vs `projectId` on `vikunja_projects`**: the flat args schema has
    both `id` (used by CRUD/hierarchy/Kanban-bucket/view/duplicate/backgrounds
    subcommands) and `projectId` (used by the sharing-domain subcommands —
    `create-share`, `share-with-user`, `list-project-users`, etc.) as sibling
@@ -152,12 +213,29 @@ Project sharing allows creating public or private links to share projects with e
 
 ### Project Views
 
-1. **Full-Model-Replace Update Endpoint**: `POST /projects/{project}/views/{id}`
-   replaces the entire `models.ProjectView`, the same convention as the
-   project update endpoint (see "Project Operations" above). `update-view`
-   and the `set-done-bucket` composite both fetch the current view first and
+1. **Not truly "full-model-replace" — an explicit `Cols(...)` allowlist,
+   which is a more dangerous shape**: `POST /projects/{project}/views/{id}`
+   *behaves* like the project/team full-replace endpoints (a partial body
+   loses data), but the mechanism is different and worth being precise
+   about. `ProjectView.Update` (`pkg/models/project_view.go:412-439` in
+   go-vikunja) writes with a hard-coded
+   `Cols("title", "view_kind", "filter", "position",
+   "bucket_configuration_mode", "bucket_configuration",
+   "default_bucket_id", "done_bucket_id")` — **not** a bare
+   `.Update(pv)` relying on xorm's zero-value column skip. `Cols(...)`
+   forces every named column to be written regardless of its zero value,
+   the same override mechanism as `UseBool` (see "Team Operations" below and
+   [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) §3a) but applied to
+   an entire column list instead of one boolean — so a partial body doesn't
+   just risk one flag, it resets a view's `position` to `0` and blanks its
+   `filter` on every field in that list the caller omits. `update-view` and
+   the `set-done-bucket` composite both fetch the current view first and
    merge requested changes onto it (`buildViewUpdatePayload` in
-   `src/tools/projects/views.ts`) rather than sending a bare partial object.
+   `src/tools/projects/views.ts`) rather than sending a bare partial object,
+   which happens to close this the same way a true full-replace endpoint
+   would — but the underlying hazard is `Cols(...)`, not the zero-value skip
+   `UseBool`/`Cols` are usually contrasted against. See
+   [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #15.
 
 2. **Setting the Done Bucket**: `models.Bucket` has no `is_done_bucket`
    field — the done bucket is `done_bucket_id` on the `ProjectView`
@@ -246,6 +324,49 @@ Project sharing allows creating public or private links to share projects with e
    registration and struct-tag citations. The general rule this establishes:
    **when the vendored OpenAPI spec and the Go handler disagree, the handler
    wins** — verify against the handler source, not the spec text.
+
+### User Settings
+
+1. **`POST /user/settings/general` Is a Full Replace, Forced**: the handler
+   (`UpdateGeneralUserSettings`, `pkg/routes/api/v1/user_settings.go:175-235`
+   in go-vikunja) binds the body into an empty `UserSettings{}`, then
+   unconditionally assigns **every** field (`Name`, `EmailRemindersEnabled`,
+   `DiscoverableByEmail`, `DiscoverableByName`,
+   `OverdueTasksRemindersEnabled`, `DefaultProjectID`, `WeekStart`,
+   `Language`, `Timezone`, `OverdueTasksRemindersTime`, `FrontendSettings`)
+   onto the user record and calls `user2.UpdateUser(s, user, true)` — the
+   third argument is `forceOverride`. There is no zero-value skip at all
+   here (this isn't a `UseBool`/`Cols` case — it's a plain assignment plus a
+   forced-override update), so a partial body wipes name, language,
+   timezone, week start, default project, both discoverability flags and
+   reminder preferences on every call that doesn't resend them all.
+   Additionally, `OverdueTasksRemindersTime` is tagged
+   `valid:"time,required"` (`user_settings.go:52`) — omit it and the request
+   400s outright, even before the wipe would happen. `vikunja_users
+   update-settings` fetches the current settings first and merges requested
+   changes onto them (`src/tools/users.ts`) before POSTing, the same
+   fetch-merge-POST shape as projects/teams/views, and always carries
+   `overdue_tasks_reminders_time` forward so the required-field 400 can't be
+   triggered by omission. See
+   [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #13.
+
+### Webhooks
+
+1. **`vikunja_webhooks update` Can Only Ever Change `events`**: unlike every
+   other "full-replace" endpoint in this file, `Webhook.Update`
+   (`pkg/models/webhooks.go:261-273` in go-vikunja) is neither a full
+   replace nor a partial merge — it's a hard-coded single-column write,
+   `s.Where("id = ?", w.ID).Cols("events").Update(w)`. The handler's own doc
+   comment says as much: "Change a webhook target's events. You cannot
+   change other values of a webhook." `targetUrl` and `secret` are therefore
+   permanently fixed at creation; there is no server-side path that will
+   ever change them, so no client-side fetch-merge can fix this the way it
+   fixes the teams/projects/views cases above — the only way to change them
+   is delete-and-recreate. `vikunja_webhooks update` rejects `targetUrl`/
+   `secret` outright (`src/tools/webhooks.ts`) rather than accepting them
+   and silently discarding the change, and its success message no longer
+   implies more was updated than `events`. See
+   [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #14.
 
 ## Operation Patterns
 
@@ -471,6 +592,36 @@ The Vikunja API supports SQL-like filter syntax as documented. Filters should be
   what's needed to parse and re-serialize them, except as an explicit
   client-side fallback when server-side filtering fails.
 
+### `labels` Filters Match IDs, Not Titles
+
+The `labels` filter field matches on numeric label **ids** server-side, not
+label titles — `filter=labels in 'HU'` 400s
+(`{"code":4019,"message":"The task filter value 'HU' for field 'labels' is
+invalid."}`), while `filter=labels in 100` (a real label id) works. This is
+non-obvious because every other commonly-filtered field (`title`, filters on
+enum-like strings) accepts the human-readable form. `resolveLabelTitlesInExpression`
+(`src/tools/tasks/filtering/FilterValidator.ts`) resolves label titles to ids
+once — server-side by fetching the caller's labels and matching case-insensitively
+— feeding the resolved ids into both the wire filter string and the
+client-side fallback evaluator. Before this fix the client-side fallback
+matched nothing either: `evaluateCondition` ran `Number(value)` on a title
+string, producing `NaN`, which cannot equal any label id
+(`src/tools/tasks/filtering/evaluators.ts:93-101`). An unresolvable label
+title is now a loud error naming the unresolved label(s), not a silent
+`Found 0 tasks`. See
+[docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #17.
+
+**Correction to a prior hypothesis:** issue #227 originally hypothesized that
+list endpoints return `labels: null` even when a task has labels, forcing
+label filtering to always miss. **This was wrong, verified live against
+2.4.0** — list endpoints (`GET /tasks/all`, `GET /projects/{id}/tasks`, etc.)
+correctly populate the `labels` array when a task has labels; a `labels:
+null` in a response means the task genuinely has none. The real bug was the
+id/title mismatch above. Anyone re-investigating a "labels filter matches
+nothing" report should check the filter value's type (title vs id) before
+suspecting the list response shape — chasing the `labels: null` theory cost
+real investigation time on #227.
+
 ## Related Documents
 
 - [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) — upstream API bugs/quirks worth reporting, with per-issue status.
@@ -488,3 +639,18 @@ mismatch — both cross-linked to `docs/VIKUNJA_API_ISSUES.md`), added "Create
 Retries and Idempotency" cross-linking `docs/ARCHITECTURE.md`'s Retry Logic
 section, and noted Vikunja 2.5.0 and 2.6.0 exist upstream but are unverified
 against this codebase.*
+
+*Updated 2026-08-31 (second pass, same day): added the `is_favorite`
+full-replace trap and the `per_page` server-side clamp to "Project
+Operations"; corrected the "Project Views" full-model-replace entry to name
+the actual mechanism (`Cols(...)` allowlist, not a bare struct update);
+added "User Settings" (`POST /user/settings/general` forced full-replace)
+and "Webhooks" (`Webhook.Update`'s `events`-only write) as new sections;
+corrected "Date Handling" — a bare date-only value 400s (code 2004) on
+create endpoints rather than silently dropping, which corrects a stale
+comment still sitting in `src/tools/tasks/validation.ts`; and added the
+`labels` filter id-vs-title gotcha (with the corrected #227 "labels: null"
+hypothesis) to "Filter Implementation Notes." All new claims verified
+against go-vikunja source (`~/Projects/vikunja`, pinned v2.3.0) or this
+repo's `src/`, with file:line citations, and cross-linked to the matching
+new entries in `docs/VIKUNJA_API_ISSUES.md`.*
