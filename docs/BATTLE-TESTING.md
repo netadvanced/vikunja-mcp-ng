@@ -2,25 +2,25 @@
 
 `npm run battle` spawns a real, headless AI agent against this repo's own MCP
 server and measures how hard the tool surface is to use. It is part 2 of the
-testing plan — part 1 is the version-matrix runner in
-[docs/LOCAL-TESTING.md](LOCAL-TESTING.md) — and shipped as wave item T2 of
+testing plan. Part 1 is the version-matrix runner in
+[docs/LOCAL-TESTING.md](LOCAL-TESTING.md), and this harness shipped as wave item T2 of
 tracking issue [netadvanced/vikunja-mcp-ng#28](https://github.com/netadvanced/vikunja-mcp-ng/issues/28).
 
 This harness answers a different question than `npm run test:mcp` /
 `npm run test:e2e:mcp` / `npm run test:matrix`. Those prove the tools work
 correctly against a real Vikunja server. This harness measures something
 else: **how well an actual AI agent copes with the tool surface** when
-handed a natural-language task and nothing else — no test-writer holding
+handed a natural-language task and nothing else: no test-writer holding
 its hand, no known-good call sequence. It's a UX benchmark for the tool
 descriptions, argument shapes, and error messages themselves.
 
 It spawns a real, headless `claude -p` session whose only tools are this
 repo's own MCP server build (plus the one built-in tool needed to discover
-it — see "Why `ToolSearch` is granted" below) and grades the run two ways:
+it; see "Why `ToolSearch` is granted" below) and grades the run two ways:
 
-1. **DID IT WORK** — verified with direct Vikunja REST calls
+1. **DID IT WORK**: verified with direct Vikunja REST calls
    (`scripts/battle/lib/verify.ts`), never the agent's own self-report.
-2. **HOW HARD** — parsed from the full JSONL transcript
+2. **HOW HARD**: parsed from the full JSONL transcript
    (`scripts/battle/lib/transcript-parser.ts` +
    `scripts/battle/lib/friction.ts`): tool-call count vs. a hand-estimated
    optimum, validation/argument errors, retries, wrong-tool attempts, tool
@@ -30,7 +30,7 @@ it — see "Why `ToolSearch` is granted" below) and grades the run two ways:
 
 **Every invocation other than `--list` spends real money against the
 configured Anthropic account.** This harness is **never** wired into CI, a
-pre-commit hook, `npm test`, or any other automatic trigger — it only runs
+pre-commit hook, `npm test`, or any other automatic trigger. It only runs
 when a human deliberately types the command. Nothing in this repository
 calls `scripts/battle/run-scenario.ts` on your behalf.
 
@@ -41,7 +41,7 @@ Rough costs observed while building this harness (Claude Code 2.1.214,
 |---|---|---|
 | Cheapest scenario (`single-task-smoke`) | haiku | ~$0.07 |
 | Cheapest scenario (`single-task-smoke`) | sonnet | typically a few times the haiku cost |
-| Full scenario library (21 scenarios), one model | sonnet | expect several dollars — run scenarios individually first if you're cost-sensitive |
+| Full scenario library (21 scenarios), one model | sonnet | expect several dollars; run scenarios individually first if you're cost-sensitive |
 
 Always start with `npm run battle -- --list` (free) and a single cheap
 scenario before running `--all`.
@@ -73,12 +73,12 @@ Requires:
   `scripts/lib/e2e-target.ts` (default target `2.4.0-postgres`, i.e.
   `http://localhost:8240/api/v1`; pick another with `VIKUNJA_E2E_TARGET`)
   and mints its own credential the same way `docker/e2e/bootstrap.sh` /
-  `scripts/mcp-e2e.ts` do — it does not need the target's
+  `scripts/mcp-e2e.ts` do. It does not need the target's
   `docker/e2e/.env.<version>-<db>` file to exist.
 - The `claude` CLI on `PATH`, logged in (this harness invokes it exactly
   like a human running `claude -p ...` at their own terminal).
 
-Output goes to `battle-results/<run-id>/` (gitignored — regenerate, don't
+Output goes to `battle-results/<run-id>/` (gitignored; regenerate, don't
 commit):
 
 ```text
@@ -95,7 +95,7 @@ battle-results/<run-id>/
 ## Safety model
 
 This mirrors the pattern in `scripts/mcp-e2e.ts` / `scripts/test-matrix.ts`
-(see those files' headers for the fuller rationale) — copied deliberately
+(see those files' headers for the fuller rationale), copied deliberately
 rather than re-derived, since it protects against a real, previously-seen
 incident class (a harness inheriting ambient Vikunja credentials and
 running against a real account instead of the disposable stack):
@@ -107,7 +107,7 @@ running against a real account instead of the disposable stack):
   `assertLocalUrl` aborts the whole run before
   anything else happens if that URL doesn't resolve to
   localhost/127.0.0.1/`::1`. This repo directory has a real, production
-  `.envrc` — the harness never reads `.env`/`.envrc`.
+  `.envrc`, but the harness never reads `.env`/`.envrc`.
 - The credential handed to the agent's MCP server child process is always
   freshly minted against that (now guaranteed-local) stack via
   login + `PUT /tokens`, exactly like `docker/e2e/bootstrap.sh`. The
@@ -133,13 +133,13 @@ running against a real account instead of the disposable stack):
   whose `name` starts with the run's prefix, before and after the scenario,
   the same as everything else it sweeps.
 - The stack itself is never brought up, torn down, or version-switched by
-  this harness — unlike `scripts/test-matrix.ts`, it assumes the stack is
+  this harness. Unlike `scripts/test-matrix.ts`, it assumes the stack is
   already up (`npm run e2e:up`) and only ever talks to it over HTTP.
 
 ## Why `ToolSearch` is granted
 
 The runner passes `--tools ToolSearch` (not `--tools ''`). This was not the
-first thing tried — with zero built-in tools granted, a live smoke-test run
+first thing tried: with zero built-in tools granted, a live smoke-test run
 showed the agent could see `vikunja-battle`'s tools were configured
 (`mcp_servers: [{name: "vikunja-battle", status: ...}]` in the transcript's
 `init` line) but had literally no mechanism to ever load an individual
@@ -153,16 +153,16 @@ every actual unit of work confined to `vikunja_*` calls.
 This has a real consequence for how the friction numbers should be read:
 `ToolSearch` calls are tracked separately
 (`FrictionReport.toolSearchCallCount`), not folded into `toolCallCount` or
-`wrongToolAttemptCount` — discovering a tool isn't a mistake, it's required
+`wrongToolAttemptCount`: discovering a tool isn't a mistake, it's required
 plumbing in this environment. But the count itself is still a genuine
 ergonomics signal worth reporting: the harness's own first live smoke run
 (see "Live smoke test evidence" in the PR this shipped in) needed **8**
-`ToolSearch` calls to do **3** actual `vikunja_*` calls — a haiku-model
+`ToolSearch` calls to do **3** actual `vikunja_*` calls: a haiku-model
 agent visibly floundering on the `select:name1,name2` query syntax before
 landing on the right incantation. If a future Claude Code release changes
 how MCP tools are exposed (no longer deferred, or a different discovery
 mechanism), re-run the smoke test and update this section plus
-`scripts/battle/run-scenario.ts`'s `--tools` value accordingly — don't
+`scripts/battle/run-scenario.ts`'s `--tools` value accordingly. Don't
 assume this behavior is permanent; re-verify with
 `claude -p --help` and a throwaway smoke run the way this section was
 originally derived (see git history / the PR description for the exact
@@ -201,23 +201,23 @@ transcript that revealed it).
 ### Live evidence runs
 
 Scenarios added by E5 (`existing-label-reuse`, `project-rename-share`) were
-never executed live at the time they shipped — this is that first live run,
+never executed live at the time they shipped. This is that first live run,
 one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
 
-- `existing-label-reuse` — last run 2026-07-20, **PASS, clean**: 6 calls vs.
-  optimal 3 (2.0x, fully explained by one `apply-label` call per task — no
+- `existing-label-reuse`: last run 2026-07-20, **PASS, clean**: 6 calls vs.
+  optimal 3 (2.0x, fully explained by one `apply-label` call per task, since no
   bulk-apply composite exists), 0 validation errors, 0 retries, agent found
   the seeded label via `vikunja_labels list --search` and applied its
-  existing id to all 3 tasks — no duplicate label created. Confirms the
+  existing id to all 3 tasks; no duplicate label created. Confirms the
   parked **label-ensure composite** verdict; stays parked. UPDATE 2026-07-25:
   `apply-label`/`remove-label` now accept `taskIds` (PR #178), so "no
-  bulk-apply composite exists" is no longer true as of this writing — a
+  bulk-apply composite exists" is no longer true as of this writing: a
   re-run today could plausibly do the 3-task apply in one `apply-label`
   call with `taskIds` + `labelTitles` instead of three individual calls.
   `optimalCallCount` stays 3 either way (see the scenario file's own
-  description) — this note only corrects the "no bulk-apply composite"
+  description); this note only corrects the "no bulk-apply composite"
   claim, which was accurate on 2026-07-20 but is stale now.
-- `project-rename-share` — last run 2026-07-20, **PASS verification, but
+- `project-rename-share`: last run 2026-07-20, **PASS verification, but
   high friction, REOPENED**: 15 calls vs. optimal 3 (5.0x), 3 validation
   errors, 3 retries. The agent's first `create-share` call passed `title`
   (the project-rename field) instead of `name` (the share-label field) --
@@ -231,7 +231,7 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
   share behind for the harness's own project-delete cleanup to reclaim.
   Reopens the parked **`name` vs `title` ergonomics** queue item with this
   evidence; the delete-share "not found" bug is a new, separate finding
-  worth its own follow-up item (not fixed here — out of scope for this
+  worth its own follow-up item (not fixed here, out of scope for this
   evidence-only item).
 
 ### Anatomy of a scenario file
@@ -288,7 +288,7 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
 1. Drop a new `scripts/battle/scenarios/<id>.json` file (any filename
    ending in `.json` is picked up; the `id` field inside is what matters).
 2. Write `promptTemplate` as a single, natural sentence a real user might
-   type — resist the urge to spell out the exact tool calls. The whole
+   type. Resist the urge to spell out the exact tool calls. The whole
    point is testing what the agent does with an under-specified ask.
 3. Reference `{{prefix}}` in every title the prompt asks the agent to
    create, and reuse those same substrings in the matching `verify` checks'
@@ -301,7 +301,7 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
    the estimate should reflect what's *possible* with this tool surface,
    not a naive one-call-per-field count. State the reasoning inline in the
    scenario's own `description` field (e.g. "create-project (1) + bulk-create
-   (1) + apply-label with taskIds (1) = 3") — see "Re-baselining
+   (1) + apply-label with taskIds (1) = 3"); see "Re-baselining
    `optimalCallCount`" below for the full policy this estimate must follow.
 5. Add a unit test in `tests/battle/scenario.test.ts` if the check verifies
    a shape not already covered.
@@ -316,15 +316,15 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
 
 The friction report ranks scenarios by `callCountRatio` (actual calls /
 `optimalCallCount`), so a stale `optimalCallCount` makes that ranking
-meaningless — worse, an `optimalCallCount` the agent routinely *beats*
-isn't an optimum at all, it just makes every run of that scenario look
+meaningless. Worse, an `optimalCallCount` the agent routinely *beats*
+isn't an optimum at all; it just makes every run of that scenario look
 artificially cheap. `optimalCallCount` is not a one-time estimate: it must
 be re-derived whenever a new composite tool ships that changes what's
 *possible* on this tool surface, the same way the coverage-threshold ratchet
 in `CLAUDE.md` only ever moves in the direction of the evidence.
 
 **A controlled haiku sweep on 2026-07-25 (main @ `8c49b68`)** found three
-scenarios where `actual < optimalCallCount` — direct proof the recorded
+scenarios where `actual < optimalCallCount`: direct proof the recorded
 optimum was stale, because two composites had shipped after those estimates
 were written:
 
@@ -337,7 +337,7 @@ were written:
 full re-baseline:
 
 - `vikunja_task_labels` `apply-label`/`remove-label` accept `taskIds: number[]`
-  — N tasks in ONE call instead of one call per task (PR #178).
+, N tasks in ONE call instead of one call per task (PR #178).
 - `vikunja_projects` `setup-kanban` provisions an entire board (project +
   ordered buckets + tasks placed into columns) in ONE call (PR #175, issue
   #173).
@@ -346,7 +346,7 @@ full re-baseline:
 originally also re-baselined `labels-due-date-combo` from 3 to 1, crediting
 `setup-kanban` with a single *fabricated placeholder column* even though the
 scenario's prompt never asks for a Kanban board. That was wrong and has been
-reverted (optimum is 3 again — see the scenario file's own description).
+reverted (optimum is 3 again; see the scenario file's own description).
 Two live runs prove why the 1-call figure was never a real optimum:
 `battle-results/20260725-172435-r9pgwd` is the run that produced the actual=1
 measurement, and its transcript shows exactly the fabrication in question --
@@ -364,11 +364,11 @@ route. The rules below are sharpened so this specific mistake can't recur.
 #185), so the columns-less form (`title` + `tasks`, no `columns`) creates
 the project and its tasks in one call while resolving/touching zero Kanban
 views or buckets (`kanban-setup.ts` skips `resolveKanbanView` entirely on
-this path — see its module doc comment). This satisfies rule 3 below for
+this path; see its module doc comment). This satisfies rule 3 below for
 the first time on this scenario: no structure, view, board, or column is
 fabricated, because none is created at all. Rule 3's ban stays in force for
 the *placeholder-column* route specifically (an explicit, non-empty
-`columns` array the prompt never asked for) — it does not generalize to
+`columns` array the prompt never asked for). It does not generalize to
 "never credit `setup-kanban`" now that a columns-less call exists that
 invents nothing.
 
@@ -386,14 +386,14 @@ invents nothing.
    the transcript.
 2. Credit a composite's full capability when the scenario's own prompt is a
    direct match for what it does (`bulk-set-bucket`, `q3-offsite-kanban`,
-   `setup-kanban-composite` — all genuinely 1 call via `setup-kanban`,
+   `setup-kanban-composite`, all genuinely 1 call via `setup-kanban`,
    because each of those prompts explicitly asks for a Kanban board with
    named columns).
 3. A composite is creditable on a scenario whose prompt does NOT literally
    ask for what the composite is designed for ONLY if reaching that call
    count requires NO structure, view, board, column, or other state the
    prompt did not ask for. "Describes an end state rather than prescribing
-   a process" is necessary but never sufficient by itself — it does not
+   a process" is necessary but never sufficient by itself; it does not
    license fabricating unrequested state to reach that end state more
    cheaply. Concretely: `setup-kanban`'s placeholder-column trick is
    permanently NOT creditable on any scenario whose prompt doesn't itself
@@ -410,7 +410,7 @@ invents nothing.
    theoretically reach just because it's technically possible. Nearly every
    "create a project with N tasks" scenario in this library could be
    collapsed to 1 call by feeding `setup-kanban` a throwaway placeholder
-   column — doing that unconditionally (or even selectively, per rule 3)
+   column. Doing that unconditionally (or even selectively, per rule 3)
    would fabricate unrequested Kanban boards across the suite and collapse
    almost every `optimalCallCount` to 1, destroying the harness's ability to
    ever show friction again. Only apply a composite's shortcut where it's
@@ -420,12 +420,12 @@ invents nothing.
    `single-task-smoke.json` for scenarios that explicitly decline the
    shortcut and state why).
 5. Record the reasoning in the scenario's own `description` field (this
-   schema has no separate "why" field — `ScenarioSchema.parse` silently
+   schema has no separate "why" field: `ScenarioSchema.parse` silently
    strips unknown keys, so `description` is the only place a comment
    survives load time). State which specific calls make up the optimum,
    e.g. `"create (1) + bulk-create (1) + apply-label with taskIds (1) = 3"`.
    If the optimum is genuinely 1, say so plainly rather than padding it back
-   up for the sake of a "more interesting" ratio — but "genuinely 1" must
+   up for the sake of a "more interesting" ratio, but "genuinely 1" must
    survive rule 3's test first.
 
 ### Full-library run, 2026-08-31 (13 scenarios, pre-#235 library)
@@ -439,16 +439,16 @@ not cover `team-rename-keeps-visibility`, `team-create-with-admin-member`,
 **13/13 passed, total cost $0.4555, zero validation errors, zero retries, and
 zero wrong-tool attempts** across the whole run.
 
-**Do not read this as an improvement over the 2026-07-28 baseline** — it
+**Do not read this as an improvement over the 2026-07-28 baseline**. It
 isn't one, and issue #202 is still open. Call-count changes versus that
 baseline: `bulk-create-subtasks` 3 → 2, `bulk-priority-bump` 2 → 1,
 `filter-high-priority-search` 2 → 3; the other ten scenarios were unchanged.
-The `filter-high-priority-search` regression is single-run noise — nothing in
-that area of the tool surface changed between the two runs — and is recorded
+The `filter-high-priority-search` regression is single-run noise (nothing in
+that area of the tool surface changed between the two runs) and is recorded
 as such rather than investigated as a regression.
 
 Issue #202's shape shifted rather than improved: **still 7 of the 13
-scenarios beat their own recorded `optimalCallCount`, but not the same 7** —
+scenarios beat their own recorded `optimalCallCount`, but not the same 7**:
 `filter-high-priority-search` dropped out of that set on this run,
 `bulk-create-subtasks` joined it. A scenario beating its own optimum is not
 good news by itself (see the re-baselining policy above): it means the
@@ -457,12 +457,12 @@ recorded optimum is stale, not that the tool surface got better.
 Two re-derivations are on record from this same round of evidence:
 
 - `percent-done-scale`'s optimum was re-derived 2 → 1 by issue #236 (see the
-  scenario table above) — **done**, reflected in `percent-done-scale.json`.
+  scenario table above): **done**, reflected in `percent-done-scale.json`.
 - `bulk-priority-bump`'s optimum is reported as **stale and likely wrong**:
   it should plausibly be 2, not the currently recorded 3, because that
   scenario's optimum was last re-verified on 2026-07-25, which predates the
   columns-less `setup-kanban` form that shipped on 2026-07-27 (issue #185).
-  **This has NOT been re-derived yet** — it is outstanding work, tracked
+  **This has NOT been re-derived yet**: it is outstanding work, tracked
   against issue #202, not a claim this document is making about the current
   `bulk-priority-bump.json` file.
 
@@ -475,7 +475,7 @@ depends on) are unit-tested against static, recorded fixtures --
 `VikunjaRestClient` (`tests/battle/helpers/fake-rest-client.ts`)
 respectively. `filter-syntax-real-errors.jsonl` is derived from a real
 campaign transcript (run `20260718-211659-05yr35`, scenario
-`filter-high-priority-search`) rather than hand-written — when
+`filter-high-priority-search`) rather than hand-written. When
 `invalidArgErrorCount`'s `VALIDATION_ERROR_PATTERNS` misses a genuine failure
 in a future campaign, add the real error text as a new fixture the same way
 rather than a synthetic one, so the regex list stays grounded in what
@@ -493,19 +493,19 @@ everything under `tests/battle/` is free and deterministic.
 ## Reading the friction report
 
 `friction-report.md` ranks scenarios by `callCountRatio` (actual calls /
-hand-estimated optimum) descending — the scenarios where the agent worked
+hand-estimated optimum) descending: the scenarios where the agent worked
 hardest relative to what should have been possible come first. Look for:
 
 - **High `callCountRatio`** with a PASS verdict: the agent got there, but
-  the tool surface made it take more calls than it should have — a
+  the tool surface made it take more calls than it should have. That is a
   candidate for a new composite tool, or a better tool description nudging
   the agent toward the cheaper path.
 - **Nonzero `invalidArgErrorCount`**: the agent's first guess at argument
-  shapes was wrong — a discoverability smoking gun. Check whether the
+  shapes was wrong: a discoverability smoking gun. Check whether the
   tool's Zod schema description/examples could make the correct shape more
   obvious.
-- **Nonzero `retryCount`**: the agent repeated a byte-identical failed call
-  — often paired with a validation error above, but sometimes a sign the
+- **Nonzero `retryCount`**: the agent repeated a byte-identical failed call,
+  often paired with a validation error above, but sometimes a sign the
   error message itself didn't give the agent anything to act on.
 - **High `toolSearchCallCount` relative to `toolCallCount`**: the agent
   spent more effort finding the right tool than using it (see "Why
@@ -515,7 +515,7 @@ hardest relative to what should have been possible come first. Look for:
   expected vs. observed.
 
 This report format is meant to feed future tool-description and
-composite-tool improvement waves directly — when a friction pattern
+composite-tool improvement waves directly. When a friction pattern
 recurs across multiple runs of the same scenario, that's the signal to act
 on, not a single run's noise.
 
@@ -529,7 +529,7 @@ shapes, error messages, or subcommands. Its friction heuristics
 (validation-error pattern matching, the retry definition, etc.) are still
 evolving with real runs, so read the friction report with that in mind
 rather than treating a single run's noise as load-bearing. It remains
-explicitly **not an automated gate** — it spawns a paid agent session and
+explicitly **not an automated gate**: it spawns a paid agent session and
 must never become something CI or a hook runs unattended.
 
 ## Re-deriving the transcript shape
@@ -541,7 +541,7 @@ harness (`claude -p --help` was the source of truth for available flags --
 run it yourself before assuming any flag mentioned here still exists).
 If a future CLI version changes the stream-json shape, the parser will
 surface it as a `parseWarnings` entry (surfaced in turn as a friction note)
-rather than silently misreporting — treat any `parseWarnings` in a run's
+rather than silently misreporting. Treat any `parseWarnings` in a run's
 `verdict.json` as a signal to re-check this file's assumptions against a
 fresh `claude -p --help` and a throwaway smoke transcript before trusting
 that run's friction numbers.

@@ -11,7 +11,7 @@ every configuration knob see [CONFIGURATION.md](CONFIGURATION.md).
 
 - **MCP Server**: Built with `@modelcontextprotocol/sdk` (entry point `src/index.ts`)
 - **Transport**: StdIO for Claude Desktop integration (`StdioServerTransport`)
-- **Tool Registry**: `src/tools/index.ts` — conditional registration gated by module config and auth type
+- **Tool Registry**: `src/tools/index.ts`, with conditional registration gated by module config and auth type
 - **Tools**: Zod-validated parameters with subcommand pattern, one module per entity in `src/tools/[entity]/`
 - **Authentication**: Session-based with AuthManager (`src/auth/AuthManager.ts`)
 - **HTTP**: All Vikunja calls go through `vikunjaRestRequest` (`src/utils/vikunja-rest.ts`) against the vendored OpenAPI spec (`docs/vikunja-openapi.json`)
@@ -42,7 +42,7 @@ The legacy typed API-client library was retired (see [ROADMAP.md §3](ROADMAP.md
 Each tool is one Vikunja domain, registered once in `src/tools/index.ts`:
 - A single `subcommand` Zod enum (`action` on the older `vikunja_filters`) routes to a handler
 - Zod validation for all parameters, so bad arguments fail at the protocol boundary
-- Every response is markdown text built by `src/utils/simple-response.ts` — see
+- Every response is markdown text built by `src/utils/simple-response.ts`; see
   [TOOLS.md](TOOLS.md)'s Response Format section
 - Registration is gated by module config and, for the credential-adjacent and
   irreversible tools, by auth type as well (see
@@ -58,8 +58,8 @@ Each tool is one Vikunja domain, registered once in `src/tools/index.ts`:
   currently wired on `vikunja_auth`
 - **Credential masking** (`src/utils/security.ts`): tokens and URLs are masked in logs and
   error messages. Redaction is centrally wired into `Logger.log`
-  (`src/utils/logger.ts`) — every call site is covered without remembering
-  to sanitize its own arguments — as a structural key-name pass
+  (`src/utils/logger.ts`), so every call site is covered without remembering
+  to sanitize its own arguments. It works as a structural key-name pass
   (`sanitizeLogArgs`) plus a textual backstop over the rendered line
   (`redactSecretsInText`) for credentials interpolated into a message
   literal, both applied only after the log-level gate so a suppressed level
@@ -68,8 +68,8 @@ Each tool is one Vikunja domain, registered once in `src/tools/index.ts`:
   cannot see: URL paths, URL userinfo, sensitive query values).
 
 ### Storage
-- `src/storage/SimpleFilterStorage.ts` — session-isolated, mutex-guarded in-memory filter storage
-- `src/storage/templateFileStore.ts` — opt-in file persistence for templates (see
+- `src/storage/SimpleFilterStorage.ts`: session-isolated, mutex-guarded in-memory filter storage
+- `src/storage/templateFileStore.ts`: opt-in file persistence for templates (see
   [CONFIGURATION.md#templates-persistence](CONFIGURATION.md#templates-persistence)); templates are otherwise session-only
 
 ### Error Hierarchy
@@ -78,7 +78,7 @@ Each tool is one Vikunja domain, registered once in `src/tools/index.ts`:
 - API error translation to user-friendly messages
 
 ### Retry Logic
-`src/utils/retry.ts` — opossum circuit breakers (registered per endpoint group by
+`src/utils/retry.ts`: opossum circuit breakers (registered per endpoint group by
 `vikunjaRestRequest`) plus exponential backoff for transient failures (`RETRY_CONFIG`):
 - `AUTH_ERRORS`: 3 retries, 1s initial delay, 2x backoff, capped at 10s
 - `NETWORK_ERRORS`: 5 retries, 500ms initial delay, 1.5x backoff, capped at 30s
@@ -91,8 +91,8 @@ Each tool is one Vikunja domain, registered once in `src/tools/index.ts`:
 - **Creates never retry an ambiguous failure.** Vikunja's v1 API uses `PUT` as its create verb,
   so `vikunjaRestRequest` gives every `PUT` the `shouldRetryNonIdempotentWrite` predicate: it
   retries only HTTP 429 and connection failures that prove the request was never delivered
-  (refused / unresolved / handshake timeout). A 5xx or a mid-flight reset is ambiguous — the
-  write may have committed with the response lost — and resending it would silently create a
+  (refused / unresolved / handshake timeout). A 5xx or a mid-flight reset is ambiguous: the
+  write may have committed with the response lost, and resending it would silently create a
   duplicate. Idempotent methods keep the standard 5xx/429/transient-network policy; a call site
   that knows a given `PUT` is safe to repeat can override `options.retry.shouldRetry`.
   See [API_NOTES.md](API_NOTES.md#create-retries-and-idempotency) for how this
