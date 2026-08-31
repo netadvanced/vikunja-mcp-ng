@@ -32,7 +32,7 @@ import {
   rewordBreakerOpenError,
   type RetryOptions,
 } from './retry';
-import { getRequestContext } from '../context/requestContext';
+import { resolveIdentityAuthManager } from '../context/requestContext';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
@@ -72,7 +72,9 @@ function resolveEffectiveAuthManager(
   if (options?.ignoreRequestContext) {
     return authManager;
   }
-  return getRequestContext()?.authManager ?? authManager;
+  // Same one rule the capability/auth-type gates use (#270/#282) — see
+  // `resolveIdentityAuthManager`'s doc comment.
+  return resolveIdentityAuthManager(authManager);
 }
 
 /**

@@ -90,15 +90,19 @@ export function registerUserDeletionTool(
     async (args) => {
       // Closure-gate precedence fix: defer to the per-request context when
       // bound (see hasRequestContext's doc comment, src/client.ts).
+      let effectiveAuthManager = authManager;
       if (hasRequestContext()) {
-        await getAuthManagerFromContext();
+        effectiveAuthManager = await getAuthManagerFromContext();
       } else if (!authManager.isAuthenticated()) {
         throw new MCPError(
           ErrorCode.AUTH_REQUIRED,
           'Authentication required. Please use vikunja_auth.connect first.',
         );
       }
-      if (authManager.getAuthType() !== 'jwt') {
+      // JWT of the CALLING identity (#282): this tool schedules deletion of
+      // the *session owner's* account, so gating it on anything but the
+      // caller's own resolved credential is a deny-by-default violation.
+      if (effectiveAuthManager.getAuthType() !== 'jwt') {
         throw new MCPError(
           ErrorCode.PERMISSION_DENIED,
           'User deletion operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',

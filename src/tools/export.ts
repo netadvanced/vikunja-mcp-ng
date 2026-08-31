@@ -199,8 +199,9 @@ export function registerExportTool(
     async (args) => {
       // Closure-gate precedence fix: defer to the per-request context when
       // bound (see hasRequestContext's doc comment, src/client.ts).
+      let effectiveAuthManager = authManager;
       if (hasRequestContext()) {
-        await getAuthManagerFromContext();
+        effectiveAuthManager = await getAuthManagerFromContext();
       } else if (!authManager.isAuthenticated()) {
         throw new MCPError(
           ErrorCode.AUTH_REQUIRED,
@@ -208,8 +209,9 @@ export function registerExportTool(
         );
       }
 
-      // Export operations require JWT authentication
-      if (authManager.getAuthType() !== 'jwt') {
+      // Export operations require JWT authentication — of the CALLING
+      // identity (#282), not of the process-global closure manager.
+      if (effectiveAuthManager.getAuthType() !== 'jwt') {
         throw new MCPError(
           ErrorCode.PERMISSION_DENIED,
           'Export operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',

@@ -4,6 +4,7 @@
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
@@ -48,6 +49,23 @@ function createStdioModeProvisioningError(subcommand: string): MCPError {
       `is running in stdio mode, which has only one process-wide credential; use ` +
       `vikunja_auth connect instead.`,
   );
+}
+
+/**
+ * Length-safe, constant-time comparison of a stored session token against a
+ * caller-supplied one (#276's reconnect check). `timingSafeEqual` throws on
+ * unequal lengths, so length is compared first — that leaks only the length,
+ * which the caller supplied half of anyway, while the byte comparison itself
+ * stays constant-time rather than short-circuiting on the first differing
+ * character like `===` does.
+ */
+function tokensMatch(storedToken: string, incomingToken: string): boolean {
+  const stored = Buffer.from(storedToken, 'utf8');
+  const incoming = Buffer.from(incomingToken, 'utf8');
+  if (stored.length !== incoming.length) {
+    return false;
+  }
+  return timingSafeEqual(stored, incoming);
 }
 
 /** The current request's validated identity, or throws if somehow called outside an ALS scope. */
@@ -236,9 +254,20 @@ export function registerAuthTool(
             const secureMessage = createSecureConnectionMessage(args.apiUrl, args.apiToken);
             logger.debug('Auth connect attempt: %s', secureMessage);
 
-            // Check if already authenticated
+            // Check if already authenticated with the SAME credential. URL
+            // equality alone is not enough (#276): the tool's own 'refresh'
+            // guidance tells a user whose JWT expired to call connect again,
+            // with a NEW token, against the same URL. Short-circuiting on the
+            // URL silently discarded that token and reported success while
+            // the expired one stayed in the session — so the token is
+            // compared too, and any difference falls through to a real
+            // connect + verifyConnection round trip.
             const currentStatus = authManager.getStatus();
-            if (currentStatus.authenticated && currentStatus.apiUrl === args.apiUrl) {
+            if (
+              currentStatus.authenticated &&
+              currentStatus.apiUrl === args.apiUrl &&
+              tokensMatch(authManager.getSession().apiToken, args.apiToken)
+            ) {
               const response = createStandardResponse(
                 'auth-connect',
                 'Already connected to Vikunja',
@@ -325,10 +354,21 @@ export function registerAuthTool(
           }
 
           case 'refresh': {
-            // authManager.getAuthType() throws AUTH_REQUIRED when there is
-            // no active session, which wrapAuthError below turns into a
-            // clear "not authenticated" error.
-            const authType = authManager.getAuthType();
+            // The CALLING identity's auth type (#282): in oidc-http mode the
+            // answer ("your JWT expired, get a new one" vs "API tokens don't
+            // expire") depends on the credential this caller actually holds
+            // in the vault, not on whatever legacy env credential the
+            // process-global manager may carry. An unprovisioned identity
+            // gets the structured provisioning prompt from
+            // getAuthManagerFromContext rather than the operator's status.
+            //
+            // stdio (no ALS scope): unchanged — authManager.getAuthType()
+            // throws AUTH_REQUIRED when there is no active session, which
+            // wrapAuthError below turns into a clear "not authenticated" error.
+            const refreshAuthManager = hasRequestContext()
+              ? await getAuthManagerFromContext()
+              : authManager;
+            const authType = refreshAuthManager.getAuthType();
 
             if (authType === 'jwt') {
               // Vikunja JWTs are short-lived (unlike API tokens) and the
@@ -409,22 +449,36 @@ export function registerAuthTool(
             // server URL to ask. Closure-gate precedence fix: defer to the
             // per-request context when bound (see hasRequestContext's doc
             // comment, src/client.ts).
+            let infoAuthManager = authManager;
             if (hasRequestContext()) {
-              await getAuthManagerFromContext();
+              infoAuthManager = await getAuthManagerFromContext();
             } else if (!authManager.isAuthenticated()) {
               throw new MCPError(
                 ErrorCode.AUTH_REQUIRED,
                 'Authentication required. Please use vikunja_auth.connect first.',
               );
             }
-            const info = await vikunjaRestRequest<VikunjaInfoResponse>(authManager, 'GET', '/info');
+            const info = await vikunjaRestRequest<VikunjaInfoResponse>(
+              infoAuthManager,
+              'GET',
+              '/info',
+            );
 
             // Refreshes the info-derived capability fields from this fresh
             // /info response while reusing the cached hasV2Api probe result
             // (or, for a session that never went through 'connect's
             // detection, running it once now) — see
             // `getOrDetectCapabilities` in `src/utils/capabilities.ts`.
-            const capabilities = await getOrDetectCapabilities(authManager, info);
+            //
+            // Keyed to the CALLING identity's session (#282): the snapshot is
+            // both READ and WRITTEN on the manager passed here, and in
+            // oidc-http mode two identities can point at different Vikunja
+            // servers. Caching on the process-global manager would serve one
+            // identity's server version (and v2 probe result) to another —
+            // and, when that manager holds no session at all, would throw
+            // AUTH_REQUIRED out of `getSession()` for a fully provisioned
+            // caller.
+            const capabilities = await getOrDetectCapabilities(infoAuthManager, info);
 
             const response = createStandardResponse(
               'auth-info',
