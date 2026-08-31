@@ -434,6 +434,38 @@ describe('setupOidcHttpAuth', () => {
     );
   });
 
+  // #292 LOW-19: without a configured publicUrl, the resource-metadata
+  // resolver derives the origin from the request's Host header - it must
+  // not reflect a Host outside the allowedHosts allowlist.
+  it('does not reflect a spoofed Host header into the 401 resource_metadata URL', async () => {
+    await setupOidcHttpAuth(
+      {
+        issuer: 'https://idp.example.test/realms/t',
+        audience: 'vikunja-mcp-ng',
+        jwksUri: 'https://idp.example.test/realms/t/certs',
+      },
+      { path: vaultPath },
+      { host: '127.0.0.1', port: 8765, path: '/mcp' },
+      async () => joseDeps
+    );
+
+    const middleware = getOidcAuthMiddleware();
+    expect(middleware).toBeInstanceOf(Function);
+
+    const captured = fakeResponse();
+    const spoofedReq = {
+      headers: { authorization: 'Bearer not-a-jwt', host: 'evil.attacker.example' },
+    } as unknown as HttpRequestWithAuth;
+    const ok = await middleware!(spoofedReq, captured.res);
+    expect(ok).toBe(false);
+    expect(captured.statusCode).toBe(401);
+    // Falls back to the configured bind host:port, not the spoofed Host.
+    expect(captured.headers?.['WWW-Authenticate']).toContain(
+      'resource_metadata="http://127.0.0.1:8765/.well-known/oauth-protected-resource"'
+    );
+    expect(captured.headers?.['WWW-Authenticate']).not.toContain('evil.attacker.example');
+  });
+
   it('throws a clear ConfigurationError when no vault master key is configured', async () => {
     delete process.env.VIKUNJA_MCP_VAULT_KEY;
 

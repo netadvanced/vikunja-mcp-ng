@@ -89,6 +89,52 @@ describe('resolveResourceUrl', () => {
       'http://0.0.0.0:9000/api/mcp'
     );
   });
+
+  // #292 LOW-19: when an allowedHosts list is supplied, an untrusted Host
+  // header must never be reflected into the discovery document.
+  describe('with an allowedHosts allowlist (LOW-19)', () => {
+    it('uses the Host header verbatim when it is in the allowlist', () => {
+      expect(
+        resolveResourceUrl(httpConfig(), fakeRequest({ host: 'mcp.example.ch:8765' }), [
+          'mcp.example.ch:8765',
+        ])
+      ).toBe('http://mcp.example.ch:8765/mcp');
+    });
+
+    it('falls back to the configured host:port when the Host header is NOT in the allowlist', () => {
+      expect(
+        resolveResourceUrl(httpConfig(), fakeRequest({ host: 'evil.attacker.example' }), [
+          'mcp.example.ch:8765',
+        ])
+      ).toBe('http://127.0.0.1:8765/mcp');
+    });
+
+    it('ignores x-forwarded-proto when the Host header is not allowlisted', () => {
+      expect(
+        resolveResourceUrl(
+          httpConfig(),
+          fakeRequest({ host: 'evil.attacker.example', 'x-forwarded-proto': 'https' }),
+          ['mcp.example.ch:8765']
+        )
+      ).toBe('http://127.0.0.1:8765/mcp');
+    });
+
+    it('still honors x-forwarded-proto when the Host header IS allowlisted', () => {
+      expect(
+        resolveResourceUrl(
+          httpConfig(),
+          fakeRequest({ host: 'mcp.example.ch:8765', 'x-forwarded-proto': 'https' }),
+          ['mcp.example.ch:8765']
+        )
+      ).toBe('https://mcp.example.ch:8765/mcp');
+    });
+
+    it('trusts the request verbatim when allowedHosts is omitted (legacy callers)', () => {
+      expect(
+        resolveResourceUrl(httpConfig(), fakeRequest({ host: 'anything.example' }))
+      ).toBe('http://anything.example/mcp');
+    });
+  });
 });
 
 describe('resolveResourceMetadataUrl', () => {
@@ -130,6 +176,18 @@ describe('buildProtectedResourceMetadata', () => {
         httpConfig(),
         'https://idp.example.ch/realms/main',
         fakeRequest({ host: '127.0.0.1:8765' })
+      ).resource
+    ).toBe('http://127.0.0.1:8765/mcp');
+  });
+
+  // #292 LOW-19
+  it('does not reflect a non-allowlisted Host header into the served metadata', () => {
+    expect(
+      buildProtectedResourceMetadata(
+        httpConfig(),
+        'https://idp.example.ch/realms/main',
+        fakeRequest({ host: 'evil.attacker.example' }),
+        ['127.0.0.1:8765']
       ).resource
     ).toBe('http://127.0.0.1:8765/mcp');
   });
