@@ -43,17 +43,18 @@ export interface EnsureLabelByTitleResult {
 }
 
 /**
- * Get-or-create a label by title: reuse an existing label whose title
- * matches case-insensitively, or create a new one when none does.
+ * Finds an existing label by title (case-insensitive exact match), or
+ * `undefined` when none exists. Never creates.
  *
- * Idempotent — calling this twice with the same title returns the same id
- * both times (the second call reuses instead of creating a duplicate).
+ * The shared lookup half of {@link ensureLabelByTitle} — extracted so the
+ * read-only callers (the task-filter title -> id resolution added for issue
+ * #227) get byte-identical match semantics without any chance of creating a
+ * label as a side effect of *reading*.
  */
-export async function ensureLabelByTitle(
+export async function findLabelByTitle(
   authManager: AuthManager,
   title: string,
-  opts: EnsureLabelByTitleOptions = {},
-): Promise<EnsureLabelByTitleResult> {
+): Promise<VikunjaLabel | undefined> {
   const normalizedTitle = title.toLowerCase();
 
   // Narrow via the server's own search first (mirrors the `list` subcommand's
@@ -70,9 +71,43 @@ export async function ensureLabelByTitle(
   // Multiple candidates can share a case-insensitive title (e.g. "Bug" and
   // "bug" both created previously); dedupe by picking the first exact match
   // deterministically instead of creating a second duplicate.
-  const existing = (Array.isArray(candidates) ? candidates : []).find(
+  return (Array.isArray(candidates) ? candidates : []).find(
     (label) => typeof label.title === 'string' && label.title.toLowerCase() === normalizedTitle,
   );
+}
+
+/**
+ * Resolves a label TITLE to its numeric id, or `undefined` when no label
+ * with that (case-insensitive) title exists.
+ *
+ * Read-only counterpart to {@link ensureLabelByTitle}: it never creates.
+ * Used by the task-filter path (issue #227), where Vikunja's `labels`
+ * filter field matches on label **ids** and rejects a title outright with
+ * HTTP 400 code 4019 (`The task filter value 'HU' for field 'labels' is
+ * invalid.`, verified against 2.4.0) — so a filter written in the documented
+ * title spelling has to be rewritten to ids before it goes on the wire.
+ */
+export async function resolveLabelIdByTitle(
+  authManager: AuthManager,
+  title: string,
+): Promise<number | undefined> {
+  const label = await findLabelByTitle(authManager, title);
+  return typeof label?.id === 'number' ? label.id : undefined;
+}
+
+/**
+ * Get-or-create a label by title: reuse an existing label whose title
+ * matches case-insensitively, or create a new one when none does.
+ *
+ * Idempotent — calling this twice with the same title returns the same id
+ * both times (the second call reuses instead of creating a duplicate).
+ */
+export async function ensureLabelByTitle(
+  authManager: AuthManager,
+  title: string,
+  opts: EnsureLabelByTitleOptions = {},
+): Promise<EnsureLabelByTitleResult> {
+  const existing = await findLabelByTitle(authManager, title);
 
   if (existing) {
     if (typeof existing.id !== 'number' || typeof existing.title !== 'string') {

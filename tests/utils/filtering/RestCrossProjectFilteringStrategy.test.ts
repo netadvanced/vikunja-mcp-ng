@@ -216,7 +216,8 @@ describe('RestCrossProjectFilteringStrategy', () => {
         serverSideFilteringUsed: false,
         serverSideFilteringAttempted: true,
         clientSideFiltering: true,
-        filteringNote: 'Direct REST GET /tasks failed; used per-project aggregation fallback',
+        filteringNote:
+          'Direct REST GET /tasks failed (HTTP 400); used per-project aggregation fallback',
       });
     });
 

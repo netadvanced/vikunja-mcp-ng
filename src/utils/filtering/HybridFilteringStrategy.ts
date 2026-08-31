@@ -47,13 +47,23 @@ export class HybridFilteringStrategy implements TaskFilteringStrategy {
 
       const result = await this.clientSideStrategy.execute(params);
 
-      // Update metadata to reflect that server-side was attempted
+      // Update metadata to reflect that server-side was attempted. The
+      // server's own reason is carried forward rather than swallowed — see
+      // RestCrossProjectFilteringStrategy's fallback for why — and any
+      // incompleteness the fallback recorded stays visible.
+      const reason = error instanceof Error ? error.message : String(error);
+      const baseNote = `Server-side filtering failed (${reason}), client-side filtering applied as fallback`;
+      const fallbackWarnings = result.metadata.warnings ?? [];
+
       return {
         ...result,
         metadata: {
           ...result.metadata,
           serverSideFilteringAttempted: true,
-          filteringNote: 'Server-side filtering failed, client-side filtering applied as fallback',
+          filteringNote:
+            fallbackWarnings.length > 0
+              ? `${baseNote} — INCOMPLETE: ${fallbackWarnings.join(' ')}`
+              : baseNote,
         },
       };
     }

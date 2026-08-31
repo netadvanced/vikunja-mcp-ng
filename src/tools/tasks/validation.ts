@@ -34,6 +34,17 @@ export function validateDateString(date: string, fieldName: string): void {
  * timestamps (anything containing a `T`) are passed through unchanged, and
  * empty/undefined input is passed through as-is (validation of malformed
  * strings is `validateDateString`'s job, not this function's).
+ *
+ * It ALSO coerces the SQL-ish space-separated form `YYYY-MM-DD HH:MM[:SS]`
+ * to `YYYY-MM-DDTHH:MM:SSZ` (issue #225). That spelling is what an agent
+ * naturally writes inside a filter string — `created >= '2026-08-16
+ * 00:00:00'` — and Vikunja rejects it outright with HTTP 400 code 4019
+ * ("The task filter value '2026-08-16 00:00:00' for field 'created' is
+ * invalid.", verified against 2.4.0). Because it is rejected rather than
+ * accepted-and-ignored, the whole filtered call failed and silently dropped
+ * into a fallback path. Coercing here keeps ONE date normalizer for both
+ * task fields and filter literals (see `conditionToString` in
+ * src/utils/filters.ts, the filter-string call site).
  */
 export function normalizeDateForApi(date: string | undefined): string | undefined {
   if (!date) return date;
@@ -44,6 +55,13 @@ export function normalizeDateForApi(date: string | undefined): string | undefine
   // Bare date-only form, e.g. '2026-07-24'.
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
     return `${trimmed}T00:00:00Z`;
+  }
+  // SQL-ish space-separated form, e.g. '2026-08-16 00:00:00' or
+  // '2026-08-16 09:30'. Seconds are optional; anything already carrying an
+  // explicit zone/offset is left for the branch above (it contains a 'T').
+  const spaceSeparated = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})(:\d{2})?$/.exec(trimmed);
+  if (spaceSeparated) {
+    return `${spaceSeparated[1]}T${spaceSeparated[2]}${spaceSeparated[3] ?? ':00'}Z`;
   }
   // Anything else (malformed, or a format we don't recognize) - leave
   // untouched; validateDateString is responsible for rejecting it.

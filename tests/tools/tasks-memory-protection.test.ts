@@ -147,7 +147,13 @@ describe('Tasks Memory Protection', () => {
         throw new Error('mock: REST GET /tasks unavailable');
       }
       if (path === '/projects') {
-        return jsonResponse(await mockClient.projects.getProjects({ per_page: 1000 }));
+        // The project list is paged now (issue #225: `per_page` is clamped by
+        // the server, so >50 projects were silently never searched). A real
+        // server returns an empty page past the end; mirror that so the
+        // aggregation terminates instead of re-reading page 1 forever.
+        const projectsPage = Number(parsed.searchParams.get('page') ?? '1');
+        const allProjects = await mockClient.projects.getProjects({ per_page: 1000 });
+        return jsonResponse(projectsPage > 1 ? [] : allProjects);
       }
       const projectTasksMatch = /^\/projects\/(-?\d+)\/tasks$/.exec(path);
       if (projectTasksMatch?.[1] !== undefined) {
@@ -163,7 +169,9 @@ describe('Tasks Memory Protection', () => {
         if (s !== null) params.s = s;
         if (sortBy !== null) params.sort_by = sortBy;
         const tasks = await mockClient.tasks.getProjectTasks(Number(projectTasksMatch[1]), params);
-        return jsonResponse(tasks);
+        // Same page-awareness as /projects above: the per-project fetch now
+        // follows pagination, so an unpaged mock would loop forever.
+        return jsonResponse(params.page !== undefined && Number(params.page) > 1 ? [] : tasks);
       }
       throw new Error(`mock: unhandled fetch path ${path}`);
     });

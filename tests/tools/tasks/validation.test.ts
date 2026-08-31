@@ -56,6 +56,26 @@ describe('Validation utilities', () => {
     it('leaves an unrecognized/malformed date string unchanged (validateDateString handles rejection)', () => {
       expect(normalizeDateForApi('not-a-date')).toBe('not-a-date');
     });
+
+    // Issue #225: the SQL-ish spelling an agent naturally writes inside a
+    // filter string. Vikunja rejects it with 400 code 4019 ("The task filter
+    // value '2026-08-16 00:00:00' for field 'created' is invalid.") rather
+    // than accepting-and-ignoring it, so the whole filtered call failed.
+    it('coerces the space-separated YYYY-MM-DD HH:MM:SS form to RFC3339', () => {
+      expect(normalizeDateForApi('2026-08-16 00:00:00')).toBe('2026-08-16T00:00:00Z');
+    });
+
+    it('coerces the space-separated form without seconds', () => {
+      expect(normalizeDateForApi('2026-08-16 09:30')).toBe('2026-08-16T09:30:00Z');
+    });
+
+    it('trims surrounding whitespace before coercing the space-separated form', () => {
+      expect(normalizeDateForApi('  2026-08-16 09:30:15  ')).toBe('2026-08-16T09:30:15Z');
+    });
+
+    it('leaves a space-separated string that is not a timestamp unchanged', () => {
+      expect(normalizeDateForApi('2026-08-16 sometime')).toBe('2026-08-16 sometime');
+    });
   });
 
   describe('validateId', () => {

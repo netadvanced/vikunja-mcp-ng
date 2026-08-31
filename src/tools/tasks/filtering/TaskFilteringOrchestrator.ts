@@ -43,7 +43,12 @@ export const TaskFilteringOrchestrator = {
       });
 
       // Step 1: Validate all inputs and parse filters
-      const validationResult = await FilterValidator.validateTaskFiltering(args, storage, config);
+      const validationResult = await FilterValidator.validateTaskFiltering(
+        args,
+        storage,
+        config,
+        authManager,
+      );
 
       // Log any validation warnings
       if (validationResult.validationWarnings.length > 0) {
@@ -64,6 +69,17 @@ export const TaskFilteringOrchestrator = {
         storage,
         authManager,
       );
+
+      // Warnings raised while resolving the filter itself (e.g. a label title
+      // that matched no label) travel with the RESULT, not just the log —
+      // they are what tells the caller the returned set is narrower than what
+      // they asked for (issues #225/#227).
+      if (validationResult.filterWarnings.length > 0) {
+        filteringResult.metadata.warnings = [
+          ...(filteringResult.metadata.warnings ?? []),
+          ...validationResult.filterWarnings,
+        ];
+      }
 
       // Step 4: Post-process and validate results
       const finalValidation = FilterValidator.validateLoadedTasks(filteringResult.tasks.length);
