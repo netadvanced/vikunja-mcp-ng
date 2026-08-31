@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MCPError, ErrorCode } from '../types';
+import { percentDoneSchema } from '../utils/percent-done';
 
 /* ===================================================================
  * TYPE DEFINITIONS & SCHEMAS
@@ -25,7 +26,10 @@ export const importedTaskSchema = z
       .string()
       .regex(/^#[0-9A-Fa-f]{6}$/)
       .optional(),
-    percentDone: z.number().min(0).max(100).optional(),
+    // Whole percentage 0-100, the same scale as `percentDone` everywhere else
+    // on this tool surface. Converted to Vikunja's 0-1 wire fraction in
+    // `TaskCreationService.prepareTaskData` — see src/utils/percent-done.ts.
+    percentDone: percentDoneSchema,
     repeatAfter: z.number().optional(),
     repeatMode: z.number().optional(),
     reminders: z.array(z.string()).optional(),

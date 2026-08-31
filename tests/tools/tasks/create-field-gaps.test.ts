@@ -11,11 +11,13 @@
  * Every assertion here checks the WIRE payload (the JSON body actually sent to
  * Vikunja), not merely that a helper was called.
  *
- * SCALE NOTE: `percentDone` is a FRACTION 0-1 (0.5 = 50%), not 0-100. Verified
- * in go-vikunja: `PercentDone float64` (pkg/models/tasks.go), the frontend's
- * own picker stores [0, 0.1, ... 1] (PercentDoneSelect.vue) and every display
- * site renders `percentDone * 100` (KanbanCard.vue). The upstream PRs above
- * describe "0-100" because that is their i18n input scale, not the contract.
+ * SCALE NOTE: the tool surface takes `percentDone` as a WHOLE PERCENTAGE 0-100
+ * (integers only); Vikunja's wire field `percent_done` is a 0-1 fraction
+ * (`PercentDone float64`, pkg/models/tasks.go). The conversion lives in
+ * `src/utils/percent-done.ts` and these tests assert both ends of it: the
+ * percentage that goes in, and the fraction that lands in the request body.
+ * See decision 22 in docs/ROADMAP.md §3 for why the boundary moved here — and
+ * note the upstream PRs above (#94, #82) read the interface as 0-100 too.
  */
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
@@ -96,12 +98,22 @@ describe('task create field gaps', () => {
       );
     }
 
-    it('sends percentDone as percent_done in the create payload', async () => {
+    it('converts a 0-100 percentDone to the 0-1 wire fraction', async () => {
       routeCreateOnly({ title: 'T', percent_done: 0.5 });
 
-      await createTask({ projectId: 1, title: 'T', percentDone: 0.5 }, authManager);
+      await createTask({ projectId: 1, title: 'T', percentDone: 50 }, authManager);
 
       expect(createBody()).toEqual({ title: 'T', project_id: 1, percent_done: 0.5 });
+    });
+
+    it('converts an odd percentage exactly (33 -> 0.33, no float artifact)', async () => {
+      routeCreateOnly({ title: 'T', percent_done: 0.33 });
+
+      await createTask({ projectId: 1, title: 'T', percentDone: 33 }, authManager);
+
+      // Not 0.33000000000000007 — `n / 100` lands on the same double as the
+      // decimal literal.
+      expect(createBody()).toHaveProperty('percent_done', 0.33);
     });
 
     it('sends percent_done: 0 rather than dropping the falsy value', async () => {
@@ -112,12 +124,22 @@ describe('task create field gaps', () => {
       expect(createBody()).toHaveProperty('percent_done', 0);
     });
 
-    it('sends percent_done: 1 for a fully-complete task (100%)', async () => {
+    it('sends percent_done: 1 for a fully-complete task (percentDone: 100)', async () => {
       routeCreateOnly({ title: 'T', percent_done: 1 });
+
+      await createTask({ projectId: 1, title: 'T', percentDone: 100 }, authManager);
+
+      expect(createBody()).toHaveProperty('percent_done', 1);
+    });
+
+    it('reads percentDone: 1 as one percent, not as "done"', async () => {
+      routeCreateOnly({ title: 'T', percent_done: 0.01 });
 
       await createTask({ projectId: 1, title: 'T', percentDone: 1 }, authManager);
 
-      expect(createBody()).toHaveProperty('percent_done', 1);
+      // The whole point of the integer percentage scale: under the old 0-1
+      // contract this same call silently wrote 100%.
+      expect(createBody()).toHaveProperty('percent_done', 0.01);
     });
 
     it('omits percent_done entirely when percentDone is not supplied', async () => {
@@ -128,17 +150,27 @@ describe('task create field gaps', () => {
       expect(createBody()).not.toHaveProperty('percent_done');
     });
 
-    it('rejects a 0-100 style value before any request is sent', async () => {
+    it('rejects a fraction with a message that teaches the scale', async () => {
       await expect(
-        createTask({ projectId: 1, title: 'T', percentDone: 50 }, authManager),
-      ).rejects.toThrow('percentDone must be between 0 and 1');
+        createTask({ projectId: 1, title: 'T', percentDone: 0.5 }, authManager),
+      ).rejects.toThrow('percentDone must be a whole number between 0 and 100');
+      await expect(
+        createTask({ projectId: 1, title: 'T', percentDone: 0.5 }, authManager),
+      ).rejects.toThrow('use 50 for 50%');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects a value above 100 before any request is sent', async () => {
+      await expect(
+        createTask({ projectId: 1, title: 'T', percentDone: 101 }, authManager),
+      ).rejects.toThrow('percentDone must be a whole number between 0 and 100');
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('rejects a negative value before any request is sent', async () => {
       await expect(
-        createTask({ projectId: 1, title: 'T', percentDone: -0.1 }, authManager),
-      ).rejects.toThrow('percentDone must be between 0 and 1');
+        createTask({ projectId: 1, title: 'T', percentDone: -1 }, authManager),
+      ).rejects.toThrow('percentDone must be a whole number between 0 and 100');
       expect(mockFetch).not.toHaveBeenCalled();
     });
   });
@@ -241,12 +273,12 @@ describe('task create field gaps', () => {
   });
 
   describe('createOneBulkTask — percentDone', () => {
-    it('sends percentDone as percent_done in the bulk create payload', async () => {
+    it('converts a 0-100 percentDone to the 0-1 wire fraction', async () => {
       mockFetch.mockImplementation(async () =>
         mockResponse({ text: JSON.stringify({ id: 9, title: 'B', percent_done: 0.25 }) }),
       );
 
-      await createOneBulkTask(authManager, 4, { title: 'B', percentDone: 0.25 });
+      await createOneBulkTask(authManager, 4, { title: 'B', percentDone: 25 });
 
       const call = fetchCalls().find((c) => c.method === 'PUT');
       expect(call?.path).toBe('/projects/4/tasks');
@@ -265,31 +297,40 @@ describe('task create field gaps', () => {
   });
 
   describe('validateBulkCreate — percentDone range', () => {
-    it('accepts a fraction between 0 and 1', () => {
+    it.each([0, 75, 100])('accepts the whole percentage %i', (pct) => {
       expect(() =>
         bulkOperationValidator.validateBulkCreate({
           projectId: 1,
-          tasks: [{ title: 'A', percentDone: 0.75 }],
+          tasks: [{ title: 'A', percentDone: pct }],
         }),
       ).not.toThrow();
     });
 
-    it('rejects a 0-100 style value with the offending index', () => {
+    it('rejects a fraction with the offending index and a teaching message', () => {
       expect(() =>
         bulkOperationValidator.validateBulkCreate({
           projectId: 1,
-          tasks: [{ title: 'A' }, { title: 'B', percentDone: 75 }],
+          tasks: [{ title: 'A' }, { title: 'B', percentDone: 0.75 }],
         }),
-      ).toThrow('tasks[1].percentDone must be between 0 and 1');
+      ).toThrow('tasks[1].percentDone must be a whole number between 0 and 100');
+    });
+
+    it('rejects a value above 100 with the offending index', () => {
+      expect(() =>
+        bulkOperationValidator.validateBulkCreate({
+          projectId: 1,
+          tasks: [{ title: 'A' }, { title: 'B', percentDone: 101 }],
+        }),
+      ).toThrow('tasks[1].percentDone must be a whole number between 0 and 100');
     });
 
     it('rejects a non-numeric value', () => {
       expect(() =>
         bulkOperationValidator.validateBulkCreate({
           projectId: 1,
-          tasks: [{ title: 'A', percentDone: '0.5' as unknown as number }],
+          tasks: [{ title: 'A', percentDone: '50' as unknown as number }],
         }),
-      ).toThrow('tasks[0].percentDone must be between 0 and 1');
+      ).toThrow('tasks[0].percentDone must be a whole number between 0 and 100');
     });
   });
 });

@@ -349,6 +349,13 @@ server boundary (`FILTER_FIELD_TO_API_FIELD` in `src/utils/filters.ts`,
 `SORT_FIELD_ALIASES` in `src/tools/tasks/constants.ts`). Do not expect the API
 to accept or return the camelCase spelling.
 
+`percent_done` differs in **scale** as well as spelling: the API stores a
+fraction 0-1 (`0.5` = 50%), while this server's `percentDone` argument is a
+whole percentage 0-100 (integers only). That conversion also happens at the
+boundary — `src/utils/percent-done.ts`, decision 22 in
+[ROADMAP.md](ROADMAP.md) §3 — so the example response below shows the wire
+value, not what the tool takes or reports.
+
 **Note:** This is not an issue but a clarification for developers who might expect camelCase fields. The API consistently uses snake_case for all task fields.
 
 **Example Task Response:**
@@ -359,7 +366,7 @@ to accept or return the camelCase spelling.
   "title": "Example Task",
   "due_date": "2024-12-31T23:59:59Z",
   "start_date": "2024-01-01T00:00:00Z", 
-  "percent_done": 50,
+  "percent_done": 0.5,
   "hex_color": "#FF0000",
   "repeat_after": 86400,
   "done_at": null,

@@ -5,6 +5,7 @@
 
 import type { ResponseMetadata } from '../types/responses';
 import type { Task, Project, Label, User } from '../types/vikunja';
+import { fractionToPercentDone } from './percent-done';
 
 /**
  * Common data structures that can be passed to response formatters
@@ -249,9 +250,12 @@ function formatTaskDetailLines(task: Task): string[] {
     parts.push(`**Due:** ${task.due_date}`);
   }
 
-  // Progress (if set)
+  // Progress (if set). Vikunja stores this as a 0-1 fraction; render it on the
+  // same whole-percentage scale the tool surface accepts, so what an agent
+  // reads back matches what it wrote. Printing the raw fraction next to a `%`
+  // sign made a half-done task read as "Progress: 0.5%".
   if (task.percent_done !== undefined && task.percent_done > 0) {
-    parts.push(`**Progress:** ${task.percent_done}%`);
+    parts.push(`**Progress:** ${fractionToPercentDone(task.percent_done)}%`);
   }
 
   // Project ID (if set)

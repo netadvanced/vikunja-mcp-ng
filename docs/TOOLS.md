@@ -100,7 +100,7 @@ truncation notice beyond that (`LIST_ITEM_RENDER_CAP`) — page further with
   - `create` - Create a new task
     - Required: title, projectId
     - Optional: description, dueDate, startDate, endDate, priority, percentDone, labels, assignees, bucketId (+ optional viewId), repeatAfter/repeatMode
-    - `percentDone` is a **fraction between 0 and 1** (0.25 = 25%, 1 = 100%), matching Vikunja's `models.Task.percent_done` wire contract — **not** a 0-100 percentage. Same scale on `update` and `bulk-create`
+    - `percentDone` is a **whole percentage between 0 and 100** (25 = 25%, 100 = done), and must be an **integer** — `0.5` is rejected with a message naming the scale rather than silently stored as half of one percent. Same scale on `update`, `bulk-create`, `bulk-update`'s `percent_done` field, `vikunja_batch_import`, and inside a `filter` string. Vikunja's own wire field (`models.Task.percent_done`) is a 0-1 fraction; this server converts in both directions at its boundary (`src/utils/percent-done.ts`) so the fraction never reaches the tool surface. Reading a task back reports the nearest whole percent (a value another Vikunja client stored at sub-percent precision is rounded, halves up). **BREAKING** since `0.7.0-beta`: `percentDone: 1` now means 1%, not 100%
     - `bucketId` drops the new task straight into a Kanban bucket. Vikunja's task-create endpoint has no bucket field, so this is applied as a post-create move through the same view/bucket resolution `set-bucket` uses. If the move fails the error names the created task id and the task is **not** deleted (the task itself was created correctly) — retry the placement with `set-bucket`
     - `position` is **rejected** on create, not silently ignored: task position is per-view state written through Vikunja's dedicated Task Position endpoint, which needs a `projectViewId` that has no sensible default for a brand-new task. Create the task, then call `set-position`
     - Validates date format (ISO 8601) and IDs
@@ -118,8 +118,8 @@ truncation notice beyond that (`LIST_ITEM_RENDER_CAP`) — page further with
     - Optional: `search` (username search, `s` query param), `page`, `perPage`
   - `comment` - List or add comments to tasks
   - `bulk-create` / `bulk-update` / `bulk-delete` - Bulk task operations (same underlying handlers as the standalone `vikunja_task_bulk` tool below)
-    - `bulk-create` required: projectId, tasks array. Per-task fields: title (required), description, dueDate, startDate, endDate, priority, `percentDone` (fraction 0-1, same contract as `create`), labels, assignees, repeatAfter/repeatMode. Creates run **sequentially** by default — see `VIKUNJA_BULK_WRITE_CONCURRENCY` in [CONFIGURATION.md](CONFIGURATION.md#bulk-write-concurrency) for the opt-in override and its SQLite caveat
-    - `bulk-update` required: taskIds array, field name, value. Supported fields: done, priority, `percent_done` (fraction 0-1), due_date, start_date, end_date, project_id, assignees, labels, repeat_after, repeat_mode. Uses per-task fetch+merge+update (does not call Vikunja's native bulk API, which can wipe omitted fields). **Cost:** O(n) get+update calls.
+    - `bulk-create` required: projectId, tasks array. Per-task fields: title (required), description, dueDate, startDate, endDate, priority, `percentDone` (whole percentage 0-100, same contract as `create`), labels, assignees, repeatAfter/repeatMode. Creates run **sequentially** by default — see `VIKUNJA_BULK_WRITE_CONCURRENCY` in [CONFIGURATION.md](CONFIGURATION.md#bulk-write-concurrency) for the opt-in override and its SQLite caveat
+    - `bulk-update` required: taskIds array, field name, value. Supported fields: done, priority, `percent_done` (whole percentage 0-100 — the same scale as `percentDone` elsewhere, even though this path names the field by its raw snake_case API spelling), due_date, start_date, end_date, project_id, assignees, labels, repeat_after, repeat_mode. Uses per-task fetch+merge+update (does not call Vikunja's native bulk API, which can wipe omitted fields). **Cost:** O(n) get+update calls.
     - `bulk-delete` required: taskIds array. Returns deleted task details for confirmation; handles partial failures gracefully. **Cost:** one delete call per task — batch in groups of 20 or fewer.
   - `attach` - Upload a file attachment to a task (`filePath` or base64 `fileContent`)
   - `list-attachments` - List a task's attachments (file name, size, mime, created, author), with optional `page`/`perPage`
@@ -369,6 +369,18 @@ aliases (`due_date`, `percent_done`, `project_id`, etc. — the underlying
 Vikunja Task JSON's own field spelling) are also accepted everywhere a field
 name is given (the `filter` string, `build`/`create`/`update`'s `conditions`
 array) and are normalized to camelCase automatically, so either spelling works.
+
+**`percentDone` in a filter is a whole percentage 0-100**, the same scale
+`vikunja_tasks` accepts — `"percentDone > 50"` means "more than half done".
+Vikunja stores the field as a 0-1 fraction, so this server rescales the value
+when it builds the outgoing server-side `filter` string (and when it evaluates
+a filter client-side). A **saved filter** is stored on the Vikunja server in
+that stored scale, because Vikunja itself evaluates it and the Vikunja web UI
+shows the same filter; `get`/`list` convert it back to 0-100 on read, so the
+obvious `get` → edit → `update` loop round-trips instead of rescaling twice.
+A saved filter that does not mention `percentDone` is returned byte-identical,
+and one this server cannot parse (e.g. authored in the web UI in syntax the
+DSL does not model) is returned unchanged rather than erroring.
 
 - `vikunja_filters` - Advanced filtering for tasks, backed by Vikunja's real saved filters. Uses `action` instead of `subcommand`.
   - `list` - Derive the list of saved filters from `GET /projects`' pseudo-project entries (optional: page, perPage, favorite)

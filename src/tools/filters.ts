@@ -51,6 +51,7 @@ import {
   validateFilterExpression,
   parseFilterString,
   expressionToString,
+  apiFilterStringToDslString,
   FILTER_FIELD_ALIASES,
 } from '../utils/filters';
 import type { FilterField, FilterOperator } from '../types/filters';
@@ -323,7 +324,14 @@ function mapSavedFilterForResponse(filter: SavedFilterApi): Record<string, unkno
     id: filter.id,
     title: filter.title,
     description: filter.description,
-    filter: filter.filters?.filter,
+    // Read back on the DSL's own scale (percentDone 0-100), not the stored
+    // wire fraction — see apiFilterStringToDslString for why converting on
+    // read is what makes the get -> edit -> update round trip safe. Filters
+    // that do not mention percentDone come back byte-identical.
+    filter:
+      filter.filters?.filter !== undefined
+        ? apiFilterStringToDslString(filter.filters.filter)
+        : undefined,
     isFavorite: filter.is_favorite,
     owner: filter.owner ? { id: filter.owner.id, username: filter.owner.username } : undefined,
     created: filter.created,
@@ -397,7 +405,10 @@ async function listSavedFilters(
           title: full.title ?? entry.title ?? '',
           description: full.description,
           isFavorite: full.is_favorite,
-          filter: full.filters?.filter,
+          filter:
+            full.filters?.filter !== undefined
+              ? apiFilterStringToDslString(full.filters.filter)
+              : undefined,
           created: full.created,
           updated: full.updated,
           hydrated: true,
@@ -445,6 +456,10 @@ export function registerFiltersTool(
         "with hydrated:false rather than silently dropped. 'build'/'validate' " +
         'remain pure local utilities - they construct or check a filter query ' +
         'string without contacting the server or touching any saved filter. ' +
+        'percentDone in a filter is a whole percentage 0-100 (e.g. "percentDone > 50" ' +
+        'for more than half done) - the same scale vikunja_tasks accepts, converted to ' +
+        "Vikunja's internal 0-1 representation on the way to the server and back again " +
+        'when a saved filter is read. ' +
         'Filter fields use camelCase (e.g. dueDate, percentDone, project) - the ' +
         "same casing 'build' emits and vikunja_tasks list's own filter argument " +
         'accepts; snake_case aliases (due_date, percent_done, project_id, etc.) ' +

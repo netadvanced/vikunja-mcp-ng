@@ -18,6 +18,7 @@ import type { TaskListingArgs } from './types/filters';
 import { createAuthRequiredError, handleFetchError } from '../../utils/error-handler';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../../utils/read-only';
+import { percentDoneSchema } from '../../utils/percent-done';
 
 // Import all operation handlers
 import { createTask, getTask, updateTask, deleteTask, createTaskResponse } from './crud';
@@ -229,25 +230,24 @@ export function registerTasksTool(
       startDate: z.string().optional(),
       endDate: z.string().optional(),
       priority: z.number().min(0).max(5).optional(),
-      // percentDone is a FRACTION between 0 and 1 on the wire (0.5 = 50%), NOT
-      // 0-100. Verified against go-vikunja: the model field is
-      // `PercentDone float64` (pkg/models/tasks.go), the frontend's own picker
-      // stores [0, 0.1, ... 1]
-      // (frontend/src/components/tasks/partials/PercentDoneSelect.vue) and every
-      // display site renders `task.percentDone * 100` (e.g. KanbanCard.vue).
-      // Community PRs describing this as "0-100"
-      // (democratize-technology/vikunja-mcp#94, #82) are quoting the
-      // user-facing input scale of their i18n strings, not the API contract.
-      // DO NOT "fix" this to max(100).
-      percentDone: z
-        .number()
-        .min(0)
-        .max(1)
-        .optional()
-        .describe(
-          'Completion progress as a FRACTION between 0 and 1 (0.25 = 25%, 1 = 100%) — not a ' +
-            '0-100 percentage. Accepted by create, update and bulk-create.',
-        ),
+      // percentDone is a WHOLE PERCENTAGE 0-100 on this tool surface. Vikunja's
+      // wire contract really is a fraction 0-1 (`PercentDone float64`,
+      // pkg/models/tasks.go; the frontend picker stores [0, 0.1, ... 1] in
+      // PercentDoneSelect.vue and every display site renders `percentDone * 100`)
+      // — that conversion happens in src/utils/percent-done.ts, on the way to and
+      // from the API, and nowhere else. The fraction is a transport detail and is
+      // deliberately not part of the contract an agent has to learn: it leaked as
+      // a memorized "gotcha", Vikunja's own human-facing scale is 0-100, and
+      // integers make `percentDone: 1` unambiguously 1% instead of a silent
+      // "done". See decision 22 in docs/ROADMAP.md §3 for the full reasoning and
+      // its revisit condition; the two community PRs that assumed 0-100
+      // (democratize-technology/vikunja-mcp#94, #82) read the interface the same
+      // way this schema now does.
+      percentDone: percentDoneSchema.describe(
+        'Completion progress as a whole percentage between 0 and 100 (25 = 25%, 100 = done). ' +
+          'Must be an integer — 0.5 is rejected, not silently read as half a percent. ' +
+          'Accepted by create, update and bulk-create.',
+      ),
       labels: z.array(z.number()).optional(),
       assignees: z.array(z.number()).optional(),
       // Kanban bucket fields (set-bucket, bulk-set-bucket subcommands).
@@ -305,7 +305,9 @@ export function registerTasksTool(
             '"dueDate < now+14d" (due within 14 days); "priority >= 4 && dueDate < now+7d" ' +
             "(high priority AND due soon); \"labels in 'bug', 'urgent'\" (has either label); " +
             '"done = false && dueDate <= now" (overdue, not done). Date literals: now, ' +
-            'now+14d, now-1w, or ISO 8601 (2024-12-31). Fields use camelCase (dueDate, ' +
+            'now+14d, now-1w, or ISO 8601 (2024-12-31). percentDone in a filter uses the ' +
+            'same whole-percentage 0-100 scale as the percentDone argument above, so ' +
+            '"percentDone > 50" means more than half done. Fields use camelCase (dueDate, ' +
             'percentDone, startDate, endDate, doneAt, project, plus ' +
             'done/priority/assignees/labels/created/updated/title/description); ' +
             'snake_case aliases (due_date, percent_done, etc.) are also accepted and ' +
@@ -351,8 +353,10 @@ export function registerTasksTool(
             startDate: z.string().optional(),
             endDate: z.string().optional(),
             priority: z.number().min(0).max(5).optional(),
-            // Fraction 0-1, same contract as the top-level percentDone above.
-            percentDone: z.number().min(0).max(1).optional(),
+            // Whole percentage 0-100, same contract as the top-level
+            // percentDone above (converted to Vikunja's 0-1 wire fraction in
+            // createOneBulkTask).
+            percentDone: percentDoneSchema,
             labels: z.array(z.number()).optional(),
             assignees: z.array(z.number()).optional(),
             repeatAfter: z.number().min(0).optional(),

@@ -119,7 +119,9 @@ const importedTaskSchema = z.object({
     .string()
     .regex(/^#[0-9A-Fa-f]{6}$/)
     .optional(),
-  percentDone: z.number().min(0).max(100).optional(),
+  // Whole percentage 0-100, integers only (mirrors percentDoneSchema in
+  // src/utils/percent-done.ts).
+  percentDone: z.number().int().min(0).max(100).optional(),
   repeatAfter: z.number().optional(),
   repeatMode: z.number().optional(),
   reminders: z.array(z.string()).optional(),
@@ -430,7 +432,10 @@ describe('Batch Import Tool', () => {
         start_date: '2024-12-01T00:00:00Z',
         end_date: '2025-01-31T00:00:00Z',
         hex_color: '#FF0000',
-        percent_done: 50,
+        // Imported as the whole percentage 50; reaches Vikunja as the 0-1
+        // wire fraction. Before the percentage-scale change this path sent
+        // `percent_done: 50` — 50x out of range and silently accepted.
+        percent_done: 0.5,
         repeat_after: 86400,
         repeat_mode: 'week',
         project_id: 1,
@@ -569,7 +574,7 @@ Task 2,Description 2,2,true`;
         start_date: '2024-12-01T00:00:00Z',
         end_date: '2025-01-31T00:00:00Z',
         hex_color: '#FF0000',
-        percent_done: 50,
+        percent_done: 0.5,
         project_id: 1,
       });
     });

@@ -177,7 +177,7 @@ describe('vikunja_filters tool', () => {
       expect(body.filters.filter).toBe('(priority >= 4 && done = false)');
     });
 
-    it('translates camelCase DSL fields to the API snake_case names', async () => {
+    it('translates camelCase DSL fields to the API snake_case names and rescales percentDone', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ status: 201, body: savedFilter() }));
 
       await toolHandler({
@@ -187,7 +187,11 @@ describe('vikunja_filters tool', () => {
 
       const call = mockFetch.mock.calls[0];
       const body = JSON.parse((call[1] as { body?: string }).body as string);
-      expect(body.filters.filter).toBe('percent_done >= 75');
+      // A saved filter is stored ON the Vikunja server and evaluated by
+      // Vikunja itself (it also shows in the web UI), so it must be stored in
+      // the 0-1 scale the percent_done column actually holds. Storing the raw
+      // `75` would save a filter that silently matches nothing.
+      expect(body.filters.filter).toBe('percent_done >= 0.75');
     });
 
     it('rejects when neither filter nor conditions are provided', async () => {
@@ -246,6 +250,71 @@ describe('vikunja_filters tool', () => {
 
       const markdown = result.content[0].text;
       expect(markdown).toContain('Retrieved filter "High priority"');
+    });
+
+    // The stored filter string lives on the Vikunja server in the scale
+    // Vikunja itself evaluates (percent_done 0-1). Reading it back on the tool
+    // surface's 0-100 scale is what makes get -> edit -> update safe: a caller
+    // who feeds the string it just read straight back into `update` would
+    // otherwise have it converted a SECOND time, saving percent_done > 0.0075.
+    it('reads a stored percent_done filter back on the 0-100 scale', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          body: savedFilter({ id: 7, filters: { filter: 'percent_done >= 0.75' } }),
+        }),
+      );
+
+      const result = await toolHandler({ action: 'get', parameters: { id: 7 } });
+
+      expect(result.content[0].text).toContain('percentDone >= 75');
+      expect(result.content[0].text).not.toContain('0.75');
+    });
+
+    it('survives the create -> get -> update round trip without rescaling twice', async () => {
+      // create: 75 in, 0.75 stored.
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          status: 201,
+          body: savedFilter({ id: 7, filters: { filter: 'percent_done >= 0.75' } }),
+        }),
+      );
+      await toolHandler({
+        action: 'create',
+        parameters: { title: 'Mostly done', filter: 'percentDone >= 75' },
+      });
+      const createBody = JSON.parse(
+        (mockFetch.mock.calls[0][1] as { body?: string }).body as string,
+      );
+      expect(createBody.filters.filter).toBe('percent_done >= 0.75');
+
+      // get: 0.75 stored, 75 reported.
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: savedFilter({ id: 7, filters: { filter: 'percent_done >= 0.75' } }) }),
+      );
+      const got = await toolHandler({ action: 'get', parameters: { id: 7 } });
+      expect(got.content[0].text).toContain('percentDone >= 75');
+
+      // update with exactly what get reported: still 0.75 on the wire.
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({
+            body: savedFilter({ id: 7, filters: { filter: 'percent_done >= 0.75' } }),
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            body: savedFilter({ id: 7, filters: { filter: 'percent_done >= 0.75' } }),
+          }),
+        );
+      await toolHandler({
+        action: 'update',
+        parameters: { id: 7, filter: 'percentDone >= 75' },
+      });
+      const updateCall = mockFetch.mock.calls.find(
+        (call) => (call[1] as { method?: string } | undefined)?.method === 'POST',
+      );
+      const updateBody = JSON.parse((updateCall?.[1] as { body?: string }).body as string);
+      expect(updateBody.filters.filter).toBe('percent_done >= 0.75');
     });
 
     it('coerces a numeric-string id', async () => {

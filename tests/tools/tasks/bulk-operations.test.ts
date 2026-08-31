@@ -433,8 +433,15 @@ describe('Bulk operations', () => {
       // models.Task.percent_done; see the note in
       // tests/tools/tasks/create-field-gaps.test.ts for the go-vikunja
       // evidence.
-      describe('percent_done field (0-1 fraction)', () => {
-        it('sends percent_done in the native bulk payload', async () => {
+      // bulk-update addresses the field by its raw snake_case API name, but it
+      // takes the SAME whole-percentage 0-100 scale as `percentDone`
+      // everywhere else on the tool surface — one scale, no exception to
+      // remember (decision 22, docs/ROADMAP.md §3). The conversion to the 0-1
+      // wire fraction happens once, in `resolveBulkUpdateValue`, which feeds
+      // both the native POST /tasks/bulk payload asserted here and the
+      // per-task fallback's merge.
+      describe('percent_done field (0-100 percentage in, 0-1 fraction on the wire)', () => {
+        it('converts a 0-100 percent_done to the fraction in the native bulk payload', async () => {
           let sentBody: unknown;
           mockRest.mockImplementation(
             async (_auth: unknown, method: string, path: string, body?: unknown) => {
@@ -455,7 +462,7 @@ describe('Bulk operations', () => {
           const result = await bulkUpdateTasks({
             taskIds: [1],
             field: 'percent_done',
-            value: 0.5,
+            value: 50,
           });
 
           expect(sentBody).toEqual({
@@ -484,7 +491,7 @@ describe('Bulk operations', () => {
             },
           );
 
-          await bulkUpdateTasks({ taskIds: [1], field: 'percent_done', value: '0.25' });
+          await bulkUpdateTasks({ taskIds: [1], field: 'percent_done', value: '25' });
 
           expect(sentBody).toEqual({
             task_ids: [1],
@@ -493,17 +500,51 @@ describe('Bulk operations', () => {
           });
         });
 
-        it('rejects a 0-100 style value before any request is sent', async () => {
+        it('sends percent_done: 1 for value 100 (fully done)', async () => {
+          let sentBody: unknown;
+          mockRest.mockImplementation(
+            async (_auth: unknown, method: string, path: string, body?: unknown) => {
+              if (method === 'GET' && /^\/tasks\/\d+$/.test(path)) {
+                return { id: 1, title: 'Task 1', assignees: [] };
+              }
+              if (method === 'POST' && path === '/tasks/bulk') {
+                sentBody = body;
+                return {
+                  task_ids: (body as { task_ids: number[] }).task_ids,
+                  tasks: [{ id: 1, title: 'Task 1', percent_done: 1 }],
+                };
+              }
+              throw new Error(`mockRest: unhandled ${method} ${path}`);
+            },
+          );
+
+          await bulkUpdateTasks({ taskIds: [1], field: 'percent_done', value: 100 });
+
+          expect(sentBody).toEqual({
+            task_ids: [1],
+            fields: ['percent_done'],
+            values: { percent_done: 1 },
+          });
+        });
+
+        it('rejects a fraction with a message that teaches the scale', async () => {
           await expect(
-            bulkUpdateTasks({ taskIds: [1], field: 'percent_done', value: 50 }),
-          ).rejects.toThrow('percent_done must be between 0 and 1');
+            bulkUpdateTasks({ taskIds: [1], field: 'percent_done', value: 0.5 }),
+          ).rejects.toThrow('percent_done must be a whole number between 0 and 100');
+          expect(mockRest).not.toHaveBeenCalled();
+        });
+
+        it('rejects a value above 100 before any request is sent', async () => {
+          await expect(
+            bulkUpdateTasks({ taskIds: [1], field: 'percent_done', value: 101 }),
+          ).rejects.toThrow('percent_done must be a whole number between 0 and 100');
           expect(mockRest).not.toHaveBeenCalled();
         });
 
         it('rejects a negative value before any request is sent', async () => {
           await expect(
             bulkUpdateTasks({ taskIds: [1], field: 'percent_done', value: -1 }),
-          ).rejects.toThrow('percent_done must be between 0 and 1');
+          ).rejects.toThrow('percent_done must be a whole number between 0 and 100');
           expect(mockRest).not.toHaveBeenCalled();
         });
       });

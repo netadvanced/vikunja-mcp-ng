@@ -4,6 +4,7 @@
 
 import type { components } from '../../../types/generated/vikunja-openapi';
 import type { FilterCondition, FilterGroup, FilterExpression } from '../../../types/filters';
+import { percentDoneToFraction } from '../../../utils/percent-done';
 
 /** `models.Task` per the OpenAPI spec — the task shape filters evaluate against. */
 type Task = components['schemas']['models.Task'];
@@ -21,8 +22,19 @@ export function evaluateCondition(task: Task, condition: FilterCondition): boole
     case 'priority':
       return evaluateComparison(task.priority || 0, operator, Number(value));
 
+    // The DSL carries percentDone as a whole percentage 0-100; the task's own
+    // percent_done is Vikunja's 0-1 fraction. Compare in WIRE space (scale the
+    // threshold down) rather than percent space (scale the task up): dividing
+    // an integer by 100 lands on exactly the double the API stored, whereas
+    // multiplying the stored fraction back up reintroduces float artifacts
+    // (0.07 * 100 === 7.000000000000001), which would make `percentDone = 7`
+    // miss a task that is exactly 7% done. See src/utils/percent-done.ts.
     case 'percentDone':
-      return evaluateComparison(task.percent_done || 0, operator, Number(value));
+      return evaluateComparison(
+        task.percent_done || 0,
+        operator,
+        percentDoneToFraction(Number(value)),
+      );
 
     case 'dueDate':
       if (!task.due_date) {

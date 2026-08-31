@@ -5,6 +5,7 @@
 
 import { z } from 'zod';
 import { FIELD_TYPES } from '../types/filters';
+import { percentDoneToFraction, fractionToPercentExact } from './percent-done';
 import type {
   FilterCondition,
   FilterExpression,
@@ -998,11 +999,59 @@ function escapeDoubleQuotedValue(value: string): string {
 }
 
 /**
+ * Rescales a `percentDone` filter value between this DSL's scale (a whole
+ * percentage, 0-100 — the same scale `vikunja_tasks`' `percentDone` argument
+ * uses) and Vikunja's stored 0-1 fraction.
+ *
+ * The filter DSL is a third place the wire fraction used to leak: an agent
+ * writing `percentDone > 50` got a query the server matched against a column
+ * whose values never exceed 1, i.e. an empty result set and no error — the
+ * same silent-wrong-answer failure the 0-100 tool surface exists to remove
+ * (decision 22, docs/ROADMAP.md §3). The DSL/AST therefore carries the
+ * 0-100 scale everywhere, and this function is applied at exactly the two
+ * edges where the wire is on the other side: `conditionToString` (outgoing
+ * server-side `filter` query param) and `apiFilterStringToDslString`
+ * (a filter string read back off the server).
+ *
+ * `direction: 'to-wire'` divides by 100 (exact for whole percentages —
+ * `n / 100` and the decimal literal `0.nn` are the same double);
+ * `'from-wire'` multiplies by 100 and strips the float artifact WITHOUT
+ * rounding to a whole percent, because a filter threshold — unlike a task's
+ * own `percentDone` — is legitimately allowed to be fractional.
+ *
+ * Non-numeric values (a `like` pattern, an unparseable string) are returned
+ * untouched rather than coerced to `NaN`.
+ */
+function rescalePercentDoneValue(
+  value: FilterCondition['value'],
+  direction: 'to-wire' | 'from-wire',
+): FilterCondition['value'] {
+  const one = (v: string | number | boolean): string | number | boolean => {
+    const num =
+      typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
+    if (!Number.isFinite(num)) return v;
+    return direction === 'to-wire' ? percentDoneToFraction(num) : fractionToPercentExact(num);
+  };
+
+  if (Array.isArray(value)) {
+    // `in` / `not in` lists, e.g. `percentDone in 25, 50, 75`.
+    return (value as Array<string | number>).map((v) =>
+      one(v),
+    ) as unknown as FilterCondition['value'];
+  }
+  return one(value);
+}
+
+/**
  * Convert condition to string representation
  */
 export function conditionToString(condition: FilterCondition): string {
-  const { field, operator, value } = condition;
+  const { field, operator } = condition;
   const apiField = FILTER_FIELD_TO_API_FIELD[field] ?? field;
+  // percentDone is 0-100 in the DSL, 0-1 on the wire — see
+  // rescalePercentDoneValue.
+  const value =
+    field === 'percentDone' ? rescalePercentDoneValue(condition.value, 'to-wire') : condition.value;
 
   let valueStr: string;
   if (Array.isArray(value)) {
@@ -1089,6 +1138,52 @@ export function expressionToDslString(expression: FilterExpression): string {
   const groups = expression.groups.map(groupToDslString);
   const operator = expression.operator || '&&';
   return groups.join(` ${operator} `);
+}
+
+/**
+ * Rewrites a filter string that came FROM Vikunja (a saved filter's stored
+ * `filters.filter`) into this DSL's own scale and casing, so a caller reading
+ * a saved filter back sees the same `percentDone` scale they would have to
+ * write (0-100) rather than the stored wire fraction.
+ *
+ * Without this, `vikunja_filters get` would hand back `percent_done > 0.75`
+ * for a filter created as `percentDone > 75` — and a caller who then fed that
+ * string straight into `update` (the obvious read-modify-write loop) would
+ * have it converted a second time, saving `percent_done > 0.0075`. Converting
+ * on read is what makes that round trip safe; converting only on write would
+ * make it destructive.
+ *
+ * Deliberately conservative, because a saved filter may have been authored in
+ * the Vikunja web UI in syntax this parser does not model:
+ * - a filter that does not mention `percent_done`/`percentDone` at all is
+ *   returned **byte-identical**, so this never reformats or normalizes
+ *   somebody else's filter for no reason;
+ * - a filter that does mention it but fails to parse is also returned
+ *   unchanged — best effort, never a thrown error on a pure read.
+ *
+ * Only filters that both mention the field and parse cleanly are re-emitted,
+ * and those are exactly the ones whose raw form would otherwise misreport the
+ * scale.
+ */
+export function apiFilterStringToDslString(filterString: string): string {
+  if (!/percent_done|percentDone/i.test(filterString)) return filterString;
+
+  const parsed = parseFilterString(filterString);
+  if (!parsed.expression) return filterString;
+
+  const rescaled: FilterExpression = {
+    ...parsed.expression,
+    groups: parsed.expression.groups.map((group) => ({
+      ...group,
+      conditions: group.conditions.map((condition) =>
+        condition.field === 'percentDone'
+          ? { ...condition, value: rescalePercentDoneValue(condition.value, 'from-wire') }
+          : condition,
+      ),
+    })),
+  };
+
+  return expressionToDslString(rescaled);
 }
 
 /**
