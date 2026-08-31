@@ -33,6 +33,7 @@ import {
   type RetryOptions,
 } from './retry';
 import { resolveIdentityAuthManager } from '../context/requestContext';
+import { getExecutionAbortSignal } from '../context/executionContext';
 import { redactSecretsInText } from './security';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -373,6 +374,31 @@ export interface VikunjaRestRequestOptions {
 }
 
 /**
+ * The error raised when the tool-execution deadline aborted a request that
+ * was already in flight.
+ *
+ * Two properties matter and are load-bearing:
+ * - The message deliberately avoids every substring `isRetryableError` /
+ *   `isTransientError` (src/utils/retry.ts) treat as grounds to retry
+ *   ('timeout', 'timed out', 'connection', 'network', 'rate limit', ...).
+ *   Re-firing a request the caller has already given up on is precisely the
+ *   "may still commit" hazard LOW-20 is about.
+ * - `cancelled: true` tells the shared circuit breaker's `errorFilter`
+ *   (`isClientErrorExcludedFromBreaker`) that this failure says nothing
+ *   about upstream Vikunja's health, so one tenant's slow calls cannot
+ *   trip a breaker that every other tenant in the process shares.
+ */
+function buildCancelledRequestError(method: string, path: string): MCPError {
+  return new MCPError(
+    ErrorCode.TIMEOUT_ERROR,
+    `Vikunja REST request cancelled (${method} ${path}): the tool execution deadline ` +
+      'elapsed before the server responded. The request was aborted; whether the server ' +
+      'had already applied it is unknown, so re-check before retrying.',
+    { cancelled: true, transient: false },
+  );
+}
+
+/**
  * The actual network call, with no retry/breaker logic of its own. This is
  * intentionally a plain top-level function (not a closure factory) so it
  * can be safely registered once per breaker name and re-fired with fresh
@@ -387,6 +413,14 @@ async function vikunjaRestRequestRaw(
   const session = authManager.getSession();
   const url = `${resolveBaseUrl(session.apiUrl)}${path}`;
 
+  // The tool-execution deadline, when one applies (see
+  // `src/context/executionContext.ts`). Passed straight to `fetch` so a
+  // timed-out tool call actually aborts its in-flight HTTP request instead
+  // of leaving it running after the caller was told it timed out (LOW-20,
+  // #296). The key is omitted entirely when there is no deadline so callers
+  // outside a rate-limited tool call see byte-for-byte the previous request.
+  const signal = getExecutionAbortSignal();
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -396,8 +430,12 @@ async function vikunjaRestRequestRaw(
         'Content-Type': 'application/json',
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      ...(signal ? { signal } : {}),
     });
   } catch (error) {
+    if (signal?.aborted) {
+      throw buildCancelledRequestError(method, path);
+    }
     throw new MCPError(
       ErrorCode.API_ERROR,
       `Vikunja REST request failed (${method} ${path}): ${describeRequestError(error)}`,
@@ -525,6 +563,9 @@ async function vikunjaRestMultipartRequestRaw(
   const session = authManager.getSession();
   const url = `${resolveBaseUrl(session.apiUrl)}${path}`;
 
+  // Same tool-execution deadline as the JSON helper above.
+  const signal = getExecutionAbortSignal();
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -533,8 +574,12 @@ async function vikunjaRestMultipartRequestRaw(
         Authorization: `Bearer ${session.apiToken}`,
       },
       body: form,
+      ...(signal ? { signal } : {}),
     });
   } catch (error) {
+    if (signal?.aborted) {
+      throw buildCancelledRequestError(method, path);
+    }
     throw new MCPError(
       ErrorCode.API_ERROR,
       `Vikunja REST request failed (${method} ${path}): ${describeRequestError(error)}`,

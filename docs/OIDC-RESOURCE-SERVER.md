@@ -151,6 +151,20 @@ The existing config engine (`src/config/ConfigurationManager.ts`) already does l
 >    startup warning" below was not implemented; the variable is silently unused on the
 >    wire in `oidc-http` mode (every request resolves its credential through the ALS
 >    context instead).
+>
+> **Addendum (2026-09-01, #263): D8's per-identity buckets shipped keyed correctly but
+> were not actually enforcing anything.** The bucketing this document describes (state #2,
+> `getSessionId()` reading the ALS identity) was implemented as written and its isolation
+> test passed — but the middleware holding those buckets was wrapped around exactly one
+> tool handler (`vikunja_auth`), so every other tool ran unmetered per identity; and the
+> buckets never expired, because the underlying `MemoryStore` was constructed without
+> `init()` and so had no window length (an unrotating window makes "60 per minute" mean 60
+> per process lifetime, with a permanent 429 after it). The hourly counter was also
+> written to one store and read from another, so it could never trip. Both the fairness
+> guarantee in §4 and D3's justification for keeping circuit breakers shared depended on
+> this working; it now does — `src/middleware/tool-rate-limit.ts` wraps the whole tool
+> surface at registration time. The optional global ceiling (item 3 above) is still not
+> built.
 
 **Interaction with existing config:**
 - Module gating (`ModulesConfigSchema`, `DANGEROUS_MODULE_KEYS`) is **unchanged** and still applies — it gates *tool registration*, which is process-wide, in both modes. `oidc-http` layers per-user *credential* isolation *underneath* the same module gates. Config can still only narrow, never widen.

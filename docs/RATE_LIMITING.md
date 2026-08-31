@@ -18,10 +18,14 @@ The system consists of three main components:
    back-compat aliases `RateLimitingMiddleware` / `SimplifiedRateLimitMiddleware` and the
    singletons `rateLimitingMiddleware` / `simplifiedRateLimitMiddleware` /
    `secureRateLimitMiddleware`.
-2. **Direct middleware helpers** (`src/middleware/direct-middleware.ts`) - `applyRateLimiting`
-   / `applyPermissions` / `applyBothMiddleware`, the integration layer used at tool
-   registration
-3. **Configuration System** - Environment-based configuration with sensible defaults
+2. **Central registration wrapper** (`src/middleware/tool-rate-limit.ts`) -
+   `withRateLimitedTools(server)`, applied once in `registerTools`. Every
+   `server.tool(...)` call made through the returned view has its handler wrapped, so the
+   whole registered tool surface is metered per identity without touching 27 call sites
+   (#263).
+3. **Direct middleware helpers** (`src/middleware/direct-middleware.ts`) - `applyRateLimiting`
+   / `applyPermissions` / `applyBothMiddleware`, the opt-in per-tool integration layer
+4. **Configuration System** - Environment-based configuration with sensible defaults
 
 ### Design Principles
 
@@ -97,29 +101,56 @@ Tools are automatically categorized for rate limiting:
 
 | Category | Tools | Characteristics |
 |----------|-------|-----------------|
-| `default` | `vikunja_auth`, `vikunja_tasks`, `vikunja_projects`, etc. | Standard CRUD operations |
-| `bulk` | `vikunja_batch_import` | High-volume data operations |
-| `export` | `vikunja_export`, `vikunja_export_tasks`, `vikunja_export_projects` | Large data exports |
+| `default` | `vikunja_auth`, `vikunja_tasks`, `vikunja_projects`, `vikunja_labels`, `vikunja_teams`, `vikunja_users`, `vikunja_filters`, `vikunja_templates`, `vikunja_webhooks`, the `vikunja_task_*` sub-resource tools, `vikunja_notifications`, `vikunja_subscriptions`, `vikunja_reactions`, `vikunja_tokens`, `vikunja_caldav_tokens`, `vikunja_admin`, `vikunja_user_deletion`, `vikunja_user_export_status` | Standard CRUD operations |
+| `bulk` | `vikunja_batch_import`, `vikunja_task_bulk` | High-volume data operations |
+| `export` | `vikunja_export_project`, `vikunja_request_user_export`, `vikunja_download_user_export` (plus the legacy names `vikunja_export`, `vikunja_export_tasks`, `vikunja_export_projects`) | Large data exports |
 
-The table mirrors `TOOL_CATEGORIES` in `src/middleware/simplified-rate-limit.ts`
-verbatim. Two caveats worth knowing before relying on it:
+The table mirrors `TOOL_CATEGORIES` in `src/middleware/simplified-rate-limit.ts`.
+Caveats worth knowing before relying on it:
 
 - The `expensive` profile has configurable limits (see the env vars above) but **no tool
   is mapped to it** — nothing in `TOOL_CATEGORIES` uses that category today.
-- The `export` row's tool names are the ones present in `TOOL_CATEGORIES`; the export
-  tools actually registered today are `vikunja_export_project`,
-  `vikunja_request_user_export`, `vikunja_download_user_export` and
-  `vikunja_user_export_status` (see `src/tools/export.ts`), so any unmapped name falls
-  through to `default`.
+- An unmapped tool name still falls through to `default`. Since #263 that should not
+  happen for a registered tool: `tests/middleware/tool-rate-limit.test.ts` asserts every
+  name `registerTools` registers has an explicit entry, so a new tool that forgets one
+  fails the suite rather than silently inheriting the default budget.
+- `vikunja_user_export_status` is deliberately `default`, not `export`: it only reads
+  whether a previously requested export is ready, and the export category's
+  2-requests-per-minute budget would make the honest ask-wait-ask-again pattern trip the
+  limiter.
 
 ## Implementation
 
 ### Integrating Rate Limiting
 
 Rate limiting is applied by wrapping a tool's handler before handing it to
-`server.tool(...)`. `src/tools/auth.ts` is the worked example in-tree — and, as of this
-writing, the **only** tool that wraps its handler, so the limits below currently apply to
-`vikunja_auth` alone rather than to every registered tool.
+`server.tool(...)`. **You do not have to do this per tool.** `registerTools`
+(`src/tools/index.ts`) registers every tool through a rate-limiting view of the
+`McpServer` (`withRateLimitedTools`, `src/middleware/tool-rate-limit.ts`), which wraps the
+handler of every `server.tool(...)` call made through it, keyed by the tool name that call
+already passes. A registered tool is therefore metered by construction, and adding a new
+tool needs no rate-limiting code at all — only an entry in `TOOL_CATEGORIES` picking its
+budget.
+
+> This is a fix, not the original design. Until #263 only `src/tools/auth.ts` wrapped its
+> handler, so every other tool ran unmetered per identity — which in `oidc-http` mode
+> (one process serving many accounts) is what `docs/ROADMAP.md` decision 16(c) assumed
+> was *not* the case when it accepted sharing circuit breakers across tenants.
+
+Two consequences of the limits now applying everywhere, worth knowing before tuning:
+
+- **Execution timeouts are live for every tool.** A `default`-category tool is cut off at
+  `TOOL_TIMEOUT` (30s by default); `bulk` gets 5 minutes and `export` 10. If a legitimately
+  slow operation starts reporting `TIMEOUT_ERROR`, raise the category's timeout rather than
+  disabling the guard. On timeout the in-flight HTTP request is now genuinely aborted
+  (#296 LOW-20), and the error says so: whether the server already applied the change is
+  unknown, so re-check before retrying rather than blindly re-sending.
+- **Response-size guards are live for every tool** at `MAX_RESPONSE_SIZE` (10MB by
+  default) for the `default` category.
+
+The per-tool helpers below remain supported for a tool that wants to opt in explicitly;
+the central wrapper detects an already-wrapped handler and leaves it alone rather than
+charging the call twice.
 
 #### Wrapping a Tool Handler
 ```typescript
@@ -241,13 +272,24 @@ console.log({
 
 ### Clearing Session Data
 ```typescript
-// Clear rate limit data (async; resets both MemoryStores and the circuit breakers)
+// Clear the CALLING identity's counters (every category, minute and hour
+// buckets). Other identities are untouched, and the circuit breakers — which
+// are process-wide, not per-identity — are left alone.
 await rateLimitingMiddleware.clearSession();
 
-// NOTE: the sessionId argument is accepted but ignored — clearing is global,
-// since sessions are keyed by process ID (see Session Management below).
-await rateLimitingMiddleware.clearSession('specific-session-id');
+// Clear one specific identity's counters. In oidc-http mode the session id
+// is the identity key, "<issuer>|<sub>"; in stdio mode it is
+// `session_${process.pid}`.
+await rateLimitingMiddleware.clearSession('https://idp.example/realm|user-a');
+
+// Testing escape hatch: reset EVERY identity's counters and both circuit
+// breakers.
+await rateLimitingMiddleware.clearAll();
 ```
+
+> Before #296 (LOW-18) `clearSession` ignored its argument and behaved like
+> `clearAll()`. It had no callers, but "reset this user" silently meaning "reset
+> every tenant in the process" was a cross-tenant bug waiting for its first caller.
 
 ### Configuration Inspection
 ```typescript
@@ -261,6 +303,12 @@ console.log('Current rate limiting configuration:', config);
 ```bash
 # Run rate limiting tests
 npm test tests/middleware/rate-limiting.test.ts
+
+# Window rotation, per-identity clearSession, deadline cancellation (#263, #296)
+npm test tests/middleware/rate-limit-windows.test.ts
+
+# The central registration wrapper: every registered tool is metered (#263)
+npm test tests/middleware/tool-rate-limit.test.ts
 
 # Run integration tests  
 npm test tests/integration/rate-limiting-integration.test.ts
@@ -300,10 +348,15 @@ describe('Load Testing', () => {
 ## Security Considerations
 
 ### Session Management
-- Sessions are identified by process ID (`session_${process.pid}` — can be enhanced with
-  proper client identification)
+- In `oidc-http` mode a session is the validated caller identity, `"<issuer>|<sub>"`, so
+  each account gets its own bucket. In `stdio` mode (single-tenant) there is no identity
+  context and the bucket falls back to the process, `session_${process.pid}`.
 - In-memory storage (no persistent tracking across restarts)
-- Counter expiry handled by `express-rate-limit`'s `MemoryStore` TTL
+- Counters expire on fixed 60s / 3600s windows held by `express-rate-limit`'s
+  `MemoryStore`. The store is given its window length via `init()` at construction —
+  omitting that (the pre-#263 state) leaves `windowMs` undefined, which makes every
+  bucket's reset time `NaN` and stops the windows rotating at all, turning "60 per minute"
+  into 60 per process lifetime.
 
 ### Attack Mitigation
 - **Burst protection** - Per-minute window caps quick bursts

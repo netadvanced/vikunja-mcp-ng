@@ -55,6 +55,15 @@ interface MCPErrorDetails {
    */
   preRequest?: boolean;
   /**
+   * Set when the failure is the CALLER giving up, not the server failing:
+   * the tool-execution deadline (src/middleware/simplified-rate-limit.ts)
+   * aborted an in-flight request. Distinct from `transient` — nothing is
+   * known to be wrong upstream — which is why
+   * `isClientErrorExcludedFromBreaker` (src/utils/retry.ts) keeps these out
+   * of the shared circuit breakers' failure statistics.
+   */
+  cancelled?: boolean;
+  /**
    * Set by OIDC bearer-token validation failures (src/auth/oidc/jwtValidator.ts)
    * so an HTTP transport can build the `WWW-Authenticate: Bearer error="..."`
    * header per RFC 6750 without re-deriving it from `code`/`statusCode`.
