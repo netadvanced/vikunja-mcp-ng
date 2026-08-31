@@ -24,7 +24,7 @@ module.exports = {
       // Ratcheted gate — see CLAUDE.md "Coverage Thresholds" for policy.
       // Raise these in lockstep with honest coverage growth; never lower
       // except by explicit owner decision.
-      // Raised 2026-08-31 (was 83/82/92/92, set 2026-07-27) after 17 merged
+      // Raised 2026-08-31 (was 83/82/92/92, set 2026-07-27) after 16 merged
       // PRs lifted coverage on every axis: honest numbers are
       // 85.65 branches / 84.56 functions / 93.8 lines / 93.7 statements.
       // Same per-axis buffer preserved as the prior raise (~1.19 branches /
