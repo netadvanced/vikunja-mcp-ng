@@ -250,6 +250,49 @@ describe('task write-path field gaps', () => {
     });
   });
 
+  describe('update — repeat configuration (#274, HIGH-3)', () => {
+    /** GET (analyse) -> POST (full-model update) -> GET (complete task). */
+    function routeUpdate(current: Record<string, unknown>): void {
+      routeByPath((method, path) => {
+        if (path === '/tasks/5') return { id: 5, project_id: 1, title: 'T', ...current };
+        return {};
+      });
+    }
+
+    it('does not re-multiply an already-in-seconds repeat_after when only repeatMode changes', async () => {
+      // Exact numbers from the bug scenario: a weekly task's repeat_after is
+      // already 604800 seconds on the wire. Updating just repeatMode must
+      // not feed that value back through the day/week/year multiplier.
+      routeUpdate({ repeat_after: 604800, repeat_mode: 0 });
+
+      await updateTask({ id: 5, repeatMode: 'week' }, authManager);
+
+      const body = bodyOf('POST', '/tasks/5');
+      expect(body).toHaveProperty('repeat_after', 604800);
+      expect(body).toHaveProperty('repeat_mode', 0);
+    });
+
+    it('sets repeat_mode = 1 for month, leaving repeat_after untouched, when only repeatMode changes', async () => {
+      routeUpdate({ repeat_after: 604800, repeat_mode: 0 });
+
+      await updateTask({ id: 5, repeatMode: 'month' }, authManager);
+
+      const body = bodyOf('POST', '/tasks/5');
+      expect(body).toHaveProperty('repeat_after', 604800);
+      expect(body).toHaveProperty('repeat_mode', 1);
+    });
+
+    it('converts a fresh repeatAfter count using the provided repeatMode', async () => {
+      routeUpdate({ repeat_after: 604800, repeat_mode: 0 });
+
+      await updateTask({ id: 5, repeatAfter: 2, repeatMode: 'week' }, authManager);
+
+      const body = bodyOf('POST', '/tasks/5');
+      expect(body).toHaveProperty('repeat_after', 2 * 7 * 24 * 60 * 60);
+      expect(body).toHaveProperty('repeat_mode', 0);
+    });
+  });
+
   describe('create-subtask — repeatAfter / repeatMode / done / hexColor', () => {
     function routeSubtaskCreation(): void {
       routeByPath((method, path) => {

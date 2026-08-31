@@ -364,18 +364,29 @@ function buildUpdateData(currentTask: VikunjaTask, args: UpdateTaskArgs): Vikunj
     // Handle repeat configuration for updates. The generated
     // `models.Task.repeat_mode` type (0 | 1 | 2) matches the real API, so no
     // bypass cast is needed here (unlike the legacy client's incorrect string enum).
+    //
+    // #274 (HIGH-3): `convertRepeatConfiguration` expects `repeatAfter` as a
+    // user-friendly day/week/month/year *count* and multiplies it into
+    // seconds. `currentTask.repeat_after` is already in seconds (it came
+    // straight off the wire), so it must never be fed back into that
+    // converter as a fallback — doing so re-applies the multiplier to an
+    // already-converted value (e.g. a weekly task's 604800 seconds becomes
+    // 604800 * 604800 seconds, ~1650 years). When only `repeatMode` is being
+    // changed, leave `repeat_after` untouched and set `repeat_mode` directly.
     ...(args.repeatAfter !== undefined || args.repeatMode !== undefined
       ? ((): Partial<VikunjaTask> => {
-          const repeatConfig = convertRepeatConfiguration(
-            args.repeatAfter !== undefined ? args.repeatAfter : currentTask.repeat_after,
-            args.repeatMode !== undefined ? args.repeatMode : undefined,
-          );
-          const updates: Partial<VikunjaTask> = {};
-          if (repeatConfig.repeat_after !== undefined)
-            updates.repeat_after = repeatConfig.repeat_after;
-          if (repeatConfig.repeat_mode !== undefined)
-            updates.repeat_mode = repeatConfig.repeat_mode as 0 | 1 | 2;
-          return updates;
+          if (args.repeatAfter !== undefined) {
+            const repeatConfig = convertRepeatConfiguration(args.repeatAfter, args.repeatMode);
+            const updates: Partial<VikunjaTask> = {};
+            if (repeatConfig.repeat_after !== undefined)
+              updates.repeat_after = repeatConfig.repeat_after;
+            if (repeatConfig.repeat_mode !== undefined)
+              updates.repeat_mode = repeatConfig.repeat_mode as 0 | 1 | 2;
+            return updates;
+          }
+          // Only repeatMode was provided: repeat_after is already in
+          // seconds on the current task and must be left as-is.
+          return { repeat_mode: args.repeatMode === 'month' ? 1 : 0 };
         })()
       : {}),
   };

@@ -230,6 +230,67 @@ branch's traversal completes, so only genuine cycles are collapsed; the same
 object appearing twice in a non-cyclic tree is rendered in full at each
 occurrence.
 
+### Error and Response Redaction
+
+Log masking (above) covers `Logger.log()` only. The other way text leaves this
+server is the MCP response itself, and until the fix described here that
+surface had no redaction at all. Three separate gaps, all found by the
+2026-08-31 audit (issues #287 and #292):
+
+**1. Thrown-error text now goes through the same redaction pass as logs.**
+`SecureErrorHandler.sanitize()` in `src/utils/error-handler.ts` recognized a
+fixed list of *categories* (stack traces, database URIs, IP addresses, file
+paths) and replaced the whole message with a canned string when one matched.
+None of those categories covers a bare credential, so a raw `eyJ...` JWT, a
+PEM block, or a webhook URL with the secret in its path travelled verbatim
+into `MCPError.message` and out to the MCP client. `sanitize()` now ends with
+`redactSecretsInText()`, the same function the logger uses, so there is one
+definition of what a secret looks like across logs and errors. It runs last
+and replaces only the credential substring, so messages that already matched a
+category keep their canned text and ordinary messages stay readable.
+
+**2. The sanitizer's shared regexes are no longer stateful.**
+`SECURITY_PATTERNS` is a module-level array shared by every call, and its
+entries were declared with the `g` flag while being used with `.test()`. A
+global regex carries a mutable `lastIndex`, so a match in one call made the
+next call resume scanning from that offset: a shorter follow-up message got no
+match and was returned unsanitized. In `oidc-http` mode a single process
+serves many identities, which turned this into a cross-request leak of one
+caller's raw error text into another caller's response. The patterns are now
+non-global, which makes `.test()` stateless. The regression test
+(`tests/utils/error-redaction.test.ts`) drives two sequential "requests"
+through the shared singleton and asserts the second is sanitized identically
+whether or not the first ran. **Rule for anyone editing that array: do not add
+`g` or `y` to a shared regex that is used with `.test()`.**
+
+**3. Upstream HTTP error bodies are redacted before they reach the message.**
+`src/utils/vikunja-rest.ts` interpolates the first 500 characters of a failed
+response body into `MCPError.message`. That body is authored by something this
+server does not control: Vikunja itself, but also any reverse proxy, WAF, or
+auth gateway in front of it, and those routinely echo request details back,
+including the `Authorization` header or a query string. The body now runs
+through `redactSecretsInText()` before truncation (the scan covers 4 KiB so a
+credential straddling the 500-character display cut cannot have its tail
+trimmed off and its head kept), and the message of a failure thrown by `fetch`
+itself gets the same treatment, since it embeds the request URL and can
+therefore carry userinfo credentials. `redactSecretsInText()` gained a rule
+for quoted `"name": "value"` pairs at the same time, because error bodies are
+usually JSON and the pre-existing prose rule wanted the `:` to sit directly
+after the name.
+
+**One deliberate exception: `vikunja_projects auth-share`.** This subcommand
+returns a live share-scoped JWT in its response, in full. That is the point of
+the operation rather than a leak: `POST /shares/{hash}/auth` is a credential
+exchange, and the caller trades a share hash plus the share's password for the
+bearer token every later read of the shared project needs. The token is the
+caller's own, minted in that request from a secret they supplied in the same
+call, so it is not a cross-identity exposure even in `oidc-http` mode, and its
+scope and lifetime are narrower than the session credential the caller already
+holds. The decision is documented at the call site in
+`src/tools/projects/sharing.ts` and pinned by a test named for it in
+`tests/tools/projects/sharing.test.ts`, so a future response-hardening sweep
+has to change it deliberately rather than silently break share auth.
+
 ### Test-Only Methods on AuthManager
 
 `AuthManager` carries two test-only mutators in production code,

@@ -295,6 +295,21 @@ const PEM_PRIVATE_KEY_PATTERN =
 const INLINE_ASSIGNMENT_PATTERN =
   /\b([A-Za-z0-9_-]{2,40})(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;)&"']+)/g;
 
+/**
+ * Quoted `"name": "value"` pairs, i.e. JSON.
+ *
+ * {@link INLINE_ASSIGNMENT_PATTERN} structurally cannot catch these: it wants
+ * the `:` immediately after the name, and in JSON a closing quote sits in
+ * between. That mattered little while this module only fed the logger, but
+ * upstream HTTP error bodies (now routed through here, audit #292 MED-18)
+ * are almost always JSON, and are frequently JSON that has been escaped once
+ * more into a `"message"` field. Hence the optional backslash on each quote,
+ * which lets one rule cover `"password":"x"` and `\"password\":\"x\"` alike.
+ * The value stops at the first quote or backslash, so the pattern stays
+ * linear-time on adversarial input.
+ */
+const QUOTED_ASSIGNMENT_PATTERN = /(\\?["'])([A-Za-z0-9_-]{2,40})\1(\s*:\s*)(\\?["'])([^"'\\]*)\4/g;
+
 // URL-shaped substrings, matched loosely so they can be re-parsed with `URL`.
 const URL_LIKE_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>\\]+/gi;
 
@@ -396,6 +411,21 @@ export function redactSecretsInText(text: string): string {
   if (result.includes('-----BEGIN')) {
     result = result.replace(PEM_PRIVATE_KEY_PATTERN, '[REDACTED_PRIVATE_KEY]');
   }
+
+  result = result.replace(
+    QUOTED_ASSIGNMENT_PATTERN,
+    (
+      match,
+      nameQuote: string,
+      name: string,
+      separator: string,
+      valueQuote: string,
+      value: string,
+    ) =>
+      EMBEDDED_CREDENTIAL_NAME.test(name) && value.length > 0
+        ? `${nameQuote}${name}${nameQuote}${separator}${valueQuote}[REDACTED]${valueQuote}`
+        : match,
+  );
 
   result = result.replace(INLINE_ASSIGNMENT_PATTERN, (match, name: string, separator: string) =>
     EMBEDDED_CREDENTIAL_NAME.test(name) ? `${name}${separator}[REDACTED]` : match,

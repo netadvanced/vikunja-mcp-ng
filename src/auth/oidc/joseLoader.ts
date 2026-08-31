@@ -25,12 +25,37 @@ import type { JoseDeps } from './types';
 
 let cachedDeps: Promise<JoseDeps> | undefined;
 
+/**
+ * The real dynamic import, factored out so {@link loadJose}'s caching logic
+ * (the part that matters for the LOW-21 fix below) can be unit-tested with
+ * an injected stub, even though this inner function itself still requires a
+ * genuine Node runtime to exercise — see the file header.
+ */
 // See file header: only a genuine ESM dynamic import exercises this function;
 // Jest cannot run one without --experimental-vm-modules, so no test calls it.
 /* istanbul ignore next */
-export function loadJose(): Promise<JoseDeps> {
+function importJose(): Promise<JoseDeps> {
+  return import('jose');
+}
+
+/**
+ * Loads (and caches) the `jose` package.
+ *
+ * LOW-21 (#296): a *rejected* import promise used to be cached forever — a
+ * transient failure on the first call (e.g. the process starting before the
+ * filesystem/network was fully ready) permanently broke JWT validation for
+ * the rest of the process's life, since every later call returned the same
+ * already-rejected promise instead of trying again. On rejection we now
+ * clear `cachedDeps` before re-throwing, so the NEXT call retries the import
+ * instead of replaying the stale failure. A successful import is still
+ * cached forever, same as before.
+ */
+export function loadJose(importer: () => Promise<JoseDeps> = importJose): Promise<JoseDeps> {
   if (!cachedDeps) {
-    cachedDeps = import('jose');
+    cachedDeps = importer().catch((error: unknown) => {
+      cachedDeps = undefined;
+      throw error;
+    });
   }
   return cachedDeps;
 }

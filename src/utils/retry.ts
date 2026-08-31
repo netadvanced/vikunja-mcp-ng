@@ -6,6 +6,7 @@
 import CircuitBreaker from 'opossum';
 import { logger } from './logger';
 import { isAuthenticationError } from './auth-error-handler';
+import { MCPError } from '../types/errors';
 import { extractHttpStatus } from './http-error-detail';
 
 /**
@@ -150,9 +151,19 @@ const OPEN_BREAKER_CODE = 'EOPENBREAKER';
  * `ECONNRESET`/`ETIMEDOUT`, opossum's own `ETIMEDOUT`/`ESHUTDOWN`/
  * `ESEMLOCKED`) are NOT filtered — they keep counting toward opening the
  * breaker, which is exactly the "service looks unhealthy" signal the
- * breaker exists to catch.
+ * breaker exists to catch. The one exception is a caller-side cancellation
+ * (`details.cancelled`), handled first below.
  */
 export function isClientErrorExcludedFromBreaker(error: unknown): boolean {
+  // A request the CALLER aborted (the tool-execution deadline elapsed — see
+  // `cancelled` in src/types/errors.ts) is the same kind of non-signal as a
+  // 4xx: it says nothing about upstream health. Counting it would let one
+  // identity's slow or oversized calls trip breakers that, per decision
+  // 16(c), every other tenant in the process shares.
+  if (error instanceof MCPError && error.details?.cancelled === true) {
+    return true;
+  }
+
   const status = extractHttpStatus(error);
   if (status === null) return false;
   if (status === 401) return false;
@@ -264,8 +275,38 @@ export function createCircuitBreaker<TArgs extends unknown[], TR>(
     }
     registryKey = `${name}#${operation.name || 'anonymous'}`;
     const existingForOperation = circuitBreakerRegistry.get(registryKey);
-    if (existingForOperation) {
+    // LOW-16 (#296): `registryKey` is derived from `operation.name`, which is
+    // '' for every anonymous function — so two DISTINCT anonymous operations
+    // that collide under the same `name` land on the identical disambiguated
+    // key. Without re-checking `.action`, a third anonymous operation here
+    // would silently reuse the second's breaker (wrong action fired). Fall
+    // through to the loop below whenever the cached action doesn't actually
+    // match, exactly as the outer check above does for `registryKey === name`.
+    if (
+      existingForOperation &&
+      (existingForOperation as unknown as { action?: unknown }).action === operation
+    ) {
       return existingForOperation as unknown as CircuitBreaker<TArgs, TR>;
+    }
+    if (existingForOperation) {
+      // Still colliding after the first disambiguation (e.g. a third
+      // anonymous operation) — keep appending a numeric suffix until we find
+      // either this exact operation's breaker or a free slot.
+      let suffix = 2;
+      let candidateKey = `${registryKey}#${suffix}`;
+      let candidate = circuitBreakerRegistry.get(candidateKey);
+      while (
+        candidate &&
+        (candidate as unknown as { action?: unknown }).action !== operation
+      ) {
+        suffix += 1;
+        candidateKey = `${registryKey}#${suffix}`;
+        candidate = circuitBreakerRegistry.get(candidateKey);
+      }
+      if (candidate) {
+        return candidate as unknown as CircuitBreaker<TArgs, TR>;
+      }
+      registryKey = candidateKey;
     }
     logger.error(
       `Circuit breaker name collision: "${name}" is already registered for a different operation. ` +

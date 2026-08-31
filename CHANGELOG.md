@@ -8,6 +8,34 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+### Fixed
+
+- **Per-identity rate limiting now covers the whole tool surface, and its windows
+  actually rotate.** Three defects, one guarantee. (1) Of the roughly two dozen tools this
+  server registers, only `vikunja_auth` was wrapped in the rate-limit middleware, so in
+  `oidc-http` mode (one process, many accounts) every other tool was unmetered per
+  identity. Every tool now registers through a rate-limiting view of the MCP server, so
+  being registered is what makes a tool metered. (2) Where the middleware was wired it did
+  not work: the counter store was never given its window length, so no window ever expired
+  and "60 requests per minute" was really 60 per process lifetime — the 61st call ever made
+  returned a misleading 429 until the server restarted. (3) The hourly limit was counted in
+  one place and read from another, so it could never trip. This matters beyond one user's
+  own budget: `docs/ROADMAP.md` decision 16(c) accepts sharing circuit breakers across
+  accounts specifically because per-user rate limits are supposed to contain a noisy
+  neighbour, and until now they did not. `vikunja_task_bulk` also moves to the bulk budget,
+  where it belongs. (#263)
+- **"Reset this user's rate limits" no longer resets everyone's.** `clearSession(sessionId)`
+  ignored the id it was given and cleared every identity's counters plus both shared circuit
+  breakers. It has no callers today, which is exactly why it is fixed now rather than after
+  something starts calling it. (#296, LOW-18)
+- **A tool call that hits its execution deadline now actually cancels the work.** The
+  deadline was a timer that was never cleared (so a fast call left one armed for up to the
+  full timeout, ten minutes for exports) and that did nothing to the operation it timed out
+  — the caller was told the call timed out while the request kept running and could still
+  commit a write. The deadline now aborts the in-flight HTTP request, reports honestly that
+  the outcome is unknown and should be re-checked rather than blindly retried, and does not
+  count against the shared circuit breakers. (#296, LOW-20)
+
 ## [0.7.0-beta.2] - 2026-09-01
 
 **A correctness pass over the whole write surface, and one breaking change.** Nearly every

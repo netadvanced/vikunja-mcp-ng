@@ -33,8 +33,56 @@ import {
   type RetryOptions,
 } from './retry';
 import { resolveIdentityAuthManager } from '../context/requestContext';
+import { getExecutionAbortSignal } from '../context/executionContext';
+import { redactSecretsInText } from './security';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+/**
+ * How much of an upstream error body is scanned for credentials before it is
+ * truncated for display. Redaction has to run on more text than we keep,
+ * otherwise a secret straddling the 500-character display cut would have its
+ * tail removed and its head kept, leaving a partial credential that no pattern
+ * matches any more. Scanning 4 KiB is cheap and covers every realistic
+ * Vikunja/proxy error body.
+ */
+const ERROR_BODY_SCAN_LIMIT = 4096;
+
+/** How much of the (already redacted) error body is shown to the caller. */
+const ERROR_BODY_DISPLAY_LIMIT = 500;
+
+/**
+ * Prepares untrusted upstream text for interpolation into an
+ * `MCPError.message`.
+ *
+ * The response body of a failed request is authored by something we do not
+ * control: Vikunja itself, but also any reverse proxy, WAF, or auth gateway
+ * in front of it. Those routinely echo request details back, including the
+ * `Authorization` header or a query string, so the body can carry the
+ * caller's own credential. Before this existed the body's first 500
+ * characters went straight into the error message, which the MCP client sees:
+ * audit #292 MED-18. It runs through the same `redactSecretsInText` pass as
+ * the logger and the thrown-error sanitizer, so there is a single definition
+ * of what counts as a secret.
+ *
+ * @param text - Raw upstream text (response body, or a network error message)
+ * @param limit - Maximum length of the returned string
+ * @returns The text with credentials redacted, truncated to `limit`
+ */
+function redactUpstreamText(text: string, limit = ERROR_BODY_DISPLAY_LIMIT): string {
+  return redactSecretsInText(text.slice(0, ERROR_BODY_SCAN_LIMIT)).slice(0, limit);
+}
+
+/**
+ * Same treatment for the message of a failure thrown by `fetch` itself, which
+ * embeds the request URL and can therefore carry userinfo credentials.
+ */
+function describeRequestError(error: unknown): string {
+  return redactUpstreamText(
+    error instanceof Error ? error.message : String(error),
+    ERROR_BODY_SCAN_LIMIT,
+  );
+}
 
 /**
  * Resolves the EFFECTIVE `AuthManager` for a request, closing the
@@ -326,6 +374,31 @@ export interface VikunjaRestRequestOptions {
 }
 
 /**
+ * The error raised when the tool-execution deadline aborted a request that
+ * was already in flight.
+ *
+ * Two properties matter and are load-bearing:
+ * - The message deliberately avoids every substring `isRetryableError` /
+ *   `isTransientError` (src/utils/retry.ts) treat as grounds to retry
+ *   ('timeout', 'timed out', 'connection', 'network', 'rate limit', ...).
+ *   Re-firing a request the caller has already given up on is precisely the
+ *   "may still commit" hazard LOW-20 is about.
+ * - `cancelled: true` tells the shared circuit breaker's `errorFilter`
+ *   (`isClientErrorExcludedFromBreaker`) that this failure says nothing
+ *   about upstream Vikunja's health, so one tenant's slow calls cannot
+ *   trip a breaker that every other tenant in the process shares.
+ */
+function buildCancelledRequestError(method: string, path: string): MCPError {
+  return new MCPError(
+    ErrorCode.TIMEOUT_ERROR,
+    `Vikunja REST request cancelled (${method} ${path}): the tool execution deadline ` +
+      'elapsed before the server responded. The request was aborted; whether the server ' +
+      'had already applied it is unknown, so re-check before retrying.',
+    { cancelled: true, transient: false },
+  );
+}
+
+/**
  * The actual network call, with no retry/breaker logic of its own. This is
  * intentionally a plain top-level function (not a closure factory) so it
  * can be safely registered once per breaker name and re-fired with fresh
@@ -340,6 +413,14 @@ async function vikunjaRestRequestRaw(
   const session = authManager.getSession();
   const url = `${resolveBaseUrl(session.apiUrl)}${path}`;
 
+  // The tool-execution deadline, when one applies (see
+  // `src/context/executionContext.ts`). Passed straight to `fetch` so a
+  // timed-out tool call actually aborts its in-flight HTTP request instead
+  // of leaving it running after the caller was told it timed out (LOW-20,
+  // #296). The key is omitted entirely when there is no deadline so callers
+  // outside a rate-limited tool call see byte-for-byte the previous request.
+  const signal = getExecutionAbortSignal();
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -349,13 +430,15 @@ async function vikunjaRestRequestRaw(
         'Content-Type': 'application/json',
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      ...(signal ? { signal } : {}),
     });
   } catch (error) {
+    if (signal?.aborted) {
+      throw buildCancelledRequestError(method, path);
+    }
     throw new MCPError(
       ErrorCode.API_ERROR,
-      `Vikunja REST request failed (${method} ${path}): ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Vikunja REST request failed (${method} ${path}): ${describeRequestError(error)}`,
       {
         transient: isTransientNetworkError(error),
         preRequest: isPreRequestNetworkError(error),
@@ -366,7 +449,7 @@ async function vikunjaRestRequestRaw(
   if (!response.ok) {
     let detail = '';
     try {
-      detail = (await response.text()).slice(0, 500);
+      detail = redactUpstreamText(await response.text());
     } catch {
       // Body could not be read — fall back to the status line only.
     }
@@ -480,6 +563,9 @@ async function vikunjaRestMultipartRequestRaw(
   const session = authManager.getSession();
   const url = `${resolveBaseUrl(session.apiUrl)}${path}`;
 
+  // Same tool-execution deadline as the JSON helper above.
+  const signal = getExecutionAbortSignal();
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -488,21 +574,32 @@ async function vikunjaRestMultipartRequestRaw(
         Authorization: `Bearer ${session.apiToken}`,
       },
       body: form,
+      ...(signal ? { signal } : {}),
     });
   } catch (error) {
+    if (signal?.aborted) {
+      throw buildCancelledRequestError(method, path);
+    }
     throw new MCPError(
       ErrorCode.API_ERROR,
-      `Vikunja REST request failed (${method} ${path}): ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      { transient: isTransientNetworkError(error) },
+      `Vikunja REST request failed (${method} ${path}): ${describeRequestError(error)}`,
+      {
+        transient: isTransientNetworkError(error),
+        // LOW-15 (#296): this path was missing the same `preRequest` marker
+        // the JSON raw path sets above — latent while retries default to
+        // off, but without it a caller that opts a multipart PUT into
+        // retries falls back to `isPreRequestNetworkError`'s ambiguous-error
+        // handling (never retry) instead of correctly recognizing a
+        // connection that never reached the server.
+        preRequest: isPreRequestNetworkError(error),
+      },
     );
   }
 
   if (!response.ok) {
     let detail = '';
     try {
-      detail = (await response.text()).slice(0, 500);
+      detail = redactUpstreamText(await response.text());
     } catch {
       // Body could not be read — fall back to the status line only.
     }

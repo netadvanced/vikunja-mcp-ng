@@ -427,6 +427,22 @@ describe('project link sharing (REST-migrated)', () => {
       expect(result.content[0].text).toContain('Successfully authenticated to share');
     });
 
+    // Deliberate behavior, re-affirmed against audit #287 (HIGH-16): this
+    // subcommand is a credential exchange, so the share-scoped JWT it mints
+    // for the caller is the whole payload. See the long rationale comment on
+    // `authProjectShare` in src/tools/projects/sharing.ts. If a future change
+    // starts redacting tool responses wholesale, this test is the tripwire.
+    it('returns the live share token verbatim (intentional, see #287)', async () => {
+      const shareToken = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzaGFyZSJ9.not-a-real-signature';
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ token: shareToken }) }),
+      );
+
+      const result = await authProjectShare({ shareHash: 'abc123' }, authManager);
+
+      expect(result.content[0].text).toContain(shareToken);
+    });
+
     it('sends the supplied password', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ token: 'jwt' }) }));
 

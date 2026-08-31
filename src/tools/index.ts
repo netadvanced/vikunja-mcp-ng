@@ -17,6 +17,7 @@ import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import type { ModulesConfig } from '../config';
 import { ConfigurationManager, ModulesConfigSchema, isModuleEnabled } from '../config';
 import { getEffectiveAuthType } from '../context/requestContext';
+import { withRateLimitedTools } from '../middleware/tool-rate-limit';
 import { logger } from '../utils/logger';
 
 import { registerAuthTool } from './auth';
@@ -117,7 +118,14 @@ export function registerTools(
   // gating configuration, and authentication.
   const modules = resolveModulesConfig();
 
-  registerAuthTool(server, authManager);
+  // Every tool below registers through this view of the server rather than
+  // the server itself, which is what makes per-identity rate limiting apply
+  // to the whole tool surface instead of just `vikunja_auth` (#263 CRIT-2 —
+  // and the premise decision 16(c) leans on when it accepts sharing circuit
+  // breakers across tenants). See src/middleware/tool-rate-limit.ts.
+  const meteredServer = withRateLimitedTools(server);
+
+  registerAuthTool(meteredServer, authManager);
 
   // Register the comprehensive tasks tool and its granular counterparts,
   // gated together behind the single "tasks" module toggle.
@@ -130,13 +138,13 @@ export function registerTools(
   // docs/API-COVERAGE.md's Tasks CRUD finding. `vikunja_tasks` is the
   // supported replacement; no capability was lost.
   if (isModuleEnabled(modules.tasks)) {
-    registerTasksTool(server, authManager, clientFactory);
-    registerTaskBulkTool(server, authManager, clientFactory);
-    registerTaskAssigneesTool(server, authManager, clientFactory);
-    registerTaskCommentsTool(server, authManager, clientFactory);
-    registerTaskRemindersTool(server, authManager, clientFactory);
-    registerTaskLabelsTool(server, authManager, clientFactory);
-    registerTaskRelationsTool(server, authManager, clientFactory);
+    registerTasksTool(meteredServer, authManager, clientFactory);
+    registerTaskBulkTool(meteredServer, authManager, clientFactory);
+    registerTaskAssigneesTool(meteredServer, authManager, clientFactory);
+    registerTaskCommentsTool(meteredServer, authManager, clientFactory);
+    registerTaskRemindersTool(meteredServer, authManager, clientFactory);
+    registerTaskLabelsTool(meteredServer, authManager, clientFactory);
+    registerTaskRelationsTool(meteredServer, authManager, clientFactory);
   }
 
   // Only register tools that require clientFactory if it's available
@@ -149,7 +157,7 @@ export function registerTools(
       // builds its subcommand enum accordingly. See that function's doc
       // comment and src/config/types.ts's `backgrounds` key.
       registerProjectsTool(
-        server,
+        meteredServer,
         authManager,
         clientFactory,
         isModuleEnabled(modules.backgrounds),
@@ -157,46 +165,46 @@ export function registerTools(
     }
 
     if (isModuleEnabled(modules.labels)) {
-      registerLabelsTool(server, authManager, clientFactory);
+      registerLabelsTool(meteredServer, authManager, clientFactory);
     }
 
     if (isModuleEnabled(modules.teams)) {
-      registerTeamsTool(server, authManager, clientFactory);
+      registerTeamsTool(meteredServer, authManager, clientFactory);
     }
 
     // Register filters tool (needs auth manager for session-scoped storage)
     if (isModuleEnabled(modules.filters)) {
-      registerFiltersTool(server, authManager, clientFactory);
+      registerFiltersTool(meteredServer, authManager, clientFactory);
     }
 
     // Register templates tool
     if (isModuleEnabled(modules.templates)) {
-      registerTemplatesTool(server, authManager, clientFactory);
+      registerTemplatesTool(meteredServer, authManager, clientFactory);
     }
 
     // Register webhooks tool
     if (isModuleEnabled(modules.webhooks)) {
-      registerWebhooksTool(server, authManager, clientFactory);
+      registerWebhooksTool(meteredServer, authManager, clientFactory);
     }
 
     // Register batch import tool
     if (isModuleEnabled(modules.batchImport)) {
-      registerBatchImportTool(server, authManager, clientFactory);
+      registerBatchImportTool(meteredServer, authManager, clientFactory);
     }
 
     // Register notifications tool
     if (isModuleEnabled(modules.notifications)) {
-      registerNotificationsTool(server, authManager, clientFactory);
+      registerNotificationsTool(meteredServer, authManager, clientFactory);
     }
 
     // Register subscriptions tool
     if (isModuleEnabled(modules.subscriptions)) {
-      registerSubscriptionsTool(server, authManager, clientFactory);
+      registerSubscriptionsTool(meteredServer, authManager, clientFactory);
     }
 
     // Register reactions tool
     if (isModuleEnabled(modules.reactions)) {
-      registerReactionsTool(server, authManager, clientFactory);
+      registerReactionsTool(meteredServer, authManager, clientFactory);
     }
 
     // Register API-token-management tool. Reserved/deny-by-default (see
@@ -207,7 +215,7 @@ export function registerTools(
     // comment), but that is a runtime concern for the tool to report, not a
     // registration-time gate.
     if (isModuleEnabled(modules.tokenManagement)) {
-      registerTokensTool(server, authManager, clientFactory);
+      registerTokensTool(meteredServer, authManager, clientFactory);
     }
 
     // Register user and export tools conditionally (preserving backward compatibility)
@@ -225,10 +233,10 @@ export function registerTools(
     // `isAuthenticated() && getAuthType() === 'jwt'` on the passed manager.
     const jwtAuthenticated = getEffectiveAuthType(authManager) === 'jwt';
     if (jwtAuthenticated && isModuleEnabled(modules.users)) {
-      registerUsersTool(server, authManager, clientFactory);
+      registerUsersTool(meteredServer, authManager, clientFactory);
     }
     if (jwtAuthenticated && isModuleEnabled(modules.export)) {
-      registerExportTool(server, authManager, clientFactory);
+      registerExportTool(meteredServer, authManager, clientFactory);
     }
 
     // Register CalDAV token management tool. Reserved/deny-by-default AND
@@ -241,7 +249,7 @@ export function registerTools(
     // registration time rather than left to the server to reject at
     // runtime — see src/tools/caldav-tokens.ts.
     if (jwtAuthenticated && isModuleEnabled(modules.caldavTokens)) {
-      registerCaldavTokensTool(server, authManager, clientFactory);
+      registerCaldavTokensTool(meteredServer, authManager, clientFactory);
     }
 
     // Register instance-admin tool. Reserved/deny-by-default AND JWT-only:
@@ -249,7 +257,7 @@ export function registerTools(
     // can only narrow what auth permits, never expand it — same composition
     // as users/export above).
     if (jwtAuthenticated && isModuleEnabled(modules.admin)) {
-      registerAdminTool(server, authManager, clientFactory);
+      registerAdminTool(meteredServer, authManager, clientFactory);
     }
 
     // Register user self-deletion tool. Reserved/deny-by-default AND
@@ -257,7 +265,7 @@ export function registerTools(
     // 'userDeletion' module config key and JWT auth must allow it. This is
     // the reserved DANGEROUS_MODULE_KEYS slot finally getting a tool.
     if (jwtAuthenticated && isModuleEnabled(modules.userDeletion)) {
-      registerUserDeletionTool(server, authManager, clientFactory);
+      registerUserDeletionTool(meteredServer, authManager, clientFactory);
     }
   }
 }
