@@ -13,8 +13,8 @@
  *   npm run e2e:up   # if not already running
  *   npx tsx scripts/capture-sample-screenshots.ts
  *
- * All selectors below were verified interactively against the pinned local
- * stack (vikunja/vikunja:2.3.0) before being hard-coded here; see this
+ * All selectors below were verified interactively against the then-pinned
+ * local stack (vikunja/vikunja:2.3.0) before being hard-coded here; see this
  * item's PR description for the exploration notes. Re-verify them if the
  * stack's pinned version ever moves (docs/LOCAL-TESTING.md's "Version
  * pinning and refresh" section) and the frontend markup has changed.
@@ -1117,13 +1117,13 @@ function updateAdminOpsDoc(): void {
   const filePath = path.join(SAMPLES_DIR, 'admin-ops.md');
   let content = readFileSync(filePath, 'utf-8');
   const note =
-    '_Screenshot unavailable: the pinned local e2e stack (`vikunja/vikunja:2.3.0`, see ' +
-    '[docs/LOCAL-TESTING.md](../LOCAL-TESTING.md#version-pinning-and-refresh)) does not yet ' +
-    'implement the admin panel API or UI on this version -- `GET /admin/overview` 404s and no ' +
-    '`admin` group appears in `GET /routes` at all. This is the documented spec/pinned-version ' +
-    'gap (the vendored OpenAPI spec is ~1000 commits ahead of the pinned stable image), not a ' +
-    'bug in the capture script. Re-run `scripts/capture-sample-screenshots.ts` once the stack is ' +
-    're-pinned to a release that ships the admin panel._\n';
+    '_Screenshot unavailable: this capture has not been re-run since the e2e stack was pinned ' +
+    'to `vikunja/vikunja:2.3.0`, a version that did not implement the admin panel API or UI at ' +
+    'all -- `GET /admin/overview` 404d and no `admin` group appeared in `GET /routes`. The pin ' +
+    'has since moved to `2.4.0`, which is now also the minimum supported Vikunja (see ' +
+    '[docs/LOCAL-TESTING.md](../LOCAL-TESTING.md#version-pinning-and-refresh)) and which does ' +
+    'ship these operations. Re-run `scripts/capture-sample-screenshots.ts` against the current ' +
+    'stack to fill this in._\n';
   const lineRegex = /`\[SCREENSHOT:[^\]]*\]`\n?/g;
   const count = (content.match(lineRegex) ?? []).length;
   if (count === 0) throw new Error('No [SCREENSHOT: ...] placeholders found in admin-ops.md');

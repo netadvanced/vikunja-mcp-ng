@@ -107,10 +107,15 @@ cannot disturb another's:
 
 | Target | API port | Notes |
 |---|---|---|
-| `2.4.0-postgres` | **8240** | the default; aligned/tested version |
-| `2.3.0-postgres` | **8230** | the v1 floor (minimum supported) |
+| `2.4.0-postgres` | **8240** | the default; aligned/tested **and** minimum supported |
 | `2.4.0-sqlite` | 9240 | SQLite-only failure classes |
-| `2.3.0-sqlite` | 9230 | |
+
+Since the floor rose to `2.4.0` (2026-08-31) there is no separate floor target — floor and
+aligned coincide, so the standard set is one version across two backends. The **resolver is
+unchanged**: `2.3.0-postgres` still resolves to port 8230 and can still be stood up by hand
+(`VIKUNJA_E2E_TARGET=2.3.0-postgres npm run e2e:up`) if you ever need to look at the old
+floor. It is simply not a supported target any more, and `npm run e2e:up:all` /
+`npm run e2e:down` (no argument) no longer include it.
 
 Ports are **derived, never hand-assigned**: `8000 + (major×100 + minor×10 +
 patch)` for Postgres, `9000 + …` for SQLite, so Vikunja 2.4.1 lands on 8241
@@ -120,7 +125,7 @@ harnesses consult — never hardcode a port.
 
 ```bash
 npm run e2e:up                                   # default target (2.4.0-postgres, port 8240)
-VIKUNJA_E2E_TARGET=2.3.0-postgres npm run e2e:up # the floor, port 8230
+VIKUNJA_E2E_TARGET=2.4.0-sqlite npm run e2e:up   # the sqlite backend, port 9240
 npm run e2e:up:all                               # every standard target at once
 npm run e2e:status                               # what's up, on which port, running which version
 ```
@@ -209,7 +214,7 @@ The `vikunja/vikunja` image serves the built frontend and the API from the
 same process on the same port, so once `npm run e2e:up` reports the stack
 healthy you can just open it in a browser:
 
-- **Web UI:** http://localhost:8240/ (default target; 8230 for the 2.3.0 floor)
+- **Web UI:** http://localhost:8240/ (default target; 9240 for the sqlite backend)
 - **API base:** http://localhost:8240/api/v1
 - **Login:** the bootstrap-created test user — username `e2e-test`, password
   as set in `TEST_PASSWORD` at the top of `docker/e2e/bootstrap.sh` (a fixed,
@@ -235,7 +240,7 @@ database, the user, and therefore the API token, which is exactly how a
 concurrent worktree lost its credential mid-session. Rotation must be a
 deliberate `reset`, never a side effect of stopping a stack.
 
-Both accept explicit targets (`npm run e2e:down 2.3.0-postgres`); with no
+Both accept explicit targets (`npm run e2e:down 2.4.0-sqlite`); with no
 argument they apply to every standard target.
 
 Leaving the stacks up between sessions is now the expected state — that is
@@ -265,14 +270,32 @@ what makes them a stable fixture rather than something every run rebuilds.
 
 ## Version pinning and refresh
 
-**Policy: minimum supported Vikunja is 2.3.0 (the v1-floor); aligned/tested
-default is 2.4.0.** Some workarounds in `src/` (see e.g.
-`src/tools/projects/sharing.ts`'s by-id-share-GET workaround) exist
-specifically for upstream bugs still present at 2.3.0 but fixed by 2.4.0 —
-those stay until 2.3.0 support is actually dropped, not merely because the
-default pin moved past the fix. Both versions are worth running locally
-(see "Version-matrix testing" below): 2.4.0 as the everyday default, 2.3.0
-as the periodic v1-floor regression check.
+**Policy: minimum supported Vikunja is 2.4.0 (the v1-floor), and the
+aligned/tested default is also 2.4.0 — the two currently coincide.**
+
+The floor was `2.3.0` until 2026-08-31. It rose because nine operations this
+server ships as `✅ Implemented` — the eight `/admin/*` operations behind
+`vikunja_admin`, plus `GET /projects/{project}/tasks/by-index/{index}`
+(`vikunja_tasks get-by-index`) — **do not exist on a released Vikunja 2.3.0
+at all**; the 169-operation denominator they were counted in came from a
+`try.vikunja.io` *unstable* build 1019 commits past the `v2.3.0` tag, not
+from the tag. Raising the floor makes the compatibility claim true rather
+than bolting a caveat onto a false one. Secondary reason: upstream moves
+fast and this project needs to keep up. See `docs/ROADMAP.md` §3 decision 27.
+
+Practical consequences while they coincide:
+
+- There is **no separate floor lane** in the matrix or the pre-tag checklist.
+  The default run *is* the floor run. The lane returns — with its "deliberately
+  different from the default so it never gets exercised by accident" property
+  intact — as soon as the aligned version moves past 2.4.0 (issue #237).
+- Some workarounds in `src/` (e.g. `src/tools/projects/sharing.ts`'s
+  by-id-share-GET workaround) exist for upstream bugs fixed in 2.4.0. Their
+  documented removal condition — "when the minimum supported version is raised
+  to ≥ 2.4.0" — **has now fired**, but removing them is a behaviour change
+  needing live re-verification, so it is deliberately a separate change from
+  the policy raise. Do not treat a stale "still needed at the 2.3.0 floor"
+  comment as current; check the dated note next to it.
 
 The stack pins `vikunja/vikunja:2.4.0` by default — see the comment block
 at the top of `docker/e2e/docker-compose.yml` for the full reasoning and
@@ -295,9 +318,14 @@ To refresh the pin when a newer stable Vikunja release ships:
 1. Check available tags: `curl -s https://hub.docker.com/v2/repositories/vikunja/vikunja/tags?page_size=100`
    (or the [releases page](https://github.com/go-vikunja/vikunja/releases)).
 2. Bump the tag in `docker/e2e/docker-compose.yml` and its comment block,
-   and the `DEFAULT_TARGET` / `standardTargets()` values in
-   `scripts/lib/e2e-target.ts` (the resolver every script and harness reads
-   the version, ports, and env-file name from).
+   and `DEFAULT_TARGET` in `scripts/lib/e2e-target.ts` (the resolver every
+   script and harness reads the version, ports, and env-file name from —
+   `standardTargets()` derives its list from `DEFAULT_TARGET` and
+   `FLOOR_VERSION`, so it needs no edit). Moving `DEFAULT_TARGET` past
+   `FLOOR_VERSION` is exactly what un-collapses floor and aligned: the
+   standard set goes back to four stacks and the floor matrix lane in
+   `docs/RELEASING.md` becomes live again. Decide deliberately whether the
+   floor moves with it.
 3. Bring the stack up on the new tag and refresh `docs/vikunja-openapi.json`
    from it (`VIKUNJA_E2E_TARGET=X.Y.Z-postgres npm run e2e:up && npm run
    fetch:api-spec:container && npm run generate:api-types`), if you also
@@ -456,10 +484,10 @@ stack-recreation and harness-invocation steps. The matrix is version × db
 variant" above).
 
 ```bash
-npm run test:matrix                                          # 2.4.0 / postgres (defaults, aligned/tested)
-VIKUNJA_VERSION=2.3.0 npm run test:matrix                     # the v1-floor regression check
+npm run test:matrix                                          # 2.4.0 / postgres (defaults, aligned/tested = floor)
 VIKUNJA_DB=sqlite npm run test:matrix                         # default version, sqlite backend
-VIKUNJA_VERSION=2.3.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
+VIKUNJA_VERSION=2.5.0 npm run test:matrix                     # an unsupported version, ad hoc
+VIKUNJA_VERSION=2.5.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
 ```
 
 For the chosen `VIKUNJA_VERSION` (default `2.4.0`, matching the compose
@@ -498,10 +526,11 @@ file's own default — see "Version pinning and refresh" above) and
    breaker issue. As of the 2.4.0 alignment (tracking issue #28 item A1),
    this check passed 12/12 across 5 repeated runs against `2.4.0`/sqlite —
    see "Vikunja 2.4.0 and `concurrent_writes`" below. This project's
-   client-side write-serialization is retained regardless, as
-   defense-in-depth for the documented v1-floor (2.3.0, where the fix isn't
-   present) — see the comment on the `create` `BatchProcessor` in
-   `src/tools/tasks/bulk-operations-simplified.ts`.
+   client-side write-serialization is retained regardless — its revisit
+   condition is a conjunction ("floor ≥ 2.4.0 **and** durable multi-run
+   evidence across upstream point releases") and only the first arm has
+   fired with the 2026-08-31 floor raise — see the comment on the `create`
+   `BatchProcessor` in `src/tools/tasks/bulk-operations-simplified.ts`.
 5. **Exits 0 on `PASS`, 1 on `FAIL`** — usable as a plain shell gate even
    without CI (GitHub Actions are disabled repo-wide by explicit owner
    decision; this is why this entire workflow is a local script rather
@@ -552,11 +581,12 @@ write-concurrency issue tracked in #116.
 **This does not change this project's own behavior.** The client-side
 serialization in `src/tools/tasks/bulk-operations-simplified.ts` (the
 `create` `BatchProcessor`'s `maxConcurrency: 1`) is retained regardless, as
-defense-in-depth — this project's documented minimum supported Vikunja
-version is still 2.3.0 (which does not advertise `concurrent_writes` and
-does exhibit the lock-storm), a deployer's server may not be running
-2.4.0+ at all, and serializing creates is cheap in the common case. See
-that file's comment for the exact revisit condition.
+defense-in-depth. Its revisit condition is a conjunction — floor raised to
+≥ 2.4.0 **and** multi-run evidence, beyond one wave's handful of runs, that
+the upstream fix is durable across point releases. The 2026-08-31 floor
+raise fired the first arm only; the second is still unmet, and serializing
+creates is cheap in the common case. See that file's comment for the exact
+wording.
 
 ### When a new Vikunja release ships
 

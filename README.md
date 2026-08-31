@@ -19,10 +19,15 @@ This server exposes Vikunja as **27 tools** (~150 subcommands), each covering on
 
 | Vikunja | Status |
 |---|---|
-| **2.4.0** | Aligned and tested — the version CI and the e2e stacks run against |
-| **2.3.0** | Minimum supported; the floor for the v1 API |
+| **2.4.0** | Aligned and tested — the version CI and the e2e stacks run against. Also the **minimum supported** version: floor and aligned currently coincide |
 | 2.5.0, 2.6.0 | Released upstream, **neither is supported or tested here** — no code in this server targets them yet. 2.6.0 (2026-08-31) is primarily a security release (18 fixes) |
-| < 2.3.0 | Not supported |
+| < 2.4.0 | Not supported |
+
+The floor rose from 2.3.0 to 2.4.0 in the `0.7.0-beta` line: nine operations this
+server ships as implemented (the eight `vikunja_admin` operations and
+`vikunja_tasks get-by-index`) simply do not exist on a released Vikunja 2.3.0, so
+the old floor claim was never true in practice. **If you run Vikunja 2.3.0, either
+upgrade your Vikunja or pin `vikunja-mcp-ng@0.6.2`.**
 
 The server talks to Vikunja's **v1 API**. Vikunja's v2 API is tracked as [issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184) and is not started.
 

@@ -114,16 +114,18 @@ const TARGET_ENV = readTargetEnv();
 const VIKUNJA_URL = process.env.MCP_E2E_VIKUNJA_URL || TARGET_ENV.VIKUNJA_URL || TARGET.apiUrl;
 
 // Cached once at startup by `detectServerVersion()` (called early in `main`)
-// so `driftTolerated`-gated checks (currently just the assignees-500 case,
-// see `testAssignees` below) can condition their tolerance on the actual
-// server under test rather than assuming a fixed version. `null` means
-// "not yet detected" -- checked-for at the one call site that needs it.
+// and reported in the run header, so a verdict file always records which
+// server the checks actually ran against. It used to gate the assignees-500
+// drift tolerance too; that tolerance was removed on 2026-08-31 when the
+// minimum supported Vikunja rose to 2.4.0 (the version the upstream fix
+// shipped in), leaving this script with ZERO version-gated tolerances.
+// `null` means "not detected" -- purely cosmetic now.
 let detectedServerVersion: string | null = null;
 
 /**
- * Fetches GET /info and normalizes its `version` field ("v2.3.0" -> "2.3.0")
- * for version-gating drift tolerances. Never throws: if this fails for any
- * reason, callers get `null` and treat that conservatively (see call site).
+ * Fetches GET /info and normalizes its `version` field ("v2.4.0" -> "2.4.0")
+ * so the run header and verdict file name the server actually under test.
+ * Never throws: if this fails for any reason, callers get `null`.
  */
 async function detectServerVersion(): Promise<string | null> {
   try {
@@ -135,23 +137,6 @@ async function detectServerVersion(): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-/**
- * Bare-bones `X.Y.Z` semver "is `version` strictly less than `target`"
- * comparison -- sufficient for the plain release tags this project pins to
- * (no pre-release/build-metadata suffixes to handle here; `/info` reports
- * clean tags like `v2.3.0`/`v2.4.0` for actual tagged releases).
- */
-function versionLessThan(version: string, target: string): boolean {
-  const a = version.split('.').map((n) => parseInt(n, 10));
-  const b = target.split('.').map((n) => parseInt(n, 10));
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    const av = a[i] ?? 0;
-    const bv = b[i] ?? 0;
-    if (av !== bv) return av < bv;
-  }
-  return false;
 }
 
 /** Aborts the process if `url` is not localhost/127.0.0.1 — see file header. */
@@ -216,17 +201,20 @@ interface StepResult {
   skipped?: boolean;
   /**
    * Set when a check hit a *known, tracked* server-side regression on the
-   * version under test (currently: GET /tasks/{id}/assignees 500ing on
-   * Vikunja versions below 2.4.0, see `driftTolerated` below) rather than a
-   * real tool bug. Tolerated checks are excluded from the failure count /
-   * exit code but still surfaced distinctly (not silently dropped) in both
-   * this script's own [Summary] output and the version-matrix verdict file
-   * (scripts/test-matrix.ts) so nobody mistakes "tolerated" for "fixed".
-   * This tolerance is now version-gated (only applies when the detected
-   * server is < 2.4.0, see `testAssignees`) rather than global -- fixed
-   * upstream (go-vikunja/vikunja PR #2791) and confirmed shipped in the
-   * 2.4.0 tag, so a 2.4.0+ server hitting this signature is a real,
-   * hard-failing regression, not a tolerated one.
+   * version under test, rather than a real tool bug. Tolerated checks are
+   * excluded from the failure count / exit code but still surfaced
+   * distinctly (not silently dropped) in both this script's own [Summary]
+   * output and the version-matrix verdict file (scripts/test-matrix.ts) so
+   * nobody mistakes "tolerated" for "fixed".
+   *
+   * **There are currently no `driftTolerated` call sites.** The last one --
+   * GET /tasks/{id}/assignees 500ing below Vikunja 2.4.0
+   * (go-vikunja/vikunja PR #2791) -- was removed on 2026-08-31 when the
+   * minimum supported Vikunja rose to 2.4.0, the release that fix shipped
+   * in: a server below the floor is unsupported, so tolerating its bug is
+   * no longer meaningful. The mechanism is kept because the next such
+   * regression will need it; `docs/RELEASING.md`'s pre-tag checklist asks
+   * the operator to re-read the tolerances actually present here.
    */
   serverDrift?: boolean;
   error?: string;
@@ -648,9 +636,11 @@ async function testAuth(h: McpHarness): Promise<void> {
     // runs the session capability/version detector (GET /info already
     // above, plus a one-time GET /api/v2/openapi.json probe) and must
     // surface both fields. `hasV2Api` is version-dependent — the v2 API is
-    // present on Vikunja 2.4.0+ but ABSENT on the 2.3.0 v1-floor — so we
-    // probe the live endpoint here for ground truth and assert the detector
-    // agrees, rather than hard-coding `true` (which false-failed on 2.3.0).
+    // present on Vikunja 2.4.0+ and was absent on 2.3.0 — so we probe the
+    // live endpoint here for ground truth and assert the detector agrees,
+    // rather than hard-coding `true` (which false-failed on 2.3.0 back when
+    // that was the floor, and would false-fail again on any future server
+    // that stops serving v2).
     assertStep(
       'auth info surfaces hasV2Api',
       /hasV2Api/.test(info.text),
@@ -1577,37 +1567,14 @@ async function testAssignees(h: McpHarness, ctx: FlowContext): Promise<void> {
   assertOk('assign self to task', assign);
 
   const list = await h.call('vikunja_task_assignees', { operation: 'list-assignees', id: ctx.taskId });
-  // Known, tracked server-side regression: GET /tasks/{id}/assignees 500s
-  // unconditionally on Vikunja versions below 2.4.0 (fixed upstream on
-  // go-vikunja/vikunja's main via PR #2791; confirmed shipped in the 2.4.0
-  // tagged release during the 2.4.0 alignment work -- both DB backends
-  // passed this exact check with a genuine, non-tolerated 200 there).
-  // Confirmed independently via raw REST (bypassing this tool entirely)
-  // against a fresh task with zero assignees on the same local stack — same
-  // 500 pre-2.4.0. The MCP tool's request (GET /tasks/{taskID}/assignees,
-  // no body) matches the OpenAPI spec exactly; this was a real server-side
-  // bug on affected versions, not something the tool can work around by
-  // sending a different request. The tolerance below is version-gated
-  // (only kicks in when the detected server is < 2.4.0, our documented
-  // v1-floor minimum is 2.3.0) -- it still runs every time, on every
-  // version, and only this exact signature on a pre-2.4.0 server is
-  // tolerated. On 2.4.0+ this same 500 is a hard failure: the fix is
-  // confirmed shipped there, so a regression would be new and real.
-  const preFixServer = detectedServerVersion !== null && versionLessThan(detectedServerVersion, '2.4.0');
-  if (preFixServer && list.isError && /HTTP 500/.test(list.text) && /assignees/.test(list.text)) {
-    driftTolerated(
-      'list task assignees',
-      'GET /tasks/{id}/assignees returns HTTP 500 on this Vikunja version, independent of caller',
-      `vikunja_task_assignees {operation:"list-assignees", id:${ctx.taskId}} failed with: ` +
-        `${list.text.slice(0, 300)}. Reproduced with a raw, tool-independent curl GET against ` +
-        'a fresh task with zero assignees on the same local stack — same 500. Tracked upstream ' +
-        'as go-vikunja/vikunja PR #2791, confirmed fixed and shipped in the 2.4.0 tagged release ' +
-        `(detected server version: ${detectedServerVersion}, our v1-floor minimum is 2.3.0). ` +
-        'This tolerance only applies below 2.4.0 -- see docs/LOCAL-TESTING.md\'s "Version pinning ' +
-        'and refresh" section; if this 500s on 2.4.0+, remove this tolerance and let it fail for real.',
-    );
-    return;
-  }
+  // Historical note, kept because a 500 here has a known cause: GET
+  // /tasks/{id}/assignees 500s unconditionally on Vikunja versions below
+  // 2.4.0 (go-vikunja/vikunja PR #2791), and this check used to tolerate
+  // that behind a `detectedServerVersion < 2.4.0` gate. The minimum
+  // supported Vikunja is now 2.4.0 -- the release the fix shipped in -- so
+  // that gate could never fire on a supported server and was removed on
+  // 2026-08-31. A 500 here is now a plain hard failure, which is the
+  // correct signal on any server we claim to support.
   if (assertOk('list task assignees', list)) {
     assertStep(
       'assignee list includes self',

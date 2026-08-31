@@ -149,23 +149,25 @@ and no undo for an npm publish.
       default explicitly.
   - [ ] `VIKUNJA_VERSION=<aligned> VIKUNJA_DB=postgres npm run test:matrix` — PASS.
   - [ ] `VIKUNJA_VERSION=<aligned> VIKUNJA_DB=sqlite npm run test:matrix` — PASS.
-  - [ ] **Minimum-supported-version floor regression:** `VIKUNJA_VERSION=2.3.0 npm run test:matrix`
-        (postgres is sufficient for the floor check unless the release touches DB-concurrency
-        behavior, in which case run both backends) — `2.3.0` is the documented minimum supported
-        Vikunja version (see
-        [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-pinning-and-refresh)), deliberately
-        different from the aligned/default version so it never gets exercised by accident. A
-        `FAIL` here needs the same triage as any other matrix failure (script staleness vs. real
-        tool bug vs. new server-drift) before proceeding.
+  - [ ] **Minimum-supported-version floor regression — NOT APPLICABLE while floor == aligned.**
+        The floor rose to `2.4.0` on 2026-08-31 (docs/ROADMAP.md §3 decision 27), which is also
+        the aligned/default version, so the two runs above **are** the floor run. Do not run a
+        separate floor lane: pointing it at `2.4.0` re-runs work already done, and pointing it at
+        `2.3.0` verifies a version this project no longer supports (and where nine shipped
+        operations do not exist at all). This box is deliberately left in place rather than
+        deleted — the safeguard it describes, a floor version *deliberately different from the
+        default so it never gets exercised by accident*, is real and returns the moment the
+        aligned version moves past `2.4.0` (issue #237 proposes 2.6.0). When that happens,
+        restore this as a live checkbox and set `FLOOR_VERSION` in `scripts/lib/e2e-target.ts` +
+        `MIN_SUPPORTED_VIKUNJA` in `scripts/lib/vikunja-compat-version.sh` accordingly.
 - [ ] **Live MCP harness expectations, read honestly, not assumed.** The matrix run above already
       executes both `npm run test:mcp` and `npm run test:e2e:mcp` per version/DB combination, but
       confirm you're reading the results against the *current* tolerances, not stale memory of a
-      previous release: open `scripts/mcp-e2e.ts` and check what is currently version-gated (as of
-      this writing, one documented tolerance — `GET /tasks/{id}/assignees` 500s unconditionally
-      below Vikunja 2.4.0, tolerated only on servers `< 2.4.0` and a hard failure on 2.4.0+; see
-      `driftTolerated()` / `versionLessThan()` in that file and
-      [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#true-mcp-layer-e2e-harness-npm-run-teste2emcp)'s
-      "Findings categorization" section). Any `✗` (hard failure) blocks the release; any `⚠
+      previous release: open `scripts/mcp-e2e.ts` and check what is currently tolerated. **As of
+      2026-08-31 there are zero `driftTolerated()` call sites** — the last one (`GET
+      /tasks/{id}/assignees` 500s below Vikunja 2.4.0) was removed with the floor raise, since a
+      server below the floor is unsupported and its bugs should fail loudly. The mechanism is
+      retained for the next such regression. Any `✗` (hard failure) blocks the release; any `⚠
       server-drift` must match a tolerance actually present in `scripts/mcp-e2e.ts` today — if the
       script's tolerances have changed since this paragraph was last edited, trust the script and
       update this paragraph in the same PR.
@@ -256,9 +258,11 @@ How this project tracks new upstream Vikunja releases, proven end-to-end alignin
 1. A new upstream Vikunja version ships.
 2. Validate the tool surface against it before touching any pins:
    `VIKUNJA_VERSION=<new> npm run test:matrix` for both `VIKUNJA_DB=postgres` and `sqlite`, **and**
-   the minimum-supported floor (`VIKUNJA_VERSION=2.3.0 npm run test:matrix`) to confirm the floor
-   still holds — see
-   [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-matrix-testing-npm-run-testmatrix).
+   the minimum-supported floor to confirm the floor still holds — see
+   [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-matrix-testing-npm-run-testmatrix). The floor
+   is currently `2.4.0`, i.e. the same as the aligned version, so that second run collapses into
+   the first; it becomes a distinct `VIKUNJA_VERSION=<floor> npm run test:matrix` again as soon
+   as this step moves the aligned version past the floor.
 3. Refresh the vendored spec from the pinned container and regenerate types:
    `VIKUNJA_E2E_TARGET=<new>-postgres npm run e2e:up && npm run fetch:api-spec:container && npm run
    generate:api-types`. Use the container spec, not `npm run fetch:api-spec` (which hits
@@ -326,7 +330,9 @@ the `e2e` pin and warns (doesn't fail) on drift. The image also carries these as
 range survives a retag.
 
 **Minimum-supported vs. aligned** — the project supports a floor version in addition to the
-current aligned/default version (currently floor `2.3.0`, aligned `2.4.0`); see
+current aligned/default version. **They currently coincide (floor `2.4.0`, aligned `2.4.0`)**,
+so a release publishes one compat alias, not two: `release.yml` compares `MIN` against `COMPAT`
+and omits the duplicate `:X.Y.Z-vikunja<min>` tag and its release-notes row when they match. See
 [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-pinning-and-refresh) for the policy and what
 keeps a workaround alive past the point its target bug is fixed upstream.
 

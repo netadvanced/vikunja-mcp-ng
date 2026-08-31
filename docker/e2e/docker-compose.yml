@@ -22,19 +22,27 @@
 # Fetching from the pinned container itself instead means the vendored spec
 # and this pin are byte-for-byte in sync by construction.
 #
-# Policy: **minimum supported Vikunja is 2.3.0** (the v1-floor — some
-# workarounds in src/ target upstream bugs still present at 2.3.0, e.g. the
-# by-id share GET bug fixed upstream only in 2.4.0; see
-# src/tools/sharing.ts / docs/API-COVERAGE.md), while **2.4.0 is the
-# aligned/tested default** everything in this repo is validated against
-# day to day. Both are worth running (see docs/LOCAL-TESTING.md).
+# Policy (raised 2026-08-31, `0.7.0-beta` line): **minimum supported Vikunja
+# is 2.4.0**, and 2.4.0 is also the **aligned/tested default** — floor and
+# aligned currently COINCIDE. The floor was 2.3.0 until nine operations this
+# server ships as implemented (the eight /admin/* operations and
+# GET /projects/{project}/tasks/by-index/{index}) turned out not to exist on
+# a released 2.3.0 at all; see docs/ROADMAP.md §3 decision 27. Some
+# workarounds in src/ still target upstream bugs fixed only in 2.4.0 (e.g.
+# the by-id share GET bug — src/tools/projects/sharing.ts,
+# docs/API-COVERAGE.md); their removal condition has now fired but is
+# deliberately a separate change, not part of the policy raise.
 #
 # The tag is env-driven (`VIKUNJA_VERSION`, default `2.4.0` below) so the
 # version-matrix runner (`npm run test:matrix`, see
 # scripts/test-matrix.ts and docs/LOCAL-TESTING.md) can bring this stack
 # up against a different Vikunja release without editing this file:
 #
-#   VIKUNJA_VERSION=2.3.0 npm run e2e:up   # the v1-floor regression check
+#   VIKUNJA_VERSION=2.5.0 npm run e2e:up   # an unsupported version, ad hoc
+#
+# There is no separate floor lane while floor == aligned: the default run IS
+# the floor run. A distinct floor target returns as soon as the aligned
+# version moves past 2.4.0 (issue #237).
 #
 # Plain `npm run e2e:up` (no override) uses the `2.4.0` default. Re-pin the
 # *default* by bumping the fallback value below (see docs/LOCAL-TESTING.md's
@@ -68,6 +76,9 @@
 #
 #   2.4.0-postgres -> project vikunja-e2e-2.4.0-postgres, API on 8240
 #   2.3.0-postgres -> project vikunja-e2e-2.3.0-postgres, API on 8230
+#
+# (The 2.3.0 line is kept purely as a worked example of the arithmetic — the
+# formula resolves any version, supported or not.)
 #
 # Ports are DERIVED from the version, never hand-assigned -- the formula and
 # the target ids live in scripts/lib/e2e-target.ts, which bootstrap.sh

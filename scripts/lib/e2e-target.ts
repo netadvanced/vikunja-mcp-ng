@@ -49,8 +49,20 @@ export interface E2eTarget {
 /** The target every harness uses when the caller doesn't choose one. */
 export const DEFAULT_TARGET = '2.4.0-postgres';
 
-/** Minimum supported Vikunja (the v1 floor), kept alongside the default for callers that sweep both. */
-export const FLOOR_VERSION = '2.3.0';
+/**
+ * Minimum supported Vikunja (the v1 floor).
+ *
+ * Raised `2.3.0` -> `2.4.0` on 2026-08-31 (docs/ROADMAP.md §3 decision 27), so it currently
+ * EQUALS `DEFAULT_TARGET`'s version — floor and aligned coincide, and `standardTargets()`
+ * therefore yields one version's worth of stacks, not two. They separate again the moment the
+ * aligned version moves past 2.4.0 (issue #237), at which point this constant is the only edit
+ * needed to bring the floor lane back.
+ *
+ * Note this is a *policy* value, not a limit of the resolver: `resolveTarget('2.3.0-postgres')`
+ * still works and still derives port 8230 — the port formula is plain arithmetic over any
+ * `X.Y.Z`, deliberately kept so an unsupported version can still be stood up ad hoc.
+ */
+export const FLOOR_VERSION = '2.4.0';
 
 function versionOffset(version: string): number {
   const parts = version.split('.').map((n) => Number.parseInt(n, 10));
@@ -102,9 +114,14 @@ export function resolveTarget(id: string = DEFAULT_TARGET): E2eTarget {
   };
 }
 
-/** Every target the repo routinely runs: aligned + floor, both backends. */
+/**
+ * Every target the repo routinely runs: the aligned version and the floor, both DB backends.
+ * De-duplicated, because those two versions currently coincide (see `FLOOR_VERSION`) and a
+ * stack list with the same target twice would `e2e:up:all` it twice.
+ */
 export function standardTargets(): E2eTarget[] {
-  return ['2.4.0-postgres', '2.4.0-sqlite', `${FLOOR_VERSION}-postgres`, `${FLOOR_VERSION}-sqlite`].map(
-    (id) => resolveTarget(id),
-  );
+  const versions = [...new Set([DEFAULT_TARGET.split('-')[0] as string, FLOOR_VERSION])];
+  return versions
+    .flatMap((version) => [`${version}-postgres`, `${version}-sqlite`])
+    .map((id) => resolveTarget(id));
 }

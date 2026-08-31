@@ -17,7 +17,8 @@ refused with an error naming the field and what to use instead — and the three
 destroyed or duplicated your data are called out first, under **Fixed — data loss and
 duplicate writes**.
 The breaking change riding along: **`percentDone` is a whole percentage 0-100**, not a 0-1
-fraction.
+fraction. And one change that is about your server rather than your calls: **the minimum
+supported Vikunja is now 2.4.0** — 2.3.0 is no longer supported.
 
 ### Changed
 
@@ -74,6 +75,26 @@ fraction.
   (`position` on task create, `doneBucketId`/`defaultBucketId` on `create-view`,
   `targetUrl`/`secret`/`basicAuth*` on webhook `update`, `labelTitles` on `remove-label`,
   changed `title`/`description`/`parentProjectId`/`hexColor` on `setup-kanban`'s reuse path).
+
+- **BREAKING: the minimum supported Vikunja is now 2.4.0. Vikunja 2.3.0 is no longer
+  supported.** If your Vikunja instance runs 2.3.0, either upgrade Vikunja to 2.4.0+ or pin
+  this package to `vikunja-mcp-ng@0.6.2`, the last release that claimed a 2.3.0 floor. There
+  is no runtime version check — nothing new will start refusing to talk to your server; what
+  changes is what this project tests, fixes and claims.
+
+  **Why:** the 2.3.0 claim was not true. Nine operations this server ships as implemented —
+  the eight `vikunja_admin` operations (`overview`, `list-projects`, `set-project-owner`,
+  `list-users`, `create-user`, `delete-user`, `set-user-admin`, `set-user-status`) and
+  `vikunja_tasks get-by-index` (`GET /projects/{project}/tasks/by-index/{index}`) — **do not
+  exist on a released Vikunja 2.3.0 at all**. They looked in range because the API-coverage
+  denominator (169 operations) was measured against `v2.3.0-1019-g95b7e673`, a `try.vikunja.io`
+  *unstable* build 1019 commits past the tag; the released 2.3.0 has 160. Raising the floor
+  makes the compatibility claim true, rather than annotating a false one with a caveat.
+  Secondary reason: upstream Vikunja moves fast and this project needs to keep up.
+
+  Aligned/tested stays **2.4.0**, so floor and aligned now coincide — a deliberate transient,
+  not a target state; they separate again when the aligned version moves (issue #237). Full
+  reasoning and revisit condition: decision 27 in [docs/ROADMAP.md](docs/ROADMAP.md) §3.
 
 ### Fixed — data loss and duplicate writes
 
@@ -348,7 +369,8 @@ fraction.
   `TeamMember.Username` via a `param:"user"` tag — it is keyed by **username**), generalized
   into a rule: where the spec and the handler disagree, the handler wins. The compatibility
   matrix now records that Vikunja **2.5.0 and 2.6.0 are released upstream and neither
-  supported nor tested here** — 2.3.0 remains the floor and 2.4.0 the aligned, tested target.
+  supported nor tested here**, with 2.4.0 as both the floor and the aligned, tested target
+  (the floor raise itself is under **Changed**, above).
 
 ## [0.7.0-beta.1] - 2026-08-14
 

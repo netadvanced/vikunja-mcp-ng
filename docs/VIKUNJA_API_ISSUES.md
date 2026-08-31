@@ -6,10 +6,14 @@ This document tracks issues discovered with the Vikunja API that should be repor
 and tests cite them by number (`VIKUNJA_API_ISSUES.md #2`, `#7`, `#8`), so
 numbers are never reused or reshuffled; resolved items keep their number and get
 a status line. Each item carries a **Status** and the Vikunja version the claim
-was last checked against. The supported floor is **Vikunja 2.3.0**, aligned/
-tested default **2.4.0** (`docker/e2e/docker-compose.yml`) — anything only ever
-verified on 0.22.x is flagged as such and should be re-checked before being
-relied on. Vikunja **2.5.0** and **2.6.0** have since been released upstream
+was last checked against. The supported floor is **Vikunja 2.4.0**, which is
+also the aligned/tested default (`docker/e2e/docker-compose.yml`) — the floor
+rose from 2.3.0 on 2026-08-31, so an item verified only against 2.3.0 now
+describes a version below the floor, and anything only ever verified on 0.22.x
+is doubly so. Both should be re-checked before being relied on. Note that
+"verified against go-vikunja source, pinned v2.3.0" lines below record *where a
+handler was read*, not a compatibility claim; handler source rarely moves, so
+those stay as provenance. Vikunja **2.5.0** and **2.6.0** have since been released upstream
 (2.6.0 on 2026-08-31, primarily a security release — 18 fixes), but neither
 is the floor nor the tested default here — nothing in `src/` or this file
 has been verified against either, so treat any 2.5- or 2.6-specific behavior
@@ -238,8 +242,9 @@ exposes three native bulk endpoints:
 **Still genuinely missing:** bulk **create** and bulk **delete**. Those remain
 client-side loops issuing one API call per task
 (`src/tools/tasks/bulk-operations-simplified.ts`), and creates are run
-sequentially on purpose to avoid SQLite "database is locked" 500s at the 2.3.0
-floor.
+sequentially on purpose to avoid SQLite "database is locked" 500s — observed at
+the old 2.3.0 floor, retained past the 2.4.0 floor raise pending durable
+multi-release evidence that upstream's `concurrent_writes` fix holds.
 
 **Impact:** Bulk create/delete of large batches is still O(n) round trips, so
 rate-limit and batch-size guidance still applies (`MAX_BULK_OPERATION_TASKS =
@@ -361,8 +366,8 @@ terminal and not retried, since retrying only adds latency
 
 **Status:** ⚠️ Still assumed open upstream. The fallback and its
 "don't retry a 401 here" behaviour are covered by
-`tests/utils/vikunja-rest.test.ts`; whether a modern server (2.3.0/2.4.0) still
-401s on this endpoint with a `tk_*` token has not been re-verified live.
+`tests/utils/vikunja-rest.test.ts`; whether a modern server (2.4.0, the floor)
+still 401s on this endpoint with a `tk_*` token has not been re-verified live.
 
 ## 9. API Response Field Naming Convention
 
@@ -407,12 +412,12 @@ value, not what the tool takes or reports.
 
 **Status:** ❓ **Unverified on any supported version.** This was only ever
 observed on Vikunja **v0.22.1**, which is far below this project's supported
-floor (2.3.0) and its aligned/tested default (2.4.0). Nothing in the current
+floor and aligned/tested default (both 2.4.0). Nothing in the current
 code base asserts that server-side filtering is broken — `vikunja_tasks list`
 uses `HybridFilteringStrategy`, which *tries the server first* and only falls
 back to client-side evaluation when that call fails, and the e2e suite
 exercises real server-side filter expressions (`scripts/mcp-e2e.ts`, including a
-negative control). Re-verify against a live 2.3.0/2.4.0 server before citing
+negative control). Re-verify against a live 2.4.0 server before citing
 this item; it may be entirely historical.
 
 *(Numbering note: this item was previously also labelled "9", colliding with the

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # vikunja-compat-version.sh — single source of truth for "which Vikunja server version is this
-# build aligned to". Prints the normalized base version (e.g. "2.3.0") to stdout; nothing else
+# build aligned to". Prints the normalized base version (e.g. "2.4.0") to stdout; nothing else
 # on stdout, so this is safe to use via command substitution:
 #
 #   VIKUNJA_COMPAT_VERSION="$(scripts/lib/vikunja-compat-version.sh)"
@@ -9,7 +9,7 @@
 # Source: the vendored OpenAPI spec's `info.version` field (docs/vikunja-openapi.json), which is
 # the same spec generated types are built from (see docs/RELEASING.md "Vikunja compatibility").
 # That field is a `git describe`-style string off the Vikunja server repo, e.g.
-# "v2.3.0-1019-g95b7e673" — this script normalizes it down to the base release "2.3.0".
+# "v2.4.0-1019-g95b7e673" — this script normalizes it down to the base release "2.4.0".
 #
 # Never hand-type this version anywhere else (Docker tags, docs, CHANGELOG) — always derive it
 # from this script (or read the printed value from a run of it) so there is exactly one place
@@ -18,11 +18,17 @@
 set -euo pipefail
 
 # Minimum supported Vikunja version (the v1-floor). Policy value, not derivable from the spec —
-# this is the single machine-readable source of truth for it (docs/RELEASING.md §3, the e2e
-# floor-regression matrix run, and the `-vikunja<min>` Docker compat alias all reference it).
-# Every release's pre-tag matrix validates the image against BOTH this floor and the aligned
-# version above, so both get a `-vikunja<ver>` alias on the same image digest.
-MIN_SUPPORTED_VIKUNJA="2.3.0"
+# this is the single machine-readable source of truth for it (docs/RELEASING.md §3 and the
+# `-vikunja<min>` Docker compat alias both reference it).
+#
+# Raised 2.3.0 -> 2.4.0 on 2026-08-31 (docs/ROADMAP.md §3 decision 27): nine operations this
+# project ships as implemented do not exist on a released Vikunja 2.3.0, so the old floor was
+# never true. It now EQUALS the aligned version derived below, and that is deliberate, not a
+# mistake: .github/workflows/release.yml compares MIN against COMPAT and simply omits the
+# duplicate `-vikunja<min>` tag / release-notes row when they match, so a coinciding floor
+# publishes one compat alias instead of two identical ones. The two separate again when the
+# aligned version moves past 2.4.0 (issue #237).
+MIN_SUPPORTED_VIKUNJA="2.4.0"
 
 # `--min-supported` prints the floor and exits (no spec/jq needed) — used by the release workflow
 # to emit the floor compat tag alongside the aligned one.
@@ -51,7 +57,7 @@ if [[ -z "$RAW_VERSION" || "$RAW_VERSION" == "null" ]]; then
   exit 1
 fi
 
-# Normalize "v2.3.0-1019-g95b7e673" (or plain "2.3.0") down to "2.3.0":
+# Normalize "v2.4.0-1019-g95b7e673" (or plain "2.4.0") down to "2.4.0":
 # strip a leading 'v', then strip everything from the first '-' onward.
 BASE_VERSION="${RAW_VERSION#v}"
 BASE_VERSION="${BASE_VERSION%%-*}"
@@ -66,7 +72,7 @@ fi
 # above); the e2e pin is a separately-maintained decision that should normally agree with it but
 # isn't required to gate a release publish.
 #
-# The compose file's image tag is env-driven (`vikunja/vikunja:${VIKUNJA_VERSION:-2.3.0}`, see
+# The compose file's image tag is env-driven (`vikunja/vikunja:${VIKUNJA_VERSION:-2.4.0}`, see
 # docker/e2e/docker-compose.yml) so a version-matrix run can override it without editing the
 # file — this cross-check reads the *default* fallback value, i.e. the baseline pin everyone gets
 # with a plain `npm run e2e:up`, not whatever VIKUNJA_VERSION a given test-matrix run happened to

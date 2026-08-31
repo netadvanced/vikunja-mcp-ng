@@ -508,8 +508,10 @@ other verb- and field-mapping notes.
   client-side loops making individual API calls.
 - `bulk-create` runs **sequentially** on purpose (`maxConcurrency: 1`):
   concurrent creates 500 with "database is locked" on SQLite-backed servers
-  at the 2.3.0 floor. Vikunja 2.4.0 advertises `concurrent_writes: true`, but
-  sequential is retained as defense-in-depth for the supported floor.
+  at or below the old 2.3.0 floor. Vikunja 2.4.0 advertises
+  `concurrent_writes: true` and is now the floor, but sequential is retained
+  pending durable multi-release evidence — see the `create` `BatchProcessor`
+  comment in `src/tools/tasks/bulk-operations-simplified.ts`.
 - Consider rate limiting when processing large batches.
 
 ## Future Considerations
@@ -545,8 +547,8 @@ already requires for v1.
 
 **Version note (2026-08-31):** Vikunja 2.5.0 and 2.6.0 have since been
 released upstream (2.6.0 on 2026-08-31, primarily a security release — 18
-fixes). Neither is this project's floor (2.3.0) nor its aligned/tested
-default (2.4.0, above) — nothing in `src/` targets them, and no claim in this
+fixes). Neither is this project's floor nor its aligned/tested
+default (both 2.4.0, above) — nothing in `src/` targets them, and no claim in this
 file has been re-verified against either. Treat 2.5- and 2.6-specific
 behavior as unknown rather than assuming it matches 2.4.0, until it gets the
 same live-verification treatment 2.4.0 received here.
