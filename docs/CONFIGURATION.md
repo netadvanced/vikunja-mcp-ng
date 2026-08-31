@@ -646,9 +646,10 @@ default you should keep unless you know your Vikunja's database is not SQLite.
 > open" until the reset timeout. Live repro on Vikunja 2.3.0: three 12-task
 > bulk-creates at concurrency 8 yielded 2/12, 0/12, 0/12; sequential creates
 > yielded 36/36. Vikunja 2.4.0 advertises `concurrent_writes: true` and passed
-> the same stress check cleanly, but the supported floor is still 2.3.0 — so
-> raising this on a SQLite backend reintroduces the lock storm. Raise it only
-> for Postgres/MySQL-backed instances.
+> the same stress check cleanly, and 2.4.0 is now the supported floor — but
+> "passed a handful of runs in one wave" is not yet evidence the fix is durable
+> across upstream point releases, so the conservative default stands. Raise it
+> only for Postgres/MySQL-backed instances.
 
 An invalid value (non-numeric, fractional, zero, negative) logs a warning and
 falls back to the default rather than failing startup; a value above the cap is

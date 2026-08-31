@@ -103,14 +103,17 @@ const processors = {
   // pass-rate numbers. This strongly suggests upstream shipped (or now at
   // least advertises) a real SQLite write-concurrency fix. This
   // client-side serialization is **retained regardless, as defense-in-depth**
-  // — our documented v1-floor minimum is still 2.3.0 (which does not
-  // advertise `concurrent_writes` and does exhibit the lock-storm), a
-  // deployer's server may not be SQLite-backed 2.4.0+ at all, and
-  // serializing creates costs little in the common (small-N) case. Revisit
-  // condition: only reconsider dropping this once the minimum supported
-  // Vikunja version is raised to ≥ 2.4.0 AND further multi-run evidence
-  // (beyond this wave's handful of runs) confirms the fix is durable across
-  // upstream point releases, not a one-off.
+  // — serializing creates costs little in the common (small-N) case.
+  //
+  // Revisit condition (unchanged, and it is a CONJUNCTION): only reconsider
+  // dropping this once the minimum supported Vikunja version is raised to
+  // >= 2.4.0 AND further multi-run evidence (beyond this wave's handful of
+  // runs) confirms the fix is durable across upstream point releases, not a
+  // one-off. **Status 2026-08-31: the first arm has fired** — the floor rose
+  // 2.3.0 -> 2.4.0 (docs/ROADMAP.md §3 decision 27), so every supported
+  // server now advertises `concurrent_writes`. The second arm has not: no
+  // evidence has been gathered beyond the original 2.4.0-alignment runs.
+  // Do not drop the serialization on the first arm alone.
   //
   // Escape hatch: `VIKUNJA_BULK_WRITE_CONCURRENCY` (see
   // `getBulkWriteConcurrency` below and docs/CONFIGURATION.md) raises this at

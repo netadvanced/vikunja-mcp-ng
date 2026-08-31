@@ -29,9 +29,9 @@ export const BATTLE_RESULTS_DIR = path.join(REPO_ROOT, 'battle-results');
 export const SCENARIOS_DIR = path.join(REPO_ROOT, 'scripts', 'battle', 'scenarios');
 
 // Deliberately NOT `process.env.VIKUNJA_URL` -- see file header.
-// Targets own their ports (issue #205) — 2.4.0 is on 8240, the 2.3.0 floor
-// on 8230 — so this resolves through scripts/lib/e2e-target.ts rather than
-// pinning a port that only ever described one stack.
+// Targets own their ports (issue #205) — 2.4.0-postgres is on 8240,
+// 2.4.0-sqlite on 9240 — so this resolves through scripts/lib/e2e-target.ts
+// rather than pinning a port that only ever described one stack.
 export const VIKUNJA_URL =
   process.env.BATTLE_VIKUNJA_URL ||
   resolveTarget(process.env.VIKUNJA_E2E_TARGET || DEFAULT_TARGET).apiUrl;

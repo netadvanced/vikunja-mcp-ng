@@ -8,7 +8,7 @@
 # port formula and is evaluated below rather than duplicated here.
 #
 #   npm run e2e:up                          # the default target (2.4.0-postgres, API on 8240)
-#   VIKUNJA_E2E_TARGET=2.3.0-postgres npm run e2e:up    # the v1 floor, API on 8230
+#   VIKUNJA_E2E_TARGET=2.4.0-sqlite npm run e2e:up      # the sqlite backend, API on 9240
 #   npm run e2e:up:all                      # every standard target at once
 #
 # STABLE TOKENS (issue #205). This script is idempotent about credentials: if

@@ -46,8 +46,8 @@ docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json`)
 
 `8240` is the **default e2e target**'s API port (`2.4.0-postgres`). Since
 issue #205 each `<version>-<db>` target is its own stack on its own derived
-port (`scripts/lib/e2e-target.ts` owns the formula; the 2.3.0 floor is on
-`8230`) — fetch from the port of whichever target you actually brought up, and
+port (`scripts/lib/e2e-target.ts` owns the formula; `2.4.0-sqlite` is on
+`9240`) — fetch from the port of whichever target you actually brought up, and
 see [docs/LOCAL-TESTING.md](LOCAL-TESTING.md) for the target table.
 
 This gives an exactly-reproducible spec/behavior pairing tied to the pinned

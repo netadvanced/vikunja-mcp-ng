@@ -26,7 +26,7 @@ This server exposes Vikunja as **27 tools** (~150 subcommands) — a session too
 
 OIDC mode shipped in `0.7.0-beta.0`/`0.7.0-beta.1`. It has been field-tested against a real gateway + identity provider + Vikunja, but has not yet seen sustained production use — see the [OIDC setup manual](../docs/OIDC-SETUP.md) and the [resource-server design and threat model](../docs/OIDC-RESOURCE-SERVER.md).
 
-**Vikunja compatibility:** aligned and tested against **2.4.0**, minimum supported **2.3.0** (the v1 API floor). Vikunja **2.5.0 and 2.6.0 have both been released upstream but neither is supported or tested here** — nothing in `src/` targets them. (2.6.0, released 2026-08-31, is primarily a security release — 18 fixes.) The v1 API is what this server speaks; **v2 adoption is [issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184), on the 0.8.0 milestone, and has not started.** Node 22+ only.
+**Vikunja compatibility:** aligned and tested against **2.4.0**, and **2.4.0 is also the minimum supported** version (the v1 API floor) — floor and aligned currently coincide. The floor rose from 2.3.0 in the `0.7.0-beta` line because nine operations shipped here as implemented (the eight `vikunja_admin` operations and `vikunja_tasks get-by-index`) do not exist on a released 2.3.0; 2.3.0 users should upgrade Vikunja or pin `vikunja-mcp-ng@0.6.2`. Vikunja **2.5.0 and 2.6.0 have both been released upstream but neither is supported or tested here** — nothing in `src/` targets them. (2.6.0, released 2026-08-31, is primarily a security release — 18 fixes.) The v1 API is what this server speaks; **v2 adoption is [issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184), on the 0.8.0 milestone, and has not started.** Node 22+ only.
 
 ## See it in action
 
@@ -102,9 +102,11 @@ Each supported version runs as its own persistent stack, on its own port, all at
 | Target | API port |
 |---|---|
 | `2.4.0-postgres` | 8240 |
-| `2.3.0-postgres` | 8230 |
 | `2.4.0-sqlite` | 9240 |
-| `2.3.0-sqlite` | 9230 |
+
+Ports are derived from the version (`8000 + MMP` postgres, `9000 + MMP` sqlite), so any
+other version resolves without a table edit — `2.3.0-postgres` still works out to 8230
+if you ever need to look at the old floor, it is just no longer a supported target.
 
 ```bash
 npm run e2e:up:all    # bring every target up
@@ -126,7 +128,7 @@ Credentials are stable for the life of a stack and land in `docker/e2e/.env.<ver
 | `npm run test:matrix` | Both harnesses across a version/DB target, writing a verdict file |
 | `npm run battle` | Spawns a **real AI agent** against the tool surface and grades correctness + ergonomics. Manual, costs real money — read [Battle testing](../docs/BATTLE-TESTING.md) first |
 
-Select a target with `VIKUNJA_E2E_TARGET=2.3.0-postgres npm run test:e2e:mcp`.
+Select a target with `VIKUNJA_E2E_TARGET=2.4.0-sqlite npm run test:e2e:mcp`.
 
 Mocked unit tests cannot catch a whole class of bug here — several real defects were found only by the live lanes. Run `test:e2e:mcp` after merges that touch tool behaviour.
 

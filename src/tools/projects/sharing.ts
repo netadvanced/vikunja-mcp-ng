@@ -22,12 +22,14 @@
  * `getProjectShare`/`deleteProjectShare` do NOT call the by-id GET route
  * above to resolve a share — they route through the LIST route instead, as a
  * workaround for a confirmed upstream server bug that makes the by-id GET
- * 404 for every share, even immediately after creation. **Status: fixed
- * upstream and confirmed shipped in the Vikunja 2.4.0 tagged release, but
- * this project's documented v1-floor minimum is still 2.3.0 (which lacks the
- * fix), so this workaround stays.** See `findShareByIdViaList`'s doc comment
- * for the full root-cause chain, the exact upstream commit, and the exact
- * condition for removing it.
+ * 404 for every share, even immediately after creation. **Status (updated
+ * 2026-08-31): fixed upstream and shipped in the Vikunja 2.4.0 tagged
+ * release, and the minimum supported Vikunja is now 2.4.0 — so this
+ * workaround's documented removal condition HAS FIRED.** It is retained here
+ * only because removing it is a behaviour change needing live
+ * re-verification, deliberately kept out of the floor-policy change that
+ * fired the condition. See `findShareByIdViaList`'s doc comment for the full
+ * root-cause chain and the exact upstream commit.
  */
 
 import type { AuthManager } from '../../auth/AuthManager';
@@ -155,18 +157,21 @@ function truncateForMessage(value: string, maxLength = 40): string {
  * `GET /projects/{project}/shares` (list) is unaffected either way — it
  * authorizes via `project.IsAdmin(s, a)`, never touching `Hash` at all.
  *
- * **Current status (as of the 2.4.0 alignment, tracking issue #28 item A1):
- * still needed.** This project's documented minimum supported Vikunja
- * version is 2.3.0 (the v1-floor, which predates the fix) even though the
- * aligned/tested default is now 2.4.0 (which has it) — see
- * `docker/e2e/docker-compose.yml`'s pin comment and `docs/API-COVERAGE.md`.
- * A caller could be pointed at any server from 2.3.0 up, so this workaround
- * cannot be removed just because the *default* moved past the fix.
+ * **Revisit condition, as originally written: remove this workaround (revert
+ * to the by-id route) only when the minimum supported Vikunja version is
+ * raised to ≥ 2.4.0** — i.e. when 2.3.0 support is dropped, not merely when
+ * the default pin is bumped.
  *
- * **Revisit condition: remove this workaround (revert to the by-id route)
- * only when the minimum supported Vikunja version is raised to ≥ 2.4.0** —
- * i.e. when 2.3.0 support is dropped, not merely when the default pin is
- * bumped.
+ * **Status 2026-08-31: that condition has FIRED.** The floor was raised
+ * 2.3.0 → 2.4.0 (docs/ROADMAP.md §3 decision 27, docs/LOCAL-TESTING.md's
+ * "Version pinning and refresh"), and the fix is an ancestor of every
+ * version this project now supports. Reverting to the by-id route is
+ * therefore correct and outstanding — but it changes what request this
+ * server sends, so it needs a live e2e run to land, and was deliberately not
+ * bundled into the documentation-and-policy change that fired the condition.
+ * Whoever picks it up: delete this helper, call
+ * `GET /projects/{project}/shares/{share}` directly from `getProjectShare`
+ * and `deleteProjectShare`, and re-run `npm run test:e2e:mcp`.
  */
 async function findShareByIdViaList(
   authManager: AuthManager,

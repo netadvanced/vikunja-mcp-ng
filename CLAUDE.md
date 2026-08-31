@@ -233,7 +233,7 @@ try {
 
 - **Node.js**: 22+ LTS only (no EOL versions — Node 20 reached EOL April 2026)
 - **TypeScript**: Strict mode enabled
-- **Vikunja**: 2.3.0+ required (v1 API floor); 2.4.0 is the aligned/tested default — see `docker/e2e/docker-compose.yml`'s pin comment
+- **Vikunja**: 2.4.0+ required (v1 API floor, raised from 2.3.0 in the `0.7.0-beta` line); 2.4.0 is also the aligned/tested default, so floor and aligned currently coincide — see `docker/e2e/docker-compose.yml`'s pin comment
 
 ## Repository Configuration
 

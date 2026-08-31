@@ -10,9 +10,9 @@
  *      version via GET /api/v1/info or a different DB backend (detected via
  *      `docker compose ps`, see `getRunningBackend`), or bringing it up
  *      fresh if it isn't running at all. The stack's own version pin
- *      defaults to 2.4.0 (the aligned/tested default -- 2.3.0 is the
- *      documented v1-floor minimum, see docker/e2e/docker-compose.yml's pin
- *      comment) but is env-driven (see docker/e2e/docker-compose.yml's
+ *      defaults to 2.4.0 (the aligned/tested default, which since
+ *      2026-08-31 is ALSO the documented v1-floor minimum — see
+ *      docker/e2e/docker-compose.yml's pin comment) but is env-driven (see docker/e2e/docker-compose.yml's
  *      `VIKUNJA_VERSION` interpolation) — this script drives that the same
  *      way a human would: `VIKUNJA_VERSION=X.Y.Z npm run e2e:up`. The DB
  *      backend (item F2, tracking issue #28 — added so SQLite-only failure
@@ -33,10 +33,15 @@
  *      full per-check list.
  *
  * Usage:
- *   npm run test:matrix                                          # 2.4.0 / postgres (defaults)
- *   VIKUNJA_VERSION=2.3.0 npm run test:matrix                     # the v1-floor regression check
+ *   npm run test:matrix                                          # 2.4.0 / postgres (defaults; floor == aligned)
  *   VIKUNJA_DB=sqlite npm run test:matrix                         # default version, sqlite backend
- *   VIKUNJA_VERSION=2.3.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
+ *   VIKUNJA_VERSION=2.5.0 npm run test:matrix                     # an unsupported version, ad hoc
+ *   VIKUNJA_VERSION=2.5.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
+ *
+ * There is no separate floor lane while the floor and the aligned version
+ * coincide (both 2.4.0) — the default run IS the floor run. VIKUNJA_VERSION
+ * still accepts any tag, supported or not, because the target resolver's
+ * port arithmetic is version-agnostic.
  *
  * See docs/LOCAL-TESTING.md's "Version-matrix testing" section for the full
  * writeup, including what to do when a new Vikunja release ships.
