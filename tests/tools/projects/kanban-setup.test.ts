@@ -441,6 +441,237 @@ describe('setupKanban', () => {
     });
   });
 
+  /**
+   * `setup-kanban` reuses an existing project (`id`) as-is and never writes
+   * to it. `title`/`description`/`parentProjectId` supplied alongside `id`
+   * used to be silently ignored - the owner-approved fix: let a value
+   * through when it already matches the project's current value (a
+   * harmless no-op re-assertion), reject loudly (naming current vs
+   * requested, pointing at `vikunja_projects update`) only when it would
+   * actually change something.
+   */
+  describe('existing project reuse — title/description/parentProjectId equality guard', () => {
+    it('does not fetch the project at all when none of title/description/parentProjectId is supplied', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      const result = await setupKanban({ id: 900 }, authManager);
+
+      expect(result.content[0]?.text ?? '').toContain('project 900 reused (ID: 900)');
+      // No routes registered at all — if setupKanban made ANY request, the
+      // router would throw "Unmocked request in test".
+      expect(router.calls).toHaveLength(0);
+    });
+
+    it('lets a matching description through silently (no-op)', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/901', () => ({
+        id: 901,
+        title: 'Existing',
+        description: 'Same description',
+      }));
+
+      const result = await setupKanban(
+        { id: 901, description: 'Same description' },
+        authManager,
+      );
+
+      expect(result.content[0]?.text ?? '').toContain('project 901 reused (ID: 901)');
+    });
+
+    it('treats a whitespace-only description difference as a no-op', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/902', () => ({
+        id: 902,
+        title: 'Existing',
+        description: 'Same description',
+      }));
+
+      const result = await setupKanban(
+        { id: 902, description: '  Same description  ' },
+        authManager,
+      );
+
+      expect(result.content[0]?.text ?? '').toContain('project 902 reused (ID: 902)');
+    });
+
+    it('treats an absent current description as equal to an empty requested one', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      // No `description` field at all on the fetched project.
+      router.on('GET', '/projects/912', () => ({ id: 912, title: 'Existing' }));
+
+      const result = await setupKanban({ id: 912, description: '   ' }, authManager);
+
+      expect(result.content[0]?.text ?? '').toContain('project 912 reused (ID: 912)');
+    });
+
+    it('rejects a description that actually differs, naming current vs requested and pointing at vikunja_projects update', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/903', () => ({
+        id: 903,
+        title: 'Existing',
+        description: 'Old description',
+      }));
+
+      const error = await setupKanban(
+        { id: 903, description: 'New description' },
+        authManager,
+      ).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(MCPError);
+      expect((error as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+      const message = (error as MCPError).message;
+      expect(message).toContain('description');
+      expect(message).toContain('Old description');
+      expect(message).toContain('New description');
+      expect(message).toContain('vikunja_projects update');
+      expect(message).toContain('903');
+      // Only the GET fetch happened — nothing else was touched.
+      expect(router.calls).toHaveLength(1);
+      expect(router.calls[0]).toMatchObject({ method: 'GET', path: '/projects/903' });
+    });
+
+    it('rejects a title that differs from the existing project', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/904', () => ({ id: 904, title: 'Old Title' }));
+
+      const error = await setupKanban({ id: 904, title: 'New Title' }, authManager).catch(
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(MCPError);
+      expect((error as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+      const message = (error as MCPError).message;
+      expect(message).toContain('title');
+      expect(message).toContain('Old Title');
+      expect(message).toContain('New Title');
+    });
+
+    it('lets a matching title through silently (trimmed comparison)', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/905', () => ({ id: 905, title: 'Exact Title' }));
+
+      const result = await setupKanban({ id: 905, title: '  Exact Title  ' }, authManager);
+
+      expect(result.content[0]?.text ?? '').toContain('project 905 reused (ID: 905)');
+    });
+
+    it('lets a matching parentProjectId through silently', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/906', () => ({
+        id: 906,
+        title: 'Child',
+        parent_project_id: 10,
+      }));
+
+      const result = await setupKanban({ id: 906, parentProjectId: 10 }, authManager);
+
+      expect(result.content[0]?.text ?? '').toContain('project 906 reused (ID: 906)');
+    });
+
+    it('rejects a parentProjectId that differs from the existing parent', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/907', () => ({
+        id: 907,
+        title: 'Child',
+        parent_project_id: 10,
+      }));
+
+      const error = await setupKanban({ id: 907, parentProjectId: 11 }, authManager).catch(
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(MCPError);
+      const message = (error as MCPError).message;
+      expect(message).toContain('parentProjectId');
+      expect(message).toContain('current: 10');
+      expect(message).toContain('requested: 11');
+    });
+
+    it('rejects a parentProjectId when the existing project has none, describing current as "none (no parent)"', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      // No `parent_project_id` field at all on the fetched project.
+      router.on('GET', '/projects/908', () => ({ id: 908, title: 'Top-level' }));
+
+      const error = await setupKanban({ id: 908, parentProjectId: 12 }, authManager).catch(
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(MCPError);
+      const message = (error as MCPError).message;
+      expect(message).toContain('none (no parent)');
+      expect(message).toContain('requested: 12');
+    });
+
+    it('treats an explicit current parent_project_id of 0 the same as "no parent"', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/909', () => ({
+        id: 909,
+        title: 'Top-level',
+        parent_project_id: 0,
+      }));
+
+      const error = await setupKanban({ id: 909, parentProjectId: 12 }, authManager).catch(
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(MCPError);
+      expect((error as MCPError).message).toContain('none (no parent)');
+    });
+
+    it('names multiple mismatched fields in one rejection', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/910', () => ({
+        id: 910,
+        title: 'Old',
+        description: 'Old desc',
+      }));
+
+      const error = await setupKanban(
+        { id: 910, title: 'New', description: 'New desc' },
+        authManager,
+      ).catch((e: unknown) => e);
+
+      const message = (error as MCPError).message;
+      expect(message).toContain('title');
+      expect(message).toContain('description');
+    });
+
+    it('fetches the project exactly once even when checking all three fields together', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/911', () => ({
+        id: 911,
+        title: 'Same',
+        description: 'Same desc',
+        parent_project_id: 3,
+      }));
+
+      const result = await setupKanban(
+        { id: 911, title: 'Same', description: 'Same desc', parentProjectId: 3 },
+        authManager,
+      );
+
+      expect(result.content[0]?.text ?? '').toContain('project 911 reused (ID: 911)');
+      const getCalls = router.calls.filter(
+        (c) => c.method === 'GET' && c.path === '/projects/911',
+      );
+      expect(getCalls).toHaveLength(1);
+      expect(router.calls).toHaveLength(1);
+    });
+  });
+
   describe('unknown column name on a task (fail fast)', () => {
     it('rejects the whole call up front with a VALIDATION_ERROR, before any API call is made', async () => {
       const router = createRouter();

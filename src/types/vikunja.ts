@@ -298,6 +298,13 @@ export interface Webhook {
   target_url: string;
   events: string[];
   secret?: string;
+  // Create-only, per models.Webhook (go-vikunja pkg/models/webhooks.go): if
+  // provided, outgoing webhook requests are sent with an HTTP Basic Auth
+  // header. `Webhook.Update` is a hard-coded `Cols("events")` write, so
+  // neither field can ever be changed after creation - see webhooks.ts's
+  // `update` rejection for basicAuthUser/basicAuthPassword.
+  basic_auth_user?: string;
+  basic_auth_password?: string;
   created?: string;
   updated?: string;
   created_by?: User;
