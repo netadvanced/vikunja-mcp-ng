@@ -178,6 +178,17 @@ function isSensitiveKey(key: string): boolean {
   });
 }
 
+// LOW-13 (#292): the base64-ish and long-alphanumeric CREDENTIAL_FORMAT_PATTERNS
+// below allow digits, letters, '+' and '/' - which also describes an
+// ordinary REST path (`/projects/12345/webhooks/67890123`, 20+ chars, no
+// separator other than '/') and a dotted version string
+// (`2.4.0-beta.123456789`). Neither can be excluded by narrowing the
+// credential patterns' own charset without also missing real base64/hex
+// secrets that legitimately contain '/' or digits-only runs, so both shapes
+// are recognized and excluded up front instead.
+const VERSION_STRING_PATTERN = /^v?\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.]+)?$/;
+const REST_PATH_PATTERN = /^\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\/?(?:\?.*)?$/;
+
 /**
  * Checks if a string value looks like a credential based on format patterns
  *
@@ -187,6 +198,12 @@ function isSensitiveKey(key: string): boolean {
 function isCredentialFormat(value: string): boolean {
   // Only check strings of reasonable length (avoid false positives on short strings)
   if (value.length < 8) {
+    return false;
+  }
+
+  // A plain version string or REST path is never a credential, even though
+  // it can otherwise fit the broad base64/alphanumeric shapes below.
+  if (VERSION_STRING_PATTERN.test(value) || REST_PATH_PATTERN.test(value)) {
     return false;
   }
 

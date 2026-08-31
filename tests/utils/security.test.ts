@@ -326,6 +326,34 @@ describe('Security Utilities', () => {
     });
   });
 
+  describe('Credential-shape false positives (#292 LOW-13)', () => {
+    it('does not mask a plain REST path', () => {
+      // Key deliberately not named 'path'/'file'/etc - this is testing the
+      // value-shape (isCredentialFormat) heuristic, not key-name matching,
+      // which already (correctly) treats a 'path' key as sensitive.
+      const sanitized = sanitizeLogData({
+        restPath: '/projects/12345/webhooks/67890123',
+      }) as Record<string, unknown>;
+      expect(sanitized.restPath).toBe('/projects/12345/webhooks/67890123');
+    });
+
+    it('does not mask a dotted version string', () => {
+      const sanitized = sanitizeLogData({
+        serverVersion: '2.4.0-beta.123456789012',
+      }) as Record<string, unknown>;
+      expect(sanitized.serverVersion).toBe('2.4.0-beta.123456789012');
+    });
+
+    it('still masks a genuinely credential-shaped long alphanumeric string', () => {
+      const sanitized = sanitizeLogData({
+        blob: 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae',
+      }) as Record<string, unknown>;
+      expect(sanitized.blob).not.toBe(
+        'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae',
+      );
+    });
+  });
+
   describe('Edge Case Coverage Tests', () => {
     it('should mask URL fragments with sensitive keys (line 245)', () => {
       const url = 'https://example.com/api#token_secret';
