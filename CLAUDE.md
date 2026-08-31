@@ -111,7 +111,7 @@ server.tool('vikunja_tasks', {
 }
 ```
 
-**Policy**: Ratcheted gate — thresholds sit just below current honest coverage and are raised as coverage grows. This approach transforms the gate from an always-red distraction into an effective regression detector. Thresholds are never lowered except by explicit owner decision (data-backed exception). Coverage improvements raise the gate in lockstep to maintain the buffer.
+**Policy**: Ratcheted gate. Thresholds sit just below current honest coverage and are raised as coverage grows. This turns the gate from an always-red distraction into an effective regression detector. Thresholds are never lowered except by explicit owner decision (data-backed exception). Coverage improvements raise the gate in lockstep to maintain the buffer.
 
 ### Defensive Programming Rule
 **If code cannot be tested, it must be removed.** Every defensive pattern (like `|| ''` fallbacks) must have corresponding test cases that trigger those code paths.
@@ -231,9 +231,9 @@ try {
 
 ## Version Requirements
 
-- **Node.js**: 22+ LTS only (no EOL versions — Node 20 reached EOL April 2026)
+- **Node.js**: 22+ LTS only (no EOL versions; Node 20 reached EOL April 2026)
 - **TypeScript**: Strict mode enabled
-- **Vikunja**: 2.4.0+ required (v1 API floor, raised from 2.3.0 in the `0.7.0-beta` line); 2.4.0 is also the aligned/tested default, so floor and aligned currently coincide — see `docker/e2e/docker-compose.yml`'s pin comment
+- **Vikunja**: 2.4.0+ required (v1 API floor, raised from 2.3.0 in the `0.7.0-beta` line); 2.4.0 is also the aligned/tested default, so floor and aligned currently coincide (see `docker/e2e/docker-compose.yml`'s pin comment)
 
 ## Repository Configuration
 
