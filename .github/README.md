@@ -15,7 +15,18 @@
 
 ## What this gives your AI assistant
 
-This server exposes Vikunja as **27 tools** (a session tool, 22 available by default or by auth type, and 4 sensitive ones that are off until an operator opts in), each covering one entity with a consistent `subcommand` pattern — not a 1:1 REST proxy, but composite operations built for how an AI actually works: resolve a username instead of demanding a user ID, verify that tricky writes actually stuck instead of trusting a `200`, and explicit confirmation gates on destructive operations. Your assistant reasons in natural language; the server turns that into correct Vikunja API calls and reports partial failures honestly instead of pretending success.
+This server exposes Vikunja as **27 tools** (~150 subcommands) — a session tool, 22 available by default or by auth type, and 4 sensitive ones that are off until an operator opts in. Each covers one entity with a consistent `subcommand` pattern — not a 1:1 REST proxy, but composite operations built for how an AI actually works: resolve a username instead of demanding a user ID, verify that tricky writes actually stuck instead of trusting a `200`, and explicit confirmation gates on destructive operations. Your assistant reasons in natural language; the server turns that into correct Vikunja API calls and reports partial failures honestly instead of pretending success.
+
+## Where the project is right now
+
+| | Version | Notes |
+|---|---|---|
+| npm `latest` | **0.6.2** | Stable, single-user `stdio` server |
+| npm `beta` | **0.7.0-beta.1** | Adds opt-in **OIDC resource-server mode**: Streamable HTTP transport, per-user identity, MCP auth discovery, one-click SSO enrollment. `stdio` is unchanged and still the default |
+
+OIDC mode shipped in `0.7.0-beta.0`/`0.7.0-beta.1`. It has been field-tested against a real gateway + identity provider + Vikunja, but has not yet seen sustained production use — see the [OIDC setup manual](../docs/OIDC-SETUP.md) and the [resource-server design and threat model](../docs/OIDC-RESOURCE-SERVER.md).
+
+**Vikunja compatibility:** aligned and tested against **2.4.0**, minimum supported **2.3.0** (the v1 API floor). Vikunja **2.5.0 and 2.6.0 have both been released upstream but neither is supported or tested here** — nothing in `src/` targets them. (2.6.0, released 2026-08-31, is primarily a security release — 18 fixes.) The v1 API is what this server speaks; **v2 adoption is [issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184), on the 0.8.0 milestone, and has not started.** Node 22+ only.
 
 ## See it in action
 
@@ -55,7 +66,7 @@ npm run build
 }
 ```
 
-Full install options, JWT vs. API-token auth, module gating, and every environment variable live in the [Configuration guide](../docs/CONFIGURATION.md).
+Full install options, JWT vs. API-token auth, module gating, transport selection, and every environment variable live in the [Configuration guide](../docs/CONFIGURATION.md).
 
 ## Capabilities
 
@@ -69,17 +80,15 @@ Full install options, JWT vs. API-token auth, module gating, and every environme
 
 \* JWT authentication only. User data export also has request/status/download tools (`vikunja_request_user_export`, `vikunja_user_export_status`, `vikunja_download_user_export`), all JWT-only. (`vikunja_webhooks`' account-wide `scope: 'user'` is JWT-only too; its default `scope: 'project'` works with either auth type.)
 
-A session tool, `vikunja_auth` (connect / status / info / refresh / disconnect), rounds out the always-on surface. Four more tools — `vikunja_tokens`, `vikunja_caldav_tokens`, `vikunja_admin`, and `vikunja_user_deletion` — exist for API-token management, CalDAV-token management, instance administration, and self account deletion. All are **disabled by default**; an operator opts in explicitly (see Configuration). `vikunja_user_deletion` is the most sensitive of the four — it can delete the connected account — so read its [Configuration guide entry](../docs/CONFIGURATION.md#known-modules) before enabling it. `vikunja_projects` also has three opt-in cosmetic subcommands (project backgrounds) behind a `backgrounds` module toggle, off by default for the opposite reason: low value, not danger.
+A session tool, `vikunja_auth` (connect / status / info / refresh / disconnect), rounds out the always-on surface. Four more tools — `vikunja_tokens`, `vikunja_caldav_tokens`, `vikunja_admin`, and `vikunja_user_deletion` — are **disabled by default** and need an explicit operator opt-in; `vikunja_projects` has three opt-in cosmetic subcommands (project backgrounds) behind their own toggle. Which module each lives behind, what enabling it exposes, and the extra JWT requirement on the most sensitive ones: [Configuration guide § Known modules](../docs/CONFIGURATION.md#known-modules).
 
 Full subcommand-by-subcommand reference: [`docs/TOOLS.md`](../docs/TOOLS.md).
 
 ## Safety by design
 
-Every entity is a toggle you can disable in config, `vikunja_admin`/`vikunja_tokens`/`vikunja_caldav_tokens`/`vikunja_user_deletion` ship off until an operator opts in (and `vikunja_admin`/`vikunja_caldav_tokens`/`vikunja_user_deletion` additionally require an active JWT session), and a global read-only mode can reject every write/destructive subcommand while reads keep working. Full details: [Configuration guide](../docs/CONFIGURATION.md#module-gating).
+Every entity is a toggle you can disable in config, the four sensitive tools ship off until an operator opts in, and a global read-only mode can reject every write/destructive subcommand while reads keep working. Full details: [Configuration guide](../docs/CONFIGURATION.md#module-gating).
 
 ## Working on this project
-
-Vikunja compatibility: **aligned to 2.4.0**, minimum supported **2.3.0** (the v1 floor). Node 22+ only.
 
 ```bash
 npm ci
@@ -111,8 +120,9 @@ Credentials are stable for the life of a stack and land in `docker/e2e/.env.<ver
 | Command | What it does |
 |---|---|
 | `npm run test:coverage` | Unit suite behind the coverage gate |
-| `npm run test:mcp` | ~23 direct-REST checks against a local stack |
+| `npm run test:mcp` | Direct-REST checks against a local stack |
 | `npm run test:e2e:mcp` | Full MCP-tool-layer harness — spawns the built server and drives it over stdio |
+| `npm run test:e2e:oidc` | OIDC `http`-mode harness — token validation, vault, per-identity isolation, against a mock issuer |
 | `npm run test:matrix` | Both harnesses across a version/DB target, writing a verdict file |
 | `npm run battle` | Spawns a **real AI agent** against the tool surface and grades correctness + ergonomics. Manual, costs real money — read [Battle testing](../docs/BATTLE-TESTING.md) first |
 
