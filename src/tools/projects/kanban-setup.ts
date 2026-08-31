@@ -465,6 +465,84 @@ async function createAndPlaceTasks(
 }
 
 /**
+ * When `setup-kanban` reuses an existing project (`id` supplied), it never
+ * writes to that project - `title`/`description`/`parentProjectId` were
+ * historically accepted alongside `id` and silently ignored, which let a
+ * caller believe a rename/re-description/re-parent had happened when it
+ * had not.
+ *
+ * Owner-approved resolution: reject only when a supplied value would
+ * actually CHANGE something. A value that already matches the project's
+ * current state is treated as a no-op and let through silently, so a
+ * caller that always passes `projectId` + `description` (harmlessly
+ * re-asserting the same description on every call) keeps working.
+ *
+ * Equality rules (deliberately normalized, not raw `===`, to avoid a false
+ * rejection on a harmless formatting difference):
+ *  - `title`/`description`: compared trimmed. A caller resending the same
+ *    description with different leading/trailing whitespace is a no-op,
+ *    not a change. `null`/`undefined` on the fetched project is treated as
+ *    `''` before trimming (an empty description compares equal to an
+ *    absent one).
+ *  - `parentProjectId`: `models.Project.parent_project_id` represents "no
+ *    parent" as `0` (or omits the field), never as an explicit `null`. Our
+ *    surface's `parentProjectId` is always a validated positive integer
+ *    when supplied (see `validateId` above) - it can never itself be `0` -
+ *    so the only normalization needed is on the FETCHED side: a missing or
+ *    `0` current value both mean "no parent" and are compared as `0`.
+ *
+ * Only called when at least one of the three fields was actually supplied
+ * (see the call site) - `setupKanban` does not fetch the project at all for
+ * the common "reuse by id alone" call, so this never adds a round trip to
+ * that path.
+ */
+function assertReuseFieldsMatchExisting(
+  projectId: number,
+  requested: { title?: string; description?: string; parentProjectId?: number },
+  current: VikunjaProject,
+): void {
+  const mismatches: string[] = [];
+
+  if (requested.title !== undefined) {
+    const requestedTitle = requested.title.trim();
+    const currentTitle = (current.title ?? '').trim();
+    if (requestedTitle !== currentTitle) {
+      mismatches.push(`title (current: "${currentTitle}", requested: "${requestedTitle}")`);
+    }
+  }
+
+  if (requested.description !== undefined) {
+    const requestedDescription = requested.description.trim();
+    const currentDescription = (current.description ?? '').trim();
+    if (requestedDescription !== currentDescription) {
+      mismatches.push(
+        `description (current: "${currentDescription}", requested: "${requestedDescription}")`,
+      );
+    }
+  }
+
+  if (requested.parentProjectId !== undefined) {
+    const currentParentProjectId = current.parent_project_id ?? 0;
+    if (requested.parentProjectId !== currentParentProjectId) {
+      mismatches.push(
+        `parentProjectId (current: ${currentParentProjectId === 0 ? 'none (no parent)' : currentParentProjectId}, requested: ${requested.parentProjectId})`,
+      );
+    }
+  }
+
+  if (mismatches.length > 0) {
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `setup-kanban reuses project ${projectId} as-is and does not modify it, but the following ` +
+        `supplied value(s) differ from the project's current value and would NOT take effect: ` +
+        `${mismatches.join('; ')}. Remove the mismatched field(s) to reuse the project as-is (a ` +
+        "value that already matches is fine), or change them first with vikunja_projects update, " +
+        'then re-run setup-kanban. Nothing has been created by this call.',
+    );
+  }
+}
+
+/**
  * Provisions a whole Kanban board in one call: creates (or reuses) the
  * project, ensures its Kanban view, resolves the requested columns IN
  * ORDER (reusing/renaming/creating buckets as needed), then bulk-creates
@@ -577,6 +655,30 @@ export async function setupKanban(
   let projectCreated = false;
   if (args.id !== undefined) {
     projectId = args.id;
+
+    // Only fetch the project when there is actually something to compare -
+    // the common "reuse by id alone" call supplies none of these three
+    // fields, and must not pay for an extra round trip it doesn't need.
+    const hasReuseFieldsToCheck =
+      args.title !== undefined ||
+      args.description !== undefined ||
+      args.parentProjectId !== undefined;
+    if (hasReuseFieldsToCheck) {
+      const currentProject = await vikunjaRestRequest<VikunjaProject>(
+        authManager,
+        'GET',
+        `/projects/${projectId}`,
+      );
+      assertReuseFieldsMatchExisting(
+        projectId,
+        {
+          ...(args.title !== undefined && { title: args.title }),
+          ...(args.description !== undefined && { description: args.description }),
+          ...(args.parentProjectId !== undefined && { parentProjectId: args.parentProjectId }),
+        },
+        currentProject,
+      );
+    }
   } else {
     const trimmedTitle = (args.title as string).trim();
     const projectBody: CreateProjectRequest = { title: trimmedTitle };

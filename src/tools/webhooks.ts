@@ -277,7 +277,7 @@ export function registerWebhooksTool(
     'vikunja_webhooks',
     withReadOnlyNote(
       'vikunja_webhooks',
-      "Manage webhooks for integrating Vikunja events with external services. 'scope' selects which webhook family to operate on: 'project' (default) manages a single project's webhooks (PUT/GET/POST/DELETE /projects/{id}/webhooks*, requires projectId); 'user' manages the current user's account-wide webhooks, which fire across all projects (PUT/GET/POST/DELETE /user/settings/webhooks*, must NOT be combined with projectId). Both scopes share the identical models.Webhook shape and the same subcommands. IMPORTANT: 'update' can only change 'events' - the Vikunja API writes no other webhook column - so targetUrl and secret are create-only and are REJECTED (not ignored) by 'update'; to repoint a webhook or rotate its secret, delete it and create a replacement. Per the OpenAPI spec, /user/settings/webhooks* is JWT-only - calls made with an API token (tk_*) session may be rejected by the server.",
+      "Manage webhooks for integrating Vikunja events with external services. 'scope' selects which webhook family to operate on: 'project' (default) manages a single project's webhooks (PUT/GET/POST/DELETE /projects/{id}/webhooks*, requires projectId); 'user' manages the current user's account-wide webhooks, which fire across all projects (PUT/GET/POST/DELETE /user/settings/webhooks*, must NOT be combined with projectId). Both scopes share the identical models.Webhook shape and the same subcommands. IMPORTANT: 'update' can only change 'events' - the Vikunja API writes no other webhook column - so targetUrl, secret, basicAuthUser, and basicAuthPassword are create-only and are REJECTED (not ignored) by 'update'; to repoint a webhook, rotate its secret, or change its Basic Auth credentials, delete it and create a replacement. basicAuthUser/basicAuthPassword, when supplied together on 'create', make the webhook send its outgoing requests with an HTTP Basic Auth header - use this when the receiving endpoint sits behind Basic Auth. Per the OpenAPI spec, /user/settings/webhooks* is JWT-only - calls made with an API token (tk_*) session may be rejected by the server.",
     ),
     {
       // Operation type
@@ -322,6 +322,18 @@ export function registerWebhooksTool(
         .describe(
           "Create-only HMAC signing key. The Vikunja API cannot rotate a webhook's secret after creation, so 'update' rejects this field - delete and re-create instead. Never echoed back in responses.",
         ),
+      basicAuthUser: z
+        .string()
+        .optional()
+        .describe(
+          "Create-only. Paired with basicAuthPassword to send the webhook's outgoing requests with an HTTP Basic Auth header - use this when the receiving endpoint requires Basic Auth. The Vikunja API cannot change this after creation, so 'update' rejects this field - delete and re-create instead.",
+        ),
+      basicAuthPassword: z
+        .string()
+        .optional()
+        .describe(
+          "Create-only credential, paired with basicAuthUser. The Vikunja API cannot change this after creation, so 'update' rejects this field - delete and re-create instead. Never echoed back in responses or logged.",
+        ),
     },
     getToolAnnotations('vikunja_webhooks'),
     async (args) => {
@@ -353,8 +365,11 @@ export function registerWebhooksTool(
       }
 
       // NEVER log `args` wholesale here: it carries `secret` (an HMAC signing
-      // key) and `targetUrl` (provider webhook URLs such as Slack's embed a
-      // secret in their path). Log only non-credential scalars.
+      // key), `basicAuthPassword` (a credential), and `targetUrl` (provider
+      // webhook URLs such as Slack's embed a secret in their path). Log only
+      // non-credential scalars - `basicAuthUser` is excluded too, even
+      // though it isn't itself a secret, so its presence never hints at
+      // which fields were supplied together.
       logger.debug('Webhooks tool called', {
         subcommand,
         scope,
@@ -365,6 +380,8 @@ export function registerWebhooksTool(
         events: args.events,
         hasTargetUrl: args.targetUrl !== undefined,
         hasSecret: args.secret !== undefined,
+        hasBasicAuthUser: args.basicAuthUser !== undefined,
+        hasBasicAuthPassword: args.basicAuthPassword !== undefined,
       });
 
       try {
@@ -497,6 +514,19 @@ export function registerWebhooksTool(
               webhookData.secret = args.secret;
             }
 
+            // basic_auth_user/basic_auth_password: create-only, per
+            // models.Webhook (go-vikunja pkg/models/webhooks.go) - Create
+            // inserts the full struct, so both fields are write fields here
+            // exactly like target_url/secret above. `update`'s hard-coded
+            // Cols("events") write excludes them the same way it excludes
+            // target_url/secret - see the rejection in the 'update' case.
+            if (args.basicAuthUser !== undefined) {
+              webhookData.basic_auth_user = args.basicAuthUser;
+            }
+            if (args.basicAuthPassword !== undefined) {
+              webhookData.basic_auth_password = args.basicAuthPassword;
+            }
+
             // The server's create handler returns the bound struct as-is, so
             // the response echoes back the `secret` the caller just sent.
             // Redact it before it can reach a tool response or a log line.
@@ -545,20 +575,25 @@ export function registerWebhooksTool(
             // POST /user/settings/webhooks/{id} run the same
             // `models.Webhook.Update`, which is literally
             //   s.Where("id = ?", w.ID).Cols("events").Update(w)
-            // Every other column - target_url, secret, basic_auth_* - is
-            // excluded by that `Cols("events")` and is discarded server-side.
-            // The swagger annotation says the same thing in prose:
-            // "Change a webhook target's events. You cannot change other
-            // values of a webhook."
+            // Every other column - target_url, secret, basic_auth_user,
+            // basic_auth_password - is excluded by that `Cols("events")` and
+            // is discarded server-side. The swagger annotation says the same
+            // thing in prose: "Change a webhook target's events. You cannot
+            // change other values of a webhook."
             //
             // This used to build `{ events }` and drop targetUrl/secret on
             // the floor while still reporting success - so an agent
             // repointing a webhook at a new URL, or rotating its secret, was
             // told it worked when nothing had changed. Reject loudly instead;
-            // there is no payload shape that would make it work.
+            // there is no payload shape that would make it work. The same
+            // applies to basicAuthUser/basicAuthPassword added alongside
+            // them - neither can be rotated after creation either.
             const unsupportedUpdateFields: string[] = [];
             if (args.targetUrl !== undefined) unsupportedUpdateFields.push('targetUrl');
             if (args.secret !== undefined) unsupportedUpdateFields.push('secret');
+            if (args.basicAuthUser !== undefined) unsupportedUpdateFields.push('basicAuthUser');
+            if (args.basicAuthPassword !== undefined)
+              unsupportedUpdateFields.push('basicAuthPassword');
             if (unsupportedUpdateFields.length > 0) {
               throw new MCPError(
                 ErrorCode.VALIDATION_ERROR,
@@ -566,9 +601,10 @@ export function registerWebhooksTool(
                   "API only ever writes a webhook's `events` (both " +
                   'POST /projects/{id}/webhooks/{webhookID} and POST /user/settings/webhooks/{id} ' +
                   'update the events column and nothing else), so the value would be accepted and ' +
-                  'silently ignored. To point a webhook at a different URL or rotate its secret, ' +
-                  "delete it (subcommand: 'delete') and create a replacement (subcommand: " +
-                  "'create') with the new values - the replacement gets a new webhook ID.",
+                  'silently ignored. To point a webhook at a different URL, rotate its secret, or ' +
+                  "change its Basic Auth credentials, delete it (subcommand: 'delete') and create " +
+                  "a replacement (subcommand: 'create') with the new values - the replacement gets " +
+                  'a new webhook ID.',
               );
             }
 

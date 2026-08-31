@@ -422,6 +422,52 @@ describe('Webhooks Tool', () => {
       );
     });
 
+    it('sends basicAuthUser/basicAuthPassword on the wire when both are supplied', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          body: {
+            ...mockWebhook,
+            basic_auth_user: 'fake-basic-user',
+            basic_auth_password: 'fake-basic-pw',
+          },
+        }),
+      );
+
+      await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['task.created'],
+        basicAuthUser: 'fake-basic-user',
+        basicAuthPassword: 'fake-basic-pw',
+      });
+
+      const sent = JSON.parse(
+        (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+      ) as Record<string, unknown>;
+      expect(sent.basic_auth_user).toBe('fake-basic-user');
+      expect(sent.basic_auth_password).toBe('fake-basic-pw');
+    });
+
+    it('omits basic auth fields entirely when not supplied', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhook }));
+
+      await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['task.created'],
+      });
+
+      const sent = JSON.parse(
+        (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+      ) as Record<string, unknown>;
+      expect(sent).not.toHaveProperty('basic_auth_user');
+      expect(sent).not.toHaveProperty('basic_auth_password');
+    });
+
     it('should throw error when targetUrl is missing', async () => {
       await expect(
         mockHandler({
@@ -769,6 +815,74 @@ describe('Webhooks Tool', () => {
         }).catch((e: unknown) => e);
 
         expect((error as MCPError).message).toContain('targetUrl or secret');
+      });
+
+      it('rejects basicAuthUser, naming it and pointing at delete + create', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          basicAuthUser: 'fake-basic-user',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        expect((error as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+        const message = (error as MCPError).message;
+        expect(message).toContain('basicAuthUser');
+        expect(message).toContain("subcommand: 'delete'");
+        expect(message).toContain("subcommand: 'create'");
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('rejects basicAuthPassword WITHOUT ever repeating the password value', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          basicAuthPassword: 'fake-basic-pw',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        const message = (error as MCPError).message;
+        expect(message).toContain('basicAuthPassword');
+        expect(message).not.toContain('fake-basic-pw');
+        expect(JSON.stringify((error as MCPError).details ?? {})).not.toContain('fake-basic-pw');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      // The falsy case a naive `if (args.basicAuthPassword)` guard would wave
+      // through, silently keeping the old credential while reporting success.
+      it('rejects an EMPTY basicAuthPassword (falsy but supplied)', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          basicAuthPassword: '',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        expect((error as MCPError).message).toContain('basicAuthPassword');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('names all four fields when targetUrl, secret, basicAuthUser, and basicAuthPassword are all supplied', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          targetUrl: 'https://new.example.com/hook',
+          secret: 'rotated',
+          basicAuthUser: 'fake-basic-user',
+          basicAuthPassword: 'fake-basic-pw',
+        }).catch((e: unknown) => e);
+
+        const message = (error as MCPError).message;
+        expect(message).toContain('targetUrl or secret or basicAuthUser or basicAuthPassword');
+        expect(message).not.toContain('fake-basic-pw');
       });
 
       // The falsy case a naive `if (args.secret)` guard would wave through,
@@ -1442,6 +1556,149 @@ describe('Webhooks Tool', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // `basic_auth_password` is a credential (`models.Webhook.BasicAuthPassword`,
+  // go-vikunja pkg/models/webhooks.go) exactly like `secret` above - it must
+  // never reach a response body, a log line, or an error. `basicAuthUser` is
+  // not itself a secret but is exercised alongside it for the same flows.
+  // -------------------------------------------------------------------------
+  describe('credential hygiene for `basicAuthPassword`', () => {
+    const BASIC_AUTH_USER = 'fake-basic-user';
+    const BASIC_AUTH_PASSWORD = 'fake-basic-password-do-not-use';
+
+    it('sends the password on the wire when creating, but never echoes it back', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      // The real server returns the bound struct as-is, credentials included.
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          body: {
+            ...mockWebhook,
+            basic_auth_user: BASIC_AUTH_USER,
+            basic_auth_password: BASIC_AUTH_PASSWORD,
+          },
+        }),
+      );
+
+      const result = await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['task.created'],
+        basicAuthUser: BASIC_AUTH_USER,
+        basicAuthPassword: BASIC_AUTH_PASSWORD,
+      });
+
+      // Still forwarded on create - this is the one place it must be sent.
+      const sent = JSON.parse(
+        (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+      ) as Record<string, unknown>;
+      expect(sent.basic_auth_password).toBe(BASIC_AUTH_PASSWORD);
+
+      // ...but redacted out of the response the agent (and its transcript) sees.
+      expect(result.content[0].text).not.toContain(BASIC_AUTH_PASSWORD);
+      expect(result.content[0].text).toContain('[REDACTED]');
+    });
+
+    it('redacts a password leaked by a list response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: [{ ...mockWebhook, basic_auth_password: BASIC_AUTH_PASSWORD }] }),
+      );
+
+      const result = await mockHandler({ subcommand: 'list', projectId: 1 });
+      expect(result.content[0].text).not.toContain(BASIC_AUTH_PASSWORD);
+    });
+
+    it('redacts a password leaked by a get response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: [{ ...mockWebhook, basic_auth_password: BASIC_AUTH_PASSWORD }] }),
+      );
+
+      const result = await mockHandler({ subcommand: 'get', projectId: 1, webhookId: 1 });
+      expect(result.content[0].text).not.toContain(BASIC_AUTH_PASSWORD);
+    });
+
+    it('never puts the password into a log line on the success path', async () => {
+      const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {});
+      const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+
+      try {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValueOnce(
+          mockResponse({
+            body: {
+              ...mockWebhook,
+              basic_auth_user: BASIC_AUTH_USER,
+              basic_auth_password: BASIC_AUTH_PASSWORD,
+            },
+          }),
+        );
+
+        await mockHandler({
+          subcommand: 'create',
+          projectId: 1,
+          targetUrl: 'https://example.com/webhook',
+          events: ['task.created'],
+          basicAuthUser: BASIC_AUTH_USER,
+          basicAuthPassword: BASIC_AUTH_PASSWORD,
+        });
+
+        const logged = JSON.stringify([
+          debugSpy.mock.calls,
+          infoSpy.mock.calls,
+          errorSpy.mock.calls,
+        ]);
+        expect(logged).not.toContain(BASIC_AUTH_PASSWORD);
+      } finally {
+        debugSpy.mockRestore();
+        infoSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('never puts the password into a log line on the FAILURE path either', async () => {
+      const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {});
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+
+      try {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValue(
+          mockResponse({ ok: false, status: 500, statusText: 'Server Error' }),
+        );
+
+        await mockHandler({
+          subcommand: 'create',
+          projectId: 1,
+          targetUrl: 'https://example.com/webhook',
+          events: ['task.created'],
+          basicAuthUser: BASIC_AUTH_USER,
+          basicAuthPassword: BASIC_AUTH_PASSWORD,
+        }).catch(() => undefined);
+
+        const logged = JSON.stringify([debugSpy.mock.calls, errorSpy.mock.calls]);
+        expect(logged).not.toContain(BASIC_AUTH_PASSWORD);
+      } finally {
+        debugSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('never puts the password into a thrown error on the update-rejection path', async () => {
+      const error = await mockHandler({
+        subcommand: 'update',
+        projectId: 1,
+        webhookId: 1,
+        events: ['task.created'],
+        basicAuthUser: BASIC_AUTH_USER,
+        basicAuthPassword: BASIC_AUTH_PASSWORD,
+      }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(MCPError);
+      expect((error as MCPError).message).not.toContain(BASIC_AUTH_PASSWORD);
+      expect(JSON.stringify((error as MCPError).details ?? {})).not.toContain(BASIC_AUTH_PASSWORD);
+    });
+  });
+
   describe('Tool Registration', () => {
     it('should register with correct schema', () => {
       expect(mockServer.tool).toHaveBeenCalledWith(
@@ -1455,6 +1712,8 @@ describe('Webhooks Tool', () => {
           targetUrl: expect.any(Object),
           events: expect.any(Object),
           secret: expect.any(Object),
+          basicAuthUser: expect.any(Object),
+          basicAuthPassword: expect.any(Object),
         }),
         expect.any(Object), // ToolAnnotations
         expect.any(Function),
