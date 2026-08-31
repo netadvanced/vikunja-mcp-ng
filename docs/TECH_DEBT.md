@@ -2,11 +2,125 @@
 
 The open, verified technical-debt register for `vikunja-mcp-ng`: what is genuinely still wrong in
 the tree, what it would cost to fix, and what has been checked and closed. Every item below was
-re-verified against current `src/` and `tests/` on **2026-08-03** — an item that cannot be
+re-verified against current `src/` and `tests/` on **2026-08-03**, then extended on **2026-08-31**
+from a frozen-tag audit at `audit-final-20260831` (`e2a8dbff`) — an item that cannot be
 reproduced from the working tree is marked resolved and kept only as a record, never left standing
 as if it were still true. Architecture context lives in [ARCHITECTURE.md](ARCHITECTURE.md); the
 forward-looking plan lives in [ROADMAP.md](ROADMAP.md), which is where *new capability* is tracked
 rather than here.
+
+The 2026-08-31 items (`AUDIT-001` … `AUDIT-008`) are confirmed against that tag, not against
+whatever `main` has moved to since. Re-verify the cited `file:line` on this branch before
+treating one as still open. Full evidence pack, suspected-not-promoted, and decision-log drops:
+[AUDIT-2026-08-31.md](audits/AUDIT-2026-08-31.md). Fixes and process tooling are **held**.
+
+## AUDIT-001 — `vikunja_tasks list` reports complete from one clamped page
+
+**Still open. Highest-value class on this register: success with a wrong answer.** Same family as
+#225/#244, but those closed the **fallback** aggregation path. The **primary** success path was
+not.
+
+### Current State
+
+| Fact | Value (verified at `e2a8dbff`) |
+|---|---|
+| Default pagination | `FilterExecutor` sets `per_page=1000`, `page=1` when the caller omits them (`src/tools/tasks/filtering/FilterExecutor.ts:232-241`) |
+| Cross-project | One `GET /tasks` (`src/utils/filtering/RestCrossProjectFilteringStrategy.ts:90-113`). No further pages. No `resultComplete: false`. |
+| Filtered single-project | One `GET /projects/{id}/tasks` (`src/utils/filtering/ServerSideFilteringStrategy.ts:46-88`) |
+| Unfiltered single-project | `ClientSideFilteringStrategy` auto-paginates and **is clean** |
+| Upstream clamp | Vikunja `service.maxitemsperpage`, default 50 (`pkg/web/handler/read_all.go`) |
+
+**Scenario.** `vikunja_tasks list` with no `page`/`perPage` (typical agent call). Vikunja returns
+the first 50 rows. The tool says `Found 50 tasks` with `success: true`. Matching tasks on later
+pages never appear.
+
+Multi-group `filter` + `done` makes it worse: `done` is not folded into the server filter string
+and is only applied after that truncated page (`FilterValidator.ts:279-281`,
+`FilterExecutor.ts:148-154`).
+
+Same class, smaller surface (kept here so they are not re-filed separately):
+
+- `vikunja_notifications list` + `unreadOnly` filters client-side over one `GET /notifications`
+  page (`src/tools/notifications.ts:159-172`).
+- `list-comments` is an unpaged `GET /tasks/{id}/comments`
+  (`src/tools/tasks/comments/CommentOperationsService.ts:62-68`).
+
+### Decision and Timing
+
+Fix before any further “list completeness” work. The fallback already has `resultComplete` /
+`warnings`; the primary path should grow the same signal **and** actually page. Do not “fix” this
+by lowering `per_page` without paging — that just makes the lie smaller.
+
+## AUDIT-002 — templates persist file mixes oidc-http tenants
+
+**Still open when `templates.persistPath` / `VIKUNJA_MCP_TEMPLATES_FILE` is set.** In-memory
+buckets are correctly `(issuer\|sub)`-keyed. The file is not.
+
+Hydrate (`src/tools/templates.ts:99-104`) loads every `PersistedTemplateRecord` into the current
+session. Persist (`:124-136`) writes this session’s list over the whole file. Records have no
+identity field (`src/storage/templateFileStore.ts`).
+
+**Scenario (oidc-http + persist on).** A creates a template → file = A. B’s first list hydrates
+A’s templates into B. B persists → A’s durable set is gone or merged under B.
+
+`docs/OIDC-RESOURCE-SERVER.md` isolation matrix requires “persistence file rows keyed
+distinctly”. That row is unimplemented; `tests/oidc/isolation.test.ts` does not cover persist.
+
+Default (in-memory only) is unaffected. If persist stays stdio/single-tenant, say so in
+CONFIGURATION.md and fail closed in `oidc-http` rather than leaking.
+
+## AUDIT-003 — JWT-only tool gates still read the process-global `AuthManager`
+
+**Still open in oidc-http.** `resolveEffectiveAuthManager` makes REST ALS-correct. Registration
+(`src/tools/index.ts:215`) and per-call JWT gates (`users.ts:236`, `export.ts:212`,
+`admin.ts:140`, `user-deletion.ts:101`) still consult the **closure** manager.
+
+If env auto-connects a JWT onto the global manager, JWT-only tools appear for every caller,
+including `tk_*` vault users. The inverse fails closed. The OIDC doc’s “env token ignored on the
+wire” is true for REST, false for the auth surface.
+
+## AUDIT-004 — bulk `BatchProcessor` singletons do not serialize across requests
+
+**Still open.** `processors.create|update|delete`
+(`src/tools/tasks/bulk-operations-simplified.ts:72-125`) are process singletons. Each
+`processBatches` constructs its own `Semaphore`. Intra-call create concurrency is still 1; N
+concurrent oidc-http `bulk-create`s ⇒ N concurrent creates — the SQLite lock → breaker cascade
+#116 was written to prevent, now cross-request.
+
+## AUDIT-005 — `auth-share` emits a live JWT in the MCP response
+
+**Still open.** `src/tools/projects/sharing.ts:514-540` puts `authResult` (includes
+`auth.Token.token`) into the tool body. Tests assert this
+(`tests/tools/projects/sharing.test.ts:416-427`). Not a deny-by-default mint tool; webhook create
+already redacts the equivalent secret.
+
+Structural sibling (promote only the JWT emission as the defect; this is the pipe): thrown
+`error.message` never passes logger redaction, and `SecureErrorHandler.sanitize`
+(`src/utils/error-handler.ts:25-42`) has no bare-`eyJ` rule.
+
+## AUDIT-006 — `vikunja_templates instantiate` reports success on partial work
+
+**Still open.** `src/tools/templates.ts:536-598`: task create failures and label-attach failures
+are `logger.warn` only. Message is always `Project "…" created from template "…"`.
+`createStandardResponse` defaults `success: true`. `failedTasks` lives in `data` only.
+`createdTasks: 0` still looks like success. Violates ROADMAP §1 pillar 4.
+
+## AUDIT-007 — `list-members` maps a failed teams fetch to “0 teams”
+
+**Still open.** `src/tools/projects/sharing-access.ts:759-812`: users rejection hard-fails; teams
+rejection becomes `teams = []` with no error field. Summary claims `0 direct team(s)` and
+`success: true`. Shares at least set `linkShares.available: false`.
+
+## AUDIT-008 — confirmed, lower priority (do not re-discover)
+
+See [AUDIT-2026-08-31.md](audits/AUDIT-2026-08-31.md) §AUDIT-008 for file:line. Short list: process-global
+webhook `eventCache`; unmasked OIDC `sub` in logs; `FilterStorageManager` cleanup vs in-flight
+`getStorage`; `normalizedKeyCache` maxSize unenforced; client-side filter budget overshoot when
+`autoPaginate` is false.
+
+**Explicitly not on this register:** shared circuit breakers (ROADMAP 16c / OIDC D3, accepted);
+briefing-known items (#237 expand/401 chain, create-not-retried, percentDone scale, date-only
+update gap, dead `src/transforms/task.ts`).
 
 ## ARCH-003 — AORP Markdown Helper: marked.js Migration Opportunity
 
@@ -130,5 +244,6 @@ Nothing remains to address; kept here as a record so the item is not re-filed fr
 
 ---
 
-*Last updated 2026-08-03 (audit pass: every item re-verified against the working tree — one
-resolved, one corrected, one re-scoped). Previous update: November 20, 2024, pre-fork.*
+*Last updated 2026-08-31 (AUDIT-001…008 added from frozen-tag audit at `e2a8dbff`; evidence in
+[AUDIT-2026-08-31.md](audits/AUDIT-2026-08-31.md); fixes held). Previous full re-verification: 2026-08-03.
+Previous update: November 20, 2024, pre-fork.*
