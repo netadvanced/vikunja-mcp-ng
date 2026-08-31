@@ -220,6 +220,33 @@ Project sharing allows creating public or private links to share projects with e
    silently dropped (battle-tested friction — see tracking issue #28, item
    E1).
 
+### Team Operations
+
+1. **Full-Model-Replace Update Endpoint, With a Bool-Specific Trap**: `POST
+   /teams/{id}` follows the same full-model-replace convention as projects,
+   views, and buckets above, but is more dangerous: go-vikunja writes
+   `is_public` with xorm's `UseBool`, which forces that one column to be
+   written even when `false` — bypassing the zero-value skip that made
+   omitting other fields (like `description`) look harmless. An update that
+   omitted `is_public` therefore silently un-published a public team.
+   `vikunja_teams update` fetches the team first and merges requested
+   changes onto it via `buildTeamUpdatePayload` (`src/tools/teams.ts`), the
+   same fetch-merge-POST shape `buildProjectUpdatePayload` uses for projects.
+   Full write-up, verified against the go-vikunja source, is in
+   [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) §3a — including the
+   generalized "watch for `UseBool` on any full-replace endpoint" lesson, and
+   why team **membership** writes (add/remove/admin-toggle) are a different,
+   unaffected shape and should not be "fixed" the same way.
+
+2. **Member Addressing Is By Username, Not Id**: the vendored spec annotates
+   the admin-toggle route's path segment as `@Param userID path int true "User
+   ID"`, but the actual go-vikunja route binds that segment to the member's
+   *username* (`TeamMember.Username` carries a `param:"user"` struct tag) —
+   see [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #3 for the route
+   registration and struct-tag citations. The general rule this establishes:
+   **when the vendored OpenAPI spec and the Go handler disagree, the handler
+   wins** — verify against the handler source, not the spec text.
+
 ## Operation Patterns
 
 ### Assignee Management
@@ -246,6 +273,26 @@ bulk endpoint *is* used is restoring a complete assignee snapshot after a
 3. If label assignment fails, the task already exists
 
 This creates a race condition in task creation.
+
+### Create Retries and Idempotency
+
+Vikunja's v1 API inverts the verbs most REST APIs use: `PUT` is the **create**
+verb and `POST` is the **update** verb (see "Full-Model-Replace Update
+Endpoint" under "Project Operations" above for the update side). That
+inversion matters beyond naming: it means the HTTP method alone tells
+`vikunjaRestRequest` whether a write is safe to retry. A 5xx response, or a
+connection reset mid-flight, does not prove a create failed — the row may
+already be persisted server-side with only the response lost — so blindly
+retrying it would silently create a duplicate task/project/label/comment.
+`shouldRetryNonIdempotentWrite` (`src/utils/vikunja-rest.ts`) therefore
+retries a `PUT` only on HTTP 429 or a connection failure that *proves* the
+request bytes never reached the server (refused / unresolved / handshake
+timeout); every other method keeps the standard 5xx/429/transient-network
+retry policy. The full rationale, the retry-preset table, and the "revisit if
+Vikunja ever gains an idempotency key" escape hatch live in
+[docs/ARCHITECTURE.md](ARCHITECTURE.md)'s "Retry Logic" section — this entry
+exists mainly so the create/update verb inversion sits next to this file's
+other verb- and field-mapping notes.
 
 ## MCP-Specific Limitations
 
@@ -375,6 +422,14 @@ routing calls at `/api/v2/*` without separately verifying each endpoint's
 shape against the vendored v2 OpenAPI spec, the same way `docs/API_NOTES.md`
 already requires for v1.
 
+**Version note (2026-08-31):** Vikunja 2.5.0 and 2.6.0 have since been
+released upstream (2.6.0 on 2026-08-31, primarily a security release — 18
+fixes). Neither is this project's floor (2.3.0) nor its aligned/tested
+default (2.4.0, above) — nothing in `src/` targets them, and no claim in this
+file has been re-verified against either. Treat 2.5- and 2.6-specific
+behavior as unknown rather than assuming it matches 2.4.0, until it gets the
+same live-verification treatment 2.4.0 received here.
+
 ## Filter Implementation Notes
 
 ### SQL-Like Filter Syntax
@@ -426,3 +481,10 @@ The Vikunja API supports SQL-like filter syntax as documented. Filters should be
 ---
 
 *Last updated: 2026-08-03 — re-verified against current `src/` and the vendored `v2.4.0` spec: corrected the `project_id`/`projectId` note, the file-attachment limitation (upload ships; only byte delivery is blocked), and the bulk-operations section (`POST /tasks/bulk` is native and used); removed `node-vikunja` framing left over from the direct-REST migration.*
+
+*Updated 2026-08-31: added "Team Operations" (full-model-replace + the
+`UseBool` public/private trap, and the spec-vs-handler member-addressing
+mismatch — both cross-linked to `docs/VIKUNJA_API_ISSUES.md`), added "Create
+Retries and Idempotency" cross-linking `docs/ARCHITECTURE.md`'s Retry Logic
+section, and noted Vikunja 2.5.0 and 2.6.0 exist upstream but are unverified
+against this codebase.*
