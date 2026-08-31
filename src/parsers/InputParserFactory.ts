@@ -80,6 +80,57 @@ const CSV_SUPPORTED_HEADERS = new Set([
   'repeatMode',
 ]);
 
+/** String forms of `done` this importer recognizes as true/false, matched case-insensitively after trimming. */
+const CSV_DONE_TRUE_VALUES = new Set(['true', 'yes', 'y', '1']);
+const CSV_DONE_FALSE_VALUES = new Set(['false', 'no', 'n', '0']);
+
+/**
+ * Coerces a CSV `done` column value to a boolean. Recognizes the common
+ * truthy/falsy string spellings a spreadsheet export is likely to produce
+ * (`yes`/`no`, `1`/`0`) in addition to the literal `true`/`false` this
+ * importer originally required — anything not on this list falls back to
+ * `false` (unchanged from prior behavior) but is logged so a typo like
+ * "maybe" does not silently become "not done" with no trace (LOW-8).
+ *
+ * @param value - Raw CSV cell value for the `done` column
+ * @returns The coerced boolean
+ */
+function coerceCSVDone(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (CSV_DONE_TRUE_VALUES.has(normalized)) return true;
+  if (CSV_DONE_FALSE_VALUES.has(normalized)) return false;
+  logger.warn('Unrecognized "done" value in CSV import; defaulting to false', {
+    rawValue: value,
+    recognizedTrue: Array.from(CSV_DONE_TRUE_VALUES),
+    recognizedFalse: Array.from(CSV_DONE_FALSE_VALUES),
+  });
+  return false;
+}
+
+/**
+ * Coerces a CSV numeric column value (priority, percentDone, repeatAfter,
+ * repeatMode) to an integer for {@link importedTaskSchema}, which requires
+ * whole numbers for these fields.
+ *
+ * Deliberately NOT `parseInt`: `parseInt('3.9', 10)` silently truncates to
+ * `3`, so a decimal value would import as a different, wrong integer with no
+ * error and no warning (LOW-7) — the exact same "succeeded-and-lost-data"
+ * shape as the unknown-CSV-header bug this file already refuses elsewhere.
+ * `Number` followed by an integer check instead returns `NaN` for both
+ * non-numeric garbage (matching `parseInt`'s existing failure mode, which
+ * `importedTaskSchema` already rejects) and for a non-integer decimal like
+ * `3.9`, routing both through the same schema-validation error path this
+ * function's caller's `skipErrors` handling already governs — no truncation,
+ * no silent partial acceptance.
+ *
+ * @param value - Raw CSV cell value for a numeric column
+ * @returns The parsed integer, or `NaN` if `value` is not a whole number
+ */
+function parseCSVIntegerField(value: string): number {
+  const num = Number(value);
+  return Number.isInteger(num) ? num : NaN;
+}
+
 /**
  * Parse CSV input data and return array of ImportedTask objects.
  * Extracted from batch-import.ts to improve modularity and testability.
@@ -172,13 +223,13 @@ function parseCSVInput(data: string, skipErrors: boolean = false): ImportedTask[
             taskData.description = value;
             break;
           case 'done':
-            taskData.done = value.toLowerCase() === 'true';
+            taskData.done = coerceCSVDone(value);
             break;
           case 'dueDate':
             taskData.dueDate = value;
             break;
           case 'priority':
-            taskData.priority = parseInt(value, 10);
+            taskData.priority = parseCSVIntegerField(value);
             break;
           case 'labels':
             taskData.labels = value
@@ -210,13 +261,13 @@ function parseCSVInput(data: string, skipErrors: boolean = false): ImportedTask[
             taskData.hexColor = value;
             break;
           case 'percentDone':
-            taskData.percentDone = parseInt(value, 10);
+            taskData.percentDone = parseCSVIntegerField(value);
             break;
           case 'repeatAfter':
-            taskData.repeatAfter = parseInt(value, 10);
+            taskData.repeatAfter = parseCSVIntegerField(value);
             break;
           case 'repeatMode':
-            taskData.repeatMode = parseInt(value, 10);
+            taskData.repeatMode = parseCSVIntegerField(value);
             break;
         }
       }

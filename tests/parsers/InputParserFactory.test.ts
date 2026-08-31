@@ -355,6 +355,60 @@ Task 4,fAlSe,4`;
         expect(result[3].done).toBe(false);
       });
 
+      it('should recognize common truthy/falsy string forms for done, not just literal true/false (LOW-8)', () => {
+        const csvData = `title,done
+Task 1,yes
+Task 2,no
+Task 3,1
+Task 4,0
+Task 5,y
+Task 6,n`;
+
+        const result = parseInputData({ format: 'csv', data: csvData });
+
+        expect(result).toHaveLength(6);
+        expect(result[0].done).toBe(true);
+        expect(result[1].done).toBe(false);
+        expect(result[2].done).toBe(true);
+        expect(result[3].done).toBe(false);
+        expect(result[4].done).toBe(true);
+        expect(result[5].done).toBe(false);
+      });
+
+      it('should default an unrecognized done value to false rather than silently guessing', () => {
+        const csvData = `title,done
+Task 1,maybe`;
+
+        const result = parseInputData({ format: 'csv', data: csvData });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].done).toBe(false);
+      });
+
+      it('should reject (not truncate) a non-integer decimal in a CSV numeric column (LOW-7)', () => {
+        // '3.9' used to silently truncate to 3 via parseInt — a different,
+        // wrong value with no error and no warning. It must now fail
+        // validation instead, the same way non-numeric garbage already did.
+        const csvData = `title,priority
+Task 1,3.9`;
+
+        expect(() => parseInputData({ format: 'csv', data: csvData })).toThrow(MCPError);
+        expect(() => parseInputData({ format: 'csv', data: csvData })).toThrow(
+          'Invalid task data at row 2',
+        );
+      });
+
+      it('should skip (not truncate) a non-integer decimal numeric column when skipErrors is set', () => {
+        const csvData = `title,priority
+Task 1,3.9
+Task 2,4`;
+
+        const result = parseInputData({ format: 'csv', data: csvData, skipErrors: true });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toEqual({ title: 'Task 2', priority: 4 });
+      });
+
       it('should convert numeric fields correctly', () => {
         const csvData = `title,priority,percentDone,repeatAfter,repeatMode
 Task 1,1,50,3600,2
