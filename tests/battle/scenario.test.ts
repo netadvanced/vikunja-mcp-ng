@@ -82,9 +82,14 @@ describe('renderScenario setup actions', () => {
 describe('shipped scenario library (scripts/battle/scenarios/*.json)', () => {
   const scenarios = loadAllScenarios(SCENARIOS_DIR);
 
-  it('ships between 6 and 15 scenarios', () => {
+  it('ships between 6 and 30 scenarios', () => {
+    // Upper bound raised from 15 when the library grew past it (teams,
+    // task position, the percentDone update/bulk/filter paths, and honest
+    // bulk partial failure). It is a "did someone check a stray file in"
+    // guard, not a cap on the library -- raise it again rather than
+    // treating it as a budget.
     expect(scenarios.length).toBeGreaterThanOrEqual(6);
-    expect(scenarios.length).toBeLessThanOrEqual(15);
+    expect(scenarios.length).toBeLessThanOrEqual(30);
   });
 
   it('has unique ids', () => {

@@ -6,6 +6,7 @@ import type {
   VikunjaRestClient,
   VikunjaShare,
   VikunjaTask,
+  VikunjaTeam,
 } from '../../../scripts/battle/lib/rest-client';
 
 /**
@@ -21,13 +22,21 @@ export class FakeRestClient implements VikunjaRestClient {
   buckets: Record<number, VikunjaBucket[]> = {};
   shares: Record<number, VikunjaShare[]> = {};
   labelsByTask: Record<number, VikunjaLabel[]> = {};
+  /** Tasks as the project's LIST view returns them: already in view order. */
+  listViewTasksByProject: Record<number, VikunjaTask[]> = {};
+  teams: VikunjaTeam[] = [];
   deletedTaskIds: number[] = [];
   deletedProjectIds: number[] = [];
   deletedLabelIds: number[] = [];
+  deletedTeamIds: number[] = [];
   failDeleteProjectIds: Set<number> = new Set();
+  failDeleteTeamIds: Set<number> = new Set();
   failCreateLabelTitles: Set<string> = new Set();
+  failCreateTeamNames: Set<string> = new Set();
   createdLabels: VikunjaLabel[] = [];
+  createdTeams: VikunjaTeam[] = [];
   private nextLabelId = 1000;
+  private nextTeamId = 2000;
 
   request<T>(): Promise<T> {
     throw new Error('not used in these tests');
@@ -77,6 +86,14 @@ export class FakeRestClient implements VikunjaRestClient {
     return this.shares[projectId] ?? [];
   }
 
+  async listListViewTasks(projectId: number): Promise<VikunjaTask[]> {
+    return this.listViewTasksByProject[projectId] ?? [];
+  }
+
+  async listTeams(): Promise<VikunjaTeam[]> {
+    return this.teams;
+  }
+
   async deleteTask(taskId: number): Promise<void> {
     this.deletedTaskIds.push(taskId);
   }
@@ -100,5 +117,22 @@ export class FakeRestClient implements VikunjaRestClient {
     this.createdLabels.push(label);
     this.labels.push(label);
     return label;
+  }
+
+  async deleteTeam(teamId: number): Promise<void> {
+    if (this.failDeleteTeamIds.has(teamId)) {
+      throw new Error(`simulated failure deleting team ${teamId}`);
+    }
+    this.deletedTeamIds.push(teamId);
+  }
+
+  async createTeam(name: string, isPublic?: boolean): Promise<VikunjaTeam> {
+    if (this.failCreateTeamNames.has(name)) {
+      throw new Error(`simulated failure creating team "${name}"`);
+    }
+    const team: VikunjaTeam = { id: this.nextTeamId++, name, is_public: isPublic ?? false };
+    this.createdTeams.push(team);
+    this.teams.push(team);
+    return team;
   }
 }

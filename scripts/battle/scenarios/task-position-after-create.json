@@ -1,0 +1,16 @@
+{
+  "id": "task-position-after-create",
+  "title": "Reordering a task after creation (position is not a create-time field)",
+  "description": "Probes the teaching error shipped in PR #229: `position` is deliberately NOT settable by `vikunja_tasks create`, because Vikunja stores task order as PER-VIEW state written through `POST /tasks/{id}/position` (models.TaskPosition), which needs a project_view_id a brand-new task has no sensible default for. Rather than accept the field and silently drop it -- the exact failure class that motivated this whole wave -- `TaskCreationService` throws a VALIDATION_ERROR naming the `set-position` subcommand. What this scenario measures is whether that error is actually ACTIONABLE: an agent that plausibly reaches for `position` at creation time should read the message, switch to `set-position`, and land the right end state, showing up as a non-zero invalidArgErrorCount with a ZERO retryCount (a retry here would mean the message taught it nothing). Verification cannot use `GET /tasks/{id}`: position is view-scoped and absent there, so the new `task-first-in-list-view` check reads `/projects/{id}/views/{listViewId}/tasks`, which returns tasks in their actual list-view order (verified against Vikunja 2.4.0). The prompt prescribes the sequence (create the four, THEN move one) precisely so that exploiting Vikunja's default ordering -- creating the tasks in reverse so the wanted one lands on top by accident -- is not a faithful solve, the same rule bulk-priority-bump.json's create-then-bulk-update sequence relies on (docs/BATTLE-TESTING.md re-baselining policy, rule 3). optimalCallCount derived from the CURRENT tool schemas: `vikunja_projects setup-kanban` in its COLUMNS-LESS form (issue #185: `columns` is optional, and with it omitted the call creates the project and its tasks while resolving/creating ZERO Kanban view or bucket -- no unrequested structure, the same reasoning labels-due-date-combo.json records) creates the project and all four tasks and reports each created taskId (1) + `vikunja_tasks set-position` on that task id, with projectViewId auto-resolved from the default `viewKind: 'list'` (1) = 2. The hand-rolled route (create-project + bulk-create + set-position = 3) reaches the same state one call more expensively.",
+  "promptTemplate": "Create a project called \"{{prefix}}Reading List\" with four tasks: \"{{prefix}}chapter-1\", \"{{prefix}}chapter-2\", \"{{prefix}}chapter-3\" and \"{{prefix}}chapter-4\". Once they are all in there, move \"{{prefix}}chapter-1\" to the very top of the list so it is the first thing anyone sees when they open the project.",
+  "optimalCallCount": 2,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Reading List" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Reading List", "min": 4 },
+    {
+      "type": "task-first-in-list-view",
+      "projectTitleContains": "{{prefix}}Reading List",
+      "titleContains": "{{prefix}}chapter-1"
+    }
+  ]
+}

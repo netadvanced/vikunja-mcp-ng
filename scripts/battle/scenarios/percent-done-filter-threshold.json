@@ -1,0 +1,27 @@
+{
+  "id": "percent-done-filter-threshold",
+  "title": "Filtering on a progress threshold",
+  "description": "The filter DSL is the fourth place Vikunja's 0-1 wire fraction used to leak, and the only one where getting it wrong produces NO error at all: `percent_done > 50` against a column whose values never exceed 1 returns an empty result set with HTTP 200. Confirmed live against the 2.4.0 e2e stack while writing this scenario -- `filter=percent_done > 0.5` returned the matching task, `filter=percent_done > 50` returned []. `rescalePercentDoneValue` (src/utils/filters.ts) rescales a percentDone threshold at both edges, outgoing (`conditionToString`) and incoming (`apiFilterStringToDslString`), so the DSL carries 0-100 end to end. A pure read cannot be verified from end state, so the prompt gives the filter a WRITE consequence: the tasks the filter selects get labelled, and the label count is asserted EXACTLY (min 2, max 2 -- the new `max` bound on `tasks-with-label-count`). That makes both failure modes visible in the end state rather than only in the transcript: a threshold left unconverted matches nothing and labels 0 tasks, while an agent that gives up on filtering and labels the lot trips the upper bound. The 0.9 raw-fraction assertion additionally pins the seeded data itself to the wire scale, so a broken create-side conversion cannot make this scenario pass for the wrong reason. optimalCallCount derived from the CURRENT tool schemas: `vikunja_projects create` (1) + `vikunja_task_bulk bulk-create` with all five tasks each carrying its own `percentDone` in the same call (1) + `vikunja_tasks list` with a `filter` expression (1) + `vikunja_task_labels apply-label` with `taskIds` (both matches) and `labelTitles` (get-or-creates the label by title, PR #178) (1) = 4. `setup-kanban` is NOT creditable here in either form: its per-task shape has no `percentDone`, so it cannot seed this scenario's data at all. The filter step is counted because the prompt asks for it explicitly (the same construction filter-high-priority-search.json uses) -- an agent could of course label the two it already knows about without querying, but that is not what was asked.",
+  "promptTemplate": "Create a project called \"{{prefix}}Q4 Rollout\" with five tasks: \"{{prefix}}task-a\" 90% done, \"{{prefix}}task-b\" 75% done, \"{{prefix}}task-c\" 30% done, \"{{prefix}}task-d\" 10% done, and \"{{prefix}}task-e\" not started at all. Then use a filter query (not manual inspection, and not your own memory of what you just created) to pull out only the tasks in that project that are more than half finished, and put a new \"{{prefix}}nearly-there\" label on exactly the ones the query gives you back.",
+  "optimalCallCount": 4,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Q4 Rollout" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Q4 Rollout", "min": 5 },
+    {
+      "type": "tasks-field-match-count",
+      "projectTitleContains": "{{prefix}}Q4 Rollout",
+      "field": "percent_done",
+      "op": "eq",
+      "value": 0.9,
+      "min": 1
+    },
+    { "type": "label-exists", "titleContains": "{{prefix}}nearly-there" },
+    {
+      "type": "tasks-with-label-count",
+      "projectTitleContains": "{{prefix}}Q4 Rollout",
+      "labelTitleContains": "{{prefix}}nearly-there",
+      "min": 2,
+      "max": 2
+    }
+  ]
+}

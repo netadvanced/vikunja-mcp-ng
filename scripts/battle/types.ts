@@ -91,6 +91,17 @@ const TasksWithLabelCountCheck = z.object({
   projectTitleContains: z.string().min(1),
   labelTitleContains: z.string().min(1),
   min: z.number().int().positive(),
+  /**
+   * Optional UPPER bound, for scenarios where labelling too much is as wrong
+   * as labelling too little. `min` alone cannot distinguish "the agent ran
+   * the filter and tagged exactly the matching tasks" from "the agent gave
+   * up and tagged everything" -- setting `max` to the same number as `min`
+   * turns this into an exact-count assertion (see
+   * percent-done-filter-threshold.json, where a filter that silently matches
+   * nothing and one that matches everything are the two failure modes the
+   * 0-100 <-> 0-1 threshold conversion exists to prevent).
+   */
+  max: z.number().int().nonnegative().optional(),
 });
 
 const TaskHasSubtasksCheck = z.object({
@@ -103,6 +114,82 @@ const TaskHasSubtasksCheck = z.object({
 const ProjectHasShareCheck = z.object({
   type: z.literal('project-has-share'),
   projectTitleContains: z.string().min(1),
+});
+
+/**
+ * Asserts NO task inside the matched project has a title containing
+ * `titleContains` -- the inverse of every other task check here, and the
+ * only way to catch a *fabricated* recovery. A bulk operation that hits a
+ * stale id must report the partial failure honestly (see
+ * `bulk-operations-simplified.ts`); an agent that instead re-creates the
+ * missing row so its bulk call "succeeds" produces an end state that passes
+ * every min-based check while being exactly the dishonest outcome the
+ * scenario exists to detect.
+ */
+const TaskAbsentFromProjectCheck = z.object({
+  type: z.literal('task-absent-from-project'),
+  projectTitleContains: z.string().min(1),
+  titleContains: z.string().min(1),
+});
+
+/**
+ * Asserts the FIRST task in the project's list view is the one whose title
+ * contains `titleContains`.
+ *
+ * Task ordering is per-view state in Vikunja, written through
+ * `POST /tasks/{id}/position` (`models.TaskPosition`) and NOT settable at
+ * create time -- `vikunja_tasks create` rejects `position` with a teaching
+ * error pointing at the `set-position` subcommand. `GET /tasks/{id}` cannot
+ * verify this: the position lives in the view's task collection, so the
+ * check reads `/projects/{id}/views/{listViewId}/tasks` (verified against
+ * Vikunja 2.4.0: that endpoint returns tasks ordered by their position in
+ * that view, each carrying its own `position` float).
+ */
+const TaskFirstInListViewCheck = z.object({
+  type: z.literal('task-first-in-list-view'),
+  projectTitleContains: z.string().min(1),
+  titleContains: z.string().min(1),
+});
+
+/**
+ * Asserts a team whose `name` contains `nameContains` exists, and
+ * (optionally) that its visibility and membership match.
+ *
+ * Teams are matched on `name`, not `title` -- `models.Team` has no `title`
+ * field, unlike every project/label/task check above.
+ *
+ * `isPublic` is the load-bearing one: `POST /teams/{id}` is a full-model
+ * replace that writes `is_public` unconditionally (go-vikunja
+ * `pkg/models/teams.go`'s `UseBool("is_public")`), so any update body that
+ * omits the field silently un-publishes a public team. Asserting the raw
+ * `is_public` after an update that only asked for a *different* field is
+ * what makes this check fail if `buildTeamUpdatePayload`'s read-then-merge
+ * (src/tools/teams.ts) is ever removed.
+ *
+ * `hasMemberUsername` matches against the embedded `members[]` array
+ * (`GET /teams` returns members inline) by USERNAME -- Vikunja keys team
+ * membership by username string, never numeric user id, deliberately, to
+ * prevent enumerated user-id entry. `memberIsAdmin` additionally asserts
+ * that member's `admin` flag, which distinguishes `members add` with
+ * `admin: true` from the separate `toggleAdmin` operation.
+ */
+const TeamExistsCheck = z.object({
+  type: z.literal('team-exists'),
+  nameContains: z.string().min(1),
+  isPublic: z.boolean().optional(),
+  hasMemberUsername: z.string().min(1).optional(),
+  memberIsAdmin: z.boolean().optional(),
+});
+
+/**
+ * Asserts NO team's `name` contains `nameContains`. Pairs with
+ * `team-exists` to prove a RENAME happened rather than a second team being
+ * created alongside the original -- an outcome that would satisfy a
+ * `team-exists` check on the new name on its own.
+ */
+const TeamAbsentCheck = z.object({
+  type: z.literal('team-absent'),
+  nameContains: z.string().min(1),
 });
 
 /**
@@ -146,8 +233,12 @@ function buildVerifyCheckSchema() {
     LabelExistsCheck,
     TasksWithLabelCountCheck,
     TaskHasSubtasksCheck,
+    TaskAbsentFromProjectCheck,
+    TaskFirstInListViewCheck,
     ProjectHasShareCheck,
     BucketsInOrderCheck,
+    TeamExistsCheck,
+    TeamAbsentCheck,
   ]);
 }
 
@@ -174,8 +265,23 @@ const CreateLabelSetupAction = z.object({
   title: z.string().min(1),
 });
 
+/**
+ * Seeds a team the agent must FIND and modify, rather than one it created
+ * itself moments earlier. Needed because the interesting team scenarios are
+ * about *updating* an existing team (does a partial update preserve
+ * `is_public`?), and a prompt that asks the agent to create-then-rename in
+ * one breath can always be solved by creating it under the final name --
+ * which passes verification while never exercising the update path at all.
+ * `name` (not `title`): teams have no title field.
+ */
+const CreateTeamSetupAction = z.object({
+  type: z.literal('create-team'),
+  name: z.string().min(1),
+  isPublic: z.boolean().optional(),
+});
+
 function buildSetupActionSchema() {
-  return z.discriminatedUnion('type', [CreateLabelSetupAction]);
+  return z.discriminatedUnion('type', [CreateLabelSetupAction, CreateTeamSetupAction]);
 }
 
 export type SetupAction = z.infer<ReturnType<typeof buildSetupActionSchema>>;
