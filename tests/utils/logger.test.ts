@@ -186,8 +186,10 @@ describe('Logger', () => {
       const { logger: testLogger } = require('../../src/utils/logger');
       testLogger.debug('Debug data:', { user: 'test', action: 'login' });
 
+      // `user` is treated as sensitive by the logger's central redaction, so it
+      // is masked while non-sensitive fields stay readable.
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringContaining("[DEBUG] Debug data: { user: 'test', action: 'login' }"),
+        expect.stringContaining("[DEBUG] Debug data: { user: '[REDACTED]', action: 'login' }"),
       );
     });
   });
