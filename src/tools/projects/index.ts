@@ -716,9 +716,10 @@ export function registerProjectsTool(
                 if (!args.projectId) {
                   throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
                 }
-                if (!args.right) {
-                  throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share right is required');
-                }
+                // `right` validity (including "missing") is checked by
+                // `resolvePermission()` inside `createProjectShare` itself —
+                // do not duplicate a falsy check here, it would reject a
+                // valid `right: 0` (read-only) as "required".
                 return await createProjectShare(args as CreateShareArgs, authManager);
 
               case 'list-shares':
@@ -795,12 +796,9 @@ export function registerProjectsTool(
                     'username is required for add-project-user operation',
                   );
                 }
-                if (!args.right) {
-                  throw new MCPError(
-                    ErrorCode.VALIDATION_ERROR,
-                    'Share right is required for add-project-user operation',
-                  );
-                }
+                // `right` is validated by `resolvePermission()` inside
+                // `addProjectUser` — no redundant falsy check here (see
+                // create-share above for why).
                 return await addProjectUser(args as AddProjectUserArgs, authManager);
 
               case 'update-project-user-permission':
@@ -816,12 +814,9 @@ export function registerProjectsTool(
                     'userId is required for update-project-user-permission operation',
                   );
                 }
-                if (!args.right) {
-                  throw new MCPError(
-                    ErrorCode.VALIDATION_ERROR,
-                    'Share right is required for update-project-user-permission operation',
-                  );
-                }
+                // `right` is validated by `resolvePermission()` inside
+                // `updateProjectUserPermission` — no redundant falsy check
+                // here (see create-share above for why).
                 return await updateProjectUserPermission(
                   args as UpdateProjectUserPermissionArgs,
                   authManager,
@@ -865,12 +860,9 @@ export function registerProjectsTool(
                     'teamId is required for add-project-team operation',
                   );
                 }
-                if (!args.right) {
-                  throw new MCPError(
-                    ErrorCode.VALIDATION_ERROR,
-                    'Share right is required for add-project-team operation',
-                  );
-                }
+                // `right` is validated by `resolvePermission()` inside
+                // `addProjectTeam` — no redundant falsy check here (see
+                // create-share above for why).
                 return await addProjectTeam(args as AddProjectTeamArgs, authManager);
 
               case 'update-project-team-permission':
@@ -886,12 +878,9 @@ export function registerProjectsTool(
                     'teamId is required for update-project-team-permission operation',
                   );
                 }
-                if (!args.right) {
-                  throw new MCPError(
-                    ErrorCode.VALIDATION_ERROR,
-                    'Share right is required for update-project-team-permission operation',
-                  );
-                }
+                // `right` is validated by `resolvePermission()` inside
+                // `updateProjectTeamPermission` — no redundant falsy check
+                // here (see create-share above for why).
                 return await updateProjectTeamPermission(
                   args as UpdateProjectTeamPermissionArgs,
                   authManager,
@@ -926,12 +915,9 @@ export function registerProjectsTool(
                     'username is required for share-with-user operation',
                   );
                 }
-                if (!args.right) {
-                  throw new MCPError(
-                    ErrorCode.VALIDATION_ERROR,
-                    'Share right is required for share-with-user operation',
-                  );
-                }
+                // `right` is validated by `resolvePermission()` inside
+                // `shareProjectWithUser` — no redundant falsy check here
+                // (see create-share above for why).
                 return await shareProjectWithUser(args as ShareWithUserArgs, authManager);
 
               case 'share-with-team':
@@ -947,12 +933,9 @@ export function registerProjectsTool(
                     'teamName is required for share-with-team operation',
                   );
                 }
-                if (!args.right) {
-                  throw new MCPError(
-                    ErrorCode.VALIDATION_ERROR,
-                    'Share right is required for share-with-team operation',
-                  );
-                }
+                // `right` is validated by `resolvePermission()` inside
+                // `shareProjectWithTeam` — no redundant falsy check here
+                // (see create-share above for why).
                 return await shareProjectWithTeam(args as ShareWithTeamArgs, authManager);
 
               case 'list-members':
