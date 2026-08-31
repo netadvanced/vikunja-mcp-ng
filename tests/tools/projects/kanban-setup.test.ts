@@ -442,6 +442,130 @@ describe('setupKanban', () => {
   });
 
   /**
+   * Issue #273 (HIGH-2): a fresh Vikunja project auto-creates To-Do/Doing/
+   * Done buckets, with Done set as the view's `done_bucket_id`. Requesting
+   * columns that don't exactly title-match the existing buckets used to let
+   * the leftover-repurpose fallback claim the done-bucket purely by
+   * position, silently turning "Done" into whatever unmatched column landed
+   * last (here "QA") — every task later placed there would then be
+   * auto-completed by Vikunja's own done-bucket behavior, reported as a
+   * clean success. The done-bucket must now be excluded from that fallback
+   * pool entirely and survive untouched.
+   */
+  describe('done-bucket protection on a fresh project (#273)', () => {
+    it('never repurposes the view done-bucket via the leftover fallback, even when no column title matches it', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      // Kanban view reports done_bucket_id: 302 ("Done").
+      router.on('GET', '/projects/88/views', () => [
+        {
+          id: 21,
+          title: 'Kanban',
+          project_id: 88,
+          view_kind: 'kanban',
+          done_bucket_id: 302,
+        },
+      ]);
+      // Vikunja's auto-created defaults for a fresh project.
+      router.on('GET', '/projects/88/views/21/buckets', () => [
+        { id: 300, title: 'To-Do', position: 0 },
+        { id: 301, title: 'Doing', position: 1 },
+        { id: 302, title: 'Done', position: 2 },
+      ]);
+
+      router.on('POST', /^\/projects\/88\/views\/21\/buckets\/\d+$/, (path, body) => {
+        const id = Number(path.split('/').pop());
+        return { id, ...(body as Record<string, unknown>) };
+      });
+      let bucketCounter = 900;
+      router.on('PUT', '/projects/88/views/21/buckets', (_p, body) => {
+        bucketCounter += 1;
+        const b = body as { title: string; position?: number };
+        return { id: bucketCounter, title: b.title, position: b.position };
+      });
+
+      // None of these exactly title-match "To-Do"/"Doing"/"Done".
+      const result = await setupKanban(
+        { id: 88, columns: ['Todo', 'In Progress', 'QA'] },
+        authManager,
+      );
+
+      const text = result.content[0]?.text ?? '';
+      expect(text).toContain('3/3 columns ready');
+      // The response says so explicitly.
+      expect(text).toContain('done-bucket was left untouched');
+      expect(text).toContain('doneBucketPreserved');
+
+      // The done-bucket (302) was NEVER written to at all — not renamed,
+      // not repositioned. This is the load-bearing assertion: previously it
+      // would have been claimed as the leftover for "QA".
+      const doneBucketWrite = router.calls.find(
+        (c) => c.method === 'POST' && c.path === '/projects/88/views/21/buckets/302',
+      );
+      expect(doneBucketWrite).toBeUndefined();
+
+      // "Todo" and "In Progress" claimed the two non-done leftovers
+      // (300/301); "QA" had nothing left to repurpose and was created new.
+      const created = router.calls.filter(
+        (c) => c.method === 'PUT' && c.path === '/projects/88/views/21/buckets',
+      );
+      expect(created).toHaveLength(1);
+      expect((created[0]?.body as { title: string }).title).toBe('QA');
+
+      const renamedIds = router.calls
+        .filter((c) => c.method === 'POST' && /\/buckets\/\d+$/.test(c.path))
+        .map((c) => Number(c.path.split('/').pop()));
+      expect(renamedIds.sort()).toEqual([300, 301]);
+      expect(renamedIds).not.toContain(302);
+    });
+
+    it('still allows an exact-title match against the done-bucket (deliberate reuse, not a blind repurpose)', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      router.on('GET', '/projects/89/views', () => [
+        {
+          id: 22,
+          title: 'Kanban',
+          project_id: 89,
+          view_kind: 'kanban',
+          done_bucket_id: 402,
+        },
+      ]);
+      router.on('GET', '/projects/89/views/22/buckets', () => [
+        { id: 400, title: 'To Do', position: 0 },
+        { id: 401, title: 'Doing', position: 1 },
+        { id: 402, title: 'Done', position: 2 },
+      ]);
+      router.on('POST', /^\/projects\/89\/views\/22\/buckets\/\d+$/, (path, body) => {
+        const id = Number(path.split('/').pop());
+        return { id, ...(body as Record<string, unknown>) };
+      });
+
+      // Exact match on every column, including "Done" itself.
+      const result = await setupKanban(
+        { id: 89, columns: ['To Do', 'Doing', 'Done'] },
+        authManager,
+      );
+
+      const text = result.content[0]?.text ?? '';
+      expect(text).toContain('3/3 columns ready');
+      // Exact-match reuse is not a "repurpose" — no preservation note.
+      expect(text).not.toContain('done-bucket was left untouched');
+
+      const doneUpdate = router.calls.find(
+        (c) => c.method === 'POST' && c.path === '/projects/89/views/22/buckets/402',
+      );
+      expect(doneUpdate).toBeDefined();
+      // Exact-title reuse: the request carries the bucket's own unchanged
+      // title (updateBucketRaw echoes `current` merged with the requested
+      // fields) — never a DIFFERENT title, which would signal a rename.
+      expect((doneUpdate?.body as { title?: string }).title).toBe('Done');
+    });
+  });
+
+  /**
    * `setup-kanban` reuses an existing project (`id`) as-is and never writes
    * to it. `title`/`description`/`parentProjectId` supplied alongside `id`
    * used to be silently ignored - the owner-approved fix: let a value
