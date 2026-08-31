@@ -278,7 +278,7 @@ describe('project link sharing (REST-migrated)', () => {
       // fails against the pre-fix code, which called
       // `/projects/1/shares/1` and would 404 against this mock.
       const url = mockFetch.mock.calls[0][0] as string;
-      expect(url).toBe('https://vikunja.test/api/v1/projects/1/shares');
+      expect(url).toBe('https://vikunja.test/api/v1/projects/1/shares?per_page=200&page=1');
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(result.content[0].text).toContain('Retrieved link share: Admin share');
     });
@@ -297,8 +297,40 @@ describe('project link sharing (REST-migrated)', () => {
       const result = await getProjectShare({ projectId: 1, shareId: '1' }, authManager);
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
-      expect(mockFetch.mock.calls[0][0]).toBe('https://vikunja.test/api/v1/projects/1/shares');
+      expect(mockFetch.mock.calls[0][0]).toBe(
+        'https://vikunja.test/api/v1/projects/1/shares?per_page=200&page=1',
+      );
       expect(result.content[0].text).toContain('Retrieved link share: Admin share');
+    });
+
+    it('paginates past the first page to find a share on a later page', async () => {
+      // Audit #291 MED-2 regression: a project with more shares than fit on
+      // one page must not read a real, later-page share as not-found.
+      const page1 = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, hash: `h${i + 1}` }));
+      mockFetch.mockImplementation((url: string) => {
+        if (url.includes('page=1')) {
+          return Promise.resolve(mockResponse({ text: JSON.stringify(page1) }));
+        }
+        if (url.includes('page=2')) {
+          return Promise.resolve(
+            mockResponse({
+              text: JSON.stringify([{ id: 201, hash: 'later-page', name: 'Late share' }]),
+            }),
+          );
+        }
+        throw new Error(`Unexpected fetch call to ${url}`);
+      });
+
+      const result = await getProjectShare({ projectId: 1, shareId: '201' }, authManager);
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch.mock.calls[0][0]).toBe(
+        'https://vikunja.test/api/v1/projects/1/shares?per_page=200&page=1',
+      );
+      expect(mockFetch.mock.calls[1][0]).toBe(
+        'https://vikunja.test/api/v1/projects/1/shares?per_page=200&page=2',
+      );
+      expect(result.content[0].text).toContain('Retrieved link share: Late share');
     });
 
     it('falls back to a generic label when the share has no name', async () => {
@@ -358,7 +390,7 @@ describe('project link sharing (REST-migrated)', () => {
       // Regression test: must hit the LIST url, not the old by-id url —
       // fails against the pre-fix code, which called
       // `/projects/1/shares/1` and would 404 against this mock.
-      expect(getCall[0]).toBe('https://vikunja.test/api/v1/projects/1/shares');
+      expect(getCall[0]).toBe('https://vikunja.test/api/v1/projects/1/shares?per_page=200&page=1');
       // The actual DELETE call is unaffected by the upstream bug and is
       // left exactly as-is: still the by-id URL.
       expect(deleteCall[0]).toBe('https://vikunja.test/api/v1/projects/1/shares/1');
@@ -378,7 +410,9 @@ describe('project link sharing (REST-migrated)', () => {
       const result = await deleteProjectShare({ projectId: 1, shareId: '1' }, authManager);
 
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(mockFetch.mock.calls[0][0]).toBe('https://vikunja.test/api/v1/projects/1/shares');
+      expect(mockFetch.mock.calls[0][0]).toBe(
+        'https://vikunja.test/api/v1/projects/1/shares?per_page=200&page=1',
+      );
       expect(result.content[0].text).toContain('Share with ID 1 deleted successfully');
     });
 
@@ -409,6 +443,34 @@ describe('project link sharing (REST-migrated)', () => {
       await expect(
         deleteProjectShare({ projectId: 1, shareId: '999' }, authManager),
       ).rejects.toThrow('Share with ID 999 not found for project 1');
+    });
+
+    it('paginates past the first page to find and delete a share on a later page', async () => {
+      // Audit #291 MED-2 regression: on a project with more shares than fit
+      // on one page, deleting a real, later-page share must not silently
+      // no-op as "not found".
+      const page1 = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, hash: `h${i + 1}` }));
+      mockFetch.mockImplementation((url: string) => {
+        if (url.includes('/shares?per_page=200&page=1')) {
+          return Promise.resolve(mockResponse({ text: JSON.stringify(page1) }));
+        }
+        if (url.includes('/shares?per_page=200&page=2')) {
+          return Promise.resolve(
+            mockResponse({
+              text: JSON.stringify([{ id: 201, hash: 'later-page', name: 'Late share' }]),
+            }),
+          );
+        }
+        if (url.endsWith('/projects/1/shares/201')) {
+          return Promise.resolve(mockResponse({ text: JSON.stringify({ message: 'deleted' }) }));
+        }
+        throw new Error(`Unexpected fetch call to ${url}`);
+      });
+
+      const result = await deleteProjectShare({ projectId: 1, shareId: '201' }, authManager);
+
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(result.content[0].text).toContain('Share with ID 201 deleted successfully');
     });
   });
 
