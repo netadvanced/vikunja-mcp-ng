@@ -593,18 +593,31 @@ export function registerFiltersTool(
             const current = await fetchSavedFilterOrThrow(authManager, params.id);
 
             let filterQuery = current.filters?.filter;
+            // Track which of filter/conditions actually drove a change to
+            // filterQuery, using the same truthy checks the merge itself
+            // uses — params.filter === '' or params.conditions === [] are
+            // both `!== undefined` but change nothing here (LOW-4: the old
+            // affectedFields reporting below used an undefined-check while
+            // this merge uses a truthy-check, so it reported "filter" as
+            // changed even when an empty string left filterQuery untouched).
+            let filterFieldChanged = false;
+            let conditionsFieldChanged = false;
             if (params.filter) {
               filterQuery = translateFilterString(params.filter);
+              filterFieldChanged = true;
             } else if (params.conditions && params.conditions.length > 0) {
               filterQuery = buildFilterStringFromConditions(
                 params.conditions,
                 params.groupOperator,
               );
+              conditionsFieldChanged = true;
             }
 
-            const affectedFields = (
-              ['title', 'description', 'filter', 'conditions', 'isFavorite'] as const
-            ).filter((key) => params[key] !== undefined);
+            const affectedFields = (['title', 'description', 'isFavorite'] as const).filter(
+              (key) => params[key] !== undefined,
+            ) as ('title' | 'description' | 'filter' | 'conditions' | 'isFavorite')[];
+            if (filterFieldChanged) affectedFields.push('filter');
+            if (conditionsFieldChanged) affectedFields.push('conditions');
 
             const mergedDescription = params.description ?? current.description;
             const mergedIsFavorite = params.isFavorite ?? current.is_favorite;
