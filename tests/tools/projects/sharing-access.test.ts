@@ -29,6 +29,7 @@ import {
 } from '../../../src/tools/projects/sharing-access';
 import { MCPError } from '../../../src/types';
 import { circuitBreakerRegistry } from '../../../src/utils/retry';
+import * as responseFactory from '../../../src/utils/response-factory';
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
@@ -538,6 +539,50 @@ describe('direct project sharing (users & teams)', () => {
       await expect(listProjectMembers({ projectId: 1 }, authManager)).rejects.toThrow(
         'Project with ID 1 not found',
       );
+    });
+
+    it('surfaces the teams-read failure honestly (audit #279), same as link-shares already does', async () => {
+      // Regression: a rejected teams read used to be silently coerced to an
+      // empty array with no error field, while a rejected link-shares read
+      // already carried an explicit `error`. Assert on the actual data
+      // object passed to `createStandardResponse` — the markdown renderer
+      // only surfaces the `users` collection in its text output, so the
+      // `teamsError`/`linkShares.error` fields are otherwise invisible from
+      // `result.content[0].text` alone.
+      const spy = jest.spyOn(responseFactory, 'createStandardResponse');
+      try {
+        mockFetch.mockImplementation((url: string) => {
+          if (url.endsWith('/projects/1/users')) {
+            return Promise.resolve(
+              mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice' }]) }),
+            );
+          }
+          if (url.endsWith('/projects/1/teams')) {
+            return Promise.resolve(mockResponse({ ok: false, status: 500, text: 'teams boom' }));
+          }
+          if (url.includes('/projects/1/shares')) {
+            return Promise.resolve(
+              mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc', permission: 0 }]) }),
+            );
+          }
+          if (url.endsWith('/projects/1')) {
+            return Promise.resolve(mockResponse({ text: JSON.stringify({ id: 1 }) }));
+          }
+          throw new Error(`Unexpected fetch call to ${url}`);
+        });
+
+        await listProjectMembers({ projectId: 1 }, authManager);
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        const data = spy.mock.calls[0][2] as Record<string, unknown>;
+        expect(data.teamsError).toEqual(expect.stringContaining('teams boom'));
+        expect(data.teams).toEqual([]);
+        // Parity check: link-shares' existing error-surfacing shape is
+        // untouched by this fix.
+        expect(data.linkShares).toEqual({ available: true, summary: expect.any(String) });
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('degrades gracefully when the link-share sub-call fails, still reporting users/teams', async () => {

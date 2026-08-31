@@ -782,6 +782,7 @@ export async function listProjectMembers(
     usersResult.status === 'fulfilled' && Array.isArray(usersResult.value) ? usersResult.value : [];
   const teams =
     teamsResult.status === 'fulfilled' && Array.isArray(teamsResult.value) ? teamsResult.value : [];
+  const teamsError = teamsResult.status === 'rejected' ? describeSettledError(teamsResult) : undefined;
 
   // listProjectShares() already returns a fully-formatted MCP response, not
   // raw data — extract the share count from it best-effort for the summary
@@ -801,6 +802,7 @@ export async function listProjectMembers(
       projectId,
       users,
       teams,
+      ...(teamsError !== undefined ? { teamsError } : {}),
       linkShares:
         sharesResult.status === 'fulfilled'
           ? { available: true, summary: sharesResult.value.content[0]?.text }
