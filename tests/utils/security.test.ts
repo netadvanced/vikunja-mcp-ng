@@ -305,6 +305,23 @@ describe('Security Utilities', () => {
       const stats = getSecurityCacheStats();
       expect(stats.size).toBeGreaterThan(0);
     });
+
+    // LOW-14 (#292, cross-audit): the normalized-key cache advertised a
+    // 10,000-entry max via getSecurityCacheStats but never actually
+    // enforced it - unbounded growth in a long-running oidc-http process
+    // if attacker-influenced object keys keep reaching the logger.
+    it('never grows the cache past the advertised maxSize', () => {
+      const { maxSize } = getSecurityCacheStats();
+
+      // Populate with more distinct keys than the cache can hold.
+      const overflowCount = maxSize + 500;
+      for (let i = 0; i < overflowCount; i++) {
+        sanitizeLogData({ [`field_${i}`]: 'value' });
+      }
+
+      const stats = getSecurityCacheStats();
+      expect(stats.size).toBeLessThanOrEqual(maxSize);
+    });
   });
 
   describe('OIDC identity masking (#292 MED-15)', () => {
