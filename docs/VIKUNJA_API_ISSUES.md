@@ -9,7 +9,11 @@ a status line. Each item carries a **Status** and the Vikunja version the claim
 was last checked against. The supported floor is **Vikunja 2.3.0**, aligned/
 tested default **2.4.0** (`docker/e2e/docker-compose.yml`) — anything only ever
 verified on 0.22.x is flagged as such and should be re-checked before being
-relied on.
+relied on. Vikunja **2.5.0** has since been released upstream (confirmed
+2026-08-24), but it is neither the floor nor the tested default here —
+nothing in `src/` or this file has been verified against it, so treat any
+2.5-specific behavior as unknown until it gets the same live-verification
+treatment 2.4.0 has had.
 
 | # | Issue | Status |
 |---|---|---|
@@ -145,9 +149,9 @@ below are kept because they remain non-obvious and are easy to get wrong:
 - Team members are **embedded** in the `GET /teams/{id}` response as `.members` — there is no standalone `GET /teams/{id}/members` endpoint.
 - `PUT /teams/{id}/members` — add a member. The body's `username` field must be the member's real username string (the API deliberately rejects numeric user ids here, to prevent automated/enumerated user-id entry).
 - `DELETE /teams/{id}/members/{username}` — remove a member; the path segment is the username, not a numeric id.
-- `POST /teams/{id}/members/{userID}/admin` — **toggles** the member's admin flag. It takes no request body and cannot set an explicit true/false value; callers that need to know the resulting state should re-check via `members list`. **Spec/implementation ambiguity, unresolved:** the vendored spec declares that path segment as `userID` (`type: integer`), but `src/tools/teams.ts` sends the member's *username* string there — consistent with the sibling `DELETE /teams/{id}/members/{username}`, and with the API's stated aversion to numeric-id member addressing. Only a live call can settle which the server actually accepts; do not "fix" either side from spec text alone.
+- `POST /teams/{id}/members/{userID}/admin` — **toggles** the member's admin flag. It takes no request body and cannot set an explicit true/false value; callers that need to know the resulting state should re-check via `members list`. **Spec/handler mismatch, settled by reading the handler (2026-08-24):** the vendored spec's `@Param userID path int true "User ID"` annotation is simply wrong. In go-vikunja's source (v2.3.0): the route is registered as `a.POST("/teams/:team/members/:user/admin", teamMemberHandler.UpdateWeb)` (`pkg/routes/routes.go`), and `TeamMember.Username` carries the struct tag `` `param:"user"` `` (`pkg/models/teams.go:78`) — echo's binder wires the `:user` path segment straight into the *username* field, never a numeric id. `TeamMember.Update` (`pkg/models/team_members.go:151`) then resolves it with `user2.GetUserByUsername(s, tm.Username)`. `src/tools/teams.ts` sending the username there was correct all along; no live call was needed to settle it, and the previous "unresolved, only a live call can settle this" framing here undersold how conclusive the source is.
 
-**Impact:** None once routed correctly. The lesson generalizes: verify team-endpoint changes against the vendored OpenAPI spec (`docs/vikunja-openapi.json`) and, where the spec is ambiguous, against a live server — never against a client library's types.
+**Impact:** None once routed correctly. **Generalizable lesson:** when the vendored OpenAPI spec and the Go handler disagree, **the handler wins** — the spec is documentation, not a contract Vikunja's own router obeys. Before trusting a `@Param` annotation (especially one typed `int` for what could plausibly be a resolve-by-name path), check the route registration and the target struct's binding tags in `~/Projects/vikunja` (read-only, pinned at v2.3.0) rather than guessing from spec text, and never from a client library's types.
 
 ### 3a. `POST /teams/{id}` full-replace hazards (worked around)
 
@@ -168,6 +172,22 @@ read-then-merge in `vikunja_teams update`. Verified in go-vikunja source
   (`pkg/models/teams.go:378`) returns `ErrTeamNameCannotBeEmpty{}` when it is
   empty — so the request is rejected with HTTP 400 "Invalid model" when `name`
   is omitted.
+
+**Generalizable lesson — `UseBool` on a full-replace endpoint is the tell.**
+xorm's struct-based `Update` normally *skips* zero-valued columns, which is
+exactly why an omitted `description` was always harmless here — the same
+zero-skip silently protects every other non-bool field on this endpoint
+today. `UseBool(colName)` (and its cousins `Cols()`/`AllCols()`) is the
+explicit escape hatch that forces one named column to be written regardless
+of its zero value. That combination — a handler with no server-side merge,
+plus a `UseBool`/`Cols` override on a specific column — is what actually
+causes the hazard, and it hides in plain sight for non-bool fields for years
+because they degrade gracefully (silently ignored) while the forced column
+degrades catastrophically (silently wiped). Before wiring up *any* new
+Vikunja write endpoint, grep the corresponding go-vikunja model's `Update`
+method for `UseBool`/`Cols`/`AllCols`; if present, a fetch→merge→POST (or an
+explicit allowlist that always carries that column forward) is mandatory,
+not optional.
 
 **Impact (now):** none for callers. `vikunja_teams update` `GET`s the team,
 spreads the whole returned model, overlays only the fields the caller actually
@@ -501,7 +521,8 @@ and webhook asks have all been resolved or were mistaken — see #1, #3, #4, #6)
 4. **Make `Bucket.position` a pointer / nullable field** (#11) so an explicit
    `0` is distinguishable from an omitted value.
 5. **Correct the spec's `POST /teams/{id}/members/{userID}/admin` path
-   parameter** (#3) if it is in fact a username, not a numeric id.
+   parameter** (#3) — it is confirmed a username, not a numeric id (the
+   handler binds it via `TeamMember.Username`'s `param:"user"` tag).
 
 ---
 
@@ -511,3 +532,11 @@ and webhook asks have all been resolved or were mistaken — see #1, #3, #4, #6)
 vendored `v2.4.0` OpenAPI spec and `docs/API-COVERAGE.md`; duplicate item
 numbers resolved, resolved/obsolete items relabelled, and per-item status +
 verified-against version added.*
+
+*Updated 2026-08-31: item #3's admin-toggle path-parameter question settled
+(not just observed) by reading the go-vikunja route registration and
+`TeamMember.Username`'s `param:"user"` binding tag directly — generalized as
+"the handler wins over the spec" — and §3a gained a standalone
+`UseBool`-on-full-replace lesson so it reads as a pattern to watch for, not
+just an incident report. Noted that Vikunja 2.5.0 exists upstream but is
+unverified here.*

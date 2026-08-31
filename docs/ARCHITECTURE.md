@@ -87,3 +87,5 @@ Each tool is one Vikunja domain, registered once in `src/tools/index.ts`:
   write may have committed with the response lost — and resending it would silently create a
   duplicate. Idempotent methods keep the standard 5xx/429/transient-network policy; a call site
   that knows a given `PUT` is safe to repeat can override `options.retry.shouldRetry`.
+  See [API_NOTES.md](API_NOTES.md#create-retries-and-idempotency) for how this
+  connects to the create/update verb inversion itself.
