@@ -31,7 +31,7 @@ export function parseInputData(options: ParseInputOptions): ImportedTask[] {
   try {
     switch (format) {
       case 'json':
-        return parseJSONInput(data);
+        return parseJSONInput(data, skipErrors);
 
       case 'csv':
         return parseCSVInput(data, skipErrors);

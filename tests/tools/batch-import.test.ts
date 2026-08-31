@@ -458,33 +458,64 @@ describe('Batch Import Tool', () => {
     });
 
     it('should validate JSON format', async () => {
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: 'invalid json',
-      });
-
-      expect(result.content[0].text).toContain('Invalid JSON data');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: 'invalid json',
+        }),
+      ).rejects.toThrow('Invalid JSON data');
     });
 
     it('should validate required fields', async () => {
-      const result = await toolHandler({
-        projectId: 1,
-        format: 'json',
-        data: JSON.stringify({ description: 'No title' }),
-      });
-
-      expect(result.content[0].text).toContain('Invalid JSON data');
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ description: 'No title' }),
+        }),
+      ).rejects.toThrow('Invalid JSON data');
     });
 
     it('should validate hex color format', async () => {
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify({ title: 'Task', hexColor: 'invalid' }),
+        }),
+      ).rejects.toThrow('Invalid JSON data');
+    });
+
+    it('should honor skipErrors for JSON imports the same way CSV already does (MED-14 from #294)', async () => {
+      const tasksData = [{ title: 'Valid Task' }, { invalidField: 'oops' }];
+
+      mockClient.tasks.createTask.mockResolvedValue({ id: 999, title: 'Valid Task' });
+
       const result = await toolHandler({
         projectId: 1,
         format: 'json',
-        data: JSON.stringify({ title: 'Task', hexColor: 'invalid' }),
+        data: JSON.stringify(tasksData),
+        skipErrors: true,
       });
 
-      expect(result.content[0].text).toContain('Invalid JSON data');
+      // The invalid task is dropped at parse time (never even reaches task
+      // creation), and the valid one still imports.
+      expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(1);
+      expect(result.content[0].text).toContain('Successfully imported: 1 tasks');
+    });
+
+    it('should still throw for an invalid JSON task when skipErrors is unset', async () => {
+      const tasksData = [{ title: 'Valid Task' }, { invalidField: 'oops' }];
+
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify(tasksData),
+        }),
+      ).rejects.toThrow('Invalid JSON data');
+      expect(mockClient.tasks.createTask).not.toHaveBeenCalled();
     });
   });
 

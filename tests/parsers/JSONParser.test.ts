@@ -269,6 +269,40 @@ describe('JSONParser', () => {
     });
   });
 
+  describe('skipErrors (MED-14 from #294)', () => {
+    it('should drop an invalid task and keep the valid ones when skipErrors is true', () => {
+      const json = '[{"title": "Valid Task"}, {"invalid": "task"}, {"title": "Also Valid"}]';
+
+      const result = parseJSONInput(json, true);
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toEqual({ title: 'Valid Task' });
+      expect(result[1]).toEqual({ title: 'Also Valid' });
+    });
+
+    it('should still throw for an invalid task when skipErrors is false (the default)', () => {
+      const json = '[{"title": "Valid Task"}, {"invalid": "task"}]';
+
+      expect(() => parseJSONInput(json)).toThrow(MCPError);
+      expect(() => parseJSONInput(json, false)).toThrow(MCPError);
+    });
+
+    it('should still throw on malformed JSON syntax even when skipErrors is true — there is no per-task boundary to skip', () => {
+      const invalidJson = '{"title": "Task",}'; // trailing comma
+
+      expect(() => parseJSONInput(invalidJson, true)).toThrow(MCPError);
+      expect(() => parseJSONInput(invalidJson, true)).toThrow('Invalid JSON data');
+    });
+
+    it('should return an empty array if every task in the batch is invalid and skipErrors is true', () => {
+      const json = '[{"invalid": "a"}, {"invalid": "b"}]';
+
+      const result = parseJSONInput(json, true);
+
+      expect(result).toHaveLength(0);
+    });
+  });
+
   describe('Error handling', () => {
     it('should throw MCPError for JSON syntax errors', () => {
       const json = '{"title": "Task"'; // missing closing brace
