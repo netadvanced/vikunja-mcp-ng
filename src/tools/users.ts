@@ -133,6 +133,16 @@ function transformUser(rawUser: unknown): User {
     ...(settings.overdue_tasks_reminders_time
       ? { overdue_tasks_reminders_time: safeString(settings.overdue_tasks_reminders_time) }
       : {}),
+    // `!== undefined`, not truthiness: `false` and `0` are real values here.
+    ...(settings.discoverable_by_email !== undefined
+      ? { discoverable_by_email: Boolean(settings.discoverable_by_email) }
+      : {}),
+    ...(settings.discoverable_by_name !== undefined
+      ? { discoverable_by_name: Boolean(settings.discoverable_by_name) }
+      : {}),
+    ...(settings.default_project_id !== undefined
+      ? { default_project_id: Number(settings.default_project_id) }
+      : {}),
   };
 
   return userResult;
@@ -147,7 +157,7 @@ export function registerUsersTool(
     'vikunja_users',
     withReadOnlyNote(
       'vikunja_users',
-      "Manage user profiles, search users, and update user settings. Use the 'timezones' subcommand to fetch this Vikunja instance's list of valid IANA time zone names before calling 'update-settings' with a timezone value — the server rejects unrecognized zone names, and the valid set is instance-dependent (depends on the OS Vikunja runs on). 'get-avatar'/'set-avatar' read and write the avatar *provider* setting (JSON — one of gravatar/upload/initials/marble/ldap/openid/default), not image bytes; 'upload-avatar' uploads an actual image file and only takes effect once the provider is 'upload' (which it also sets as a side effect).",
+      "Manage user profiles, search users, and update user settings. Use the 'timezones' subcommand to fetch this Vikunja instance's list of valid IANA time zone names before calling 'update-settings' with a timezone value — the server rejects unrecognized zone names, and the valid set is instance-dependent (depends on the OS Vikunja runs on). 'update-settings' only needs the fields you want to change: POST /user/settings/general is a full-model replace, so this tool re-reads the current settings and merges your changes onto them rather than sending a partial body (which would reset every omitted setting). 'get-avatar'/'set-avatar' read and write the avatar *provider* setting (JSON — one of gravatar/upload/initials/marble/ldap/openid/default), not image bytes; 'upload-avatar' uploads an actual image file and only takes effect once the provider is 'upload' (which it also sets as a side effect).",
     ),
     {
       // Operation type
@@ -178,6 +188,27 @@ export function registerUsersTool(
       emailRemindersEnabled: z.boolean().optional(),
       overdueTasksRemindersEnabled: z.boolean().optional(),
       overdueTasksRemindersTime: z.string().optional(),
+
+      // Discoverability + default project. Documented write fields on
+      // models.UserGeneralSettings (the body of POST /user/settings/general)
+      // that this tool used to leave undeclared, so an agent asking to change
+      // them got silence instead of a change. See the update-settings case.
+      defaultProjectId: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          'Project used for tasks created without an explicit project. 0 clears the default.',
+        ),
+      discoverableByEmail: z
+        .boolean()
+        .optional()
+        .describe('Whether other users can find this account by its exact email address.'),
+      discoverableByName: z
+        .boolean()
+        .optional()
+        .describe('Whether other users can find this account by (part of) its name.'),
 
       // Avatar settings (get-avatar/set-avatar/upload-avatar)
       avatarProvider: z.enum(AVATAR_PROVIDERS).optional(),
@@ -336,56 +367,79 @@ export function registerUsersTool(
           }
 
           case 'update-settings': {
-            if (
-              !args.name &&
-              !args.language &&
-              !args.timezone &&
-              args.weekStart === undefined &&
-              !args.frontendSettings &&
-              args.emailRemindersEnabled === undefined &&
-              args.overdueTasksRemindersEnabled === undefined &&
-              args.overdueTasksRemindersTime === undefined
-            ) {
+            // Every declared setting, paired with the wire key it maps to.
+            // Order defines the order of `affectedFields` in the response.
+            const deltas: [string, keyof ExtendedUserSettings, unknown][] = [
+              ['name', 'name', args.name],
+              ['language', 'language', args.language],
+              ['timezone', 'timezone', args.timezone],
+              ['weekStart', 'week_start', args.weekStart],
+              ['frontendSettings', 'frontend_settings', args.frontendSettings],
+              ['emailRemindersEnabled', 'email_reminders_enabled', args.emailRemindersEnabled],
+              [
+                'overdueTasksRemindersEnabled',
+                'overdue_tasks_reminders_enabled',
+                args.overdueTasksRemindersEnabled,
+              ],
+              [
+                'overdueTasksRemindersTime',
+                'overdue_tasks_reminders_time',
+                args.overdueTasksRemindersTime,
+              ],
+              ['defaultProjectId', 'default_project_id', args.defaultProjectId],
+              ['discoverableByEmail', 'discoverable_by_email', args.discoverableByEmail],
+              ['discoverableByName', 'discoverable_by_name', args.discoverableByName],
+            ];
+
+            // `!== undefined`, never truthiness: `discoverableByEmail: false`,
+            // `weekStart: 0`, `defaultProjectId: 0` and `name: ''` are all
+            // meaningful values a naive `if (value)` guard would drop.
+            const supplied = deltas.filter(([, , value]) => value !== undefined);
+
+            if (supplied.length === 0) {
               throw new MCPError(
                 ErrorCode.VALIDATION_ERROR,
                 'At least one setting field is required',
               );
             }
 
-            const settings: Partial<ExtendedUserSettings> = {};
+            // POST /user/settings/general is a FULL-MODEL REPLACE (see
+            // docs/ENDPOINT-PLAYBOOK.md §4). The server binds the body into a
+            // fresh v1.UserSettings and then assigns EVERY field of it onto
+            // the user unconditionally - `user.Name = us.Name`,
+            // `user.DiscoverableByEmail = us.DiscoverableByEmail`,
+            // `user.DefaultProjectID = us.DefaultProjectID`, ... - so any key
+            // missing from the body is written back as its Go zero value.
+            // Sending a partial body therefore wipes the user's name,
+            // language, timezone, week start, default project and both
+            // discoverability flags. (It also 400s outright when
+            // `overdue_tasks_reminders_time` is omitted: that field is tagged
+            // `valid:"time,required"`.)
+            //
+            // Same fetch -> merge -> POST shape as buildProjectUpdatePayload
+            // (src/tools/projects/crud.ts) and buildTeamUpdatePayload
+            // (src/tools/teams.ts). GET /user returns exactly the
+            // models.UserGeneralSettings object this endpoint accepts, nested
+            // under `settings`, so the round trip is field-for-field exact.
+            const currentUser = await vikunjaRestRequest<VikunjaUserWithSettings>(
+              authManager,
+              'GET',
+              '/user',
+            );
+            const currentSettings: Record<string, unknown> =
+              isUserObject(currentUser) && isUserObject(currentUser.settings)
+                ? { ...currentUser.settings }
+                : {};
+            // Read-only on this endpoint: the server populates it from the
+            // OpenID provider and never reads it back off the request body.
+            delete currentSettings.extra_settings_links;
+
+            const settings = currentSettings as Partial<ExtendedUserSettings>;
             const affectedFields: string[] = [];
 
-            if (args.name !== undefined) {
-              settings.name = args.name;
-              affectedFields.push('name');
-            }
-            if (args.language !== undefined) {
-              settings.language = args.language;
-              affectedFields.push('language');
-            }
-            if (args.timezone !== undefined) {
-              settings.timezone = args.timezone;
-              affectedFields.push('timezone');
-            }
-            if (args.weekStart !== undefined) {
-              settings.week_start = args.weekStart;
-              affectedFields.push('weekStart');
-            }
-            if (args.frontendSettings !== undefined) {
-              settings.frontend_settings = args.frontendSettings;
-              affectedFields.push('frontendSettings');
-            }
-            if (args.emailRemindersEnabled !== undefined) {
-              settings.email_reminders_enabled = args.emailRemindersEnabled;
-              affectedFields.push('emailRemindersEnabled');
-            }
-            if (args.overdueTasksRemindersEnabled !== undefined) {
-              settings.overdue_tasks_reminders_enabled = args.overdueTasksRemindersEnabled;
-              affectedFields.push('overdueTasksRemindersEnabled');
-            }
-            if (args.overdueTasksRemindersTime !== undefined) {
-              settings.overdue_tasks_reminders_time = args.overdueTasksRemindersTime;
-              affectedFields.push('overdueTasksRemindersTime');
+            for (const [argName, wireKey, value] of supplied) {
+              (settings as Record<string, unknown>)[wireKey] = value;
+              affectedFields.push(argName);
             }
 
             await vikunjaRestRequest<VikunjaMessage>(
