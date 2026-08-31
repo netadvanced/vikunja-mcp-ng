@@ -2,48 +2,48 @@
 
 This document tracks issues discovered with the Vikunja API that should be reported to the maintainer.
 
-**How to read this file.** Item numbers are **stable anchors** — source comments
+**How to read this file.** Item numbers are **stable anchors**: source comments
 and tests cite them by number (`VIKUNJA_API_ISSUES.md #2`, `#7`, `#8`), so
 numbers are never reused or reshuffled; resolved items keep their number and get
 a status line. Each item carries a **Status** and the Vikunja version the claim
 was last checked against. The supported floor is **Vikunja 2.4.0**, which is
-also the aligned/tested default (`docker/e2e/docker-compose.yml`) — the floor
+also the aligned/tested default (`docker/e2e/docker-compose.yml`). The floor
 rose from 2.3.0 on 2026-08-31, so an item verified only against 2.3.0 now
 describes a version below the floor, and anything only ever verified on 0.22.x
 is doubly so. Both should be re-checked before being relied on. Note that
 "verified against go-vikunja source, pinned v2.3.0" lines below record *where a
 handler was read*, not a compatibility claim; handler source rarely moves, so
 those stay as provenance. Vikunja **2.5.0** and **2.6.0** have since been released upstream
-(2.6.0 on 2026-08-31, primarily a security release — 18 fixes), but neither
-is the floor nor the tested default here — nothing in `src/` or this file
+(2.6.0 on 2026-08-31, primarily a security release with 18 fixes), but neither
+is the floor nor the tested default here. Nothing in `src/` or this file
 has been verified against either, so treat any 2.5- or 2.6-specific behavior
 as unknown until it gets the same live-verification treatment 2.4.0 has had.
 
 | # | Issue | Status |
 |---|---|---|
 | 1 | SQL-like filter syntax "unsupported" | ✅ Resolved (wrong param name) |
-| 2 | User endpoints reject `tk_*` API tokens | ⚠️ Open upstream — JWT workaround shipped |
+| 2 | User endpoints reject `tk_*` API tokens | ⚠️ Open upstream, JWT workaround shipped |
 | 3 | Team API surface (client-library gap) | ✅ Resolved via direct REST |
-| 4 | Bulk operations | ✅ Mostly resolved — native `POST /tasks/bulk` exists and is used |
+| 4 | Bulk operations | ✅ Mostly resolved, native `POST /tasks/bulk` exists and is used |
 | 5 | Inconsistent error responses | ⚠️ Open upstream (cosmetic) |
-| 6 | "No webhook support" | ✅ Obsolete — Vikunja has webhooks; we implement them |
+| 6 | "No webhook support" | ✅ Obsolete: Vikunja has webhooks; we implement them |
 | 7 | Task reminder field drift | ✅ Resolved (was client-library drift, not the API) |
-| 8 | `/webhooks/events` can 401 | ⚠️ Open upstream — fallback shipped |
+| 8 | `/webhooks/events` can 401 | ⚠️ Open upstream, fallback shipped |
 | 9 | snake_case field naming | ℹ️ Clarification, not a bug |
 | 10 | `filter` param ignored | ❓ Unverified on supported versions (only ever seen on 0.22.1) |
-| 11 | Bucket `position: 0` indistinguishable from omitted | ⚠️ Open upstream — workaround shipped |
+| 11 | Bucket `position: 0` indistinguishable from omitted | ⚠️ Open upstream, workaround shipped |
 | 12 | Project archive/unarchive validation | ✅ Resolved (endpoint is full-model-replace) |
 | 13 | `POST /user/settings/general` forced full-replace | ✅ Resolved (fetch-merge workaround shipped) |
-| 14 | `Webhook.Update` only ever writes `events` | ℹ️ By design upstream — client now rejects the no-op fields |
+| 14 | `Webhook.Update` only ever writes `events` | ℹ️ By design upstream, client now rejects the no-op fields |
 | 15 | Project view update writes a `Cols(...)` allowlist, not a true full replace | ✅ Resolved (fetch-merge workaround shipped) |
 | 16 | Project `is_favorite` reset by omission (separate mechanism from #3a) | ✅ Resolved (fetch-merge workaround shipped) |
 | 17 | `labels` filter matches ids, not titles | ✅ Resolved (title-to-id resolution shipped) |
-| 18 | `per_page` silently clamped to `service.maxitemsperpage` (default 50) | ℹ️ By design upstream — client now paginates instead of over-requesting |
-| 19 | Date-only field values 400 on create, not silently dropped | ℹ️ Clarification — corrects a stale in-repo comment |
+| 18 | `per_page` silently clamped to `service.maxitemsperpage` (default 50) | ℹ️ By design upstream, client now paginates instead of over-requesting |
+| 19 | Date-only field values 400 on create, not silently dropped | ℹ️ Clarification, corrects a stale in-repo comment |
 
 ## 1. SQL-Like Filter Syntax Not Supported
 
-**Status:** ✅ Resolved (2025-05-26) — never an API bug. The request used the
+**Status:** ✅ Resolved (2025-05-26); never an API bug. The request used the
 wrong parameter name: the API expects `filter`, not `filter_by`. Complex
 filters with parentheses and boolean operators work correctly with the right
 parameter.
@@ -63,7 +63,7 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all?filter=(priority
 ## 2. User Endpoints Reject API Tokens
 
 **Status:** ⚠️ Open upstream; JWT workaround shipped (2025-05-28) and still the
-supported answer. This is the most-cited item in the code base — `src/tools/auth.ts`,
+supported answer. This is the most-cited item in the code base: `src/tools/auth.ts`,
 `src/tools/tokens.ts`, `src/tools/caldav-tokens.ts` and `src/tools/user-deletion.ts`
 all gate or explain themselves by it, and `vikunja_auth connect` verifies API-token
 sessions against `GET /projects?per_page=1` rather than `GET /user` precisely because
@@ -133,7 +133,7 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/projects' \
 3. **Tools that only register under a JWT session:** `vikunja_users`,
    `vikunja_export_project`, `vikunja_request_user_export`,
    `vikunja_download_user_export`, `vikunja_user_export_status`,
-   `vikunja_caldav_tokens`, `vikunja_admin`, `vikunja_user_deletion` — several
+   `vikunja_caldav_tokens`, `vikunja_admin`, `vikunja_user_deletion`, several
    of which are additionally deny-by-default module keys. See
    [docs/CONFIGURATION.md](CONFIGURATION.md) for the gating rules and
    `src/tools/index.ts` for the registration logic.
@@ -151,18 +151,18 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/projects' \
 
 **Status:** ✅ Resolved (checked against the vendored `v2.4.0` spec). The
 original gap was in the `node-vikunja` client library, which has since been
-removed entirely — **all** `vikunja_teams` subcommands now go through
+removed entirely. **All** `vikunja_teams` subcommands now go through
 `vikunjaRestRequest` (`src/utils/vikunja-rest.ts`). The endpoint contract notes
 below are kept because they remain non-obvious and are easy to get wrong:
 
-- `GET /teams/{id}` — get a team by id.
-- `POST /teams/{id}` — update a team (**not** `PUT`; `PUT /teams/{id}` is not a defined route, only `PUT /teams` for create).
-- Team members are **embedded** in the `GET /teams/{id}` response as `.members` — there is no standalone `GET /teams/{id}/members` endpoint.
-- `PUT /teams/{id}/members` — add a member. The body's `username` field must be the member's real username string (the API deliberately rejects numeric user ids here, to prevent automated/enumerated user-id entry).
-- `DELETE /teams/{id}/members/{username}` — remove a member; the path segment is the username, not a numeric id.
-- `POST /teams/{id}/members/{userID}/admin` — **toggles** the member's admin flag. It takes no request body and cannot set an explicit true/false value; callers that need to know the resulting state should re-check via `members list`. **Spec/handler mismatch, settled by reading the handler (2026-08-24):** the vendored spec's `@Param userID path int true "User ID"` annotation is simply wrong. In go-vikunja's source (v2.3.0): the route is registered as `a.POST("/teams/:team/members/:user/admin", teamMemberHandler.UpdateWeb)` (`pkg/routes/routes.go`), and `TeamMember.Username` carries the struct tag `` `param:"user"` `` (`pkg/models/teams.go:78`) — echo's binder wires the `:user` path segment straight into the *username* field, never a numeric id. `TeamMember.Update` (`pkg/models/team_members.go:151`) then resolves it with `user2.GetUserByUsername(s, tm.Username)`. `src/tools/teams.ts` sending the username there was correct all along; no live call was needed to settle it, and the previous "unresolved, only a live call can settle this" framing here undersold how conclusive the source is.
+- `GET /teams/{id}`: get a team by id.
+- `POST /teams/{id}`: update a team (**not** `PUT`; `PUT /teams/{id}` is not a defined route, only `PUT /teams` for create).
+- Team members are **embedded** in the `GET /teams/{id}` response as `.members`; there is no standalone `GET /teams/{id}/members` endpoint.
+- `PUT /teams/{id}/members`: add a member. The body's `username` field must be the member's real username string (the API deliberately rejects numeric user ids here, to prevent automated/enumerated user-id entry).
+- `DELETE /teams/{id}/members/{username}`: remove a member; the path segment is the username, not a numeric id.
+- `POST /teams/{id}/members/{userID}/admin`: **toggles** the member's admin flag. It takes no request body and cannot set an explicit true/false value; callers that need to know the resulting state should re-check via `members list`. **Spec/handler mismatch, settled by reading the handler (2026-08-24):** the vendored spec's `@Param userID path int true "User ID"` annotation is simply wrong. In go-vikunja's source (v2.3.0): the route is registered as `a.POST("/teams/:team/members/:user/admin", teamMemberHandler.UpdateWeb)` (`pkg/routes/routes.go`), and `TeamMember.Username` carries the struct tag `` `param:"user"` `` (`pkg/models/teams.go:78`); echo's binder wires the `:user` path segment straight into the *username* field, never a numeric id. `TeamMember.Update` (`pkg/models/team_members.go:151`) then resolves it with `user2.GetUserByUsername(s, tm.Username)`. `src/tools/teams.ts` sending the username there was correct all along; no live call was needed to settle it, and the previous "unresolved, only a live call can settle this" framing here undersold how conclusive the source is.
 
-**Impact:** None once routed correctly. **Generalizable lesson:** when the vendored OpenAPI spec and the Go handler disagree, **the handler wins** — the spec is documentation, not a contract Vikunja's own router obeys. Before trusting a `@Param` annotation (especially one typed `int` for what could plausibly be a resolve-by-name path), check the route registration and the target struct's binding tags in `~/Projects/vikunja` (read-only, pinned at v2.3.0) rather than guessing from spec text, and never from a client library's types.
+**Impact:** None once routed correctly. **Generalizable lesson:** when the vendored OpenAPI spec and the Go handler disagree, **the handler wins**. The spec is documentation, not a contract Vikunja's own router obeys. Before trusting a `@Param` annotation (especially one typed `int` for what could plausibly be a resolve-by-name path), check the route registration and the target struct's binding tags in `~/Projects/vikunja` (read-only, pinned at v2.3.0) rather than guessing from spec text, and never from a client library's types.
 
 ### 3a. `POST /teams/{id}` full-replace hazards (worked around)
 
@@ -176,22 +176,22 @@ read-then-merge in `vikunja_teams update`. Verified in go-vikunja source
 - `pkg/models/teams.go:388` writes with
   `s.ID(t.ID).UseBool("is_public").Update(t)`. xorm skips zero-valued non-bool
   columns (so an omitted `description` is _not_ cleared), but `UseBool` forces
-  `is_public` to be written **even when false** — therefore **any team update
+  `is_public` to be written **even when false**, therefore **any team update
   that omits `is_public` resets a public team to private.**
 - `Team.Name` (`pkg/models/teams.go:37`) carries
   `valid:"required,runelength(1|250)"`, and `Team.Update`
   (`pkg/models/teams.go:378`) returns `ErrTeamNameCannotBeEmpty{}` when it is
-  empty — so the request is rejected with HTTP 400 "Invalid model" when `name`
+  empty, so the request is rejected with HTTP 400 "Invalid model" when `name`
   is omitted.
 
-**Generalizable lesson — `UseBool` on a full-replace endpoint is the tell.**
+**Generalizable lesson: `UseBool` on a full-replace endpoint is the tell.**
 xorm's struct-based `Update` normally *skips* zero-valued columns, which is
-exactly why an omitted `description` was always harmless here — the same
+exactly why an omitted `description` was always harmless here; the same
 zero-skip silently protects every other non-bool field on this endpoint
 today. `UseBool(colName)` (and its cousins `Cols()`/`AllCols()`) is the
 explicit escape hatch that forces one named column to be written regardless
-of its zero value. That combination — a handler with no server-side merge,
-plus a `UseBool`/`Cols` override on a specific column — is what actually
+of its zero value. That combination (a handler with no server-side merge,
+plus a `UseBool`/`Cols` override on a specific column) is what actually
 causes the hazard, and it hides in plain sight for non-bool fields for years
 because they degrade gracefully (silently ignored) while the forced column
 degrades catastrophically (silently wiped). Before wiring up *any* new
@@ -202,22 +202,22 @@ not optional.
 
 **Impact (now):** none for callers. `vikunja_teams update` `GET`s the team,
 spreads the whole returned model, overlays only the fields the caller actually
-supplied, and `POST`s the merged model back — so a description-only update
+supplied, and `POST`s the merged model back, so a description-only update
 preserves `name`, `is_public`, and every other server-returned field, and no
 longer 400s. Callers pass only what they want to change. An explicit
 `isPublic: false` still sets it to false: omission and an explicit `false` are
 distinguished, never conflated. **Cost:** one extra `GET /teams/{id}` per
-update, and a team update is consequently non-atomic — a concurrent edit
+update, and a team update is consequently non-atomic: a concurrent edit
 between the read and the write is overwritten by the merged snapshot (the same
 trade-off `buildProjectUpdatePayload` has always carried for projects).
 
-**Implementation:** `buildTeamUpdatePayload` (`src/tools/teams.ts`), the teams
-sibling of `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`) — the
+**Implementation:** `buildTeamUpdatePayload` (`src/tools/teams.ts`) is the teams
+sibling of `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`), the
 fetch → merge → POST pattern `docs/ENDPOINT-PLAYBOOK.md` §4 prescribes. The
 spread is deliberate over a hand-maintained allow-list, which would silently
 drop fields a newer server adds.
 
-**Not affected — checked, same-shaped but genuinely safe:** the team-membership
+**Not affected: checked, same-shaped but genuinely safe.** The team-membership
 writes. `PUT /teams/{id}/members` is a *create* (`TeamMember.Create`,
 `pkg/models/team_members.go:41`), `DELETE /teams/{id}/members/{username}` sends
 no body, and `POST /teams/{id}/members/{username}/admin`
@@ -230,20 +230,20 @@ row server-side and writes with `Cols("admin")`, so nothing is replaced.
 original "the API has no bulk operations at all" claim was incorrect. Vikunja
 exposes three native bulk endpoints:
 
-- `POST /tasks/bulk` (`models.BulkTask` — `{task_ids, fields, values}`) — used
+- `POST /tasks/bulk` (`models.BulkTask`: `{task_ids, fields, values}`), used
   by `vikunja_tasks bulk-update` for scalar fields since PR #89, one request
   for the whole batch.
-- `POST /tasks/{taskID}/labels/bulk` — used by task create/update via
+- `POST /tasks/{taskID}/labels/bulk`, used by task create/update via
   `setTaskLabels` (`src/utils/label-bulk.ts`).
-- `POST /tasks/{taskID}/assignees/bulk` — **replace** semantics; used only to
+- `POST /tasks/{taskID}/assignees/bulk`: **replace** semantics; used only to
   restore a complete assignee snapshot after a bulk update, never as a general
   assign flow (see `docs/ENDPOINT-TAIL-RETRIAGE.md`).
 
 **Still genuinely missing:** bulk **create** and bulk **delete**. Those remain
 client-side loops issuing one API call per task
 (`src/tools/tasks/bulk-operations-simplified.ts`), and creates are run
-sequentially on purpose to avoid SQLite "database is locked" 500s — observed at
-the old 2.3.0 floor, retained past the 2.4.0 floor raise pending durable
+sequentially on purpose to avoid SQLite "database is locked" 500s. This was observed at
+the old 2.3.0 floor, and is retained past the 2.4.0 floor raise pending durable
 multi-release evidence that upstream's `concurrent_writes` fix holds.
 
 **Impact:** Bulk create/delete of large batches is still O(n) round trips, so
@@ -252,7 +252,7 @@ rate-limit and batch-size guidance still applies (`MAX_BULK_OPERATION_TASKS =
 
 ## 5. Inconsistent Error Responses
 
-**Status:** ⚠️ Open upstream, but fully absorbed on our side — `vikunjaRestRequest`
+**Status:** ⚠️ Open upstream, but fully absorbed on our side: `vikunjaRestRequest`
 (`src/utils/vikunja-rest.ts`) normalizes whatever the server returns into an
 `MCPError` carrying `details.statusCode`, so no call site parses raw error
 bodies.
@@ -268,21 +268,21 @@ bodies.
 
 ## 6. Missing Webhook/Event Support
 
-**Status:** ✅ Obsolete — the premise is false on supported versions. Vikunja
+**Status:** ✅ Obsolete: the premise is false on supported versions. Vikunja
 ships a full webhook surface, and this server implements it: project webhooks
 (`GET`/`PUT /projects/{id}/webhooks`, `POST`/`DELETE
 /projects/{id}/webhooks/{webhookID}`), user webhooks (`/user/settings/webhooks*`,
-shipped as G4) and the event catalogue (`GET /webhooks/events`) — all exposed
+shipped as G4) and the event catalogue (`GET /webhooks/events`), all exposed
 through `vikunja_webhooks` (`src/tools/webhooks.ts`).
 
 The item is kept (rather than deleted) because item numbers are stable anchors.
-The remaining real gap is a *push/streaming* channel **into MCP** — webhooks
+The remaining real gap is a *push/streaming* channel **into MCP**. Webhooks
 deliver to an HTTP endpoint, which an stdio MCP server cannot receive, so MCP
 clients still poll. See also #8 for the `/webhooks/events` auth quirk.
 
 ## 7. Task Reminder Field Shape
 
-**Status:** ✅ Resolved — never an API bug. The drift was in the removed
+**Status:** ✅ Resolved; never an API bug. The drift was in the removed
 `node-vikunja` client's types; current code reads/writes the real
 `models.TaskReminder` shape directly (`src/types/vikunja.ts`, covered by
 `tests/tools/tasks-reminders-type-safety.test.ts`). Kept because the *correct*
@@ -291,18 +291,18 @@ without an id" consequence still governs `remove-reminder`'s design.
 
 **Description:** the removed `node-vikunja` client's typed model for task reminders (`{ id, reminder_date }`) did not
 match Vikunja's actual API contract (`models.TaskReminder`, per the OpenAPI spec), which is
-`{ reminder, relative_period?, relative_to? }` — **both** on write and on read. There is no `id`
+`{ reminder, relative_period?, relative_to? }`, **both** on write and on read. There is no `id`
 field on either side.
 
 **Issue Details:**
 - Creating/updating a reminder: the API expects the field name `reminder` (an absolute ISO 8601
   date string), with optional `relative_period` / `relative_to` for relative reminders.
-- Retrieving a task: the API returns reminders in the same shape — `reminder` (never
+- Retrieving a task: the API returns reminders in the same shape: `reminder` (never
   `reminder_date`), and no `id`.
 - The old client library's type definitions described neither correctly: it typed reminders as
   `{ id: number, reminder_date: string }`, which matches nothing the server actually sends or
   accepts. (Verified against the vendored `v2.4.0` spec: `models.TaskReminder` has
-  `reminder`, `relative_period`, `relative_to` — and no `id`.)
+  `reminder`, `relative_period`, `relative_to`, and no `id`.)
 
 **Example (actual API shape, both directions):**
 
@@ -324,14 +324,14 @@ field on either side.
 
 **Impact:** Code written against the old client's types (or against a mistaken assumption that GET
 responses use `reminder_date`/`id`) will silently write zero-value reminders and can never
-successfully identify a reminder to delete — every removal-by-id attempt returns "not found"
+successfully identify a reminder to delete: every removal-by-id attempt returns "not found"
 against a real server.
 
 **Current behaviour:** the MCP server reads and writes the actual `reminder` field in both
 directions (never `reminder_date`), now straight off the spec-generated types rather than casting
 past a drifted library type. Since the API exposes no reminder id, `remove-reminder` identifies the reminder to
 delete by its exact `reminder` date string and/or its zero-based position (`reminderIndex`) in
-the array returned by `list-reminders` — never by an id.
+the array returned by `list-reminders`, never by an id.
 
 ## 8. Webhook Events Endpoint Rejects API Tokens
 
@@ -359,7 +359,7 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all' \
 
 **Workaround:** when `GET /webhooks/events` fails, `vikunja_webhooks` falls back
 to a hardcoded list of known event types rather than erroring
-(`DEFAULT_WEBHOOK_EVENTS`, `src/tools/webhooks.ts` — used for both the project
+(`DEFAULT_WEBHOOK_EVENTS`, `src/tools/webhooks.ts`, used for both the project
 and user webhook scopes, with a 5-minute cache); the 401 is treated as
 terminal and not retried, since retrying only adds latency
 (`src/utils/vikunja-rest.ts`).
@@ -371,7 +371,7 @@ still 401s on this endpoint with a `tk_*` token has not been re-verified live.
 
 ## 9. API Response Field Naming Convention
 
-**Status:** ℹ️ Not a bug — a clarification, still accurate against the vendored
+**Status:** ℹ️ Not a bug; a clarification, still accurate against the vendored
 `v2.4.0` spec.
 
 **Description:** The Vikunja API uses snake_case field naming in responses
@@ -384,8 +384,8 @@ to accept or return the camelCase spelling.
 `percent_done` differs in **scale** as well as spelling: the API stores a
 fraction 0-1 (`0.5` = 50%), while this server's `percentDone` argument is a
 whole percentage 0-100 (integers only). That conversion also happens at the
-boundary — `src/utils/percent-done.ts`, decision 22 in
-[ROADMAP.md](ROADMAP.md) §3 — so the example response below shows the wire
+boundary (`src/utils/percent-done.ts`, decision 22 in
+[ROADMAP.md](ROADMAP.md) §3), so the example response below shows the wire
 value, not what the tool takes or reports.
 
 **Note:** This is not an issue but a clarification for developers who might expect camelCase fields. The API consistently uses snake_case for all task fields.
@@ -413,7 +413,7 @@ value, not what the tool takes or reports.
 **Status:** ❓ **Unverified on any supported version.** This was only ever
 observed on Vikunja **v0.22.1**, which is far below this project's supported
 floor and aligned/tested default (both 2.4.0). Nothing in the current
-code base asserts that server-side filtering is broken — `vikunja_tasks list`
+code base asserts that server-side filtering is broken. `vikunja_tasks list`
 uses `HybridFilteringStrategy`, which *tries the server first* and only falls
 back to client-side evaluation when that call fails, and the e2e suite
 exercises real server-side filter expressions (`scripts/mcp-e2e.ts`, including a
@@ -456,7 +456,7 @@ curl -X GET 'https://your-vikunja-instance.com/api/v1/tasks/all?filter=(done%20%
 - Large task lists cause unnecessary data transfer
 
 **MCP Server Workaround:** the server implements client-side filtering as a
-*fallback*, not as the default path — `HybridFilteringStrategy`
+*fallback*, not as the default path. `HybridFilteringStrategy`
 (`src/utils/filtering/`) attempts server-side filtering first and only falls
 back when that request fails, tagging the response with
 `clientSideFiltering` / `serverSideFilteringAttempted` and an explanatory
@@ -493,33 +493,33 @@ sent position 1 -> stored 1 (honored)
 sent position 2 -> stored 2 (honored)
 ```
 
-Resulting board order: `Col-1`, `Col-2`, `<default buckets>`, `Col-0` — the column meant to be **first** landed dead last.
+Resulting board order: `Col-1`, `Col-2`, `<default buckets>`, `Col-0`. The column meant to be **first** landed dead last.
 
-**Workaround:** Never send a literal `position: 0`. `setupKanban`'s `bucketPositionForIndex` helper pins every bucket position to a **1-based**, 65536-spaced value (`(index + 1) * 65536`) — matching the `id * 65536` lane spacing Vikunja itself uses — so every value this composite sends is guaranteed non-zero and therefore always honored.
+**Workaround:** Never send a literal `position: 0`. `setupKanban`'s `bucketPositionForIndex` helper pins every bucket position to a **1-based**, 65536-spaced value (`(index + 1) * 65536`), matching the `id * 65536` lane spacing Vikunja itself uses, so every value this composite sends is guaranteed non-zero and therefore always honored.
 
-**Impact:** Any code that programmatically sets `Bucket.position` (not just `setup-kanban`) must avoid a literal `0` for the first item in an ordered sequence. This is easy to reintroduce by "simplifying" a 1-based position helper back to a 0-based `index * step` — see the comment on `bucketPositionForIndex` for why that would silently regress this fix.
+**Impact:** Any code that programmatically sets `Bucket.position` (not just `setup-kanban`) must avoid a literal `0` for the first item in an ordered sequence. This is easy to reintroduce by "simplifying" a 1-based position helper back to a 0-based `index * step`; see the comment on `bucketPositionForIndex` for why that would silently regress this fix.
 
 ## 12. Project Archive/Unarchive Validation Error
 
-**Status:** ✅ Resolved — this was not a validation bug but the endpoint's
+**Status:** ✅ Resolved; this was not a validation bug but the endpoint's
 documented full-model-replace semantics, since handled properly.
 *(Numbering note: this item was originally mislabelled "8", colliding with the
 webhook-events item. It is #12 from 2026-08-03 onward.)*
 
 **Original symptom (2025-05-28):** archiving/unarchiving failed with
 "Struct is invalid. Invalid Data" when the request body carried only
-`is_archived`. The original write-up also named the wrong verb — there is no
+`is_archived`. The original write-up also named the wrong verb: there is no
 `PUT /projects/{id}` in the spec at all; the project update endpoint is
 **`POST /projects/{id}`**.
 
-**Actual cause:** `POST /projects/{id}` **replaces the entire project model** —
-any field omitted from the body is cleared server-side, and required fields
+**Actual cause:** `POST /projects/{id}` **replaces the entire project model**.
+Any field omitted from the body is cleared server-side, and required fields
 (notably `title`, `minLength: 1`) must be present. Sending a bare
 `{is_archived: true}` was therefore both invalid and destructive.
 
 **Resolution:** `archiveProject`/`unarchiveProject` (like `updateProject` and
 `moveProject`) fetch the current project and merge the change onto it via
-`buildProjectUpdatePayload` (`src/tools/projects/crud.ts`) before POSTing —
+`buildProjectUpdatePayload` (`src/tools/projects/crud.ts`) before POSTing,
 not just "include the title". See
 [docs/API_NOTES.md](API_NOTES.md) "Project Operations" for the full
 full-model-replace convention, which applies equally to project views and
@@ -529,16 +529,16 @@ Kanban buckets.
 
 **Status:** ✅ Resolved client-side (2026-08-31), verified against go-vikunja
 source (v2.3.0). Same family as #3a's team `UseBool` trap and #16's project
-favorites trap, but its own distinct mechanism — no zero-value skip is
+favorites trap, but its own distinct mechanism: no zero-value skip is
 involved at all here.
 
 **Root cause:** `UpdateGeneralUserSettings`
 (`pkg/routes/api/v1/user_settings.go:175-235`) binds the request body into an
 **empty** `UserSettings{}` struct, then unconditionally copies every field
-onto the loaded user record — `Name`, `EmailRemindersEnabled`,
+onto the loaded user record (`Name`, `EmailRemindersEnabled`,
 `DiscoverableByEmail`, `DiscoverableByName`, `OverdueTasksRemindersEnabled`,
 `DefaultProjectID`, `WeekStart`, `Language`, `Timezone`,
-`OverdueTasksRemindersTime`, `FrontendSettings` — and calls
+`OverdueTasksRemindersTime`, `FrontendSettings`), and calls
 `user2.UpdateUser(s, user, true)`, where the third argument is
 `forceOverride`. There is no server-side merge and no zero-value protection
 of any kind: a partial body silently resets name, language, timezone, week
@@ -546,32 +546,32 @@ start, default project, both discoverability flags and reminder preferences
 to their zero values on every call. `UserSettings.OverdueTasksRemindersTime`
 additionally carries `valid:"time,required"`
 (`pkg/routes/api/v1/user_settings.go:52`), so omitting it 400s the request
-outright — a caller can't even avoid the wipe by leaving that one field out.
+outright; a caller can't even avoid the wipe by leaving that one field out.
 
 **Impact (before the fix):** any `vikunja_users update-settings` call that
 didn't resend the caller's entire settings block silently wiped the rest.
 
 **Resolution:** `vikunja_users update-settings` (`src/tools/users.ts`)
 fetches the current settings first and merges only the caller-supplied
-fields onto them before POSTing — the same fetch-merge-POST shape as
-projects, teams, and views — and always carries
+fields onto them before POSTing, the same fetch-merge-POST shape as
+projects, teams, and views, and always carries
 `overdue_tasks_reminders_time` forward from the fetched settings so the
 required-field 400 can never be triggered by omission.
 
 ## 14. `Webhook.Update` Can Only Ever Change `events`
 
-**Status:** ℹ️ By design upstream, not a bug — but easy to assume otherwise
+**Status:** ℹ️ By design upstream, not a bug, but easy to assume otherwise
 from the endpoint's name and its shared shape with the "full-replace"
 endpoints elsewhere in this file. Client-side guard shipped 2026-08-31.
 
 **Description:** `Webhook.Update` (`pkg/models/webhooks.go:261-273`) is
-neither a full-model replace nor a partial merge — it is a hard-coded
+neither a full-model replace nor a partial merge; it is a hard-coded
 single-column write: `s.Where("id = ?", w.ID).Cols("events").Update(w)`. The
 handler's own doc comment states the constraint explicitly: "Change a
 webhook target's events. You cannot change other values of a webhook."
 `targetUrl` and `secret` are fixed permanently at creation; no server-side
-code path will ever persist a change to them via this endpoint, so — unlike
-every other item in this file — a client-side fetch-merge cannot "fix" this,
+code path will ever persist a change to them via this endpoint, so, unlike
+every other item in this file, a client-side fetch-merge cannot "fix" this,
 because the server itself discards those fields on write regardless of what
 is sent.
 
@@ -594,8 +594,8 @@ writes with an explicit
 `Cols("title", "view_kind", "filter", "position", "bucket_configuration_mode",
 "bucket_configuration", "default_bucket_id", "done_bucket_id")` rather than a
 bare `.Update(pv)` that would rely on xorm's zero-value column skip.
-`Cols(...)` is the same forcing mechanism as `UseBool` (see §3a) — it
-overrides the zero-value skip for every column it names — applied here to a
+`Cols(...)` is the same forcing mechanism as `UseBool` (see §3a): it
+overrides the zero-value skip for every column it names, applied here to a
 whole list of columns instead of one boolean. A partial body therefore resets
 a view's `position` to `0` and blanks its `filter` (and any other
 listed-but-omitted field) rather than leaving them untouched.
@@ -605,26 +605,26 @@ e.g. `title` would reset the view's `position` and `filter`.
 
 **Resolution:** `update-view` and the `set-done-bucket` composite
 (`src/tools/projects/views.ts`) fetch the current view first and merge
-requested changes onto it (`buildViewUpdatePayload`) before POSTing —
+requested changes onto it (`buildViewUpdatePayload`) before POSTing,
 functionally the same shape as a true full-replace fix, even though the
 underlying server-side hazard is a `Cols(...)` allowlist rather than a bare
 struct write.
 
-## 16. Project `is_favorite` Reset By Omission — a Second Mechanism, Not `UseBool`
+## 16. Project `is_favorite` Reset By Omission: a Second Mechanism, Not `UseBool`
 
 **Status:** ✅ Resolved client-side (2026-08-31). Same *symptom* as §3a's team
 `is_public` trap (an omitted boolean acts like an explicit `false`) but a
-genuinely different *mechanism* — do not treat this as "another `UseBool`
+genuinely different *mechanism*: do not treat this as "another `UseBool`
 column," it isn't one.
 
 **Root cause:** `Project.IsFavorite` is tagged `xorm:"-"`
-(`pkg/models/project.go:69`) — it is not a persisted column at all, so it
+(`pkg/models/project.go:69`), so it is not a persisted column at all, and
 cannot be affected by `UseBool`/`Cols` in the way #3a and #15 describe.
 Instead, `UpdateProject` (`pkg/models/project.go:1003` onward) reads the
 project's current favorite state via `isFavorite(...)` and then calls
 `addToFavorites`/`removeFromFavorite` as a side effect
 (`pkg/models/project.go:1083-1096`) whenever the incoming
-`project.IsFavorite` differs from the stored state — specifically,
+`project.IsFavorite` differs from the stored state. Specifically,
 `removeFromFavorite` fires whenever the bound value is `false` and the
 project was previously a favorite. Because the update handler binds the
 request body into a fresh struct, an update that simply omits `is_favorite`
@@ -637,7 +637,7 @@ project.
 
 **Resolution:** `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`)
 fetches the current project and carries its `isFavorite` value forward
-unless the caller explicitly supplies a different one — the same
+unless the caller explicitly supplies a different one, the same
 fetch-merge-POST pattern used for #3a, closing both mechanisms with one
 merge despite their different root causes.
 
@@ -650,11 +650,11 @@ verified live against 2.4.0.
 every other filterable field works (a human-readable value), but the
 `labels` filter field actually matches on the label's numeric **id**.
 `filter=labels in 'HU'` (a label title) returns HTTP 400, code 4019:
-`"The task filter value 'HU' for field 'labels' is invalid."` — while
+`"The task filter value 'HU' for field 'labels' is invalid."`, while
 `filter=labels in 100` (a real label id) works correctly.
 
 **Impact (before the fix, issue #227):** any filter written the "obvious"
-way, with a label title, either 400'd server-side or — worse — silently
+way, with a label title, either 400'd server-side or, worse, silently
 matched zero tasks when the client-side fallback ran `Number('HU')`,
 producing `NaN`, which cannot equal any label id
 (`src/tools/tasks/filtering/evaluators.ts:93-101`).
@@ -669,14 +669,14 @@ title now raises a named error rather than silently returning zero results.
 **Correction to a hypothesis in the original issue:** #227 also hypothesized
 that list endpoints return `labels: null` even for tasks that have labels,
 which would have made label filtering impossible to fix client-side at all.
-**This was checked and found wrong, live against 2.4.0** — list endpoints do
+**This was checked and found wrong, live against 2.4.0.** List endpoints do
 populate the `labels` array correctly; `labels: null` means the task
 genuinely has none. Anyone revisiting a "label filter matches nothing"
 report should suspect the id/title mismatch above before the response shape.
 
 ## 18. `per_page` Silently Clamped to `service.maxitemsperpage` (Default 50)
 
-**Status:** ℹ️ By design upstream, not a bug — but the silence (no error, no
+**Status:** ℹ️ By design upstream, not a bug, but the silence (no error, no
 response metadata) makes it easy to build a client that thinks it requested
 everything and got everything. Client-side handling shipped 2026-08-31.
 
@@ -693,11 +693,11 @@ and `GET /projects/{id}/tasks` route through this same handler
 validation) made a single `per_page=1000` call and silently covered only the
 first 50 projects on any instance with more. The equivalent per-project task
 aggregation used by filtering had the same bug for `GET
-/projects/{id}/tasks`, discovered and fixed in the same pass (#244) —
+/projects/{id}/tasks`, discovered and fixed in the same pass (#244), and
 unrelated to that PR's own primary scope (filter correctness), but found
 because both call sites make the same assumption about `per_page`.
 
-**Resolution:** both call sites now paginate — `fetchAllProjects` walks
+**Resolution:** both call sites now paginate. `fetchAllProjects` walks
 `page` in `FETCH_ALL_PROJECTS_PAGE_SIZE`-sized (200) chunks until a short
 page signals the end (bounded by `FETCH_ALL_PROJECTS_MAX_PAGES` = 50 as a
 safety valve), and the task-aggregation path in
@@ -709,27 +709,27 @@ silently reporting a partial list as complete.
 
 ## 19. Date-Only Field Values 400 on Create, Not Silently Dropped
 
-**Status:** ℹ️ Clarification, verified live against 2.4.0 (2026-08-31) —
+**Status:** ℹ️ Clarification, verified live against 2.4.0 (2026-08-31);
 corrects a stale characterization still present in this repo's own code
 comments.
 
 **Description:** a bare date-only value (e.g. `2026-09-01`, without a time
 component) sent for `due_date`/`start_date`/`end_date` on a task-create
 endpoint (verified on `PUT /projects/{id}/tasks`) is rejected with HTTP 400,
-code **2004** (`ErrCodeInvalidModel`, `pkg/models/error.go:202`) — "Invalid
+code **2004** (`ErrCodeInvalidModel`, `pkg/models/error.go:202`): "Invalid
 model provided." It does not silently drop the field while accepting the
 rest of the payload.
 
 **Why this needed stating explicitly:** `normalizeDateForApi`'s own doc
 comment in this repo (`src/tools/tasks/validation.ts:29-32`) still says
-Vikunja "SILENTLY DROPS a bare date-only value" — a characterization that
+Vikunja "SILENTLY DROPS a bare date-only value", a characterization that
 predates this live verification (issues #167/#163 for the create-path fix,
 #225 for the related filter-literal 400 under code 4019) and is now known
 inaccurate for create endpoints specifically. The 400-not-drop behavior is
 what `src/tools/tasks/subtasks.ts:207-213`'s comment correctly describes.
 Both comments live in the same code path family; only the older one is
 stale. `vikunja_tasks update`'s date fields are NOT yet covered by the same
-coercion (tracked separately, see tracking issue #28) — that gap is a real
+coercion (tracked separately, see tracking issue #28); that gap is a real
 open item, distinct from this clarification.
 
 **Resolution:** `normalizeDateForApi` (`src/tools/tasks/validation.ts`)
@@ -740,9 +740,9 @@ they reach the wire, applied on `create-subtask`, `bulk-create-subtasks`,
 ## Recommendations for Vikunja Maintainers
 
 Trimmed to what is **still open** upstream (the filter-syntax, team-API, bulk
-and webhook asks have all been resolved or were mistaken — see #1, #3, #4, #6):
+and webhook asks have all been resolved or were mistaken; see #1, #3, #4, #6):
 
-1. **Standardize authentication** across all endpoints — `tk_*` API tokens
+1. **Standardize authentication** across all endpoints. `tk_*` API tokens
    being rejected by every `/user/*` endpoint (#2) is the single biggest
    friction point for programmatic clients, since there is no way to exchange
    an API token for a JWT.
@@ -752,29 +752,29 @@ and webhook asks have all been resolved or were mistaken — see #1, #3, #4, #6)
 4. **Make `Bucket.position` a pointer / nullable field** (#11) so an explicit
    `0` is distinguishable from an omitted value.
 5. **Correct the spec's `POST /teams/{id}/members/{userID}/admin` path
-   parameter** (#3) — it is confirmed a username, not a numeric id (the
+   parameter** (#3): it is confirmed a username, not a numeric id (the
    handler binds it via `TeamMember.Username`'s `param:"user"` tag).
 
 ---
 
 *These issues were discovered during development of the Vikunja MCP Server.*
 
-*Last reviewed: 2026-08-03 — every item re-checked against current `src/`, the
+*Last reviewed: 2026-08-03; every item re-checked against current `src/`, the
 vendored `v2.4.0` OpenAPI spec and `docs/API-COVERAGE.md`; duplicate item
 numbers resolved, resolved/obsolete items relabelled, and per-item status +
 verified-against version added.*
 
 *Updated 2026-08-31: item #3's admin-toggle path-parameter question settled
 (not just observed) by reading the go-vikunja route registration and
-`TeamMember.Username`'s `param:"user"` binding tag directly — generalized as
-"the handler wins over the spec" — and §3a gained a standalone
+`TeamMember.Username`'s `param:"user"` binding tag directly (generalized as
+"the handler wins over the spec"), and §3a gained a standalone
 `UseBool`-on-full-replace lesson so it reads as a pattern to watch for, not
 just an incident report. Noted that Vikunja 2.5.0 and 2.6.0 exist upstream
 but are unverified here.*
 
 *Updated 2026-08-31 (second pass, same day): added items #13-#19, each
 verified against go-vikunja source (`~/Projects/vikunja`, pinned v2.3.0) with
-file:line citations, not just observed behavior — `POST /user/settings/general`
+file:line citations, not just observed behavior: `POST /user/settings/general`
 forced full-replace (#13), `Webhook.Update`'s hard-coded `events`-only write
 (#14), the project-view update's `Cols(...)` allowlist mechanism corrected
 from an earlier "full replace" characterization (#15), project `is_favorite`
