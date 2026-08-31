@@ -88,6 +88,8 @@ import {
 import { duplicateProject, type DuplicateProjectArgs } from './duplicate';
 
 import { setupKanban, type SetupKanbanArgs, type SetupKanbanTaskInput } from './kanban-setup';
+import { percentDoneSchema } from '../../utils/percent-done';
+import { strictNestedObject } from '../../utils/strict-nested-object';
 
 import {
   removeProjectBackground,
@@ -398,52 +400,72 @@ export function registerProjectsTool(
         ),
       tasks: z
         .array(
-          z.object({
-            title: z.string().min(1),
-            column: z
-              .string()
-              .optional()
-              .describe(
-                'Must match one of the setup-kanban `columns` entries (case-insensitive). A ' +
-                  'mismatch is rejected up front — the whole call fails before anything is ' +
-                  'created — rather than creating an orphaned, unplaced task.',
+          strictNestedObject(
+            {
+              title: z.string().min(1),
+              column: z
+                .string()
+                .optional()
+                .describe(
+                  'Must match one of the setup-kanban `columns` entries (case-insensitive). A ' +
+                    'mismatch is rejected up front — the whole call fails before anything is ' +
+                    'created — rather than creating an orphaned, unplaced task.',
+                ),
+              description: z.string().optional(),
+              priority: z.number().min(0).max(5).optional(),
+              dueDate: z
+                .string()
+                .optional()
+                .describe(
+                  'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
+                    'to midnight UTC.',
+                ),
+              startDate: z
+                .string()
+                .optional()
+                .describe(
+                  'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
+                    'to midnight UTC.',
+                ),
+              endDate: z
+                .string()
+                .optional()
+                .describe(
+                  'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
+                    'to midnight UTC.',
+                ),
+              labels: z
+                .array(z.string())
+                .optional()
+                .describe(
+                  "Label titles — get-or-created by title, same as apply-label's labelTitles.",
+                ),
+              assignees: z.array(z.number()).optional().describe('Numeric assignee user ids.'),
+              // Whole percentage 0-100 (75 = 75%), the SAME contract as
+              // `percentDone` on vikunja_tasks create and
+              // vikunja_task_bulk bulk-create. Converted to Vikunja's 0-1
+              // wire fraction by the shared percentDoneToFraction inside
+              // createOneBulkTask (src/utils/percent-done.ts). Declared here
+              // because it used to be silently stripped — see the
+              // SetupKanbanTaskInput.percentDone doc comment.
+              percentDone: percentDoneSchema.describe(
+                'Completion progress as a whole percentage between 0 and 100 (75 = 75%, ' +
+                  '100 = done). Must be an integer — 0.5 is rejected, not silently read as ' +
+                  'half a percent.',
               ),
-            description: z.string().optional(),
-            priority: z.number().min(0).max(5).optional(),
-            dueDate: z
-              .string()
-              .optional()
-              .describe(
-                'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
-                  'to midnight UTC.',
-              ),
-            startDate: z
-              .string()
-              .optional()
-              .describe(
-                'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
-                  'to midnight UTC.',
-              ),
-            endDate: z
-              .string()
-              .optional()
-              .describe(
-                'RFC3339/ISO 8601 date-time, or a date-only value (e.g. 2026-09-01) normalized ' +
-                  'to midnight UTC.',
-              ),
-            labels: z
-              .array(z.string())
-              .optional()
-              .describe(
-                "Label titles — get-or-created by title, same as apply-label's labelTitles.",
-              ),
-            assignees: z.array(z.number()).optional().describe('Numeric assignee user ids.'),
-          }),
+            },
+            'a setup-kanban task',
+            'Fields that belong to the PROJECT (title, description, parentProjectId) go at ' +
+              'the top level of the setup-kanban call, not inside a task. Anything else ' +
+              '(done, hexColor, repeatAfter, position, …) belongs on vikunja_tasks — create ' +
+              'the task here, then use vikunja_tasks update / set-position for it.',
+          ),
         )
         .optional()
         .describe(
           'Used by setup-kanban: tasks to bulk-create and place into their named column ' +
-            "(each task's `column`, matched against `columns`).",
+            "(each task's `column`, matched against `columns`). Unknown fields are REJECTED, " +
+            'not silently dropped.',
         ),
       // Sharing arguments (link shares + direct user/team sharing)
       projectId: z

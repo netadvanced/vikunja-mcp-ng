@@ -105,6 +105,7 @@ import { validateId } from '../../utils/validation';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
 import { vikunjaRestRequest, resolveKanbanView } from '../../utils/vikunja-rest';
 import { ensureLabelByTitle } from '../../utils/label-ensure';
+import { assertValidPercentDone } from '../../utils/percent-done';
 import { fetchBuckets, createBucketRaw, updateBucketRaw } from './buckets';
 import { moveTaskToBucket } from '../tasks/buckets';
 import { createOneBulkTask, type BulkCreateTaskData } from '../tasks/bulk-operations';
@@ -128,6 +129,17 @@ export interface SetupKanbanTaskInput {
   description?: string;
   /** 0 (unset) through 5 (DO NOW), per Vikunja's priority range. */
   priority?: number;
+  /**
+   * Completion progress as a whole percentage, **0-100** (75 = 75%), the tool
+   * surface's scale — identical to `percentDone` on `vikunja_tasks create` and
+   * `vikunja_task_bulk bulk-create`. Converted to Vikunja's 0-1 wire fraction
+   * by the SHARED `percentDoneToFraction` inside `createOneBulkTask`; this
+   * module never converts it itself. Declared here because it used to be
+   * silently stripped: a battle run asked for a task "75% done", the model
+   * correctly sent `percentDone: 75` in the one setup-kanban call, Zod dropped
+   * the undeclared key, and the composite reported success with the task at 0%.
+   */
+  percentDone?: number;
   /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD' (normalized to midnight UTC). */
   dueDate?: string;
   /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD' (normalized to midnight UTC). */
@@ -365,6 +377,9 @@ async function createAndPlaceTasks(
       if (t.startDate !== undefined) bulkTaskData.startDate = t.startDate;
       if (t.endDate !== undefined) bulkTaskData.endDate = t.endDate;
       if (t.priority !== undefined) bulkTaskData.priority = t.priority;
+      // 0-100 in, 0-1 wire fraction out — the conversion lives in
+      // createOneBulkTask (src/utils/percent-done.ts), never here.
+      if (t.percentDone !== undefined) bulkTaskData.percentDone = t.percentDone;
       if (labelIds !== undefined) bulkTaskData.labels = labelIds;
       if (t.assignees !== undefined) bulkTaskData.assignees = t.assignees;
 
@@ -506,6 +521,11 @@ export async function setupKanban(
     if (!t.title || t.title.trim() === '') {
       throw new MCPError(ErrorCode.VALIDATION_ERROR, `tasks[${i}].title is required`);
     }
+    // Whole percentage 0-100. Checked here as well as in the Zod schema
+    // because `setupKanban` is exported and reachable without it (same
+    // reasoning as validateBulkCreate's guard).
+    if (t.percentDone !== undefined)
+      assertValidPercentDone(t.percentDone, `tasks[${i}].percentDone`);
     if (t.column === undefined) return;
     if (!hasColumns) {
       throw new MCPError(

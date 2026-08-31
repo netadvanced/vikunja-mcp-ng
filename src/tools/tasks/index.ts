@@ -19,6 +19,7 @@ import { createAuthRequiredError, handleFetchError } from '../../utils/error-han
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../../utils/read-only';
 import { percentDoneSchema } from '../../utils/percent-done';
+import { strictNestedObject } from '../../utils/strict-nested-object';
 
 // Import all operation handlers
 import { createTask, getTask, updateTask, deleteTask, createTaskResponse } from './crud';
@@ -246,7 +247,7 @@ export function registerTasksTool(
       percentDone: percentDoneSchema.describe(
         'Completion progress as a whole percentage between 0 and 100 (25 = 25%, 100 = done). ' +
           'Must be an integer — 0.5 is rejected, not silently read as half a percent. ' +
-          'Accepted by create, update and bulk-create.',
+          'Accepted by create, update, bulk-create, create-subtask and bulk-create-subtasks.',
       ),
       labels: z.array(z.number()).optional(),
       assignees: z.array(z.number()).optional(),
@@ -346,22 +347,33 @@ export function registerTasksTool(
       value: z.unknown().optional(),
       tasks: z
         .array(
-          z.object({
-            title: z.string(),
-            description: z.string().optional(),
-            dueDate: z.string().optional(),
-            startDate: z.string().optional(),
-            endDate: z.string().optional(),
-            priority: z.number().min(0).max(5).optional(),
-            // Whole percentage 0-100, same contract as the top-level
-            // percentDone above (converted to Vikunja's 0-1 wire fraction in
-            // createOneBulkTask).
-            percentDone: percentDoneSchema,
-            labels: z.array(z.number()).optional(),
-            assignees: z.array(z.number()).optional(),
-            repeatAfter: z.number().min(0).optional(),
-            repeatMode: z.enum(['day', 'week', 'month', 'year']).optional(),
-          }),
+          // strict: an undeclared key here used to be stripped silently, so a
+          // per-task field an agent invented (or reached for from the flat
+          // create shape) vanished while the call still reported success. See
+          // src/utils/strict-nested-object.ts.
+          strictNestedObject(
+            {
+              title: z.string(),
+              description: z.string().optional(),
+              dueDate: z.string().optional(),
+              startDate: z.string().optional(),
+              endDate: z.string().optional(),
+              priority: z.number().min(0).max(5).optional(),
+              // Whole percentage 0-100, same contract as the top-level
+              // percentDone above (converted to Vikunja's 0-1 wire fraction in
+              // createOneBulkTask).
+              percentDone: percentDoneSchema,
+              labels: z.array(z.number()).optional(),
+              assignees: z.array(z.number()).optional(),
+              repeatAfter: z.number().min(0).optional(),
+              repeatMode: z.enum(['day', 'week', 'month', 'year']).optional(),
+            },
+            'a bulk-create task',
+            'projectId is a TOP-LEVEL argument, not a per-task one. Fields with no bulk-create ' +
+              'equivalent (done, hexColor, position, bucketId) belong on the single-task ' +
+              'subcommands — bulk-create the tasks, then use update / set-bucket / set-position ' +
+              '(or bulk-update / bulk-set-bucket).',
+          ),
         )
         .optional(),
       // Reminder fields
@@ -399,15 +411,27 @@ export function registerTasksTool(
       // create-subtask's own fields.
       subtasks: z
         .array(
-          z.object({
-            title: z.string(),
-            description: z.string().optional(),
-            dueDate: z.string().optional(),
-            priority: z.number().min(0).max(5).optional(),
-            labels: z.array(z.number()).optional(),
-            assignees: z.array(z.number()).optional(),
-            bucketId: z.coerce.number().optional(),
-          }),
+          strictNestedObject(
+            {
+              title: z.string(),
+              description: z.string().optional(),
+              dueDate: z.string().optional(),
+              startDate: z.string().optional(),
+              endDate: z.string().optional(),
+              priority: z.number().min(0).max(5).optional(),
+              // Whole percentage 0-100, same contract as the top-level
+              // percentDone above (converted to Vikunja's 0-1 wire fraction by
+              // the shared percentDoneToFraction in src/utils/percent-done.ts).
+              percentDone: percentDoneSchema,
+              labels: z.array(z.number()).optional(),
+              assignees: z.array(z.number()).optional(),
+              bucketId: z.coerce.number().optional(),
+            },
+            'a bulk-create-subtasks subtask',
+            'parentTaskId is a TOP-LEVEL argument, not a per-subtask one. Anything else ' +
+              '(done, hexColor, repeatAfter, position) belongs on the single-task ' +
+              'subcommands — create the subtasks, then use update / set-position.',
+          ),
         )
         .optional(),
       // Session ID for AORP response tracking
