@@ -497,17 +497,17 @@ describe('BatchProcessor', () => {
       expect(isNaN(result.metrics.concurrencyUtilization)).toBe(false);
     });
 
-    it('should return 0 utilization for empty batch durations', async () => {
-      // This tests the edge case in calculateConcurrencyUtilization
-      const processor = new BatchProcessor();
+    it('should return 0 utilization when nothing was processed', async () => {
+      // Edge case in calculateConcurrencyUtilization: no operations means no
+      // busy time and (usually) no measurable wall clock, so neither term can
+      // produce a NaN or an inflated value. Exercised through the public API
+      // now that the calculation is a module-level function rather than a
+      // private method reached at through `as any` (issue #296 / LOW-17).
+      const processor = new BatchProcessor({ maxConcurrency: 5 });
 
-      // Access private method through prototype for testing
-      const calculateUtilization = (processor as any).calculateConcurrencyUtilization.bind(
-        processor,
-      );
+      const result = await processor.processBatches([], jest.fn());
 
-      const utilization = calculateUtilization([], 5);
-      expect(utilization).toBe(0);
+      expect(result.metrics.concurrencyUtilization).toBe(0);
     });
   });
 

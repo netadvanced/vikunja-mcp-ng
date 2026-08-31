@@ -115,6 +115,14 @@ const processors = {
   // evidence has been gathered beyond the original 2.4.0-alignment runs.
   // Do not drop the serialization on the first arm alone.
   //
+  // Cross-request scope (issue #288): the serialization below is enforced by
+  // a semaphore that lives on the BatchProcessor instance, so it binds every
+  // caller of this singleton for the life of the process — not just the
+  // requests inside one bulk call. That matters under
+  // `VIKUNJA_MCP_TRANSPORT=http`, where one process serves many identities
+  // concurrently and N simultaneous bulk-creates would otherwise produce N
+  // independent create bursts against the same upstream Vikunja.
+  //
   // Escape hatch: `VIKUNJA_BULK_WRITE_CONCURRENCY` (see
   // `getBulkWriteConcurrency` below and docs/CONFIGURATION.md) raises this at
   // the caller's own risk for deployments that are *not* SQLite-backed — the
