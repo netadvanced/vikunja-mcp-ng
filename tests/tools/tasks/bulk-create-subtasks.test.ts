@@ -170,6 +170,95 @@ describe('bulkCreateSubtasks', () => {
       expect(text).toContain('Successfully created and related 2 subtask(s) under parent 1');
     });
 
+    describe('date normalization', () => {
+      it('coerces date-only dueDate/startDate/endDate to RFC3339 before sending the create-task request', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+          .mockResolvedValueOnce(
+            mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }),
+          ) // create-task
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          ) // create-relation
+          .mockResolvedValueOnce(
+            mockResponse({ text: JSON.stringify(parentTaskWithChildren([42])) }),
+          ); // verify
+
+        await bulkCreateSubtasks(
+          {
+            parentTaskId: 1,
+            subtasks: [
+              { title: 'A', dueDate: '2026-09-01', startDate: '2026-09-02', endDate: '2026-09-03' },
+            ],
+          },
+          authManager,
+        );
+
+        const calls = mockFetch.mock.calls as [string, RequestInit?][];
+        expect(JSON.parse(calls[1][1]?.body as string)).toEqual({
+          title: 'A',
+          project_id: 5,
+          due_date: '2026-09-01T00:00:00Z',
+          start_date: '2026-09-02T00:00:00Z',
+          end_date: '2026-09-03T00:00:00Z',
+        });
+      });
+
+      it('leaves a full RFC3339 dueDate timestamp unchanged', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+          .mockResolvedValueOnce(
+            mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }),
+          ) // create-task
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          ) // create-relation
+          .mockResolvedValueOnce(
+            mockResponse({ text: JSON.stringify(parentTaskWithChildren([42])) }),
+          ); // verify
+
+        await bulkCreateSubtasks(
+          { parentTaskId: 1, subtasks: [{ title: 'A', dueDate: '2026-09-01T15:30:00Z' }] },
+          authManager,
+        );
+
+        const calls = mockFetch.mock.calls as [string, RequestInit?][];
+        expect(JSON.parse(calls[1][1]?.body as string)).toEqual({
+          title: 'A',
+          project_id: 5,
+          due_date: '2026-09-01T15:30:00Z',
+        });
+      });
+
+      it('does not add due_date/start_date/end_date fields when not provided', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+          .mockResolvedValueOnce(
+            mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }),
+          ) // create-task
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          ) // create-relation
+          .mockResolvedValueOnce(
+            mockResponse({ text: JSON.stringify(parentTaskWithChildren([42])) }),
+          ); // verify
+
+        await bulkCreateSubtasks({ parentTaskId: 1, subtasks: [{ title: 'A' }] }, authManager);
+
+        const calls = mockFetch.mock.calls as [string, RequestInit?][];
+        const body = JSON.parse(calls[1][1]?.body as string);
+        expect(body).not.toHaveProperty('due_date');
+        expect(body).not.toHaveProperty('start_date');
+        expect(body).not.toHaveProperty('end_date');
+      });
+    });
+
     it('applies labels/assignees and places the subtask into a Kanban bucket, in order', async () => {
       mockFetch
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent

@@ -118,6 +118,106 @@ describe('subtask composites', () => {
       expect(result.content[0].text).toContain('parent task 1');
     });
 
+    describe('date normalization', () => {
+      it('coerces a date-only dueDate to RFC3339 before sending the create-task request', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          ) // create-relation
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify
+
+        await createSubtask(
+          { parentTaskId: 1, title: 'Child', dueDate: '2026-09-01' },
+          authManager,
+        );
+
+        const calls = mockFetch.mock.calls as [string, RequestInit?][];
+        expect(JSON.parse(calls[1][1]?.body as string)).toEqual({
+          title: 'Child',
+          project_id: 5,
+          due_date: '2026-09-01T00:00:00Z',
+        });
+      });
+
+      it('coerces date-only startDate and endDate to RFC3339 before sending the create-task request', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          ) // create-relation
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify
+
+        await createSubtask(
+          {
+            parentTaskId: 1,
+            title: 'Child',
+            startDate: '2026-09-01',
+            endDate: '2026-09-05',
+          },
+          authManager,
+        );
+
+        const calls = mockFetch.mock.calls as [string, RequestInit?][];
+        expect(JSON.parse(calls[1][1]?.body as string)).toEqual({
+          title: 'Child',
+          project_id: 5,
+          start_date: '2026-09-01T00:00:00Z',
+          end_date: '2026-09-05T00:00:00Z',
+        });
+      });
+
+      it('leaves a full RFC3339 dueDate timestamp unchanged', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          ) // create-relation
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify
+
+        await createSubtask(
+          { parentTaskId: 1, title: 'Child', dueDate: '2026-09-01T15:30:00Z' },
+          authManager,
+        );
+
+        const calls = mockFetch.mock.calls as [string, RequestInit?][];
+        expect(JSON.parse(calls[1][1]?.body as string)).toEqual({
+          title: 'Child',
+          project_id: 5,
+          due_date: '2026-09-01T15:30:00Z',
+        });
+      });
+
+      it('does not add due_date/start_date/end_date fields when not provided', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          ) // create-relation
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify
+
+        await createSubtask({ parentTaskId: 1, title: 'Child' }, authManager);
+
+        const calls = mockFetch.mock.calls as [string, RequestInit?][];
+        const body = JSON.parse(calls[1][1]?.body as string);
+        expect(body).not.toHaveProperty('due_date');
+        expect(body).not.toHaveProperty('start_date');
+        expect(body).not.toHaveProperty('end_date');
+      });
+    });
+
     it('attaches labels and assignees via the additive per-item endpoints before relating', async () => {
       mockFetch
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent

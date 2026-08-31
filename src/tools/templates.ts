@@ -27,6 +27,7 @@ import { setTaskLabels } from '../utils/label-bulk';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
+import { normalizeDateForApi } from './tasks/validation';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
@@ -542,7 +543,17 @@ export function registerTemplatesTool(
                     ...(taskTemplate.description && {
                       description: applyVariables(taskTemplate.description, args.variables || {}),
                     }),
-                    ...(taskTemplate.due_date && { due_date: taskTemplate.due_date }),
+                    // Coerce a date-only value (e.g. from a hand-edited
+                    // templates persist file — `create` itself only ever
+                    // captures already-full timestamps off a live task) to
+                    // RFC3339 before sending — verified live against Vikunja
+                    // 2.4.0: this exact endpoint (PUT /projects/{id}/tasks)
+                    // rejects a bare date-only due_date with HTTP 400 code
+                    // 2004 "Invalid model provided" (issues #167/#163). Same
+                    // shared helper `createTask` uses.
+                    ...(taskTemplate.due_date && {
+                      due_date: normalizeDateForApi(taskTemplate.due_date) ?? taskTemplate.due_date,
+                    }),
                     ...(taskTemplate.priority !== undefined && { priority: taskTemplate.priority }),
                     ...(taskTemplate.position !== undefined && { position: taskTemplate.position }),
                   };

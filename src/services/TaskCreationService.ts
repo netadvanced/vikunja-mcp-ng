@@ -9,6 +9,7 @@ import type { EntityResolutionResult } from './EntityResolver';
 import type { AuthManager } from '../auth/AuthManager';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { getTaskViaRest } from '../utils/task-rest-transport';
+import { normalizeDateForApi } from '../tools/tasks/validation';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
@@ -213,9 +214,16 @@ export class TaskCreationService {
     }
 
     // Handle dates
-    if (task.dueDate) taskData.due_date = task.dueDate;
-    if (task.startDate) taskData.start_date = task.startDate;
-    if (task.endDate) taskData.end_date = task.endDate;
+    // Coerce date-only values (e.g. '2026-09-01') to RFC3339 before sending
+    // — verified live against Vikunja 2.4.0: this path's `createBaseTask`
+    // hits the exact same endpoint (PUT /projects/{id}/tasks) as
+    // `TaskCreationService.createTask` (src/tools/tasks/crud/), which
+    // rejects a bare date-only due_date with HTTP 400 code 2004 "Invalid
+    // model provided" (issues #167/#163). Same shared helper that path uses
+    // — never a second hand-rolled coercion.
+    if (task.dueDate) taskData.due_date = normalizeDateForApi(task.dueDate) ?? task.dueDate;
+    if (task.startDate) taskData.start_date = normalizeDateForApi(task.startDate) ?? task.startDate;
+    if (task.endDate) taskData.end_date = normalizeDateForApi(task.endDate) ?? task.endDate;
 
     if (task.hexColor) taskData.hex_color = task.hexColor;
 
