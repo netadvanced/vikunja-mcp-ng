@@ -648,6 +648,69 @@ describe('VaultFileStore', () => {
     });
   });
 
+  describe('memory and disk never diverge on a failed write (issue #277)', () => {
+    it('a failed provision write leaves nothing behind in memory', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_a');
+
+      const writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+        throw new Error('simulated disk full');
+      });
+      try {
+        await expect(
+          store.provision(IDENTITY_B, 'https://vikunja.example.com', 'tk_b'),
+        ).rejects.toThrow('simulated disk full');
+      } finally {
+        writeSpy.mockRestore();
+      }
+
+      // B was never persisted, so it must not be usable in memory either —
+      // otherwise it works until the next restart and then vanishes.
+      expect(store.getCredential(IDENTITY_B)).toBeNull();
+      expect(store.getStatus(IDENTITY_B).provisioned).toBe(false);
+      // A's record is untouched, in memory and on disk.
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_a');
+      expect(loadVaultFile(filePath).has('https://idp.example/realm|user-a')).toBe(true);
+    });
+
+    it('a failed re-provision write keeps the previously stored token live', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_old');
+
+      const writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+        throw new Error('simulated disk full');
+      });
+      try {
+        await expect(
+          store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_new'),
+        ).rejects.toThrow('simulated disk full');
+      } finally {
+        writeSpy.mockRestore();
+      }
+
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_old');
+    });
+
+    it('a failed deprovision write leaves the record live in memory too', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_a');
+
+      const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation(() => {
+        throw new Error('simulated rename failure');
+      });
+      try {
+        await expect(store.deprovision(IDENTITY_A)).rejects.toThrow('simulated rename failure');
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      // The credential is still on disk, so it must still be in memory —
+      // reporting it removed would be a lie that a restart undoes.
+      expect(store.getCredential(IDENTITY_A)?.apiToken).toBe('tk_a');
+      expect(loadVaultFile(filePath).has('https://idp.example/realm|user-a')).toBe(true);
+    });
+  });
+
   describe('incomplete load never becomes the write-back source of truth (issue #266)', () => {
     const validRecord = (ciphertext: string): VaultRecord => ({
       vikunjaUrl: 'https://vikunja.example.com',

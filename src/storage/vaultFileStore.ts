@@ -593,8 +593,15 @@ export class VaultFileStore {
         updatedAt: now,
         lastUsedAt: existing?.lastUsedAt ?? null,
       };
-      map.set(key, record);
-      writeVaultFileAtomic(this.filePath, map);
+      // Write first, swap the in-memory view in only once the write landed
+      // (issue #277). Mutating `map` up front meant a thrown write left the
+      // record live in memory but absent from disk: the caller was told the
+      // credential was stored, it worked until the next restart, and then
+      // silently vanished. A copy keeps the failure atomic in both places.
+      const next = new Map(map);
+      next.set(key, record);
+      writeVaultFileAtomic(this.filePath, next);
+      this.cache = next;
     } finally {
       release();
     }
@@ -611,11 +618,17 @@ export class VaultFileStore {
       this.assertWritable();
       const map = this.load();
       const key = identityKey(identity);
-      const existed = map.delete(key);
-      if (existed) {
-        writeVaultFileAtomic(this.filePath, map);
+      if (!map.has(key)) {
+        return false;
       }
-      return existed;
+      // Mirror of provision's ordering (issue #277): deleting from the live
+      // map before the write meant a thrown write reported the credential as
+      // removed while it stayed on disk and came back on the next restart.
+      const next = new Map(map);
+      next.delete(key);
+      writeVaultFileAtomic(this.filePath, next);
+      this.cache = next;
+      return true;
     } finally {
       release();
     }
