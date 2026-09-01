@@ -53,6 +53,18 @@
  * claimed by any requested column are left untouched (never deleted) —
  * this composite only ever creates, renames, or reuses; it never removes.
  *
+ * Done-bucket protection (issue #273): the view's `done_bucket_id` is NEVER
+ * eligible for that leftover-repurpose fallback. On a fresh project Vikunja
+ * auto-creates To-Do/Doing/Done buckets with Done set as the view's
+ * done-bucket; without this guard, `setup-kanban { columns: ["Todo", "In
+ * Progress", "QA"] }` would rename Done to "QA" purely by position, and
+ * every task later placed there would be silently auto-completed by
+ * Vikunja's own done-bucket behavior — reported as success:true. An
+ * exact-title match against the done-bucket is still honored (deliberate,
+ * name-driven reuse); only the blind positional fallback is excluded. When
+ * the done-bucket survives untouched this way, the response's columns data
+ * carries doneBucketPreserved: true and the summary message says so.
+ *
  * Ordering guarantee: every bucket this composite touches — reused,
  * renamed, or newly created — has its `position` explicitly pinned to a
  * NON-ZERO, 65536-spaced value derived from its index in the requested
@@ -265,7 +277,12 @@ async function resolveColumns(
   projectId: number,
   viewId: number,
   columnNames: string[],
-): Promise<{ results: KanbanColumnOutcome[]; bucketIdByColumn: Map<string, number> }> {
+  doneBucketId: number | undefined,
+): Promise<{
+  results: KanbanColumnOutcome[];
+  bucketIdByColumn: Map<string, number>;
+  doneBucketPreserved: boolean;
+}> {
   const existingBuckets = await fetchBuckets(authManager, projectId, viewId);
   const sortedExisting = [...existingBuckets].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
   const claimedIds = new Set<number>();
@@ -296,9 +313,22 @@ async function resolveColumns(
       assignments[i] = { kind: 'exact', bucket: exactMatch };
     }
   }
+  // The view's done-bucket is NEVER eligible for the leftover-fallback pool
+  // (#273): a bucket only reaches this pass because no requested column's
+  // title matched it exactly, so repurposing it here would silently rename
+  // whichever bucket Vikunja is treating as "done" for THIS view — every
+  // task later moved into it would then be silently auto-completed by
+  // Vikunja's own done-bucket behavior, with setup-kanban reporting
+  // success:true. An exact-title match against the done-bucket (pass one,
+  // above) is still allowed — that is a deliberate, name-driven reuse, not a
+  // blind repurpose. The done-bucket is left completely untouched here: not
+  // renamed, not repositioned; see the 'done-bucket-preserved' note pushed
+  // onto the results below.
   for (let i = 0; i < columnNames.length; i++) {
     if (assignments[i]) continue;
-    const leftover = sortedExisting.find((b) => b.id !== undefined && !claimedIds.has(b.id));
+    const leftover = sortedExisting.find(
+      (b) => b.id !== undefined && !claimedIds.has(b.id) && b.id !== doneBucketId,
+    );
     if (leftover) {
       claimedIds.add(leftover.id as number);
       assignments[i] = { kind: 'leftover', bucket: leftover };
@@ -306,6 +336,15 @@ async function resolveColumns(
       assignments[i] = { kind: 'create' };
     }
   }
+
+  // Informational only (surfaced in the response, never affects behavior
+  // above): true when the done-bucket exists but was never claimed by any
+  // requested column (no exact-title match) — it was deliberately excluded
+  // from the leftover pool rather than repurposed, so it survives untouched.
+  const doneBucketPreserved =
+    doneBucketId !== undefined &&
+    sortedExisting.some((b) => b.id === doneBucketId) &&
+    !claimedIds.has(doneBucketId);
 
   // Perform the actual REST calls in requested column order, regardless of
   // which pass produced each assignment.
@@ -350,7 +389,7 @@ async function resolveColumns(
     }
   }
 
-  return { results, bucketIdByColumn };
+  return { results, bucketIdByColumn, doneBucketPreserved };
 }
 
 /**
@@ -714,14 +753,27 @@ export async function setupKanban(
   let columnResults: KanbanColumnOutcome[] = [];
   let bucketIdByColumn = new Map<string, number>();
   let columnFailures: KanbanColumnOutcome[] = [];
+  let doneBucketPreserved = false;
   if (hasColumns) {
     const kanbanView = await resolveKanbanView(authManager, projectId);
     viewId = kanbanView.id;
 
-    // 3. Resolve every requested column's bucket, IN ORDER.
-    const resolved = await resolveColumns(authManager, projectId, viewId, columnNames);
+    // 3. Resolve every requested column's bucket, IN ORDER. The view's
+    // done_bucket_id is threaded through so resolveColumns never repurposes
+    // it via the leftover-fallback pool (#273) — e.g. a fresh project's
+    // auto-created "Done" bucket must not get silently renamed to whatever
+    // unmatched column comes last, which would then auto-complete every task
+    // later placed there via Vikunja's own done-bucket behavior.
+    const resolved = await resolveColumns(
+      authManager,
+      projectId,
+      viewId,
+      columnNames,
+      kanbanView.done_bucket_id,
+    );
     columnResults = resolved.results;
     bucketIdByColumn = resolved.bucketIdByColumn;
+    doneBucketPreserved = resolved.doneBucketPreserved;
 
     columnFailures = columnResults.filter((c) => c.status === 'failed');
     if (columnResults.length > 0 && columnFailures.length === columnResults.length) {
@@ -766,6 +818,9 @@ export async function setupKanban(
     summaryParts.push(
       `${columnResults.length - columnFailures.length}/${columnResults.length} columns ready`,
     );
+    if (doneBucketPreserved) {
+      summaryParts.push("the project's existing done-bucket was left untouched (not repurposed)");
+    }
   }
   if (tasks.length > 0) {
     summaryParts.push(`${tasks.length - taskFailures.length}/${tasks.length} tasks created`);
@@ -839,7 +894,16 @@ export async function setupKanban(
       // `viewId`/`columns` only exist when a board was actually requested —
       // never fabricated on the columns-less path (issue #185), where no
       // Kanban view was even resolved.
-      ...(hasColumns && { viewId, columns: columnResults }),
+      ...(hasColumns && {
+        viewId,
+        columns: columnResults,
+        // Surfaced explicitly (#273) whenever the view's done-bucket existed
+        // but wasn't claimed by any requested column's exact-title match —
+        // it was deliberately excluded from the leftover-repurpose pool
+        // rather than silently renamed, so it is still the done-bucket
+        // afterwards, just under its old (unrequested) title.
+        doneBucketPreserved,
+      }),
       // Named `taskResults` (not `tasks`) — `ResponseData.tasks` is typed
       // `Task[]` (full Vikunja task objects) for other tools' responses;
       // this composite's per-task outcomes are a different, smaller shape

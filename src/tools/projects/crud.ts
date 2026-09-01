@@ -254,7 +254,9 @@ export async function listProjects(
     // GET /projects returns a bare array — there is no {data, total} envelope
     // (see docs/API_NOTES.md). Total item/page counts are therefore unknown;
     // createProjectListResponse derives `hasMore` honestly from the page size
-    // instead of fabricating a total.
+    // instead of fabricating a total. That pagination metadata (hasMore/
+    // nextPage/prevPage) now actually reaches the rendered response — see
+    // createProjectResponse in response-formatter.ts (#280).
     const responseArray = Array.isArray(response) ? response : [response];
 
     // Build options object, only including defined properties to satisfy exactOptionalPropertyTypes
@@ -369,14 +371,25 @@ export async function createProject(
 
     // Get all projects to validate hierarchy if parent is specified
     let allProjects: VikunjaProject[] = [];
+    // Tracks whether fetchAllProjects actually succeeded. An empty
+    // `allProjects` from a FAILED fetch is not the same signal as "the
+    // fetch succeeded and genuinely returned no projects" — conflating the
+    // two used to make validateProjectData's existence check report
+    // "Parent project not found" even when the real problem was the list
+    // fetch itself failing (LOW-1, issue #291). `allProjects` is only
+    // passed to the existence check below when the fetch actually
+    // succeeded; on failure `undefined` skips that check (validateId's
+    // numeric-range check still runs), leaving Vikunja's own create call to
+    // surface the real error if the parent truly doesn't exist.
+    let allProjectsFetchFailed = false;
     if (parentProjectId) {
       try {
         allProjects = await fetchAllProjects(authManager);
       } catch {
-        // Continue with validation if we can't get all projects
+        allProjectsFetchFailed = true;
       }
 
-      validateProjectData({ parentProjectId }, allProjects);
+      validateProjectData({ parentProjectId }, allProjectsFetchFailed ? undefined : allProjects);
 
       // Check depth constraints
       if (allProjects.length > 0) {
@@ -503,13 +516,19 @@ export async function updateProject(
       `/projects/${id}`,
     );
 
-    // Get all projects for hierarchy validation
+    // Get all projects for hierarchy validation. See the matching comment
+    // in createProject: an empty `allProjects` from a FAILED fetch must not
+    // be treated as "confirmed no projects exist" by the existence check
+    // below (LOW-1, issue #291) — that would misreport "Parent project not
+    // found" on every update that merely re-asserts the CURRENT parent
+    // (resolvedParentProjectId), for a project whose parent may well exist.
     let allProjects: VikunjaProject[] = [];
+    let allProjectsFetchFailed = false;
     if (parentProjectId !== undefined || (currentProject && currentProject.parent_project_id)) {
       try {
         allProjects = await fetchAllProjects(authManager);
       } catch {
-        // Continue if we can't get all projects
+        allProjectsFetchFailed = true;
       }
     }
 
@@ -534,7 +553,7 @@ export async function updateProject(
       validationUpdateData.parentProjectId = resolvedParentProjectId;
     }
 
-    validateProjectData(validationUpdateData, allProjects);
+    validateProjectData(validationUpdateData, allProjectsFetchFailed ? undefined : allProjects);
 
     // Check depth constraints if parentProjectId is being updated
     if (parentProjectId !== undefined && allProjects.length > 0) {

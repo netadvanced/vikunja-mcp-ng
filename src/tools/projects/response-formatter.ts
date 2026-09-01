@@ -42,10 +42,20 @@ export function createProjectResponse(
   // Cast data to ResponseData for type compatibility
   const responseData = _data as ResponseData;
 
-  // Use simple response format
+  // Use simple response format. `_metadata` must be forwarded here — it is
+  // the ONLY place any of the extra metadata built by call sites (pagination
+  // hasMore/nextPage, moved-project parent ids, hierarchy depth/truncation,
+  // share info, etc.) reaches the actual response payload. Previously only
+  // `verbosity` was threaded through and every other key in `_metadata` was
+  // silently discarded (#280) — `formatSuccessMessage` renders whatever
+  // lands in `metadata` via `formatObjectData`, so this is also what makes
+  // it visible in the rendered markdown, the same way the buckets/views/
+  // sharing-access formatters (which call `createStandardResponse` with
+  // their metadata directly) already surface theirs.
   const simpleAorpResult = createAorpResponse(operation, message, responseData, {
     success: true,
     metadata: {
+      ..._metadata,
       verbosity: selectedVerbosity,
     },
   });
@@ -163,7 +173,15 @@ export function createProjectListResponse(
 }
 
 /**
- * Creates a project tree response with hierarchy metadata
+ * Creates a project tree response with hierarchy metadata.
+ *
+ * `truncation` (issue #291, LOW-2) reports whether `buildProjectTree`
+ * (src/tools/projects/hierarchy.ts) dropped any subtree purely because it
+ * reached the caller's `maxDepth` — previously such subtrees vanished with
+ * no signal at all, indistinguishable from "this project genuinely has no
+ * deeper children". When `truncated` is true, both the metadata and the
+ * message body say so explicitly, and a caller can re-run with a larger
+ * `maxDepth` to see the rest.
  */
 export function createProjectTreeResponse(
   treeData: unknown,
@@ -174,22 +192,34 @@ export function createProjectTreeResponse(
     useOptimizedFormat?: boolean;
     useAorp?: boolean;
   } = {},
+  truncation: { maxDepth: number; truncated: boolean; truncatedCount: number } = {
+    maxDepth: 10,
+    truncated: false,
+    truncatedCount: 0,
+  },
 ): AorpFactoryResult {
+  const { maxDepth, truncated, truncatedCount } = truncation;
   const metadata: Partial<ResponseMetadata> = {
     hierarchy: {
       depth,
       totalNodes,
-      maxDepth: 10, // From MAX_PROJECT_DEPTH
+      // The ACTUAL maxDepth this call used, not a hardcoded constant — this
+      // used to always read 10 regardless of what the caller requested.
+      maxDepth,
+      ...(truncated && { truncated, truncatedCount }),
     },
     totalProjects: totalNodes,
   };
 
   const tree = treeData as ProjectTreeNode[];
+  const truncationNote = truncated
+    ? ` (truncated: ${truncatedCount} subtree(s) beyond maxDepth ${maxDepth} were omitted — re-run with a larger maxDepth to see them)`
+    : '';
   return createProjectSuccessResponse(
     'get-project-tree',
     { tree: tree.length === 1 ? tree[0] : tree },
     {
-      message: `Retrieved project tree with ${totalNodes} nodes at depth ${depth}`,
+      message: `Retrieved project tree with ${totalNodes} nodes at depth ${depth}${truncationNote}`,
       ...options,
       metadata,
     },
