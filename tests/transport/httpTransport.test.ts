@@ -470,6 +470,23 @@ describe('httpTransport', () => {
         expect(JSON.parse(res.body).resource).toBe('https://mcp-vikunja.example.ch/mcp');
       });
 
+      // #292 LOW-19: an untrusted Host header must not be reflected into
+      // the discovery document when publicUrl is unset.
+      it('does not reflect a spoofed Host header into the served resource URL', async () => {
+        setOidcAuthMiddleware(async () => false);
+        handle = await startHttpTransport(newServer, baseHttpConfig(), { issuer: ISSUER });
+        const port = getPort(handle);
+
+        const res = await request(port, {
+          path: '/.well-known/oauth-protected-resource',
+          headers: { host: 'evil.attacker.example' },
+        });
+
+        expect(res.statusCode).toBe(200);
+        // Falls back to the configured bind host:port, not the spoofed Host.
+        expect(JSON.parse(res.body).resource).toBe(`http://127.0.0.1:${port}/mcp`);
+      });
+
       it('is GET-only: a POST gets 405 with an Allow: GET header', async () => {
         setOidcAuthMiddleware(async () => false);
         handle = await startHttpTransport(newServer, baseHttpConfig(), { issuer: ISSUER });

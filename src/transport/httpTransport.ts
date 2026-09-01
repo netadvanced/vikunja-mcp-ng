@@ -231,7 +231,11 @@ async function handleIncomingRequest(
       sendJson(res, 405, { error: 'method_not_allowed' }, { Allow: 'GET' });
       return;
     }
-    sendJson(res, 200, buildProtectedResourceMetadata(ctx.httpConfig, ctx.oidcIssuer, req));
+    sendJson(
+      res,
+      200,
+      buildProtectedResourceMetadata(ctx.httpConfig, ctx.oidcIssuer, req, ctx.allowedHosts),
+    );
     return;
   }
 

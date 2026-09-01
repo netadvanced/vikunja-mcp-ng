@@ -26,6 +26,17 @@ const SENSITIVE_KEY_PATTERNS = [
   /(?:^|[_-])(client_secret|client_id|client_key|app_secret|app_key|app_id)(?:$|[_-])/i,
   /(?:^|[_-])(user|username|user_id|email|login|signin)(?:$|[_-])/i,
 
+  // OIDC identity patterns (#292 MED-15): `sub` and the derived
+  // `identityKey`/`sessionId` (`"<issuer>|<sub>"`, see
+  // src/context/requestContext.ts) are stable per-caller identifiers, not
+  // credentials - but leaking them still de-anonymizes a caller across log
+  // lines. `identityKey`/`sessionId` already happen to match the generic
+  // `key`/`session` patterns below, but that's incidental; `sub` matches
+  // none of them, so it needs an explicit pattern of its own. Listed
+  // together and named for what they are, so the identity-masking
+  // guarantee doesn't quietly depend on wording coincidences.
+  /(?:^|[_-])(sub|identity_key|identitykey)(?:$|[_-])/i,
+
   // Database and connection patterns
   /(?:^|[_-])(database|db|connection|connection_string|mongo_uri|mongodb_uri|redis_url)(?:$|[_-])/i,
   /(?:^|[_-])(host|hostname|server|endpoint|uri|url|link)(?:$|[_-])/i,
@@ -113,7 +124,18 @@ const UNICODE_NORMALIZATION_PATTERNS = [
   /[\uFE00-\uFE0F]/, // Variation selectors
 ];
 
-// Performance optimization: Cache normalized keys
+// Performance optimization: Cache normalized keys.
+//
+// LOW-14 (#292, cross-audit): this cache used to grow without bound - a
+// `Map` with no eviction, despite `getSecurityCacheStats` advertising a
+// `maxSize` of `NORMALIZED_KEY_CACHE_MAX_SIZE`. Any long-running
+// `oidc-http` process that ever normalizes attacker-influenced strings
+// (e.g. object keys reaching the logger from request-derived data) leaks
+// memory one entry at a time, forever. Enforced here as a size-bounded LRU:
+// a `Map` iterates in insertion order, so a hit re-inserts its entry to
+// mark it most-recently-used, and an insert past the cap evicts the
+// oldest (first) entry before adding the new one.
+const NORMALIZED_KEY_CACHE_MAX_SIZE = 10000;
 const normalizedKeyCache = new Map<string, string>();
 
 /**
@@ -127,8 +149,13 @@ const normalizedKeyCache = new Map<string, string>();
  * @returns Normalized key safe for comparison
  */
 function normalizeSecurityKey(key: string): string {
-  if (normalizedKeyCache.has(key)) {
-    return normalizedKeyCache.get(key) as string;
+  const cached = normalizedKeyCache.get(key);
+  if (cached !== undefined) {
+    // Bump to most-recently-used: delete + re-set moves it to the end of
+    // the Map's iteration order.
+    normalizedKeyCache.delete(key);
+    normalizedKeyCache.set(key, cached);
+    return cached;
   }
 
   let normalized = key.toLowerCase();
@@ -146,6 +173,14 @@ function normalizeSecurityKey(key: string): string {
 
   // Trim leading/trailing underscores
   normalized = normalized.replace(/^_+|_+$/g, '');
+
+  // Evict the least-recently-used entry before growing past the cap.
+  if (normalizedKeyCache.size >= NORMALIZED_KEY_CACHE_MAX_SIZE) {
+    const oldestKey = normalizedKeyCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      normalizedKeyCache.delete(oldestKey);
+    }
+  }
 
   // Cache the result
   normalizedKeyCache.set(key, normalized);
@@ -167,6 +202,17 @@ function isSensitiveKey(key: string): boolean {
   });
 }
 
+// LOW-13 (#292): the base64-ish and long-alphanumeric CREDENTIAL_FORMAT_PATTERNS
+// below allow digits, letters, '+' and '/' - which also describes an
+// ordinary REST path (`/projects/12345/webhooks/67890123`, 20+ chars, no
+// separator other than '/') and a dotted version string
+// (`2.4.0-beta.123456789`). Neither can be excluded by narrowing the
+// credential patterns' own charset without also missing real base64/hex
+// secrets that legitimately contain '/' or digits-only runs, so both shapes
+// are recognized and excluded up front instead.
+const VERSION_STRING_PATTERN = /^v?\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.]+)?$/;
+const REST_PATH_PATTERN = /^\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\/?(?:\?.*)?$/;
+
 /**
  * Checks if a string value looks like a credential based on format patterns
  *
@@ -176,6 +222,12 @@ function isSensitiveKey(key: string): boolean {
 function isCredentialFormat(value: string): boolean {
   // Only check strings of reasonable length (avoid false positives on short strings)
   if (value.length < 8) {
+    return false;
+  }
+
+  // A plain version string or REST path is never a credential, even though
+  // it can otherwise fit the broad base64/alphanumeric shapes below.
+  if (VERSION_STRING_PATTERN.test(value) || REST_PATH_PATTERN.test(value)) {
     return false;
   }
 
@@ -707,6 +759,6 @@ export function clearSecurityCache(): void {
 export function getSecurityCacheStats(): { size: number; maxSize: number } {
   return {
     size: normalizedKeyCache.size,
-    maxSize: 10000, // Configurable maximum cache size
+    maxSize: NORMALIZED_KEY_CACHE_MAX_SIZE,
   };
 }

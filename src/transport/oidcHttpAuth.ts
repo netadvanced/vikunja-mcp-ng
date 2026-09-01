@@ -25,6 +25,7 @@ import type { ServerResponse } from 'node:http';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import type { HttpConfig, OidcConfig, VaultConfig } from '../config/types';
 import { resolveResourceMetadataUrl } from './resourceMetadata';
+import { resolveAllowedHosts } from './httpTransport';
 import { createOidcJwtValidator, type OidcJwtValidator } from '../auth/oidc/jwtValidator';
 import { loadJose } from '../auth/oidc/joseLoader';
 import type { JoseDeps, OidcJwtValidatorConfig } from '../auth/oidc/types';
@@ -273,8 +274,13 @@ export async function setupOidcHttpAuth(
     // RFC 9728 §5.1: advertise the protected-resource metadata URL on every
     // 401/403 challenge so auto-discovering clients (claude.ai custom
     // connectors) can find the IdP without manual configuration.
+    // #292 LOW-19: same Host allowlist the SDK transport / enrollment
+    // endpoints already enforce, so the 401 challenge's advertised
+    // resource_metadata URL can't be spoofed via an untrusted Host header
+    // either (see resolveResourceUrl's doc comment for the full rationale).
+    const allowedHosts = resolveAllowedHosts(http);
     middlewareDeps.resourceMetadataUrl = (req: HttpRequestWithAuth): string =>
-      resolveResourceMetadataUrl(http, req);
+      resolveResourceMetadataUrl(http, req, allowedHosts);
   }
   setOidcAuthMiddleware(createOidcHttpAuthMiddleware(middlewareDeps));
   logger.info(

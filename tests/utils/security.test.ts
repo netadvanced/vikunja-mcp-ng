@@ -305,6 +305,70 @@ describe('Security Utilities', () => {
       const stats = getSecurityCacheStats();
       expect(stats.size).toBeGreaterThan(0);
     });
+
+    // LOW-14 (#292, cross-audit): the normalized-key cache advertised a
+    // 10,000-entry max via getSecurityCacheStats but never actually
+    // enforced it - unbounded growth in a long-running oidc-http process
+    // if attacker-influenced object keys keep reaching the logger.
+    it('never grows the cache past the advertised maxSize', () => {
+      const { maxSize } = getSecurityCacheStats();
+
+      // Populate with more distinct keys than the cache can hold.
+      const overflowCount = maxSize + 500;
+      for (let i = 0; i < overflowCount; i++) {
+        sanitizeLogData({ [`field_${i}`]: 'value' });
+      }
+
+      const stats = getSecurityCacheStats();
+      expect(stats.size).toBeLessThanOrEqual(maxSize);
+    });
+  });
+
+  describe('OIDC identity masking (#292 MED-15)', () => {
+    it('masks a bare `sub` field the same way secrets are masked', () => {
+      const sanitized = sanitizeLogData({ sub: 'user-a-1234567890' }) as Record<
+        string,
+        unknown
+      >;
+      expect(sanitized.sub).toBe('[REDACTED]');
+    });
+
+    it('masks `identityKey` and `sessionId` fields carrying the issuer|sub pair', () => {
+      const sanitized = sanitizeLogData({
+        identityKey: 'https://idp.example/realm|user-a',
+        sessionId: 'https://idp.example/realm|user-a',
+      }) as Record<string, unknown>;
+      expect(sanitized.identityKey).toBe('[REDACTED]');
+      expect(sanitized.sessionId).toBe('[REDACTED]');
+    });
+  });
+
+  describe('Credential-shape false positives (#292 LOW-13)', () => {
+    it('does not mask a plain REST path', () => {
+      // Key deliberately not named 'path'/'file'/etc - this is testing the
+      // value-shape (isCredentialFormat) heuristic, not key-name matching,
+      // which already (correctly) treats a 'path' key as sensitive.
+      const sanitized = sanitizeLogData({
+        restPath: '/projects/12345/webhooks/67890123',
+      }) as Record<string, unknown>;
+      expect(sanitized.restPath).toBe('/projects/12345/webhooks/67890123');
+    });
+
+    it('does not mask a dotted version string', () => {
+      const sanitized = sanitizeLogData({
+        serverVersion: '2.4.0-beta.123456789012',
+      }) as Record<string, unknown>;
+      expect(sanitized.serverVersion).toBe('2.4.0-beta.123456789012');
+    });
+
+    it('still masks a genuinely credential-shaped long alphanumeric string', () => {
+      const sanitized = sanitizeLogData({
+        blob: 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae',
+      }) as Record<string, unknown>;
+      expect(sanitized.blob).not.toBe(
+        'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae',
+      );
+    });
   });
 
   describe('Edge Case Coverage Tests', () => {

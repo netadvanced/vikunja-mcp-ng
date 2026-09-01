@@ -43,20 +43,41 @@ export interface ProtectedResourceMetadata {
  * (`Host` header, `X-Forwarded-Proto` scheme) with the configured bind
  * `host:port` as the last-resort host (also used when no request is in hand,
  * e.g. at startup).
+ *
+ * #292 LOW-19: when `publicUrl` isn't configured, the derived `host`/`proto`
+ * used to be taken from the request verbatim — an unauthenticated caller (this
+ * endpoint is served before the JWT middleware, by design, since a client
+ * fetches it precisely when it has no token yet) could set an arbitrary
+ * `Host`/`X-Forwarded-Proto` and have it reflected straight back in the
+ * discovery document. The content is non-secret (this is only ever the
+ * server's own resource URL, no credentials), so the impact is limited to
+ * spoofed discovery metadata rather than any data disclosure - but there's no
+ * reason to trust it either. `allowedHosts` (the same DNS-rebinding allowlist
+ * the SDK transport and the enrollment endpoints already enforce, see
+ * `resolveAllowedHosts` in `src/transport/httpTransport.ts`) is now checked
+ * here too: an unrecognized `Host` header falls back to the configured bind
+ * `host:port`, exactly as if no request were in hand at all, and
+ * `X-Forwarded-Proto` is only trusted alongside a `Host` that passed the
+ * allowlist (a forwarded-proto claim is meaningless from an untrusted host
+ * anyway). Passing `undefined` for `allowedHosts` keeps the legacy
+ * trust-the-request behaviour for callers that have not been threaded
+ * through yet (there should be none left in this codebase after #292).
  */
 export function resolveResourceUrl(
   httpConfig: HttpConfig,
-  req?: Pick<IncomingMessage, 'headers'>
+  req?: Pick<IncomingMessage, 'headers'>,
+  allowedHosts?: readonly string[]
 ): string {
   if (httpConfig.publicUrl) {
     return httpConfig.publicUrl;
   }
   const hostHeader = req?.headers.host;
-  const host =
-    typeof hostHeader === 'string' && hostHeader.length > 0
-      ? hostHeader
-      : `${httpConfig.host}:${httpConfig.port}`;
-  const forwardedProto = req?.headers['x-forwarded-proto'];
+  const hostHeaderTrusted =
+    typeof hostHeader === 'string' &&
+    hostHeader.length > 0 &&
+    (allowedHosts === undefined || allowedHosts.includes(hostHeader));
+  const host = hostHeaderTrusted ? hostHeader : `${httpConfig.host}:${httpConfig.port}`;
+  const forwardedProto = hostHeaderTrusted ? req?.headers['x-forwarded-proto'] : undefined;
   const protoRaw = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
   const protoCandidate = protoRaw?.split(',')[0]?.trim();
   const proto = protoCandidate !== undefined && protoCandidate.length > 0 ? protoCandidate : 'http';
@@ -71,9 +92,10 @@ export function resolveResourceUrl(
  */
 export function resolveResourceMetadataUrl(
   httpConfig: HttpConfig,
-  req?: Pick<IncomingMessage, 'headers'>
+  req?: Pick<IncomingMessage, 'headers'>,
+  allowedHosts?: readonly string[]
 ): string {
-  const origin = new URL(resolveResourceUrl(httpConfig, req)).origin;
+  const origin = new URL(resolveResourceUrl(httpConfig, req, allowedHosts)).origin;
   return `${origin}${WELL_KNOWN_PROTECTED_RESOURCE_PATH}`;
 }
 
@@ -81,10 +103,11 @@ export function resolveResourceMetadataUrl(
 export function buildProtectedResourceMetadata(
   httpConfig: HttpConfig,
   issuer: string,
-  req?: Pick<IncomingMessage, 'headers'>
+  req?: Pick<IncomingMessage, 'headers'>,
+  allowedHosts?: readonly string[]
 ): ProtectedResourceMetadata {
   return {
-    resource: resolveResourceUrl(httpConfig, req),
+    resource: resolveResourceUrl(httpConfig, req, allowedHosts),
     authorization_servers: [issuer],
     bearer_methods_supported: ['header'],
   };

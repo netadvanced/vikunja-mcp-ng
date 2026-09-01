@@ -594,6 +594,62 @@ describe('Webhooks Tool', () => {
       expect(result.content[0].text).toContain('**success:** true');
     });
 
+    it('does not share the event cache across identities on different Vikunja servers (#292 MED-9)', async () => {
+      // Second identity, provisioned against a DIFFERENT Vikunja server -
+      // before the fix, this shared the same 'project' cache slot as the
+      // first identity/authManager above, so its valid-events list (and
+      // TTL) would have leaked across tenants.
+      const otherAuthManager = {
+        isAuthenticated: jest.fn().mockReturnValue(true),
+        getSession: jest.fn().mockReturnValue({
+          apiUrl: 'https://other-tenant.vikunja.test',
+          apiToken: 'other-tenant-token',
+        }),
+        setSession: jest.fn(),
+        clearSession: jest.fn(),
+      } as MockAuthManager;
+
+      const otherServer = { tool: jest.fn() } as MockServer;
+      registerWebhooksTool(
+        otherServer as unknown as McpServer,
+        otherAuthManager as unknown as AuthManager,
+      );
+      const otherCalls = (otherServer.tool as jest.Mock).mock.calls;
+      const otherHandler = otherCalls[otherCalls.length - 1][
+        otherCalls[otherCalls.length - 1].length - 1
+      ] as (args: any) => Promise<any>;
+
+      // First identity populates the 'project' scope cache.
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhook }));
+      await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['task.created'],
+      });
+
+      // Second identity, same scope ('project'), must still fetch its OWN
+      // events rather than reusing the first identity's cache entry.
+      const otherEvents = ['task.created', 'other.tenant.only.event'];
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: otherEvents }));
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhook }));
+      const otherResult = await otherHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['other.tenant.only.event'],
+      });
+
+      expect(otherResult.content[0].text).toContain('**success:** true');
+
+      const eventsCalls = mockFetch.mock.calls.filter((call) =>
+        (call[0] as string).includes('/webhooks/events'),
+      );
+      // Both identities fetched events independently - no cache reuse.
+      expect(eventsCalls).toHaveLength(2);
+    });
+
     it('should handle a non-OK response when creating a webhook', async () => {
       // Events fetch succeeds
       mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));

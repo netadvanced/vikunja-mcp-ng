@@ -31,6 +31,31 @@ describe('identityKey', () => {
     const b = identityKey({ issuer: 'https://idp-two.example', sub: 'user-1' });
     expect(a).not.toBe(b);
   });
+
+  // #292 LOW-11: a `|` inside either component used to be able to make two
+  // distinct identities collide on the same unescaped key.
+  it('never collides a "|" inside issuer with a "|" inside sub (LOW-11)', () => {
+    const a = identityKey({ issuer: 'a|b', sub: 'c' });
+    const b = identityKey({ issuer: 'a', sub: 'b|c' });
+    expect(a).not.toBe(b);
+  });
+
+  it('escapes a literal "|" in a component so it round-trips distinctly from the delimiter', () => {
+    const withPipeInSub = identityKey({ issuer: 'https://idp.example', sub: 'us|er' });
+    const withPlainSub = identityKey({ issuer: 'https://idp.example', sub: 'us' });
+    // Confirms the escaped form isn't simply indistinguishable from a
+    // shorter sub followed by more issuer/sub characters.
+    expect(withPipeInSub).not.toBe(withPlainSub);
+    expect(withPipeInSub).toBe('https://idp.example|us\\|er');
+  });
+
+  it('escapes a literal backslash in a component so it cannot be used to forge an escape sequence', () => {
+    // Without escaping the backslash itself, a sub of 'us\' followed by
+    // component 'er' could be crafted to look identical to a sub
+    // containing an escaped pipe (see the test above).
+    const key = identityKey({ issuer: 'https://idp.example', sub: 'us\\' });
+    expect(key).toBe('https://idp.example|us\\\\');
+  });
 });
 
 describe('getRequestContext / getCurrentIdentity outside any ALS scope (stdio mode)', () => {
