@@ -1385,6 +1385,12 @@ Description,1`;
       // silently missing from the count.
       expect(result.content[0].text).toContain('Skipped during parsing');
       expect(result.content[0].text).toContain('Input row 2');
+      // The CSV parser used to bake its OWN row number (1-based over the raw
+      // file, header included — the same row that's "Input row 2" here was
+      // internally "row 3") into the stored error, so this line used to read
+      // "Input row 2: Invalid task data at row 3: ..." — two different
+      // numbers for the same row. Only one number should appear now.
+      expect(result.content[0].text).not.toContain('at row 3');
     });
 
     it('should log debug for parsed labels from CSV', async () => {

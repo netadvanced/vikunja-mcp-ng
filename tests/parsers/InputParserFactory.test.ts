@@ -245,7 +245,12 @@ Task 2,2`;
         expect(tasks).toHaveLength(1);
         expect(skipped).toHaveLength(1);
         expect(skipped[0]?.index).toBe(0);
-        expect(skipped[0]?.error).toContain('row 2');
+        // The raw validation cause only — no baked-in row number here. The
+        // formatter (BatchImportResponseFormatter) is what prefixes "Input
+        // row N" using `index`; stacking a second, differently-numbered "row
+        // X" from the parser inside the same message was confusing.
+        expect(skipped[0]?.error).not.toContain('row');
+        expect(skipped[0]?.error?.length).toBeGreaterThan(0);
       });
 
       it('should record every dropped CSV row when the whole batch is invalid, with correct indices', () => {
@@ -262,8 +267,8 @@ Task 2,also_invalid`;
         expect(tasks).toHaveLength(0);
         expect(skipped).toHaveLength(2);
         expect(skipped.map((s) => s.index)).toEqual([0, 1]);
-        expect(skipped[0]?.error).toContain('row 2');
-        expect(skipped[1]?.error).toContain('row 3');
+        expect(skipped[0]?.error).not.toContain('row');
+        expect(skipped[1]?.error).not.toContain('row');
       });
 
       it('should return an empty `skipped` array for CSV when nothing was dropped', () => {

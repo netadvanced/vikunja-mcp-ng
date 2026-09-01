@@ -1,8 +1,21 @@
 # Filter Storage Architecture
 
-Saved filters (and templates) live in `SimpleFilterStorage`
-(`src/storage/SimpleFilterStorage.ts`) — in-memory, session-scoped, mutex-guarded, with
-no persistent backend. **The SQLite/PostgreSQL/Redis adapter design described further
+**Naming note — this predates a later migration and is no longer accurate for `vikunja_filters`.**
+`vikunja_filters` ("saved filters") is **not** backed by `SimpleFilterStorage` — it's wired
+directly to Vikunja's real server-side `PUT/GET/POST/DELETE /filters*` endpoints (see
+[TOOLS.md § Filter Management](TOOLS.md#filter-management) and
+[OIDC-RESOURCE-SERVER.md](OIDC-RESOURCE-SERVER.md)); a saved filter persists on the Vikunja
+server, survives an MCP restart, and is visible to other Vikunja clients, none of which is
+true of anything in `SimpleFilterStorage`. This file's "Saved filters... live in
+`SimpleFilterStorage`" framing below describes the *pre-migration* architecture. What
+`SimpleFilterStorage` (`src/storage/SimpleFilterStorage.ts`) actually backs today: the
+task-listing tool's own session-scoped filter caching (unrelated to the `vikunja_filters`
+feature), and `vikunja_templates`, whose "Templates are the one durable exception" bullet
+below (opt-in file persistence) is still accurate. The class is still named
+`SimpleFilterStorage` for historical reasons even though it no longer stores saved filters.
+
+In-memory, session-scoped, mutex-guarded, with no persistent backend (except templates,
+below). **The SQLite/PostgreSQL/Redis adapter design described further
 down is not what ships**: it is the pre-v0.2.0 plan, retained here as design reference
 only. Read "What Ships Today" first; treat everything under "Historical Design" as
 history.

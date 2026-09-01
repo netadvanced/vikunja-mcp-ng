@@ -7,13 +7,21 @@ the tool surface itself see [TOOLS.md](TOOLS.md), for the conventions new
 endpoint work follows see [ENDPOINT-PLAYBOOK.md](ENDPOINT-PLAYBOOK.md), and for
 every configuration knob see [CONFIGURATION.md](CONFIGURATION.md).
 
+**This page predates the OIDC resource-server epic and describes `stdio` mode only** —
+still accurate for that mode (the default, one-process-one-identity deployment), but it
+does not cover the opt-in `oidc-http` transport: a stateless multi-tenant mode with
+per-request JWT validation, an `AsyncLocalStorage`-scoped identity per call, and an
+encrypted credential vault (`src/storage/vaultFileStore.ts`) instead of one process-wide
+`AuthManager` session. See [OIDC-RESOURCE-SERVER.md](OIDC-RESOURCE-SERVER.md) for that
+mode's architecture and [OIDC-SETUP.md](OIDC-SETUP.md) for the operator/user setup story.
+
 ## At a Glance
 
 - **MCP Server**: Built with `@modelcontextprotocol/sdk` (entry point `src/index.ts`)
-- **Transport**: StdIO for Claude Desktop integration (`StdioServerTransport`)
+- **Transport**: StdIO for Claude Desktop integration (`StdioServerTransport`), or an opt-in Streamable-HTTP/OIDC resource-server mode (`VIKUNJA_MCP_TRANSPORT=http`) — see the note above
 - **Tool Registry**: `src/tools/index.ts`, with conditional registration gated by module config and auth type
 - **Tools**: Zod-validated parameters with subcommand pattern, one module per entity in `src/tools/[entity]/`
-- **Authentication**: Session-based with AuthManager (`src/auth/AuthManager.ts`)
+- **Authentication**: Session-based with AuthManager (`src/auth/AuthManager.ts`) in `stdio` mode; per-request identity resolved from a JWT + the credential vault in `oidc-http` mode
 - **HTTP**: All Vikunja calls go through `vikunjaRestRequest` (`src/utils/vikunja-rest.ts`) against the vendored OpenAPI spec (`docs/vikunja-openapi.json`)
 - **Error Handling**: Custom MCPError with proper error codes
 - **Type Safety**: Full TypeScript with strict mode
@@ -21,7 +29,9 @@ every configuration knob see [CONFIGURATION.md](CONFIGURATION.md).
 ## Component Overview
 
 ### AuthManager
-Handles session management and authentication state (`src/auth/AuthManager.ts`):
+Handles session management and authentication state (`src/auth/AuthManager.ts`) —
+**this section describes `stdio` mode**; `oidc-http` mode resolves a per-request
+`AuthManager` from the credential vault instead (see the note under the page title):
 - Supports both API tokens (`tk_*`) and JWT authentication, auto-detected from the token format
 - Maintains single instance throughout server lifetime
 - Holds one in-memory session (`connect`/`disconnect`); nothing is persisted across restarts
