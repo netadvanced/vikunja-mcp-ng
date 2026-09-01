@@ -57,6 +57,7 @@ import { ConfigurationError } from '../config/types';
 import { readSecretEnv } from '../config/secrets';
 import { identityKey, type Identity } from '../context/requestContext';
 import { fsyncPath } from './fsync';
+import { AuthManager } from '../auth/AuthManager';
 import type { VikunjaCredential } from '../auth/CredentialSource';
 
 const ALGORITHM = 'aes-256-gcm';
@@ -84,6 +85,45 @@ const CURRENT_KEY_VERSION = 2;
  * at most one vault write per identity per interval.
  */
 const DEFAULT_LAST_USED_FLUSH_INTERVAL_MS = 60_000;
+
+/**
+ * The vault stores Vikunja **API tokens** (`tk_*`) and nothing else — issue
+ * #322.
+ *
+ * This is the invariant behind `getCredential`'s `authType: 'api-token'`,
+ * which used to be an unconditional hardcode on a value nothing checked. In
+ * `oidc-http` mode that label is fed straight into `authManager.connect(...)`
+ * (`src/transport/oidcHttpAuth.ts`), so a mislabeled credential would make
+ * the per-identity auth manager lie about what it holds — and the JWT-only
+ * registration gate (`src/tools/index.ts`, issue #270) reads exactly that
+ * value. Enforcing the invariant at the single write path makes the label
+ * true by construction instead of true by assumption.
+ *
+ * Rejecting a JWT here is not an arbitrary narrowing; it is the mode's
+ * design (docs/OIDC-RESOURCE-SERVER.md §1.2 and wave item H1-6, "uniform
+ * `api-token` assumption"):
+ *  - Vikunja's own JWTs come from *its* login form, expire in hours, and
+ *    this server holds no refresh path for them (ROADMAP §4's "Never"
+ *    verdict on `token/refresh`), so a vaulted JWT is a credential that
+ *    silently dies — the vault is explicitly a long-lived-token store.
+ *  - The one-click SSO enrollment flow (`src/transport/enrollment.ts`) mints
+ *    a `tk_*` token for exactly this reason.
+ *
+ * A non-`tk_`, non-JWT string is still accepted: `AuthManager.detectAuthType`
+ * treats anything unrecognized as an API token for backward compatibility,
+ * and the caller has already round-tripped the token against Vikunja before
+ * reaching the vault. Only the positively-identified JWT shape is refused.
+ */
+export function assertVaultableToken(apiToken: string): void {
+  if (AuthManager.detectAuthType(apiToken) === 'jwt') {
+    throw new Error(
+      'The credential vault stores Vikunja API tokens only, and this looks like a JWT ' +
+        '(eyJ...). Create an API token in Vikunja → Settings → API Tokens (it starts with ' +
+        '"tk_") and link that instead: a Vikunja JWT comes from an interactive login, ' +
+        'expires within hours, and this server cannot refresh it.',
+    );
+  }
+}
 
 /** One vault record's on-disk shape (docs/OIDC-RESOURCE-SERVER.md §3c file-shape table). */
 export interface VaultRecord {
@@ -117,10 +157,65 @@ export interface VaultStatus {
   readonly createdAt?: string;
   readonly updatedAt?: string;
   readonly lastUsedAt?: string | null;
+  /** On-disk record format of this identity's own record, when one exists. */
+  readonly keyVersion?: number;
+  /**
+   * True when this identity's record is usable but written in an outdated
+   * format that the owner should re-provision to upgrade — today, the
+   * pre-AAD `keyVersion: 1` shape (issue #262) or a token stored before the
+   * vault refused JWTs (issue #322). `migrationNotice` says which and what
+   * to do; unlike `issue`, the credential still works meanwhile.
+   */
+  readonly needsMigration?: boolean;
+  /** Human-readable, actionable explanation of `needsMigration`. */
+  readonly migrationNotice?: string;
   // Index signature so this shape can be passed directly as `ResponseData`
   // to `createStandardResponse` (`src/utils/response-factory.ts`) without a
   // separate re-shaping step.
   readonly [key: string]: unknown;
+}
+
+/**
+ * Operator-facing summary of how many stored records still sit in an
+ * outdated on-disk format (issue #322 finding 2). Identities are masked.
+ */
+export interface VaultMigrationSummary {
+  readonly totalRecords: number;
+  readonly legacyRecords: number;
+  /** Masked identity keys of the records still on `keyVersion: 1`. */
+  readonly legacyIdentities: readonly string[];
+  /** Present when this process's view of the vault is known incomplete (#266). */
+  readonly incompleteReason?: string;
+}
+
+/**
+ * The per-identity half of the migration visibility (issue #322): what, if
+ * anything, this record's owner should re-provision — and why. Returns
+ * `undefined` for an already-current record.
+ *
+ * Both cases are *usable* credentials, which is why they are a notice and
+ * not a `VaultStatus.issue`: nothing is broken today, but the record was
+ * written by a build with weaker guarantees than the current one.
+ */
+function migrationNoticeFor(record: VaultRecord, token: string): string | undefined {
+  if (AuthManager.detectAuthType(token) === 'jwt') {
+    // Predates `assertVaultableToken`. The stored JWT is almost certainly
+    // expired already, and it can never register the JWT-only tools in this
+    // mode, so say so plainly rather than leaving the owner to guess.
+    return (
+      'The credential stored for you is a JWT, not a Vikunja API token. It was linked ' +
+      "before this server rejected JWTs, it expires on Vikunja's own schedule and cannot " +
+      'be refreshed here. Run vikunja_auth provision with a "tk_" API token instead.'
+    );
+  }
+  if (record.keyVersion === KEY_VERSION_NO_AAD) {
+    return (
+      'Your credential is stored in the legacy pre-binding format (keyVersion 1): its ' +
+      'Vikunja URL and identity binding are not covered by the encryption tag. It still ' +
+      'works — re-run vikunja_auth provision with the same token to upgrade it.'
+    );
+  }
+  return undefined;
 }
 
 function isVaultRecord(value: unknown): value is VaultRecord {
@@ -606,6 +701,15 @@ export class VaultFileStore {
    * missing record and an undecryptable one (wrong master key / tampered
    * data) both resolve to `null`, matching `VikunjaCredentialSource`'s
    * contract (`src/auth/CredentialSource.ts`) exactly.
+   *
+   * `authType` is `'api-token'` because {@link assertVaultableToken} makes
+   * that true at every write path, not because the field is unexamined
+   * (issue #322): `src/transport/oidcHttpAuth.ts` feeds this value into
+   * `authManager.connect(...)`, and the JWT-only registration gate in
+   * `src/tools/index.ts` reads it back, so it has to describe the token that
+   * is actually stored. A record written by an older build that predates the
+   * guard is caught by {@link getStatus}, which tells that identity to
+   * re-provision.
    */
   getCredential(identity: Identity): VikunjaCredential | null {
     const key = identityKey(identity);
@@ -655,8 +759,11 @@ export class VaultFileStore {
     }
     let maskedToken: string | undefined;
     let issue: string | undefined;
+    let migrationNotice: string | undefined;
     try {
-      maskedToken = maskCredential(this.decryptRecord(record, key));
+      const token = this.decryptRecord(record, key);
+      maskedToken = maskCredential(token);
+      migrationNotice = migrationNoticeFor(record, token);
     } catch (error) {
       issue =
         'A credential is stored for you but cannot be decrypted (wrong vault master key, ' +
@@ -676,6 +783,42 @@ export class VaultFileStore {
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
       lastUsedAt: record.lastUsedAt,
+      keyVersion: record.keyVersion,
+      ...(migrationNotice !== undefined ? { needsMigration: true, migrationNotice } : {}),
+    };
+  }
+
+  /**
+   * Vault-wide migration state, for the OPERATOR — issue #322 finding 2.
+   *
+   * `decryptRecord`'s legacy warning fires at most once per identity, and
+   * only if that identity happens to make a request, so an operator could
+   * run indefinitely without ever learning that some records are still on
+   * the unbound `keyVersion: 1` format. This is the deterministic answer:
+   * how many records exist, how many still need re-provisioning, and which
+   * identities (masked) they are.
+   *
+   * Deliberately NOT part of `getStatus`: that is a per-tenant response in a
+   * multi-tenant process, and one tenant has no business counting another's
+   * records. This is called at startup (`src/transport/oidcHttpAuth.ts`),
+   * where the audience is the operator reading their own server's boot
+   * output.
+   */
+  getMigrationSummary(): VaultMigrationSummary {
+    const map = this.load();
+    const legacyIdentities: string[] = [];
+    for (const [key, record] of map) {
+      if (record.keyVersion === KEY_VERSION_NO_AAD) {
+        legacyIdentities.push(maskCredential(key));
+      }
+    }
+    return {
+      totalRecords: map.size,
+      legacyRecords: legacyIdentities.length,
+      legacyIdentities,
+      ...(this.incompleteLoadReason !== undefined
+        ? { incompleteReason: this.incompleteLoadReason }
+        : {}),
     };
   }
 
@@ -689,6 +832,10 @@ export class VaultFileStore {
    * incomplete (issue #266).
    */
   async provision(identity: Identity, vikunjaUrl: string, apiToken: string): Promise<void> {
+    // Enforced at the single write path, so EVERY caller is covered: the
+    // `vikunja_auth provision` subcommand, the SSO enrollment flow, and any
+    // future one (issue #322). See `assertVaultableToken`.
+    assertVaultableToken(apiToken);
     const release = await this.mutex.acquire();
     try {
       this.assertWritable();

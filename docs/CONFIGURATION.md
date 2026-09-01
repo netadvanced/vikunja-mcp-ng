@@ -342,6 +342,21 @@ own token used to decide the gate for everyone — a JWT there exposed
 including `tk_*`-vaulted ones, and a `tk_*` there denied them to callers
 entitled to them. The per-call checks inside those tools resolve the same way.
 
+**Consequence: the JWT-only tools are effectively `stdio`-only** (issue #322). The
+`oidc-http` credential vault stores Vikunja **API tokens** and nothing else — that is the
+mode's design (`docs/OIDC-RESOURCE-SERVER.md` §1.2: an OIDC access token is not a Vikunja
+credential, so each user links their own long-lived `tk_*` token), and since #322
+`vikunja_auth provision` and the vault itself both **reject** a JWT-shaped token with an
+explanatory error instead of storing it mislabeled. A Vikunja JWT comes from Vikunja's own
+login form, expires within hours, and this server holds no refresh path for it, so it is
+not a credential the vault can keep working. Every vaulted identity therefore resolves to
+`authType: 'api-token'`, and `vikunja_users`, the four export tools,
+`vikunja_caldav_tokens`, `vikunja_admin` and `vikunja_user_deletion` never register in
+`oidc-http` mode no matter how the module keys are set. Use those tools from a `stdio`
+deployment with a JWT session. (If Vikunja ever issues long-lived, refreshable JWTs — or
+accepts OIDC tokens directly, the upstream ask in `docs/OIDC-RESOURCE-SERVER.md` §5 — this
+is the decision to revisit.)
+
 ## Global Read-Only Safety Mode
 
 A separate, orthogonal safety layer from module gating: instead of hiding a tool from the

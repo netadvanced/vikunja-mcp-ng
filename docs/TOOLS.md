@@ -27,6 +27,13 @@ default config (`vikunja_auth`, `vikunja_tasks` plus its six granular
 `vikunja_caldav_tokens`, `vikunja_admin`, and `vikunja_user_deletion`
 (module opt-in required; all but `vikunja_tokens` also JWT-only).
 
+**The JWT-only tools are `stdio`-only in practice.** `oidc-http` mode's
+credential vault stores Vikunja API tokens by design — `vikunja_auth
+provision` refuses a JWT, which would expire within hours with no refresh
+path — so no identity there ever resolves to a JWT session and those tools
+never register in that mode (issue #322). See
+[CONFIGURATION.md § Composing with Auth-Type Gating](CONFIGURATION.md#composing-with-auth-type-gating).
+
 ## Response Format
 
 Every tool returns MCP text content: a markdown document built by

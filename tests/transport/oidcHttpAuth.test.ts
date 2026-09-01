@@ -16,7 +16,16 @@ import {
   setupOidcHttpAuth,
   type OidcHttpAuthDeps,
 } from '../../src/transport/oidcHttpAuth';
-import { setActiveVaultStore } from '../../src/storage/vaultFileStore';
+import * as fs from 'node:fs';
+import {
+  setActiveVaultStore,
+  parseMasterKey,
+  encryptToken,
+  vaultRecordAad,
+  writeVaultFileAtomic,
+  type VaultRecord,
+} from '../../src/storage/vaultFileStore';
+import { logger } from '../../src/utils/logger';
 import {
   getOidcAuthMiddleware,
   setOidcAuthMiddleware,
@@ -496,5 +505,103 @@ describe('setupOidcHttpAuth', () => {
         async () => joseDeps
       )
     ).rejects.toThrow(/vault file path/);
+  });
+
+  // Issue #322 finding 2: the legacy-format warning used to fire only when an
+  // affected identity happened to make a request, so an operator could run
+  // for months without ever learning some records were still unbound.
+  describe('vault migration state is reported at startup', () => {
+    /** Write a pre-#262 record (no AAD, keyVersion 1) under the live master key. */
+    const writeLegacyVault = (count: number): void => {
+      const key = parseMasterKey(process.env.VIKUNJA_MCP_VAULT_KEY as string);
+      const records = new Map<string, VaultRecord>();
+      for (let i = 0; i < count; i += 1) {
+        records.set(`https://idp.example.test/realms/t|user-${i}`, {
+          vikunjaUrl: 'https://vikunja.example.com',
+          ...encryptToken(`tk_legacy-${i}`, key),
+          keyVersion: 1,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          lastUsedAt: null,
+        });
+      }
+      writeVaultFileAtomic(vaultPath, records);
+    };
+
+    const setup = async (): Promise<void> => {
+      await setupOidcHttpAuth(
+        {
+          issuer: 'https://idp.example.test/realms/t',
+          audience: 'vikunja-mcp-ng',
+          jwksUri: 'https://idp.example.test/realms/t/certs',
+        },
+        { path: vaultPath },
+        undefined,
+        async () => joseDeps
+      );
+    };
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+      fs.rmSync(vaultPath, { force: true });
+    });
+
+    it('warns once with the count and masked identities when records still need migrating', async () => {
+      writeLegacyVault(2);
+      const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      await setup();
+
+      const migrationWarning = warnSpy.mock.calls.find((call) =>
+        String(call[0]).includes('legacy pre-binding format')
+      );
+      expect(migrationWarning).toBeDefined();
+      expect(String(migrationWarning?.[0])).toContain('2 of 2');
+      expect(migrationWarning?.[1]).toMatchObject({ legacyRecords: 2, totalRecords: 2 });
+      // Masked identities only — this goes to operator logs.
+      expect(JSON.stringify(migrationWarning?.[1])).not.toContain('user-0');
+    });
+
+    it('stays quiet when every record is already in the current format', async () => {
+      const key = parseMasterKey(process.env.VIKUNJA_MCP_VAULT_KEY as string);
+      const identityKeyValue = 'https://idp.example.test/realms/t|user-0';
+      writeVaultFileAtomic(
+        vaultPath,
+        new Map<string, VaultRecord>([
+          [
+            identityKeyValue,
+            {
+              vikunjaUrl: 'https://vikunja.example.com',
+              ...encryptToken(
+                'tk_current',
+                key,
+                vaultRecordAad(identityKeyValue, 'https://vikunja.example.com')
+              ),
+              keyVersion: 2,
+              createdAt: '2026-01-01T00:00:00.000Z',
+              updatedAt: '2026-01-01T00:00:00.000Z',
+              lastUsedAt: null,
+            },
+          ],
+        ])
+      );
+      const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      await setup();
+
+      expect(
+        warnSpy.mock.calls.some((call) => String(call[0]).includes('legacy pre-binding format'))
+      ).toBe(false);
+    });
+
+    it('does not warn about a vault file that does not exist yet (fresh deployment)', async () => {
+      const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      await setup();
+
+      expect(
+        warnSpy.mock.calls.some((call) => String(call[0]).includes('legacy pre-binding format'))
+      ).toBe(false);
+    });
   });
 });

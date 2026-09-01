@@ -27,11 +27,20 @@ The system consists of three main components:
    `stdio` deployment never applies this wrapper**: one process serves exactly one identity
    there, so there is no noisy neighbour to contain, and the epic's hard invariant
    (`docs/OIDC-RESOURCE-SERVER.md` §2, `src/index.ts`'s transport-mode doc comment) requires
-   `stdio` to stay byte-for-byte its pre-OIDC-epic behavior. A `stdio` deployment is
-   therefore unmetered regardless of `RATE_LIMIT_ENABLED`/`RATE_LIMIT_PER_MINUTE` below;
-   those variables only take effect once `oidc-http` mode is selected.
+   `stdio` to stay byte-for-byte its pre-OIDC-epic behavior. In a `stdio` deployment every
+   tool registered through this wrapper is therefore unmetered regardless of
+   `RATE_LIMIT_ENABLED`/`RATE_LIMIT_PER_MINUTE` below; for those tools, the variables only
+   take effect once `oidc-http` mode is selected. **`vikunja_auth` is the one exception** —
+   see the note under point 3.
 3. **Direct middleware helpers** (`src/middleware/direct-middleware.ts`) - `applyRateLimiting`
-   / `applyPermissions` / `applyBothMiddleware`, the opt-in per-tool integration layer
+   / `applyPermissions` / `applyBothMiddleware`, the opt-in per-tool integration layer.
+   Exactly one tool opts in today: `vikunja_auth` wraps its handler in
+   `applyRateLimiting('vikunja_auth', ...)` (`src/tools/auth.ts`). That path predates the
+   OIDC epic and has **no transport check** — it is gated only by `RATE_LIMIT_ENABLED`
+   (default on), so `vikunja_auth` calls are rate-limited and timeout-wrapped on **both**
+   transports, `stdio` included. Deliberate: the tool that hands over credentials is worth
+   metering even in the single-user case. So "a `stdio` deployment is unmetered" is true of
+   every tool *except* `vikunja_auth` (issue #322 finding 3).
 4. **Configuration System** - Environment-based configuration with sensible defaults
 
 ### Design Principles
