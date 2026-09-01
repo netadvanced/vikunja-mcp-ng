@@ -447,12 +447,22 @@ function parseArrayValues(state: ParseState): string[] | null {
  * Convert string value to appropriate type based on field
  */
 function convertValue(
-  value: string,
+  value: string | string[],
   field: FilterField,
   operator: FilterOperator,
 ): string | number | boolean | string[] {
   if (operator === 'in' || operator === 'not in') {
-    return value.split(',').map((v) => v.trim());
+    // parseCondition already splits IN/NOT IN values with parseArrayValues,
+    // which respects quote boundaries - an array here is already correct
+    // and must not be re-joined/re-split on ',' (that would fragment a
+    // quoted value that legitimately contains a comma). A bare string only
+    // reaches this branch from outside the parser (e.g. programmatic
+    // callers), where naive comma-splitting is the best available fallback.
+    return Array.isArray(value) ? value.map((v) => v.trim()) : value.split(',').map((v) => v.trim());
+  }
+
+  if (Array.isArray(value)) {
+    throw new Error(`Unexpected array value for operator: ${operator}`);
   }
 
   const fieldType = {
@@ -508,7 +518,13 @@ function parseCondition(state: ParseState): FilterCondition | null {
     if (values === null) {
       throw new Error('Expected value(s) for IN/NOT IN operator');
     }
-    rawValue = values.join(',');
+    // Pass the already-split, already-unquoted values through as an array
+    // rather than re-joining with ',' for convertValue to re-split: a
+    // quoted value containing a literal comma (e.g. `in ("a,b", c)`) has
+    // already had its comma consumed as content by parseArrayValues here,
+    // and joining+re-splitting on ',' would fragment it back into extra
+    // values, silently corrupting the filter.
+    rawValue = values;
   } else {
     const value = parseValue(state);
     if (value === null) {
@@ -531,6 +547,7 @@ function parseCondition(state: ParseState): FilterCondition | null {
 function parseGroup(state: ParseState): FilterGroup {
   const conditions: FilterCondition[] = [];
   let operator: LogicalOperator = '&&';
+  let sawLogicalOp = false;
   let hasParens = false;
 
   skipWhitespace(state);
@@ -564,7 +581,22 @@ function parseGroup(state: ParseState): FilterGroup {
       break;
     }
 
+    // A FilterGroup applies a single operator uniformly across all of its
+    // conditions (it is flat, not a tree), so mixing && and || within one
+    // group is inherently ambiguous: `a && b || c` could mean `(a && b) || c`
+    // or `a && (b || c)`, and silently picking one (whichever operator was
+    // seen last, historically) produces a filter the user did not write.
+    // Reject it and teach the fix instead of guessing.
+    if (sawLogicalOp && logicalOp !== operator) {
+      throw new Error(
+        `Cannot mix && and || in the same group without parentheses to disambiguate. ` +
+          `Group the higher-precedence part explicitly, e.g. write "(a && b) || c" ` +
+          `instead of "a && b || c".`,
+      );
+    }
+
     operator = logicalOp;
+    sawLogicalOp = true;
     skipWhitespace(state);
 
     // Parse next condition
@@ -1000,6 +1032,30 @@ function escapeDoubleQuotedValue(value: string): string {
 }
 
 /**
+ * True when a string value would NOT round-trip if re-serialized bare: it
+ * is empty, or contains a character `parseUnquotedValue` treats as a
+ * delimiter (whitespace, `(`, `)`, `,`, `=`, `!`, `<`, `>`, `&`, `|`) and
+ * would therefore stop reading at, silently truncating the value or
+ * splitting it into extra tokens on re-parse. `like` values are always
+ * quoted regardless (existing behavior), independent of this check.
+ */
+function valueNeedsQuoting(value: string): boolean {
+  return value === '' || /[\s(),=!<>&|'"]/.test(value);
+}
+
+/**
+ * Renders a single string value for a re-serialized filter, quoting it
+ * (double-quoted, with `escapeDoubleQuotedValue`) whenever left bare it
+ * would not round-trip through the parser - see `valueNeedsQuoting`.
+ */
+function renderFilterStringValue(value: string, operator: FilterOperator): string {
+  if (operator === 'like' || valueNeedsQuoting(value)) {
+    return `"${escapeDoubleQuotedValue(value)}"`;
+  }
+  return value;
+}
+
+/**
  * Rescales a `percentDone` filter value between this DSL's scale (a whole
  * percentage, 0-100 — the same scale `vikunja_tasks`' `percentDone` argument
  * uses) and Vikunja's stored 0-1 fraction.
@@ -1106,17 +1162,15 @@ export function conditionToString(condition: FilterCondition): string {
 
   let valueStr: string;
   if (Array.isArray(value)) {
-    valueStr = value.join(', ');
-  } else if (typeof value === 'string' && operator === 'like') {
-    valueStr = `"${escapeDoubleQuotedValue(value)}"`;
+    valueStr = value
+      .map((v) => (typeof v === 'string' ? renderFilterStringValue(v, operator) : String(v)))
+      .join(', ');
+  } else if (typeof value === 'string') {
+    valueStr = renderFilterStringValue(value, operator);
   } else if (typeof value === 'boolean') {
     valueStr = value.toString();
   } else {
     valueStr = String(value);
-  }
-
-  if (operator === 'in' || operator === 'not in') {
-    return `${apiField} ${operator} ${valueStr}`;
   }
 
   return `${apiField} ${operator} ${valueStr}`;
@@ -1158,9 +1212,11 @@ export function conditionToDslString(condition: FilterCondition): string {
 
   let valueStr: string;
   if (Array.isArray(value)) {
-    valueStr = value.join(', ');
-  } else if (typeof value === 'string' && operator === 'like') {
-    valueStr = `"${escapeDoubleQuotedValue(value)}"`;
+    valueStr = value
+      .map((v) => (typeof v === 'string' ? renderFilterStringValue(v, operator) : String(v)))
+      .join(', ');
+  } else if (typeof value === 'string') {
+    valueStr = renderFilterStringValue(value, operator);
   } else if (typeof value === 'boolean') {
     valueStr = value.toString();
   } else {

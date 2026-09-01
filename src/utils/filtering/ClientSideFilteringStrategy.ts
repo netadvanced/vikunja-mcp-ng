@@ -118,7 +118,27 @@ async function fetchProjectTasks(
   authManager: AuthManager,
   projectId: number,
   params: TaskListApiParams,
-  options: { autoPaginate: boolean; budget: TaskLoadBudget },
+  options: {
+    autoPaginate: boolean;
+    budget: TaskLoadBudget;
+    /**
+     * True only for the cross-project aggregation call site
+     * (`loadTasksAcrossProjects`), where N projects' single-request fetches
+     * (the `!autoPaginate` branch below) run concurrently via `Promise.all`
+     * and must therefore coordinate against the shared `budget` (issue #290
+     * MED-19) rather than each independently fetching a full page and only
+     * decrementing afterwards.
+     *
+     * False for the single-project call site in `execute()`: there is
+     * exactly one fetch there, so there is no concurrent-overshoot race to
+     * coordinate against, and a server that ignores `per_page` and returns
+     * far more than requested is intentionally left for the existing
+     * post-load hard limit in `FilterExecutor.executeFiltering` to catch
+     * (`actualCount > maxAllowed * 1.5` -> throws) — silently clamping it
+     * here instead would turn that into a silently-truncated success.
+     */
+    coordinateSingleRequestBudget?: boolean;
+  },
   /**
    * `orderBy`/`filterTimezone`/`filterIncludeNulls` from the original
    * `FilteringArgs`, threaded through ONLY when this is the cross-project
@@ -129,7 +149,7 @@ async function fetchProjectTasks(
    */
   extras: Pick<FilteringArgs, 'orderBy' | 'filterTimezone' | 'filterIncludeNulls'> = {},
 ): Promise<VikunjaTask[]> {
-  const { autoPaginate, budget } = options;
+  const { autoPaginate, budget, coordinateSingleRequestBudget = false } = options;
 
   const requestPage = async (page: number | undefined): Promise<VikunjaTask[]> => {
     // Client-side filtering never sends `filter` server-side (that's the whole
@@ -146,7 +166,51 @@ async function fetchProjectTasks(
   };
 
   if (!autoPaginate) {
+    if (!coordinateSingleRequestBudget) {
+      // Single call site, no concurrency to race — see the doc comment on
+      // `coordinateSingleRequestBudget` above for why this intentionally
+      // does not clamp.
+      const single = await requestPage(undefined);
+      budget.remaining -= single.length;
+      return single;
+    }
+
+    // The cross-project aggregation path: every project's fetch here is a
+    // single request, and `Promise.all` in `loadTasksAcrossProjects` fires
+    // them all concurrently — so this branch must coordinate against the
+    // SAME shared budget the auto-paginate loop below coordinates against,
+    // not just decrement it as an afterthought. A pre-check for a budget
+    // already exhausted by an earlier-resolving sibling avoids firing a
+    // request that can only be discarded; the check-slice-decrement
+    // immediately after the await is what actually matters, because it runs
+    // synchronously (no `await` in between), so concurrent projects
+    // resolving in any order still each atomically claim only what's left
+    // rather than racing past the limit together (issue #290 MED-19:
+    // previously fetched-then-decremented with no check at all, so N
+    // concurrent projects could together return N times the budget with
+    // `resultComplete` staying a silent `true`).
+    if (budget.remaining <= 0) {
+      budget.truncated = true;
+      budget.warnings.push(
+        `Project ${projectId}: stopped loading at the ${getMaxTasksLimit()}-task limit ` +
+          `(VIKUNJA_MAX_TASKS_LIMIT); more tasks exist that are not in this result.`,
+      );
+      return [];
+    }
+
     const single = await requestPage(undefined);
+
+    if (single.length > budget.remaining) {
+      const clamped = single.slice(0, budget.remaining);
+      budget.remaining = 0;
+      budget.truncated = true;
+      budget.warnings.push(
+        `Project ${projectId}: stopped loading at the ${getMaxTasksLimit()}-task limit ` +
+          `(VIKUNJA_MAX_TASKS_LIMIT); more tasks exist that are not in this result.`,
+      );
+      return clamped;
+    }
+
     budget.remaining -= single.length;
     return single;
   }
@@ -316,6 +380,15 @@ async function loadTasksAcrossProjects(
   const safeProjects = await loadAllProjects(authManager, options.budget);
   const skipped: number[] = [];
 
+  // Coordination (issue #290 MED-19) only matters once there is more than
+  // one project to race: a single project's single-request fetch has no
+  // sibling to overshoot the budget alongside, so it stays on the same
+  // "bypass and let the downstream hard limit catch a gross overshoot" path
+  // the lone single-project call site in `execute()` uses (see
+  // `coordinateSingleRequestBudget`'s doc comment) rather than silently
+  // truncating a result the caller's own explicit page/perPage asked for.
+  const coordinateSingleRequestBudget = safeProjects.length > 1;
+
   const perProject = await Promise.all(
     safeProjects.map(async (project): Promise<VikunjaTask[]> => {
       const projectId = project.id;
@@ -324,7 +397,13 @@ async function loadTasksAcrossProjects(
         return [];
       }
       try {
-        return await fetchProjectTasks(authManager, projectId, params, options, extras);
+        return await fetchProjectTasks(
+          authManager,
+          projectId,
+          params,
+          { ...options, coordinateSingleRequestBudget },
+          extras,
+        );
       } catch (error) {
         logger.warn('Skipping a project that failed during all-projects task aggregation', {
           projectId,
@@ -345,15 +424,13 @@ async function loadTasksAcrossProjects(
   }
 
   // No extra aggregate clamp is needed here: projects are fetched
-  // concurrently, but the budget check and its decrement in
-  // `fetchProjectTasks` are a synchronous pair, so no project can observe
-  // room that another has already claimed. `budget.remaining` is therefore a
-  // real ceiling on the total, not an approximate one.
-  //
-  // (A caller who supplied explicit page/perPage bypasses the budget entirely
-  // and gets exactly what the server returned, so the pre-existing post-load
-  // memory validation in `FilterExecutor.executeFiltering` still sees the
-  // true count rather than one this function already trimmed.)
+  // concurrently, but in `fetchProjectTasks` the budget check and its
+  // decrement (whether that's the auto-paginate loop's per-page check or the
+  // single-request branch's check-slice-decrement, issue #290 MED-19) are
+  // always a synchronous pair with no `await` between them, so no project
+  // can observe room that another has already claimed. `budget.remaining` is
+  // therefore a real ceiling on the total in both cases, not an approximate
+  // one.
   return perProject.flat();
 }
 

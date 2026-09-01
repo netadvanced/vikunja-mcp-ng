@@ -301,6 +301,38 @@ describe('incomplete filtered results are never reported as a clean success', ()
       expect(result.metadata.warnings?.join(' ')).toContain('100-task limit');
     });
 
+    // Regression for issue #290 MED-19: a caller who supplies an explicit
+    // page/perPage disables auto-pagination (`autoPaginate: false`), so each
+    // project's fetch is a single request. Before the fix, that single-shot
+    // branch fetched first and decremented the shared budget only AFTER
+    // returning the full page, with no check and no clamp — so N projects
+    // fetched concurrently could together return N times the budget with
+    // `resultComplete` staying a silent `true`. The fix clamps each
+    // project's single page to whatever budget remains at the moment its
+    // own fetch resolves, the same way the auto-paginate loop already does.
+    it('clamps the concurrent multi-project aggregate to the budget even with an explicit page/perPage (autoPaginate: false, #290 MED-19)', async () => {
+      process.env.VIKUNJA_MAX_TASKS_LIMIT = '50';
+      serverWith({
+        clamp: 50,
+        projects: [1, 2, 3],
+        tasksPerProject: { 1: 40, 2: 40, 3: 40 },
+      });
+
+      const result = await new ClientSideFilteringStrategy().execute({
+        args: { allProjects: true, page: 1, perPage: 40 },
+        filterExpression: null,
+        filterString: undefined,
+        params: { page: 1, per_page: 40 },
+        authManager,
+      });
+
+      // 3 projects x 40 tasks = 120 available; the budget must hold at 50.
+      expect(result.tasks.length).toBeLessThanOrEqual(50);
+      expect(result.tasks).toHaveLength(50);
+      expect(result.metadata.resultComplete).toBe(false);
+      expect(result.metadata.warnings?.join(' ')).toContain('50-task limit');
+    });
+
     it('stops at the per-project page ceiling and says so', async () => {
       // A server handing out one task per page can never exhaust the task
       // budget in a sane number of requests; the page ceiling is the guard
