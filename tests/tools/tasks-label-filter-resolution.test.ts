@@ -105,19 +105,30 @@ describe('label filters — title to id resolution (issue #227)', () => {
       expect(restMock).toHaveBeenCalledTimes(1);
     });
 
-    it('leaves a numeric label filter alone and issues no lookup at all', async () => {
+    it('falls back to numeric-as-id when no label is titled that numeral (issue #324)', async () => {
+      // No label titled "100" or "101" exists, so both values fall back to
+      // being treated as literal ids — but only AFTER checking, never on
+      // sight (see the next describe block for the case where a label
+      // really is titled a numeral, which this same lookup must catch).
+      restMock.mockResolvedValue([]);
+
       const result = await FilterValidator.validateAndParseFilter(
         { filter: 'labels in 100, 101' } as TaskListingArgs,
         storage,
         authManager,
       );
 
-      expect(restMock).not.toHaveBeenCalled();
+      expect(restMock).toHaveBeenCalledWith(authManager, 'GET', '/labels?s=100');
+      expect(restMock).toHaveBeenCalledWith(authManager, 'GET', '/labels?s=101');
       expect(result.filterString).toBe('labels in 100, 101');
     });
 
-    it('resolves only the titles in a mixed id/title list, leaving the ids as given', async () => {
-      restMock.mockResolvedValue([{ id: 100, title: 'HU' }]);
+    it('resolves the titles in a mixed id/title list, leaving a genuinely-unmatched numeral as an id', async () => {
+      restMock.mockImplementation((_auth: unknown, _method: string, path: string) =>
+        Promise.resolve(
+          path === '/labels?s=HU' ? [{ id: 100, title: 'HU' }] : ([] as unknown[]),
+        ),
+      );
 
       const result = await FilterValidator.validateAndParseFilter(
         { filter: "labels in 42, 'HU'" } as TaskListingArgs,
@@ -125,7 +136,7 @@ describe('label filters — title to id resolution (issue #227)', () => {
         authManager,
       );
 
-      expect(restMock).toHaveBeenCalledTimes(1);
+      expect(restMock).toHaveBeenCalledTimes(2);
       expect(result.filterString).toBe('labels in 42, 100');
     });
 
@@ -227,6 +238,49 @@ describe('label filters — title to id resolution (issue #227)', () => {
 
       expect(restMock).not.toHaveBeenCalled();
       expect(result.filterExpression?.groups[0]?.conditions[0]?.value).toEqual(['HU']);
+    });
+  });
+
+  describe('a numeric-looking value is a title first, an id only as fallback (issue #324)', () => {
+    it('resolves a label whose TITLE is a numeral to that label — not to "id 123"', async () => {
+      // A label literally titled "123" exists with a DIFFERENT numeric id.
+      // The old behaviour short-circuited on `Number('123')` being finite
+      // and used 123 as the id outright, silently ignoring this label.
+      restMock.mockResolvedValue([{ id: 999, title: '123' }]);
+
+      const result = await FilterValidator.validateAndParseFilter(
+        { filter: 'labels in 123' } as TaskListingArgs,
+        storage,
+        authManager,
+      );
+
+      expect(restMock).toHaveBeenCalledWith(authManager, 'GET', '/labels?s=123');
+      expect(result.filterString).toBe('labels in 999');
+    });
+
+    it('still accepts a genuine numeric id when no label is titled that numeral', async () => {
+      restMock.mockResolvedValue([]);
+
+      const result = await FilterValidator.validateAndParseFilter(
+        { filter: 'labels in 999' } as TaskListingArgs,
+        storage,
+        authManager,
+      );
+
+      expect(result.filterString).toBe('labels in 999');
+    });
+
+    it('treats a scientific-notation-looking title (e.g. "1e2") as a title lookup too', async () => {
+      restMock.mockResolvedValue([{ id: 42, title: '1e2' }]);
+
+      const result = await FilterValidator.validateAndParseFilter(
+        { filter: "labels in '1e2'" } as TaskListingArgs,
+        storage,
+        authManager,
+      );
+
+      expect(restMock).toHaveBeenCalledWith(authManager, 'GET', '/labels?s=1e2');
+      expect(result.filterString).toBe('labels in 42');
     });
   });
 

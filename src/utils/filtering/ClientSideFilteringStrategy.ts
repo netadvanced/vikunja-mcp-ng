@@ -61,6 +61,95 @@ function createBudget(): TaskLoadBudget {
 const MAX_PAGES_PER_PROJECT = 500;
 
 /**
+ * Default cap on how many projects' task fetches run at once in
+ * `loadTasksAcrossProjects`. See {@link CROSS_PROJECT_CONCURRENCY_ENV_VAR}
+ * for the override and `mapWithConcurrency`'s doc comment for why this
+ * exists (issue #324).
+ */
+const DEFAULT_CROSS_PROJECT_CONCURRENCY = 10;
+
+/** Env var that overrides {@link DEFAULT_CROSS_PROJECT_CONCURRENCY}. */
+const CROSS_PROJECT_CONCURRENCY_ENV_VAR = 'VIKUNJA_CROSS_PROJECT_CONCURRENCY';
+
+/**
+ * Hard upper bound for the override — past this, a "tuning" value is
+ * indistinguishable from just disabling the cap again.
+ */
+const MAX_CROSS_PROJECT_CONCURRENCY = 50;
+
+/**
+ * Reads {@link CROSS_PROJECT_CONCURRENCY_ENV_VAR}, falling back to
+ * {@link DEFAULT_CROSS_PROJECT_CONCURRENCY} for anything unset, non-numeric,
+ * non-finite, or out of range — the same defend-then-fall-back shape
+ * `getBulkWriteConcurrency` (src/tools/tasks/bulk-operations-simplified.ts)
+ * uses for its own env override.
+ */
+function getCrossProjectConcurrency(): number {
+  const raw = process.env[CROSS_PROJECT_CONCURRENCY_ENV_VAR];
+  if (raw === undefined || raw.trim() === '') return DEFAULT_CROSS_PROJECT_CONCURRENCY;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) {
+    logger.warn(
+      `Ignoring invalid ${CROSS_PROJECT_CONCURRENCY_ENV_VAR} (must be an integer >= 1): ${raw}`,
+    );
+    return DEFAULT_CROSS_PROJECT_CONCURRENCY;
+  }
+  return Math.min(parsed, MAX_CROSS_PROJECT_CONCURRENCY);
+}
+
+/**
+ * Runs `fn` over `items` with at most `limit` invocations in flight at once,
+ * preserving each result's position (like `Promise.all(items.map(fn))`, but
+ * bounded).
+ *
+ * Why this exists (issue #324). `loadTasksAcrossProjects` used a bare
+ * `Promise.all(safeProjects.map(...))` to fetch every accessible project's
+ * tasks for the "all projects" aggregate. `Array.prototype.map` invokes its
+ * callback for every element synchronously before any promise settles, so
+ * ALL N projects' GET requests fired essentially simultaneously regardless
+ * of N. The per-project budget coordination added for #290 MED-19 (see
+ * `coordinateSingleRequestBudget`) already makes the final task COUNT
+ * correct no matter how many projects race — that stays untouched here. What
+ * was never bounded is fan-out itself: a user with, say, 200 accessible
+ * projects triggered 200 concurrent upstream requests and 200 in-flight
+ * per-project result arrays at once, scaling peak transient memory and peak
+ * concurrent load with project count alone.
+ *
+ * A tiny inline pool rather than reusing `BatchProcessor`
+ * (src/utils/performance/batch-processor.ts) deliberately: that class is a
+ * process-wide singleton with metrics/logging built around WRITE batching
+ * (bulk update/delete/create), and instantiating one per call would give
+ * every read-side cross-project fetch its own throwaway semaphore instance —
+ * exactly the per-call-limit mistake that class's own doc comment (issue
+ * #288) says was fixed for the write side. This helper is scoped to the one
+ * read-side call site that needs it and carries no shared state across
+ * calls, which is the right shape here: unlike the bulk-write processors,
+ * there is nothing this call site needs to coordinate across requests.
+ */
+async function mapWithConcurrency<TInput, TOutput>(
+  items: TInput[],
+  limit: number,
+  fn: (item: TInput) => Promise<TOutput>,
+): Promise<TOutput[]> {
+  const results: TOutput[] = new Array<TOutput>(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      const item = items[index] as TInput;
+      results[index] = await fn(item);
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return results;
+}
+
+/**
  * The server's own `service.maxitemsperpage`, read from the cached `GET
  * /info` payload (`max_items_per_page`) when the session has one.
  *
@@ -124,10 +213,10 @@ async function fetchProjectTasks(
     /**
      * True only for the cross-project aggregation call site
      * (`loadTasksAcrossProjects`), where N projects' single-request fetches
-     * (the `!autoPaginate` branch below) run concurrently via `Promise.all`
-     * and must therefore coordinate against the shared `budget` (issue #290
-     * MED-19) rather than each independently fetching a full page and only
-     * decrementing afterwards.
+     * (the `!autoPaginate` branch below) run concurrently, bounded by
+     * `mapWithConcurrency`'s cap (issue #324), and must therefore coordinate
+     * against the shared `budget` (issue #290 MED-19) rather than each
+     * independently fetching a full page and only decrementing afterwards.
      *
      * False for the single-project call site in `execute()`: there is
      * exactly one fetch there, so there is no concurrent-overshoot race to
@@ -176,8 +265,9 @@ async function fetchProjectTasks(
     }
 
     // The cross-project aggregation path: every project's fetch here is a
-    // single request, and `Promise.all` in `loadTasksAcrossProjects` fires
-    // them all concurrently — so this branch must coordinate against the
+    // single request, and `mapWithConcurrency` in `loadTasksAcrossProjects`
+    // fires up to its concurrency cap of them at once (issue #324) — so this
+    // branch must coordinate against the
     // SAME shared budget the auto-paginate loop below coordinates against,
     // not just decrement it as an afterthought. A pre-check for a budget
     // already exhausted by an earlier-resolving sibling avoids firing a
@@ -389,8 +479,15 @@ async function loadTasksAcrossProjects(
   // truncating a result the caller's own explicit page/perPage asked for.
   const coordinateSingleRequestBudget = safeProjects.length > 1;
 
-  const perProject = await Promise.all(
-    safeProjects.map(async (project): Promise<VikunjaTask[]> => {
+  // Bounded fan-out (issue #324): see `mapWithConcurrency`'s doc comment.
+  // This only caps how many project fetches are IN FLIGHT at once — the
+  // budget coordination below (#290 MED-19) is unaffected either way, since
+  // it was already safe under unbounded concurrency and stays exactly as
+  // strict under bounded concurrency.
+  const perProject = await mapWithConcurrency(
+    safeProjects,
+    getCrossProjectConcurrency(),
+    async (project): Promise<VikunjaTask[]> => {
       const projectId = project.id;
       // Skip pseudo-projects (e.g. Favorites uses a negative id) to avoid duplicate tasks.
       if (typeof projectId !== 'number' || projectId <= 0) {
@@ -412,7 +509,7 @@ async function loadTasksAcrossProjects(
         skipped.push(projectId);
         return [];
       }
-    }),
+    },
   );
 
   if (skipped.length > 0) {
