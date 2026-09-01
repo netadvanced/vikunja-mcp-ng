@@ -217,20 +217,59 @@ describe('Consolidated Filter Utilities', () => {
       expect(result).toBe('done = true');
     });
 
-    it('should quote string values only for the like operator', () => {
+    it('should quote string values for the like operator', () => {
       const likeCondition: FilterCondition = {
         field: 'title',
         operator: 'like',
         value: 'test task',
       };
       expect(conditionToString(likeCondition)).toBe('title like "test task"');
+    });
 
+    it('should leave a plain unquoted string value bare for =', () => {
+      const eqCondition: FilterCondition = {
+        field: 'title',
+        operator: '=',
+        value: 'simple',
+      };
+      expect(conditionToString(eqCondition)).toBe('title = simple');
+    });
+
+    it('should quote a string value containing spaces for = so it round-trips (#290 MED-4)', () => {
       const eqCondition: FilterCondition = {
         field: 'title',
         operator: '=',
         value: 'test task',
       };
-      expect(conditionToString(eqCondition)).toBe('title = test task');
+      const serialized = conditionToString(eqCondition);
+      expect(serialized).toBe('title = "test task"');
+
+      // Round-trip: re-parsing the serialized filter must recover the same value.
+      const parsed = parseFilterString(serialized);
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.expression?.groups[0]?.conditions[0]).toEqual({
+        field: 'title',
+        operator: '=',
+        value: 'test task',
+      });
+    });
+
+    it('should quote a string value containing spaces for != so it round-trips (#290 MED-4)', () => {
+      const neCondition: FilterCondition = {
+        field: 'title',
+        operator: '!=',
+        value: 'foo bar',
+      };
+      const serialized = conditionToString(neCondition);
+      expect(serialized).toBe('title != "foo bar"');
+
+      const parsed = parseFilterString(serialized);
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.expression?.groups[0]?.conditions[0]).toEqual({
+        field: 'title',
+        operator: '!=',
+        value: 'foo bar',
+      });
     });
 
     it('should join array values with commas', () => {

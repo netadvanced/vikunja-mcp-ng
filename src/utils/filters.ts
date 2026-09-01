@@ -1032,6 +1032,30 @@ function escapeDoubleQuotedValue(value: string): string {
 }
 
 /**
+ * True when a string value would NOT round-trip if re-serialized bare: it
+ * is empty, or contains a character `parseUnquotedValue` treats as a
+ * delimiter (whitespace, `(`, `)`, `,`, `=`, `!`, `<`, `>`, `&`, `|`) and
+ * would therefore stop reading at, silently truncating the value or
+ * splitting it into extra tokens on re-parse. `like` values are always
+ * quoted regardless (existing behavior), independent of this check.
+ */
+function valueNeedsQuoting(value: string): boolean {
+  return value === '' || /[\s(),=!<>&|'"]/.test(value);
+}
+
+/**
+ * Renders a single string value for a re-serialized filter, quoting it
+ * (double-quoted, with `escapeDoubleQuotedValue`) whenever left bare it
+ * would not round-trip through the parser - see `valueNeedsQuoting`.
+ */
+function renderFilterStringValue(value: string, operator: FilterOperator): string {
+  if (operator === 'like' || valueNeedsQuoting(value)) {
+    return `"${escapeDoubleQuotedValue(value)}"`;
+  }
+  return value;
+}
+
+/**
  * Rescales a `percentDone` filter value between this DSL's scale (a whole
  * percentage, 0-100 — the same scale `vikunja_tasks`' `percentDone` argument
  * uses) and Vikunja's stored 0-1 fraction.
@@ -1138,17 +1162,15 @@ export function conditionToString(condition: FilterCondition): string {
 
   let valueStr: string;
   if (Array.isArray(value)) {
-    valueStr = value.join(', ');
-  } else if (typeof value === 'string' && operator === 'like') {
-    valueStr = `"${escapeDoubleQuotedValue(value)}"`;
+    valueStr = value
+      .map((v) => (typeof v === 'string' ? renderFilterStringValue(v, operator) : String(v)))
+      .join(', ');
+  } else if (typeof value === 'string') {
+    valueStr = renderFilterStringValue(value, operator);
   } else if (typeof value === 'boolean') {
     valueStr = value.toString();
   } else {
     valueStr = String(value);
-  }
-
-  if (operator === 'in' || operator === 'not in') {
-    return `${apiField} ${operator} ${valueStr}`;
   }
 
   return `${apiField} ${operator} ${valueStr}`;
@@ -1190,9 +1212,11 @@ export function conditionToDslString(condition: FilterCondition): string {
 
   let valueStr: string;
   if (Array.isArray(value)) {
-    valueStr = value.join(', ');
-  } else if (typeof value === 'string' && operator === 'like') {
-    valueStr = `"${escapeDoubleQuotedValue(value)}"`;
+    valueStr = value
+      .map((v) => (typeof v === 'string' ? renderFilterStringValue(v, operator) : String(v)))
+      .join(', ');
+  } else if (typeof value === 'string') {
+    valueStr = renderFilterStringValue(value, operator);
   } else if (typeof value === 'boolean') {
     valueStr = value.toString();
   } else {
