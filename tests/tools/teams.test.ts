@@ -154,6 +154,38 @@ describe('Teams Tool', () => {
       expect(markdown).toContain('Retrieved 2 teams');
     });
 
+    // Regression for issue #289 / HIGH-18 spot-check: a page the caller
+    // didn't pin themselves that comes back exactly full cannot be told
+    // apart from "that's every team" without a completeness signal.
+    it('warns when an unpinned page comes back exactly at the server page cap', async () => {
+      const fullPage = Array.from({ length: 50 }, (_, i) => ({
+        ...mockTeam,
+        id: i + 1,
+        name: `Team ${i + 1}`,
+      }));
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: fullPage })) as any;
+
+      const result = await callTool('list');
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('INCOMPLETE RESULT');
+      expect(markdown).toContain('Retrieved 50 teams');
+    });
+
+    it('does not warn when the caller pinned an explicit page even if it comes back full', async () => {
+      const fullPage = Array.from({ length: 50 }, (_, i) => ({
+        ...mockTeam,
+        id: i + 1,
+        name: `Team ${i + 1}`,
+      }));
+      global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: fullPage })) as any;
+
+      const result = await callTool('list', { page: 1, perPage: 50 });
+
+      const markdown = result.content[0].text;
+      expect(markdown).not.toContain('INCOMPLETE RESULT');
+    });
+
     it('should support pagination parameters', async () => {
       global.fetch = jest.fn().mockResolvedValue(mockFetchResponse({ body: [mockTeam] })) as any;
 

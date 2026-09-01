@@ -101,6 +101,28 @@ describe('Attachments read-side subcommands', () => {
       expect(parsed.searchParams.get('per_page')).toBe('10');
     });
 
+    // Regression for issue #289 / HIGH-18 spot-check: a page the caller
+    // didn't pin themselves that comes back exactly full cannot be told
+    // apart from "that's everyone" without a completeness signal.
+    it('warns when an unpinned page comes back exactly at the server page cap', async () => {
+      fetchMock.mockResolvedValue(
+        restOk(
+          Array.from({ length: 50 }, (_, i) => ({
+            id: i + 1,
+            task_id: 42,
+            file: { id: i + 1, name: `f${i + 1}.txt` },
+          })),
+        ),
+      );
+
+      const result = await listAttachments({ id: 42 }, authManager);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('INCOMPLETE RESULT');
+      expect(markdown).toContain('Task 42 has 50 attachment(s)');
+    });
+
     it('omits the query string when no pagination is supplied', async () => {
       fetchMock.mockResolvedValue(restOk([]));
 

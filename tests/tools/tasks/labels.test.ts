@@ -713,6 +713,20 @@ describe('Label operations', () => {
       expect(result.content[0].text).toContain('Task has 1 label(s)');
     });
 
+    // Regression for issue #289 / HIGH-18 spot-check: this call site never
+    // exposed page/perPage to its caller at all, so a full page could never
+    // be told apart from "that's every label on the task" without this
+    // signal.
+    it('warns when the labels page comes back exactly at the server page cap', async () => {
+      fetchMock.mockResolvedValue(
+        restOk(Array.from({ length: 50 }, (_, i) => ({ id: i + 1, title: `label${i + 1}` }))),
+      );
+      const result = await listTaskLabels({ id: 1 }, authManager);
+
+      expect(result.content[0].text).toContain('INCOMPLETE RESULT');
+      expect(result.content[0].text).toContain('Task has 50 label(s)');
+    });
+
     it('should throw error if task id is missing', async () => {
       await expect(listTaskLabels({}, authManager)).rejects.toThrow(MCPError);
     });
