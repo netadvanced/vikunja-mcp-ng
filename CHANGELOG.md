@@ -8,8 +8,40 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
-### Fixed
+## [0.7.0-beta.3] - 2026-09-01
 
+**A security and reliability hardening pass, not a feature release.** Two independent code
+reviews (tag `audit-final-20260831`) found 36 confirmed defects across credential handling,
+multi-tenant isolation, silent data loss, and listings or filters that answered wrong and
+called it success. All 36 are fixed here, closed and independently re-verified against the
+merged tree, tracked in #297. Five more issues surfaced while fixing them, or were pulled in
+deliberately once the queue was already open, and are fixed or documented alongside. Nothing
+in this release changes what you send this server or how you read its responses; every entry
+below is either a defect that is now closed or a response that is now honest where it used
+to overstate itself. 2.6.0 alignment (#237, #254) is deliberately not part of this release;
+see that issue for why bundling it here was rejected.
+
+### Security
+
+- **The credential vault's AES-GCM encryption now actually authenticates what it
+  encrypts.** Only `ciphertext`/`iv`/`authTag` were covered by the GCM auth tag; the
+  plaintext `vikunjaUrl` field and the record's identity key were not bound to it. Someone
+  who could write the vault file, the exact threat the encryption exists to survive, could
+  retarget `vikunjaUrl` to a host they control (the victim's next request then decrypts
+  their real `tk_*` token straight to that host) or splice one identity's ciphertext under
+  another identity's key so it decrypts transparently as theirs. Records now bind
+  `identityKey(identity) + vikunjaUrl` as GCM AAD under a bumped `keyVersion`;
+  older `keyVersion 1` records still decrypt (no AAD, with a one-time re-provision warning)
+  rather than breaking outright. (#262)
+- **A rejected error's raw text could leak into a different oidc-http request's
+  response.** The shared error sanitizer used a stateful global (`/g`) regex; JavaScript's
+  own `lastIndex` bookkeeping on that pattern meant one request's error text could surface
+  in the *next* request's response, a cross-tenant information leak. Reproduced live.
+  Fixed by removing the shared mutable state. Alongside it: thrown error text and REST
+  error-body passthrough now go through the same secret-redaction pass the logger already
+  applied, closing a gap where a bare JWT or credential embedded in an error could reach a
+  client unredacted even though the log stream was already protected. (#292 MED-8, MED-18;
+  #287)
 - **Per-identity rate limiting now covers the whole tool surface, and its windows
   actually rotate.** Three defects, one guarantee. (1) Of the roughly two dozen tools this
   server registers, only `vikunja_auth` was wrapped in the rate-limit middleware, so in
@@ -17,24 +49,249 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
   identity. Every tool now registers through a rate-limiting view of the MCP server, so
   being registered is what makes a tool metered. (2) Where the middleware was wired it did
   not work: the counter store was never given its window length, so no window ever expired
-  and "60 requests per minute" was really 60 per process lifetime — the 61st call ever made
-  returned a misleading 429 until the server restarted. (3) The hourly limit was counted in
-  one place and read from another, so it could never trip. This matters beyond one user's
-  own budget: `docs/ROADMAP.md` decision 16(c) accepts sharing circuit breakers across
-  accounts specifically because per-user rate limits are supposed to contain a noisy
+  and "60 requests per minute" was really 60 per process lifetime, and the 61st call ever
+  made returned a misleading 429 until the server restarted. (3) The hourly limit was
+  counted in one place and read from another, so it could never trip. This matters beyond
+  one user's own budget: `docs/ROADMAP.md` decision 16(c) accepts sharing circuit breakers
+  across accounts specifically because per-user rate limits are supposed to contain a noisy
   neighbour, and until now they did not. `vikunja_task_bulk` also moves to the bulk budget,
-  where it belongs. (#263)
-- **"Reset this user's rate limits" no longer resets everyone's.** `clearSession(sessionId)`
-  ignored the id it was given and cleared every identity's counters plus both shared circuit
-  breakers. It has no callers today, which is exactly why it is fixed now rather than after
-  something starts calling it. (#296, LOW-18)
-- **A tool call that hits its execution deadline now actually cancels the work.** The
-  deadline was a timer that was never cleared (so a fast call left one armed for up to the
-  full timeout, ten minutes for exports) and that did nothing to the operation it timed out
-  — the caller was told the call timed out while the request kept running and could still
-  commit a write. The deadline now aborts the in-flight HTTP request, reports honestly that
-  the outcome is unknown and should be re-checked rather than blindly retried, and does not
-  count against the shared circuit breakers. (#296, LOW-20)
+  where it belongs. Two smaller fixes on the same middleware: `clearSession(sessionId)` now
+  actually scopes to the given id instead of wiping every identity's counters and both
+  shared breakers, and a tool call that hits its execution deadline now actually cancels
+  the in-flight request instead of leaving an uncleared timer running behind a caller who
+  was told it timed out. (#263; #296 LOW-18, LOW-20)
+- **JWT-only tools (`vikunja_admin`, `vikunja_users`, `vikunja_export`, user deletion) now
+  gate on the caller's own resolved identity, not a process-global auth manager.** In a
+  mixed-credential oidc-http deployment (legacy `VIKUNJA_URL`/`VIKUNJA_API_TOKEN` env vars
+  set alongside oidc-http mode), the old gate could register dangerous tools for every
+  caller regardless of their own credential type, or hide them from a caller who should
+  have had access. Registration and every per-call gate, plus `vikunja_auth`
+  `info`/`refresh`'s capability probe, now resolve the same per-identity manager the REST
+  layer already used correctly. Two smaller auth fixes rode along: `vikunja_auth connect`
+  against an already-connected URL now actually compares and stores a newly supplied
+  token instead of silently no-op'ing (which broke the tool's own documented refresh
+  flow), and `vikunja_users search` no longer drops every result's display name (it was
+  reading `name` from a `settings` shape that `GET /users` doesn't return). (#270, #282;
+  #276; #281)
+
+### Fixed: data loss and duplicate writes
+
+- **Bulk-updating assignees had three independent ways to silently wipe them.** The
+  workaround that exists specifically to survive a server-side assignee-wipe bug had its
+  own bugs: a failed pre-update snapshot read let that task's assignees be wiped with no
+  warning; an honesty-check that could throw after the destructive write but before the
+  restore step let the fallback re-fetch and preserve the already-wiped state; and the
+  per-task path added new assignees then deleted old ones without excluding the overlap,
+  so re-assigning to an overlapping set could drop a shared member. All three closed.
+  Alongside it: the `BatchProcessor` singletons behind every bulk operation were
+  process-wide but built a fresh concurrency semaphore per call, so the "at most one
+  concurrent create" guarantee held only within a single request, not across concurrent
+  oidc-http callers, reopening the SQLite lock cascade this server already fixed once for
+  a single caller, now cross-tenant. The semaphore is now shared per processor, live
+  concurrency serializes correctly, and its previously-meaningless utilization metric now
+  reflects real busy time. (#267; #288, #296 LOW-17)
+- **Templates persisted to disk could silently vanish, or overwrite another identity's
+  saved templates.** Three related bugs, closed together because the first is what turned
+  the second into a guarantee. `FilterStorageManager` never bumped a session's last-access
+  time on lookup, so an active session could be evicted by the idle sweep; on return it
+  got a fresh empty store, `list` reported "0 templates" while the file still had them,
+  and the very next `create` overwrote the disk file with that near-empty set, destroying
+  everything. Separately, the persisted record shape carried no identity field at all: in
+  OIDC mode, one identity's first touch hydrated every identity's templates into their
+  session, and each write persisted only that session's set over the whole file, so
+  concurrent identities could silently erase each other's saved templates. Records are now
+  identity-scoped end to end, with a write mutex against concurrent persists, and the
+  eviction race is fixed at its source (`getStorage` now bumps last-access on every
+  lookup, not just writes). A fourth fix in the same area: `vikunja_templates instantiate`
+  now reports failure when any task or label attach fails during instantiation, instead of
+  always reporting success while burying the failures in a field nothing surfaces. (#264,
+  #293 MED-11; #265; #271)
+- **The credential vault could destroy every other user's stored token, or silently drift
+  out of sync with disk.** A transiently unreadable vault file (permissions, a bad edit)
+  was cached as an empty map forever; the next successful provision then wrote that
+  near-empty map back, permanently deleting every other identity's credential with only a
+  startup log line as a trace. The vault now refuses to write back while a load is known
+  incomplete. Two related fixes: `provision`/`deprovision` now mutate the in-memory cache
+  only after the write to disk succeeds, so a thrown write error can no longer leave memory
+  and disk permanently disagreeing about who is (de)provisioned; and `vikunja_auth status`
+  now reports `provisioned` based on whether a record actually decrypts, not merely
+  whether it's present in the map, so a record that can no longer be decrypted (a
+  master-key mismatch) is no longer reported as a working connection. Vault and template
+  atomic writes now also `fsync` before and after rename, so a "successful" write survives
+  a power loss. (#266; #277; #278; #293 LOW-10)
+- **An aborted batch import discarded the record of what it had already created, and
+  reported the whole thing as a plain success.** With `skipErrors` unset, a mid-batch
+  failure re-threw and discarded the partial result, the response never mentioned the
+  tasks that had already landed, and unlike every other tool here batch-import converted
+  the failure into success-shaped content instead of an actual error, so a client checking
+  `isError` saw a clean success. The natural next move, retrying the whole import, then
+  duplicated everything that already succeeded. Aborts now surface as a real error carrying
+  the partial-result summary. (#269)
+
+### Fixed: multi-tenant isolation
+
+- **Several process-wide caches and one identity delimiter were shared or ambiguous
+  across tenants.** The webhook event-validation cache was shared across identities that
+  might be provisioned against entirely different Vikunja servers; it's now keyed by
+  identity. OIDC identity values (`sub`, the derived `identityKey`) appeared unmasked in
+  logs even though the redaction layer already protected secrets; they're now masked the
+  same way. The `issuer|sub` identity-key delimiter was unescaped (safe today with one
+  allowlisted issuer, a latent collision risk with a second); it's now escaped. A
+  credential-shape heuristic in the log sanitizer was flagging harmless strings like
+  version numbers and REST paths as credentials; it's narrower now without weakening real
+  detection. A security cache advertised a 10,000-entry cap it never enforced, a slow
+  memory leak in long-running processes; the cap is now real (LRU eviction). And the
+  protected-resource discovery metadata endpoint reflected an unvalidated `Host` /
+  `X-Forwarded-Proto` when `http.publicUrl` was unset; it now validates against the
+  existing DNS-rebinding allowlist. (#292 MED-9, MED-15, LOW-11, LOW-13, LOW-14, LOW-19)
+  `docs/CONFIGURATION.md` and `docs/OIDC-RESOURCE-SERVER.md` now also state explicitly
+  that `oidc-http` mode with vault persistence is single-process; a cross-process
+  last-writer-wins race was confirmed but is out of scope for a topology this project
+  doesn't claim to support (#292 MED-16).
+
+### Fixed: answers that were wrong, partial, or quietly ignored
+
+- **Listings silently truncated at Vikunja's page clamp and called it the whole
+  answer.** Both server-driven filtering strategies (cross-project and single-project)
+  issued one request each and never checked whether the page came back full; Vikunja
+  clamps `per_page` server-side (default 50), so "list all my tasks" on a 193-task account
+  quietly returned 50 with no signal 143 were missing. Both strategies now paginate through
+  and set `resultComplete: false` when a caller-supplied page limit stops early. The same
+  pattern recurred in `vikunja_notifications list`, `list-comments`, and (spot-checked and
+  fixed where confirmed) `list-assignees`/`list-attachments`/`list-labels`/`list-teams`; all
+  now carry the same completeness signal. A compounding bug in the same code: a filter
+  mixing a server-side group with a `done` condition never folded `done` into the
+  server-side filter at all, so it silently post-filtered an already-truncated page; `done`
+  is now part of the server-side filter expression. Three smaller listing-honesty fixes
+  from the same pass: a client-side aggregation branch could drop tasks near the collection
+  budget without flagging truncation, `orderBy`/`filterTimezone`/`filterIncludeNulls` could
+  be silently dropped by the cross-project fallback on any failure cause, and a
+  single-project listing that silently ignores cross-project-only params now says so.
+  (#268; #289; #290 MED-6, MED-7, LOW-3)
+- **A live-verified fix, not a guess: `vikunja_notifications mark-read` was not actually
+  marking anything read.** Confirmed against two independent Vikunja 2.4.0 stacks
+  (postgres and a freshly provisioned sqlite instance, ruling out stale state on one
+  container): sending the toggle with the empty body the API spec documents never
+  persisted the change, no matter how many times it was called. Sniffing Vikunja's own
+  frontend showed it sends an explicit `{"read": true}` body instead, which does persist.
+  `mark-read` now sends that, keeps its existing retry-once fallback for defense, and
+  surfaces a warning in its response rather than a silent success if confirmation still
+  fails after both attempts. A related bug in the same tool: Vikunja's zero-time
+  `read_at` sentinel could make `unreadOnly` filtering and mark-read idempotency both
+  behave wrong, since the code checked `read_at` truthiness instead of the response's own
+  `read` boolean; also confirmed live and fixed. (#314; #289 HIGH-18, #286)
+- **The filter parser silently collapsed a mixed `&&`/`||` expression into one
+  operator, and re-serialization could corrupt values on the way back out.**
+  `priority = 5 && done = false || priority = 4`, the natural way to write this without
+  parentheses, parsed into a single group whose operator got overwritten by whichever
+  logical operator was seen last, silently changing the query's meaning. Unparenthesized
+  mixed operators are now a teaching error instead. Two adjacent bugs: quoted string values
+  lost their quotes on re-serialization (breaking the round-trip for any value containing a
+  space), and a quoted `in`/`not in` value containing a comma was silently re-split into
+  extra values; both now respect quote boundaries. The client-side date evaluator also
+  treated Vikunja's zero-date sentinel as a real `dueDate` (already handled correctly for
+  the other three date fields), so an "overdue" filter falling back to client-side
+  evaluation could match every task with no due date at all; fixed to match. A last,
+  narrower fix in the same area: the client-side collection budget could overshoot when
+  `autoPaginate` is false, because concurrent per-project fetches weren't coordinated
+  against the shared budget; they now check and decrement it atomically. (#272; #290 MED-4,
+  MED-5, MED-19; #285)
+- **The "potentially dangerous content" guard rejected ordinary text, inconsistently.**
+  A SQL-injection-shaped pattern (`on\w+[^&]*=`, meant to catch encoded `onclick=`-style
+  attacks) had no anchor to any encoding marker, so it matched any word containing "on"
+  followed anywhere later by an `=` sign, rejecting real text like
+  `13,75 V = 13 j d'autonomie, 12 V = 44 j` on `create`/`create-subtask`/
+  `bulk-create-subtasks` while `update` silently accepted the identical string, because
+  `update` never sanitized at all. The unanchored pattern is removed (real event-handler
+  and `javascript:` content is still caught by the existing, correctly-anchored patterns);
+  `update` now sanitizes consistently with every other write path; and a rejection now
+  names the field and the specific rule that matched, instead of a bare "String contains
+  potentially dangerous content". `bulk-create-subtasks` also no longer fails an entire
+  batch because one item's validation failed; that item is now reported as a failed result
+  alongside its valid siblings, consistent with how this codebase's other bulk operations
+  already report partial success. The identical false-positive tolerance also existed in
+  `vikunja_users upload-avatar`'s base64 handling (only a zero-length decode was rejected,
+  so genuinely malformed base64 still decoded to garbage bytes and got uploaded); fixed the
+  same way as the equivalent `attach.ts` fix below. (#226; #300)
+- **A handful of write paths tolerated corrupted or unverified input without checking.**
+  `vikunja_tasks attach` tolerated malformed base64 the same way `upload-avatar` did above;
+  it now validates the base64 shape before decoding rather than only catching a
+  zero-length result. `create-subtask`/`bulk-create-subtasks` treated an HTTP 200 on a
+  label/assignee attach `PUT` as proof the attach happened, with no read-back to confirm;
+  `create-subtask`'s path now verifies. Updating `repeatMode` without also sending
+  `repeatAfter` could inflate a task's recurrence interval by roughly 52 billion seconds,
+  because the existing (already-in-seconds) value was being re-multiplied by a converter
+  expecting a day/week/year count; fixed to convert back before re-applying the multiplier.
+  `setup-kanban`'s bucket-reuse fallback could silently repurpose a fresh project's
+  done-bucket into an ordinary column, so Vikunja auto-completed every task placed there;
+  the done-bucket is now excluded from that fallback. And `vikunja_projects list` computed
+  honest pagination and hierarchy metadata and then discarded it before it reached the
+  response; it's now wired through. (#295 MED-12; #295 LOW-22; #274; #273; #280)
+- **Project sharing had four correctness gaps, plus one honesty gap in `list-members`.**
+  A numeric permission of `right: 0` (read-only) was schema-valid but rejected at seven
+  dispatch sites with a falsy check, so downgrading a share to read-only failed with a
+  misleading error. `get-share`/`delete-share` and the `atomic: true` verification read on
+  `share-with-user`/`share-with-team` both read an unpaginated shares list, so a share
+  beyond the first page could read as not-found (silently no-op'ing a delete) or cause a
+  successful grant to be wrongly revoked; both now paginate through. Link-share creation
+  now strips `password` from its response, since the field is documented write-only after
+  creation. Separately, `list-members` was coercing a failed teams-read to a silent "0
+  direct team(s)" instead of surfacing the failure, the same honest-failure gap
+  `link-shares` already avoided; it now reports an explicit error field. Two smaller
+  hierarchy fixes: a project fetch failure was being treated as "parent not found" instead
+  of "couldn't check", and `get-tree` now reports when it truncates at `maxDepth` instead
+  of silently dropping the rest of the subtree. (#291 MED-1, MED-2, MED-3, MED-17; #279;
+  #291 LOW-1, LOW-2)
+- **Batch import had four correctness bugs beyond the abort-handling fix above.** The CSV
+  parser split on newlines before quote-aware parsing ran, so an RFC 4180 multiline quoted
+  field produced a spurious extra task; quotes are now parsed before the split. A
+  nonexistent assignee username was misdiagnosed as an API authentication problem (an
+  empty user-search result looks identical to both cases); the two are now distinguished.
+  Imported reminders were silently dropped with a warning claiming they "cannot be added
+  after task creation", which is both false and backwards, since this codebase's own
+  `add-reminder` proves otherwise; reminders are now included in the create body. And label
+  resolution during import read only the first page of `GET /labels`, misreporting
+  existing labels beyond page 1 as not found; it now paginates. Three smaller CSV/JSON
+  parity fixes rode along: `skipErrors` was silently ignored for JSON imports while CSV
+  honored it, numeric CSV coercions used `parseInt` and silently truncated decimals the
+  JSON path would reject, and CSV `done` only recognized the literal string `"true"`. (#275;
+  #283; #284; #294 MED-10, MED-14, LOW-7, LOW-8)
+- **Two response-formatting bugs could mask a real failure as a success.** An
+  assignee-verification failure rendered under a success header, because the underlying
+  `response.success = false` was never copied into the metadata the formatter actually
+  reads; it's wired through now. And `vikunja_filters update` reported `filter` as changed
+  in `affectedFields` even when the supplied value was empty and nothing actually changed,
+  a truthiness-versus-undefined mismatch between the merge logic and the reporting logic;
+  the two are now aligned. `add-reminder` also now normalizes a date-only value through
+  `normalizeDateForApi`, the same as every other create-family path. (#295 MED-13; #295
+  LOW-4; #295 LOW-5)
+
+### Chores
+
+- Two dead storage-layer modules (`FilterSerializer.ts` and a diverged, unimported
+  `FilterValidator.ts` variant) removed, per this project's own "if code cannot be tested,
+  it must be removed" rule. Two smaller hardening fixes rode along in the same pass: the
+  multipart raw-request path now carries the same retry predicate the JSON raw path
+  already had (latent until now, since retries are off by default), and a circuit-breaker
+  name-collision fallback no longer risks returning a mismatched action under a third
+  anonymous operation collision. Separately, `joseLoader` no longer caches a *rejected*
+  JWT-library import forever; a transient startup failure now retries on next use instead
+  of permanently breaking JWT validation until restart. (#293 LOW-9; #296 LOW-15, LOW-16;
+  #296 LOW-21)
+
+### Documentation
+
+- **OIDC enrollment identity-pinning's real matching behavior, and an operational
+  footgun, are now documented.** On Vikunja 2.4.0, `GET /user` omits `email` entirely, so
+  the email-first match path is dead code in practice; matching is effectively
+  username-only today, and `docs/OIDC-SETUP.md` now says so plainly. Separately, if a
+  local Vikunja account already holds the username an SSO login would auto-create,
+  Vikunja silently assigns the new account a random username instead of failing or
+  merging, which then 403s the legitimate user's own enrollment; the operational rule
+  (don't pre-create local accounts sharing a username with one that will later SSO-enroll)
+  and a troubleshooting entry are now documented. Both are real, open findings from a
+  production deployment; a real code fix is deliberately deferred rather than rushed into
+  this release, and stays tracked in #223 and #224.
 
 ## [0.7.0-beta.2] - 2026-09-01
 
