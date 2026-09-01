@@ -199,6 +199,11 @@ a multi-task alternative to `id`, see above),
 - `vikunja_batch_import` - Import multiple tasks from CSV or JSON
   - Required: projectId, format ('csv' or 'json'), data
   - Optional: skipErrors (continue on errors), dryRun (validate only)
+  - **`skipErrors: true` no longer drops rows silently.** A row/task that fails schema
+    validation is skipped from import as before, but is now recorded (input row number +
+    reason) and surfaced in the response's `skippedRows` (or, if every row was skipped,
+    in the "no valid tasks" error itself) rather than only ever counting the survivors
+    (issue #323)
   - **Batch Size Limit**: Maximum 100 tasks per import
   - **CSV Format**:
     - Requires header row with field names
@@ -367,10 +372,10 @@ description.
   - `scope` - `'project'` (default) or `'user'`. `'project'` operates on a single project's webhooks (`/projects/{id}/webhooks*`) and requires `projectId`. `'user'` operates on the current user's account-wide webhooks (`/user/settings/webhooks*`, G4), which fire across every project the user has access to, and must **not** be combined with `projectId`. Both scopes share the identical `models.Webhook` shape and the same subcommands below.
   - `list-events` - Get all available webhook event types (for the selected scope)
   - `list` - List webhooks (required: `projectId` when `scope` is `'project'`; optional `page`/`perPage`, only honored for `scope: 'project'` since `GET /user/settings/webhooks` documents no pagination params)
-  - `get` - Get a specific webhook (required: `webhookId`; also `projectId` when `scope` is `'project'`); emulated client-side via `list` + filter-by-id, since the spec has no single-webhook GET in either scope
+  - `get` - Get a specific webhook (required: `webhookId`; also `projectId` when `scope` is `'project'`); emulated client-side via `list` + filter-by-id, since the spec has no single-webhook GET in either scope. For `scope: 'project'`, `get` walks every page of the collection itself (`fetchAllPages`) rather than only the server's default first page, so a webhook whose id lands past that page is still found instead of reporting `NOT_FOUND` (`scope: 'user'` has no page/per_page support at all, so it stays a single request; issue #332)
   - `create` - Create a new webhook (required: `targetUrl`, `events` array; also `projectId` when `scope` is `'project'`; optional: `secret` for HMAC signing, and `basicAuthUser` + `basicAuthPassword`); events are validated against available event types
     - `basicAuthUser`/`basicAuthPassword` make the webhook send its outgoing requests with an HTTP Basic Auth header. Supply both when the receiving endpoint sits behind Basic Auth. They are `models.Webhook`'s documented `basic_auth_user`/`basic_auth_password` write fields, which this tool previously did not declare at all, so a webhook behind Basic Auth could not be created
-    - **Credentials never come back.** Vikunja blanks `secret` on read paths but returns the bound struct from `create`, so a freshly created webhook used to echo the secret the caller had just sent. Both `secret` and `basic_auth_password` are redacted in tool responses, and neither is logged (`vikunja_webhooks` logs their presence as a boolean, never their value; `basicAuthUser` and `targetUrl` are excluded from logs too, since provider webhook URLs such as Slack's embed a secret in the path)
+    - **Credentials never come back.** Vikunja blanks `secret` on read paths but returns the bound struct from `create`, so a freshly created webhook used to echo the secret the caller had just sent. `secret` and `basic_auth_password` are redacted in tool responses, and neither is logged (`vikunja_webhooks` logs their presence as a boolean, never their value; `basicAuthUser` and `targetUrl` are excluded from logs too, since provider webhook URLs such as Slack's embed a secret in the path). `targetUrl` itself is also masked in every `list`/`get`/`create`/`update` **response** (the same high-entropy-path-segment detection used for log redaction) since a provider callback URL can be secret-bearing in its own right — the raw URL is still what's actually sent to Vikunja on the wire (issue #327)
   - `update` - Update webhook **events** (required: `webhookId`, `events` array; also `projectId` when `scope` is `'project'`); validated the same way.
     - **`events` is the only field this endpoint writes, and the others are now rejected rather than accepted-and-ignored.** `Webhook.Update` is a hard-coded `s.Where("id = ?", w.ID).Cols("events").Update(w)` in both scopes: neither a full-model replace nor a partial update, but a single-column write, so **no payload shape makes any other field stick**. Supplying `targetUrl`, `secret`, `basicAuthUser` or `basicAuthPassword` raises a `VALIDATION_ERROR` naming the field (never its value). Previously the tool built `{events}`, discarded the rest, and reported "updated successfully", so repointing a webhook at a new URL or rotating its secret was reported as working while nothing changed. **To change any of them, delete the webhook and create a replacement.**
   - `delete` - Delete a webhook (required: `webhookId`; also `projectId` when `scope` is `'project'`)
@@ -441,8 +446,8 @@ field matches on label **ids** and rejects a title outright
 (`filter=labels in HU` → HTTP 400 code 4019), while the DSL's documented
 spelling uses titles. Titles are therefore resolved to ids **once**, before the
 expression is both serialised for the wire and handed to the client-side
-evaluator; a value that is already numeric costs no lookup. The consequences
-worth knowing:
+evaluator; a value that arrives as a genuine `number` (already an id) costs no
+lookup. The consequences worth knowing:
 
 - A `labels` condition where **no** title resolves is a `VALIDATION_ERROR`
   naming the unresolved titles, not `Found 0 tasks`. "Nothing matched" and
@@ -453,6 +458,12 @@ worth knowing:
   error, never silently treated as "no such label".
 - The client-side evaluator matches by id **or** title (case-insensitively),
   so the fallback path is correct on its own.
+- **A numeric-*looking* string (`"123"`, `"1e2"`) always tries title
+  resolution first**, even though it parses as a number — a label can itself
+  be titled `"123"`. Only once no label has that exact title does it fall
+  back to being treated as a literal id. Previously any numeric-looking
+  string skipped title resolution entirely, so a label named e.g. `"2024"`
+  could never be matched by title (issue #324).
 
 **Date literals are normalized.** A filter such as
 `created >= '2026-08-16 00:00:00'` used to be sent verbatim and rejected with

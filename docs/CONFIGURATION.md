@@ -714,6 +714,30 @@ democratize-technology/vikunja-mcp#97.
 VIKUNJA_BULK_WRITE_CONCURRENCY=1   # default; raise ONLY on non-SQLite backends
 ```
 
+## Cross-Project Fetch Concurrency
+
+Listing tasks across every accessible project (the "all projects" aggregate
+fallback in `vikunja_tasks list`, used when the caller does not target a
+single project) fetches each project's tasks concurrently, bounded by a small
+pool rather than firing one request per project at once — a user with
+hundreds of accessible projects would otherwise trigger hundreds of
+simultaneous upstream requests (issue #324).
+
+- **Env var**: `VIKUNJA_CROSS_PROJECT_CONCURRENCY`
+- **Default**: `10`
+- **Accepted values**: a positive integer, capped at `50`
+- **Scope**: read-only — this only bounds how many per-project fetches are
+  in flight at once. It does not change `VIKUNJA_MAX_TASKS_LIMIT`'s task-count
+  budget, which stays exactly as strict either way.
+
+An invalid value (non-numeric, fractional, zero, negative) logs a warning and
+falls back to the default rather than failing startup; a value above the cap
+is clamped to `50`.
+
+```env
+VIKUNJA_CROSS_PROJECT_CONCURRENCY=10   # default; raise for a large multi-project workspace
+```
+
 ## Task Loading Limits (`VIKUNJA_MAX_TASKS_LIMIT`)
 
 `VIKUNJA_MAX_TASKS_LIMIT` is a single, shared budget with two call sites:
@@ -912,8 +936,9 @@ VIKUNJA_MCP_TEMPLATES_FILE=/path/to/templates.json   # optional; see Templates P
 
 ### Bulk Operation Variables
 ```env
-VIKUNJA_BULK_WRITE_CONCURRENCY=1     # optional, default 1 (sequential), max 10; see Bulk Write Concurrency
-VIKUNJA_MAX_TASKS_LIMIT=10000        # optional, default 10000, max 50000; see Task Loading Limits
+VIKUNJA_BULK_WRITE_CONCURRENCY=1        # optional, default 1 (sequential), max 10; see Bulk Write Concurrency
+VIKUNJA_MAX_TASKS_LIMIT=10000           # optional, default 10000, max 50000; see Task Loading Limits
+VIKUNJA_CROSS_PROJECT_CONCURRENCY=10    # optional, default 10, max 50; see Cross-Project Fetch Concurrency
 ```
 
 ### Transport Variables
