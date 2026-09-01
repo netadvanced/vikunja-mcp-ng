@@ -849,6 +849,28 @@ describe('Consolidated Filter Utilities', () => {
       });
     });
 
+    it('respects quote boundaries when splitting in-operator values, even when a quoted value contains a comma (#290 MED-5)', () => {
+      const result = parseFilterString('title in "a,b", c');
+      expect(result.error).toBeUndefined();
+      expect(result.expression?.groups[0]?.conditions[0]).toEqual({
+        field: 'title',
+        operator: 'in',
+        // Must stay exactly two values - "a,b" (comma preserved as content)
+        // and "c" - not silently fragmented into three ("a", "b", "c").
+        value: ['a,b', 'c'],
+      });
+    });
+
+    it('respects quote boundaries when splitting not-in-operator values containing a comma (#290 MED-5)', () => {
+      const result = parseFilterString('title not in "x,y,z"');
+      expect(result.error).toBeUndefined();
+      expect(result.expression?.groups[0]?.conditions[0]).toEqual({
+        field: 'title',
+        operator: 'not in',
+        value: ['x,y,z'],
+      });
+    });
+
     describe('snake_case field aliases are accepted and normalized to camelCase', () => {
       // The exact friction from battle-testing finding #2: an agent tries
       // the snake_case Task JSON spelling (due_date) before the DSL's

@@ -447,12 +447,22 @@ function parseArrayValues(state: ParseState): string[] | null {
  * Convert string value to appropriate type based on field
  */
 function convertValue(
-  value: string,
+  value: string | string[],
   field: FilterField,
   operator: FilterOperator,
 ): string | number | boolean | string[] {
   if (operator === 'in' || operator === 'not in') {
-    return value.split(',').map((v) => v.trim());
+    // parseCondition already splits IN/NOT IN values with parseArrayValues,
+    // which respects quote boundaries - an array here is already correct
+    // and must not be re-joined/re-split on ',' (that would fragment a
+    // quoted value that legitimately contains a comma). A bare string only
+    // reaches this branch from outside the parser (e.g. programmatic
+    // callers), where naive comma-splitting is the best available fallback.
+    return Array.isArray(value) ? value.map((v) => v.trim()) : value.split(',').map((v) => v.trim());
+  }
+
+  if (Array.isArray(value)) {
+    throw new Error(`Unexpected array value for operator: ${operator}`);
   }
 
   const fieldType = {
@@ -508,7 +518,13 @@ function parseCondition(state: ParseState): FilterCondition | null {
     if (values === null) {
       throw new Error('Expected value(s) for IN/NOT IN operator');
     }
-    rawValue = values.join(',');
+    // Pass the already-split, already-unquoted values through as an array
+    // rather than re-joining with ',' for convertValue to re-split: a
+    // quoted value containing a literal comma (e.g. `in ("a,b", c)`) has
+    // already had its comma consumed as content by parseArrayValues here,
+    // and joining+re-splitting on ',' would fragment it back into extra
+    // values, silently corrupting the filter.
+    rawValue = values;
   } else {
     const value = parseValue(state);
     if (value === null) {
