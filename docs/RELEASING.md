@@ -185,6 +185,14 @@ and no undo for an npm publish.
       annotated tag's message and the GitHub release notes (Step 6). Confirm it's accurate, in the
       right Keep a Changelog categories, and leads with the Vikunja alignment line if applicable
       (§3).
+- [ ] **README version currency — both `README.md` (npm) and `.github/README.md` (GitHub profile
+      landing page), every release, not just when someone happens to notice.** Both carry a
+      dist-tag/version table (`latest` / `beta` and, in `.github/README.md`, the Vikunja
+      alignment/floor line) that only updates by hand. Diff each against `npm view
+      vikunja-mcp-ng dist-tags` and this release's actual version/alignment before tagging — do
+      not assume the last release's pass caught it. **Known stale as of 2026-09-02: both still say
+      `0.7.0-beta.1`**; fix this in the same PR as whatever release finally runs this checklist
+      next, rather than deferring it again.
 
 Only once every box above is checked, proceed to Step 5.
 
