@@ -385,12 +385,16 @@ describe('Notifications Tool', () => {
       );
     });
 
-    it('should call POST once when the toggle already lands on read', async () => {
-      // The idempotency check reads the response's own explicit `read`
-      // boolean (issue #286 / HIGH-15), not `read_at` truthiness — `read_at`
-      // is always a non-empty string on a real server (a real timestamp, or
-      // the zero-time sentinel for "unread"), so it can never signal
-      // "unread" via truthiness alone.
+    it('should POST an explicit { read: true } body, not the documented empty body', async () => {
+      // Issue #314, confirmed live against Vikunja 2.4.0 on both a postgres
+      // and a freshly-provisioned sqlite backend: the spec-documented
+      // bodyless toggle (docs/vikunja-openapi.json says "no request body")
+      // never actually persists a read state, no matter how many times it
+      // is called. Sniffing the real frontend's own request showed it sends
+      // `{"read": true}` explicitly, which DOES persist — see
+      // `ensureNotificationRead`'s doc comment and
+      // docs/VIKUNJA_API_ISSUES.md item #21. This asserts the outgoing
+      // request body carries that fix (docs/ENDPOINT-PLAYBOOK.md §6).
       mockFetch.mockResolvedValueOnce(
         mockResponse({
           body: {
@@ -412,17 +416,18 @@ describe('Notifications Tool', () => {
           Authorization: 'Bearer test-token',
           'Content-Type': 'application/json',
         },
+        body: JSON.stringify({ read: true }),
       });
       expect(result.content[0].text).toContain('marked as read');
+      expect(result.content[0].text).not.toContain('WARNING');
     });
 
-    it('should call POST a second time to re-toggle when the first call lands on unread', async () => {
-      // First toggle flips an already-read notification to unread — `read:
-      // false` alongside `read_at` still being a (real-server-realistic)
-      // non-empty string, since the check is on the explicit `read`
-      // boolean, not `read_at` truthiness (issue #286 / HIGH-15). The
-      // handler must detect this and toggle again so mark-read stays
-      // idempotent no matter the notification's starting state.
+    it('should retry once, still sending { read: true }, when the first call does not confirm read: true', async () => {
+      // Defensive fallback path (kept from before #314's fix): if the
+      // server's response doesn't confirm `read: true` on the first
+      // attempt, retry once before giving up, so mark-read stays
+      // idempotent no matter the notification's starting state or a
+      // transient server hiccup.
       mockFetch
         .mockResolvedValueOnce(
           mockResponse({
@@ -453,14 +458,51 @@ describe('Notifications Tool', () => {
       expect(mockFetch).toHaveBeenNthCalledWith(
         1,
         'https://api.vikunja.test/api/v1/notifications/5',
-        expect.objectContaining({ method: 'POST' }),
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ read: true }) }),
       );
       expect(mockFetch).toHaveBeenNthCalledWith(
         2,
         'https://api.vikunja.test/api/v1/notifications/5',
-        expect.objectContaining({ method: 'POST' }),
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ read: true }) }),
       );
       expect(result.content[0].text).toContain('marked as read');
+      expect(result.content[0].text).not.toContain('WARNING');
+    });
+
+    it('should surface a warning instead of a silent success when both attempts fail to confirm read: true', async () => {
+      // #314's suggested next step: don't silently report "marked as read"
+      // when the server never actually confirmed it, even after the retry.
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({
+            body: {
+              id: 5,
+              name: 'x',
+              created: '2026-01-01T00:00:00Z',
+              read_at: '0001-01-01T00:00:00Z',
+              read: false,
+            },
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            body: {
+              id: 5,
+              name: 'x',
+              created: '2026-01-01T00:00:00Z',
+              read_at: '0001-01-01T00:00:00Z',
+              read: false,
+            },
+          }),
+        );
+
+      const result = await mockHandler({ subcommand: 'mark-read', notificationId: 5 });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(result.content[0].text).toContain('WARNING');
+      expect(result.content[0].text).toContain(
+        'did not confirm read: true after 2 attempts',
+      );
     });
   });
 
