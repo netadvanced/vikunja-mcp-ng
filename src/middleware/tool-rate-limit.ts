@@ -14,7 +14,16 @@
  * the wrapper on the 28th), this wraps the `McpServer` handed to
  * `registerTools()` once: every `server.tool(...)` call made through it gets
  * its handler wrapped, keyed by the tool name that same call already passes.
- * A tool that is registered is therefore metered, by construction.
+ * A tool that is registered through it is therefore metered, by construction.
+ *
+ * `registerTools()` (`src/tools/index.ts`) only applies this wrapper in
+ * `oidc-http` transport mode — the scenario this module's whole rationale
+ * above depends on (one process, many identities). The default `stdio`
+ * deployment has exactly one identity per process, so there is no noisy
+ * neighbour for a rate limit to contain, and the OIDC epic's hard invariant
+ * requires `stdio` to stay byte-for-byte its pre-epic behavior. This module
+ * itself stays mode-agnostic (it wraps whatever server it's given); the
+ * mode check lives at the call site.
  *
  * The wrapper is a `Proxy`, not a mutation of the caller's server: the
  * `McpServer` passed in is left exactly as it was (`src/index.ts` keeps using

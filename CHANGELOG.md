@@ -42,24 +42,33 @@ see that issue for why bundling it here was rejected.
   applied, closing a gap where a bare JWT or credential embedded in an error could reach a
   client unredacted even though the log stream was already protected. (#292 MED-8, MED-18;
   #287)
-- **Per-identity rate limiting now covers the whole tool surface, and its windows
-  actually rotate.** Three defects, one guarantee. (1) Of the roughly two dozen tools this
-  server registers, only `vikunja_auth` was wrapped in the rate-limit middleware, so in
-  `oidc-http` mode (one process, many accounts) every other tool was unmetered per
-  identity. Every tool now registers through a rate-limiting view of the MCP server, so
-  being registered is what makes a tool metered. (2) Where the middleware was wired it did
-  not work: the counter store was never given its window length, so no window ever expired
-  and "60 requests per minute" was really 60 per process lifetime, and the 61st call ever
-  made returned a misleading 429 until the server restarted. (3) The hourly limit was
-  counted in one place and read from another, so it could never trip. This matters beyond
-  one user's own budget: `docs/ROADMAP.md` decision 16(c) accepts sharing circuit breakers
-  across accounts specifically because per-user rate limits are supposed to contain a noisy
-  neighbour, and until now they did not. `vikunja_task_bulk` also moves to the bulk budget,
-  where it belongs. Two smaller fixes on the same middleware: `clearSession(sessionId)` now
-  actually scopes to the given id instead of wiping every identity's counters and both
-  shared breakers, and a tool call that hits its execution deadline now actually cancels
-  the in-flight request instead of leaving an uncleared timer running behind a caller who
-  was told it timed out. (#263; #296 LOW-18, LOW-20)
+- **Per-identity rate limiting in `oidc-http` mode now covers the whole tool surface, and
+  its windows actually rotate.** Three defects, one guarantee. (1) Of the roughly two
+  dozen tools this server registers, only `vikunja_auth` was wrapped in the rate-limit
+  middleware, so in `oidc-http` mode (one process, many accounts) every other tool was
+  unmetered per identity. Every tool registered in that mode now goes through a
+  rate-limiting view of the MCP server, so being registered is what makes a tool metered.
+  (2) Where the middleware was wired it did not work: the counter store was never given
+  its window length, so no window ever expired and "60 requests per minute" was really 60
+  per process lifetime, and the 61st call ever made returned a misleading 429 until the
+  server restarted. (3) The hourly limit was counted in one place and read from another,
+  so it could never trip. This matters beyond one user's own budget: `docs/ROADMAP.md`
+  decision 16(c) accepts sharing circuit breakers across accounts specifically because
+  per-user rate limits are supposed to contain a noisy neighbour, and until now they did
+  not. `vikunja_task_bulk` also moves to the bulk budget, where it belongs.
+  **`stdio`, the default deployment, is unaffected**: caught during this release's own
+  pre-tag checklist, the fix as first landed applied to every transport, which would have
+  put a real per-minute ceiling on ordinary local use for the first time, one process
+  there always serves exactly one identity, so there is no noisy neighbour to contain, and
+  the OIDC epic's own invariant requires `stdio` to stay byte-for-byte its pre-epic
+  behavior. The wrapper now only engages when `VIKUNJA_MCP_TRANSPORT=http` is set; `stdio`
+  remains exactly as unmetered across this whole tool surface as it always was, aside from
+  `vikunja_auth`'s own pre-existing, unrelated wrapping. Two smaller fixes on the same
+  middleware: `clearSession(sessionId)` now actually scopes to the given id instead of
+  wiping every identity's counters and both shared breakers, and a tool call that hits its
+  execution deadline now actually cancels the in-flight request instead of leaving an
+  uncleared timer running behind a caller who was told it timed out. (#263; #296 LOW-18,
+  LOW-20)
 - **JWT-only tools (`vikunja_admin`, `vikunja_users`, `vikunja_export`, user deletion) now
   gate on the caller's own resolved identity, not a process-global auth manager.** In a
   mixed-credential oidc-http deployment (legacy `VIKUNJA_URL`/`VIKUNJA_API_TOKEN` env vars

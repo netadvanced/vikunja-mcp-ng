@@ -19,10 +19,17 @@ The system consists of three main components:
    singletons `rateLimitingMiddleware` / `simplifiedRateLimitMiddleware` /
    `secureRateLimitMiddleware`.
 2. **Central registration wrapper** (`src/middleware/tool-rate-limit.ts`) -
-   `withRateLimitedTools(server)`, applied once in `registerTools`. Every
-   `server.tool(...)` call made through the returned view has its handler wrapped, so the
-   whole registered tool surface is metered per identity without touching 27 call sites
-   (#263).
+   `withRateLimitedTools(server)`, applied in `registerTools` **only when the server is
+   running in `oidc-http` transport mode** (one process, many identities, so rate limits
+   contain a noisy neighbour per `docs/ROADMAP.md` decision 16(c)). Every `server.tool(...)`
+   call made through the returned view has its handler wrapped, so the whole registered tool
+   surface is metered per identity without touching 27 call sites (#263). **The default
+   `stdio` deployment never applies this wrapper**: one process serves exactly one identity
+   there, so there is no noisy neighbour to contain, and the epic's hard invariant
+   (`docs/OIDC-RESOURCE-SERVER.md` §2, `src/index.ts`'s transport-mode doc comment) requires
+   `stdio` to stay byte-for-byte its pre-OIDC-epic behavior. A `stdio` deployment is
+   therefore unmetered regardless of `RATE_LIMIT_ENABLED`/`RATE_LIMIT_PER_MINUTE` below;
+   those variables only take effect once `oidc-http` mode is selected.
 3. **Direct middleware helpers** (`src/middleware/direct-middleware.ts`) - `applyRateLimiting`
    / `applyPermissions` / `applyBothMiddleware`, the opt-in per-tool integration layer
 4. **Configuration System** - Environment-based configuration with sensible defaults
