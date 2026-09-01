@@ -38,18 +38,19 @@ against the merged tree below.
   the same high-entropy-path-segment detection already used for log redaction; the raw URL
   is still sent on the wire when creating or updating. (#327)
 
-### Fixed: oidc-http availability
+### Fixed: export tool identity resolution
 
-- **Three of the four `vikunja_export_project`/user-export tools always failed with
-  `AUTH_REQUIRED` in `oidc-http` mode**, even for a correctly JWT-authenticated caller.
+- **Three of the four export tools checked the wrong `AuthManager`** —
   `vikunja_request_user_export`, `vikunja_download_user_export`, and
-  `vikunja_user_export_status` checked the closure/process-global `AuthManager` (never
-  connected in `oidc-http`, where per-caller credentials live behind the request-scoped
-  context) instead of resolving the calling identity's own manager the way
-  `vikunja_export_project` already did. All four now resolve consistently; a latent bug in
-  `vikunja_export_project` itself (it computed the correct per-request manager but still
-  passed the closure one to the actual export call) was caught and fixed alongside. `stdio`
-  behavior is unchanged. (#329)
+  `vikunja_user_export_status` read the closure/process-global manager captured at
+  registration time instead of resolving the calling identity's own manager the way
+  `vikunja_export_project` already did. This is a real fix for `stdio` and any deployment
+  where a JWT session exists on that closure manager; it does **not** newly make these
+  tools reachable in `oidc-http` mode — the credential vault only ever stores API tokens
+  (#322), so a vault-backed identity is never JWT-typed and these JWT-only tools still
+  never register there, exactly as before. A latent bug in `vikunja_export_project` itself
+  (it computed the correct per-request manager but still passed the closure one to the
+  actual export call) was caught and fixed alongside. (#329)
 
 ### Fixed: answers that were wrong, partial, or quietly ignored
 
@@ -79,10 +80,11 @@ against the merged tree below.
   (default 10 in flight, tunable via `VIKUNJA_CROSS_PROJECT_CONCURRENCY`, capped at 50). The
   existing per-project budget accounting (#290 MED-19) is unaffected — this only bounds
   fan-out, not the task-count budget. (#324)
-- **The credential vault's `eventCache` (webhook event-type cache) no longer grows without
-  bound.** A distinct entry accumulated forever per `(identity, scope)` pair the process had
-  ever seen in `oidc-http` mode; it is now a bounded LRU (cap 10,000, evict-then-insert),
-  mirroring the pattern already used for the redaction path's `normalizedKeyCache`. (#327)
+- **`vikunja_webhooks`' `eventCache` (the webhook event-type cache, not the credential
+  vault) no longer grows without bound.** A distinct entry accumulated forever per
+  `(identity, scope)` pair the process had ever seen in `oidc-http` mode; it is now a
+  bounded LRU (cap 10,000, evict-then-insert), mirroring the pattern already used for the
+  redaction path's `normalizedKeyCache`. (#327)
 
 ## [0.7.0-beta.3] - 2026-09-01
 

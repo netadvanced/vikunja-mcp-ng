@@ -96,7 +96,7 @@ never a clean `Found 0 tasks`.
 
 - `vikunja_auth` - Authentication management
   - `connect` - Initialize connection with API token. Performs a verification round trip before reporting success: an unauthenticated `GET /info` call validates the URL is reachable and returns the server version (surfaced as `serverVersion` in the response), then a cheap authenticated call validates the credential itself (`GET /user` for JWT sessions, `GET /projects?per_page=1` for API-token sessions, since `tk_*` tokens cannot use `/user`; see [VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #2). If either step fails, the session is rolled back and a clear error is thrown instead of silently "succeeding" with a bad URL or token.
-  - `status` - Check authentication status
+  - `status` - Check authentication status. In oidc-http mode, a record that's usable but outdated (the pre-AAD `keyVersion: 1` format, or a JWT stored before #322's API-token-only guard existed) also reports `needsMigration: true` plus a `migrationNotice` telling you to re-provision (see [OIDC-RESOURCE-SERVER.md](OIDC-RESOURCE-SERVER.md) for the full field list)
   - `refresh` - Report token-refresh status: API tokens (`tk_*`) are long-lived and need no refresh; JWTs expire and must be replaced by reconnecting with a new token (Vikunja's token-refresh endpoint relies on a login cookie this server does not hold)
   - `info` - Fetch the connected Vikunja server's `GET /info` payload (version, frontend URL, motd, enabled features, ...). Requires an active session.
   - `disconnect` - Clear the in-memory session and the cached client factory. Local only: nothing is revoked server-side.
@@ -199,11 +199,16 @@ a multi-task alternative to `id`, see above),
 - `vikunja_batch_import` - Import multiple tasks from CSV or JSON
   - Required: projectId, format ('csv' or 'json'), data
   - Optional: skipErrors (continue on errors), dryRun (validate only)
-  - **`skipErrors: true` no longer drops rows silently.** A row/task that fails schema
-    validation is skipped from import as before, but is now recorded (input row number +
-    reason) and surfaced in the response's `skippedRows` (or, if every row was skipped,
-    in the "no valid tasks" error itself) rather than only ever counting the survivors
-    (issue #323)
+  - **`skipErrors: true` no longer drops rows silently — but only rows dropped during
+    parsing get this treatment.** A row/task that fails schema validation *during
+    parsing* is still skipped from import, but is now named ("Skipped during parsing:
+    Input row N: ‹reason›") in the response text, or in the "no valid tasks" error
+    itself if every row was skipped — rather than only ever counting the survivors with
+    zero record of what was dropped (issue #323). This is response text, not a separate
+    structured field. It's distinct from a row that fails *after* parsing, during the
+    actual task-creation call to Vikunja — those already had their own per-row error
+    reporting and are unaffected by this fix. Without `skipErrors: true`, the first
+    invalid row still throws immediately, same as before.
   - **Batch Size Limit**: Maximum 100 tasks per import
   - **CSV Format**:
     - Requires header row with field names
@@ -371,7 +376,7 @@ description.
 - `vikunja_webhooks` - Webhook operations for project automation, plus the current user's account-wide webhooks
   - `scope` - `'project'` (default) or `'user'`. `'project'` operates on a single project's webhooks (`/projects/{id}/webhooks*`) and requires `projectId`. `'user'` operates on the current user's account-wide webhooks (`/user/settings/webhooks*`, G4), which fire across every project the user has access to, and must **not** be combined with `projectId`. Both scopes share the identical `models.Webhook` shape and the same subcommands below.
   - `list-events` - Get all available webhook event types (for the selected scope)
-  - `list` - List webhooks (required: `projectId` when `scope` is `'project'`; optional `page`/`perPage`, only honored for `scope: 'project'` since `GET /user/settings/webhooks` documents no pagination params)
+  - `list` - List webhooks (required: `projectId` when `scope` is `'project'`; optional `page`/`perPage`, only honored for `scope: 'project'` since `GET /user/settings/webhooks` documents no pagination params). **Unlike `get` below, `list` does not walk every page itself** — omit `page`/`perPage` and you get exactly Vikunja's default first (clamped) page, same as any other unpaginated-by-default listing in this server; pass them explicitly to see further pages
   - `get` - Get a specific webhook (required: `webhookId`; also `projectId` when `scope` is `'project'`); emulated client-side via `list` + filter-by-id, since the spec has no single-webhook GET in either scope. For `scope: 'project'`, `get` walks every page of the collection itself (`fetchAllPages`) rather than only the server's default first page, so a webhook whose id lands past that page is still found instead of reporting `NOT_FOUND` (`scope: 'user'` has no page/per_page support at all, so it stays a single request; issue #332)
   - `create` - Create a new webhook (required: `targetUrl`, `events` array; also `projectId` when `scope` is `'project'`; optional: `secret` for HMAC signing, and `basicAuthUser` + `basicAuthPassword`); events are validated against available event types
     - `basicAuthUser`/`basicAuthPassword` make the webhook send its outgoing requests with an HTTP Basic Auth header. Supply both when the receiving endpoint sits behind Basic Auth. They are `models.Webhook`'s documented `basic_auth_user`/`basic_auth_password` write fields, which this tool previously did not declare at all, so a webhook behind Basic Auth could not be created
@@ -379,7 +384,7 @@ description.
   - `update` - Update webhook **events** (required: `webhookId`, `events` array; also `projectId` when `scope` is `'project'`); validated the same way.
     - **`events` is the only field this endpoint writes, and the others are now rejected rather than accepted-and-ignored.** `Webhook.Update` is a hard-coded `s.Where("id = ?", w.ID).Cols("events").Update(w)` in both scopes: neither a full-model replace nor a partial update, but a single-column write, so **no payload shape makes any other field stick**. Supplying `targetUrl`, `secret`, `basicAuthUser` or `basicAuthPassword` raises a `VALIDATION_ERROR` naming the field (never its value). Previously the tool built `{events}`, discarded the rest, and reported "updated successfully", so repointing a webhook at a new URL or rotating its secret was reported as working while nothing changed. **To change any of them, delete the webhook and create a replacement.**
   - `delete` - Delete a webhook (required: `webhookId`; also `projectId` when `scope` is `'project'`)
-  - Valid events are cached for 5 minutes per scope to improve performance (project and user-level events are cached separately); invalid events in `create`/`update` produce a clear error listing all valid options.
+  - Valid events are cached for 5 minutes per scope to improve performance (project and user-level events are cached separately, keyed per identity in oidc-http mode); invalid events in `create`/`update` produce a clear error listing all valid options. The cache itself is a bounded LRU (cap 10,000 entries, evict-then-insert) so a long-lived oidc-http process doesn't accumulate one entry per `(identity, scope)` pair forever (issue #327).
   - **Note:** per the OpenAPI spec, `/user/settings/webhooks*` (`scope: 'user'`) is JWT-only. Calls made with an API token (`tk_*`) session may be rejected by the server; the tool surfaces a specific, actionable error in that case rather than the generic webhook-permissions message.
 
 ## Notifications
@@ -488,13 +493,21 @@ memory. For very large projects with thousands of tasks or deeply nested
 structures this may consume significant memory. Consider exporting smaller
 projects individually.
 
+All four tools below require JWT authentication and are not registered for API-token
+sessions — including in `oidc-http` mode, where the credential vault only ever stores
+`tk_*` API tokens (issue #322), so these four simply never appear there regardless of
+module config. A fix (issue #329) corrected three of them to resolve the *calling*
+identity's auth manager instead of a stale process-global one when a JWT session does
+exist (`stdio`, or a mixed deployment) — that closes a real availability bug in that
+scenario, but does **not** make these tools reachable in `oidc-http` mode, since the
+vault-backed identity is never JWT-typed to begin with.
+
 - `vikunja_export_project` - Export project data **[Requires JWT authentication]**
   - Required: `projectId`. Optional: `includeChildren` (recursive, default false)
   - Exports all tasks with full details, all labels used in the project, and (optionally) the full child-project hierarchy with circular-reference detection
-  - **Note:** requires JWT authentication; not registered for API-token sessions.
-- `vikunja_request_user_export` - Request a full user data export (required: `password` for security verification). You'll receive an email when the export is ready.
-- `vikunja_user_export_status` - Check whether a previously requested user data export is ready, and when (`GET /user/export`, returns `models.UserExportStatus`: `id`/`created`/`expires`/`size`). Completes the request → status → download trio.
-- `vikunja_download_user_export` - Confirm a previously requested user data export is ready on the server (required: `password`). Returns the server's confirmation message, not the export file itself. Per the Vikunja API spec, this endpoint never returns the archive's contents, and MCP has no binary-attachment support. Retrieve the actual file from the Vikunja web UI or a direct API client using the same credentials.
+- `vikunja_request_user_export` - Request a full user data export **[Requires JWT authentication]** (required: `password` for security verification). You'll receive an email when the export is ready.
+- `vikunja_user_export_status` - Check whether a previously requested user data export is ready, and when **[Requires JWT authentication]** (`GET /user/export`, returns `models.UserExportStatus`: `id`/`created`/`expires`/`size`). Completes the request → status → download trio.
+- `vikunja_download_user_export` - Confirm a previously requested user data export is ready on the server **[Requires JWT authentication]** (required: `password`). Returns the server's confirmation message, not the export file itself. Per the Vikunja API spec, this endpoint never returns the archive's contents, and MCP has no binary-attachment support. Retrieve the actual file from the Vikunja web UI or a direct API client using the same credentials.
 
 ## API Token Management (deny-by-default)
 

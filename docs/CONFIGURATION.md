@@ -422,9 +422,13 @@ several subcommands with different semantics, the tool-level hints are derived
 conservatively:
 
 - `readOnlyHint` is `true` only when **every** subcommand on that tool is classified
-  `read` (today: `vikunja_auth`, `vikunja_export_project`,
-  `vikunja_download_user_export` and `vikunja_user_export_status`; see
-  `TOOL_CLASSIFICATIONS` in `src/utils/read-only.ts`).
+  `read` (today: `vikunja_export_project`, `vikunja_download_user_export` and
+  `vikunja_user_export_status`; see `TOOL_CLASSIFICATIONS` in
+  `src/utils/read-only.ts`). **`vikunja_auth` is not in this list**: `provision` is
+  classified `write` and `deprovision` `destructive` (issue #322 made these real
+  account-level vault mutations, analogous to `vikunja_tokens`'s own
+  create/delete pairing), so `vikunja_auth` as a whole no longer gets
+  `readOnlyHint: true`, and both subcommands are rejected by global read-only mode.
 - `destructiveHint` is `true` when **any** subcommand is classified `destructive` (true
   for nearly every CRUD-shaped tool, since almost all of them expose a `delete`-shaped
   operation).

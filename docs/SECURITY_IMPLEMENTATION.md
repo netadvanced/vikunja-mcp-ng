@@ -213,6 +213,14 @@ These are exactly the shapes a key-name-only check misses: a webhook
 `targetUrl` is not itself a "secret" field, but the credential can live
 inside the URL string it holds.
 
+**This masking is not only a logging concern.** Since issue #327,
+`vikunja_webhooks`' `redactWebhookCredentials` (`src/tools/webhooks.ts`) applies this
+same URL-secret detection (`redactUrlSecrets`) to `target_url` in every `list`/`get`/
+`create`/`update` **tool response**, not just log lines — a secret-bearing webhook URL
+used to round-trip in full every time a caller listed or fetched the webhook again.
+
+
+
 **Operator-visible consequence.** Some fields that previously rendered in
 full now render as `[REDACTED]` in log output, most notably `user`. This is
 intentional (the field name matches the sensitive-key patterns tuned for

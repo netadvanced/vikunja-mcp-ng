@@ -290,15 +290,23 @@ function parseCSVInput(data: string, skipErrors: boolean = false): ParsedTasksRe
       const validatedTask = importedTaskSchema.parse(taskData);
       tasks.push(validatedTask);
     } catch (error) {
-      const message = `Invalid task data at row ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      const cause = error instanceof Error ? error.message : 'Unknown error';
       if (!skipErrors) {
-        throw new MCPError(ErrorCode.VALIDATION_ERROR, message);
+        // Thrown directly to the caller with no other row-numbering context,
+        // so this message names the row itself (1-based over the raw file,
+        // header included — row 2 is the first data row).
+        throw new MCPError(ErrorCode.VALIDATION_ERROR, `Invalid task data at row ${i + 1}: ${cause}`);
       }
-      // If skipErrors is true, we skip this row and continue — but record it
-      // so the caller can report it instead of silently losing it (#323).
+      // skipErrors is set: skip this row and continue, but record it so the
+      // caller can report it instead of silently losing it (#323). Store just
+      // the cause (matching parseJSONInput's shape) rather than re-baking a
+      // ROW-file row number in here too — BatchImportResponseFormatter already
+      // prefixes every skipped entry with its own "Input row N" (1-based among
+      // DATA rows via `index`), and stacking two different row-numbering
+      // schemes in one line ("Input row 1: ... at row 2: ...") was confusing.
       // 0-based among data rows: the first data row (line index 1, right
       // after the header) is index 0.
-      skipped.push({ index: i - 1, error: message });
+      skipped.push({ index: i - 1, error: cause });
     }
   }
 
