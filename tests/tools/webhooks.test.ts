@@ -358,6 +358,62 @@ describe('Webhooks Tool', () => {
         new MCPError(ErrorCode.NOT_FOUND, 'Webhook with ID 1 not found in project 1'),
       );
     });
+
+    it('finds a webhook past the first (server-clamped) page instead of reporting NOT_FOUND (#332)', async () => {
+      // A full first page (length === the server's page cap) used to be
+      // treated as "that's every webhook" - `get` never asked for page 2.
+      // `max_items_per_page: 2` (read via `authManager.getCapabilities()`,
+      // see `readServerPageCap`) keeps this test's fixtures small.
+      (mockAuthManager as any).getCapabilities = jest
+        .fn()
+        .mockReturnValue({ features: { max_items_per_page: 2 } });
+
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({ body: [mockWebhook, { ...mockWebhook, id: 2 }] }), // page 1: full (2 of 2)
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ body: [{ ...mockWebhook, id: 3 }] }), // page 2: the target, short (last page)
+        );
+
+      const result = await mockHandler({
+        subcommand: 'get',
+        projectId: 1,
+        webhookId: 3,
+      });
+
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        1,
+        'https://api.vikunja.test/api/v1/projects/1/webhooks',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        'https://api.vikunja.test/api/v1/projects/1/webhooks?page=2',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(result.content[0].text).toContain('"id": 3');
+    });
+
+    it("does not paginate for scope 'user' (GET /user/settings/webhooks has no page/per_page)", async () => {
+      // A single full-looking page from the user-scope endpoint must NOT
+      // trigger a second (identical, since that scope ignores page/perPage)
+      // request the way project-scope pagination would.
+      (mockAuthManager as any).getCapabilities = jest
+        .fn()
+        .mockReturnValue({ features: { max_items_per_page: 1 } });
+
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [{ ...mockWebhook, id: 5 }] }));
+
+      const result = await mockHandler({ subcommand: 'get', scope: 'user', webhookId: 5 });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/user/settings/webhooks',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(result.content[0].text).toContain('"id": 5');
+    });
   });
 
   describe('Create Webhook', () => {
