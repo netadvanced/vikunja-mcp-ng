@@ -791,6 +791,41 @@ describe('Consolidated Filter Utilities', () => {
       expect(result.error).toBeDefined();
     });
 
+    it('rejects unparenthesized mixed && / || in one group instead of silently collapsing to one operator (#272)', () => {
+      // Previously: parsed into a single group whose operator was
+      // overwritten by whichever logical operator was seen last, then
+      // re-serialized as all-`||` - silently wrong. Now: an explicit,
+      // teaching error instead of a guess.
+      const result = parseFilterString('priority = 5 && done = false || priority = 4');
+      expect(result.expression).toBeNull();
+      expect(result.error).toBeDefined();
+      expect(result.error?.message).toContain('&&');
+      expect(result.error?.message).toContain('||');
+      expect(result.error?.message).toContain('parentheses');
+    });
+
+    it('rejects mixed && / || inside a single parenthesized group too, since a group is flat (#272)', () => {
+      const result = parseFilterString('(priority = 5 && done = false || priority = 4)');
+      expect(result.expression).toBeNull();
+      expect(result.error).toBeDefined();
+      expect(result.error?.message).toContain('parentheses');
+    });
+
+    it('still accepts fully-parenthesized mixed-operator expressions, disambiguated group by group (#272)', () => {
+      const result = parseFilterString('(priority = 5 && done = false) || priority = 4');
+      expect(result.error).toBeUndefined();
+      expect(result.expression?.groups).toHaveLength(2);
+      expect(result.expression?.groups[0]?.operator).toBe('&&');
+      expect(result.expression?.operator).toBe('||');
+    });
+
+    it('still accepts a single unparenthesized operator repeated any number of times (#272)', () => {
+      const result = parseFilterString('priority = 5 && done = false && priority = 4');
+      expect(result.error).toBeUndefined();
+      expect(result.expression?.groups[0]?.conditions).toHaveLength(3);
+      expect(result.expression?.groups[0]?.operator).toBe('&&');
+    });
+
     it('should parse valid simple input with no error', () => {
       const result = parseFilterString('done = true');
       expect(result.expression).toEqual({

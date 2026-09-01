@@ -531,6 +531,7 @@ function parseCondition(state: ParseState): FilterCondition | null {
 function parseGroup(state: ParseState): FilterGroup {
   const conditions: FilterCondition[] = [];
   let operator: LogicalOperator = '&&';
+  let sawLogicalOp = false;
   let hasParens = false;
 
   skipWhitespace(state);
@@ -564,7 +565,22 @@ function parseGroup(state: ParseState): FilterGroup {
       break;
     }
 
+    // A FilterGroup applies a single operator uniformly across all of its
+    // conditions (it is flat, not a tree), so mixing && and || within one
+    // group is inherently ambiguous: `a && b || c` could mean `(a && b) || c`
+    // or `a && (b || c)`, and silently picking one (whichever operator was
+    // seen last, historically) produces a filter the user did not write.
+    // Reject it and teach the fix instead of guessing.
+    if (sawLogicalOp && logicalOp !== operator) {
+      throw new Error(
+        `Cannot mix && and || in the same group without parentheses to disambiguate. ` +
+          `Group the higher-precedence part explicitly, e.g. write "(a && b) || c" ` +
+          `instead of "a && b || c".`,
+      );
+    }
+
     operator = logicalOp;
+    sawLogicalOp = true;
     skipWhitespace(state);
 
     // Parse next condition
