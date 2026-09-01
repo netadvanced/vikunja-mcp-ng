@@ -78,33 +78,108 @@ describe('bulkCreateSubtasks', () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('requires every subtask spec to have a title', async () => {
-      await expect(
-        bulkCreateSubtasks({ parentTaskId: 1, subtasks: [{ title: 'A' }, {}] }, authManager),
-      ).rejects.toThrow('subtasks[1].title is required to create a subtask');
-      expect(mockFetch).not.toHaveBeenCalled();
+    it('requires every subtask spec to have a title, but a title-less item does not block its valid siblings (issue #226)', async () => {
+      // Item 1 (missing title) fails pre-flight validation; item 0 is otherwise valid and
+      // must still be attempted — a single invalid item must not sink the whole batch.
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ id: 42, title: 'A', project_id: 5 }) }),
+        ) // subtask A: create-task
+        .mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+          }),
+        ) // subtask A: create-relation
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify(parentTaskWithChildren([42])) }),
+        ); // subtask A: verify-relation
+
+      const result = await bulkCreateSubtasks(
+        { parentTaskId: 1, subtasks: [{ title: 'A' }, {}] },
+        authManager,
+      );
+
+      const text = result.content[0].text;
+      expect(text).toContain('partially completed');
+      expect(text).toContain('Successfully created and related 1 of 2 subtask(s)');
+      expect(text).toContain('Failed indexes: 1');
+      // The invalid item was never attempted against the API — no extra fetch calls
+      // beyond resolve-parent + subtask A's own create/relate/verify sequence.
+      expect(mockFetch).toHaveBeenCalledTimes(4);
     });
 
-    it('validates label/assignee/bucket ids in every spec before making any request', async () => {
+    it('reports subtasks[N].title/label/assignee/bucket validation errors per-item and fails the whole batch only when nothing could succeed', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) }));
       await expect(
         bulkCreateSubtasks(
           { parentTaskId: 1, subtasks: [{ title: 'A', labels: [-1] }] },
           authManager,
         ),
       ).rejects.toThrow(MCPError);
+
+      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) }));
       await expect(
         bulkCreateSubtasks(
           { parentTaskId: 1, subtasks: [{ title: 'A', assignees: [0] }] },
           authManager,
         ),
       ).rejects.toThrow(MCPError);
+
+      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) }));
       await expect(
         bulkCreateSubtasks(
           { parentTaskId: 1, subtasks: [{ title: 'A', bucketId: -5 }] },
           authManager,
         ),
       ).rejects.toThrow(MCPError);
-      expect(mockFetch).not.toHaveBeenCalled();
+
+      // Every one of the 3 single-item batches above resolves the parent (the only
+      // possible request when every item in a batch is invalid) but never reaches a
+      // create-task call.
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(
+        mockFetch.mock.calls.every(
+          (call) =>
+            call[0] === 'https://vikunja.test/api/v1/tasks/1' &&
+            (call[1]?.method ?? 'GET') === 'GET',
+        ),
+      ).toBe(true);
+    });
+
+    it('names the field and matched rule when a subtask description trips the dangerous-content check, without failing valid siblings', async () => {
+      // Regression for issue #226: a false-positive-prone description used to throw out of
+      // the pre-flight `.map()` and abort the entire batch before any subtask was attempted.
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ id: 42, title: 'Good', project_id: 5 }) }),
+        ) // subtask 0 (valid): create-task
+        .mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+          }),
+        ) // subtask 0: create-relation
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify(parentTaskWithChildren([42])) }),
+        ); // subtask 0: verify-relation
+
+      const result = await bulkCreateSubtasks(
+        {
+          parentTaskId: 1,
+          subtasks: [
+            { title: 'Good' },
+            { title: 'Bad', description: '<script>alert(1)</script>' },
+          ],
+        },
+        authManager,
+      );
+
+      const text = result.content[0].text;
+      expect(text).toContain('Successfully created and related 1 of 2 subtask(s)');
+      expect(text).toContain('subtasks[1].description');
+      expect(text).toContain('script tag');
+      expect(mockFetch).toHaveBeenCalledTimes(4);
     });
 
     it('surfaces a friendly NOT_FOUND when the parent task does not exist', async () => {

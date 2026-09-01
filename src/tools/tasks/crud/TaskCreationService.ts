@@ -126,10 +126,10 @@ export async function createTask(
     }
 
     // Sanitize and validate user inputs for comprehensive security
-    const sanitizedTitle = sanitizeString(args.title);
+    const sanitizedTitle = sanitizeString(args.title, 'title');
     // Preserve empty strings as they are valid descriptions
     const sanitizedDescription =
-      args.description !== undefined ? sanitizeString(args.description) : undefined;
+      args.description !== undefined ? sanitizeString(args.description, 'description') : undefined;
 
     // Validate optional date fields
     if (args.dueDate) {

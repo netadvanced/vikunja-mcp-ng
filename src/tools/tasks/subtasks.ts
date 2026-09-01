@@ -443,9 +443,9 @@ export async function createSubtask(
   if (!args.title) {
     throw new MCPError(ErrorCode.VALIDATION_ERROR, 'title is required to create a subtask');
   }
-  const sanitizedTitle = sanitizeString(args.title);
+  const sanitizedTitle = sanitizeString(args.title, 'title');
   const sanitizedDescription =
-    args.description !== undefined ? sanitizeString(args.description) : undefined;
+    args.description !== undefined ? sanitizeString(args.description, 'description') : undefined;
 
   if (args.dueDate) {
     validateDateString(args.dueDate, 'dueDate');
@@ -613,7 +613,12 @@ export interface BulkCreateSubtaskResult {
  * reported success count derived from confirmed per-subtask successes
  * (PR #95's honest partial-reporting shape). `atomic` (per-subtask) rolls
  * back only that subtask's own created task on failure — it never reaches
- * across subtasks.
+ * across subtasks. Per-item validation/sanitization (title/description
+ * content, dates, ids, ...) is also caught individually, not just API-step
+ * failures: a bad item at index N is recorded as a failed result rather than
+ * throwing out of the pre-flight pass and aborting the whole batch (issue
+ * #226 — that used to fail every item whenever any one item's description
+ * tripped the dangerous-content check).
  */
 export async function bulkCreateSubtasks(
   args: BulkCreateSubtasksArgs,
@@ -637,47 +642,62 @@ export async function bulkCreateSubtasks(
     );
   }
 
-  // Validate + sanitize every spec up-front, before making any request —
-  // mirrors create-subtask's own pre-flight validation.
-  const specs: SubtaskCoreSpec[] = args.subtasks.map((s, index) => {
-    if (!s.title) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        `subtasks[${index}].title is required to create a subtask`,
-      );
+  // Validate + sanitize every spec up-front, before making any request — mirrors
+  // create-subtask's own pre-flight validation. Each item's validation is caught
+  // individually rather than left to throw out of the `.map()`: a throw there would abort
+  // the whole batch before any subtask was even attempted, which contradicts this
+  // function's own partial-success contract (see doc comment above) — one bad item (e.g.
+  // a title/description that trips sanitizeString) must not prevent the other, valid
+  // items in the same batch from being created. See issue #226.
+  const specResults: Array<
+    { ok: true; spec: SubtaskCoreSpec } | { ok: false; title: string | undefined; error: string }
+  > = args.subtasks.map((s, index) => {
+    try {
+      if (!s.title) {
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          `subtasks[${index}].title is required to create a subtask`,
+        );
+      }
+      if (s.dueDate) {
+        validateDateString(s.dueDate, `subtasks[${index}].dueDate`);
+      }
+      if (s.startDate) {
+        validateDateString(s.startDate, `subtasks[${index}].startDate`);
+      }
+      if (s.endDate) {
+        validateDateString(s.endDate, `subtasks[${index}].endDate`);
+      }
+      if (s.percentDone !== undefined)
+        assertValidPercentDone(s.percentDone, `subtasks[${index}].percentDone`);
+      if (s.labels && s.labels.length > 0) {
+        s.labels.forEach((id) => validateId(id, `subtasks[${index}].label ID`));
+      }
+      if (s.assignees && s.assignees.length > 0) {
+        s.assignees.forEach((id) => validateId(id, `subtasks[${index}].assignee ID`));
+      }
+      if (s.bucketId !== undefined) {
+        validateId(s.bucketId, `subtasks[${index}].bucketId`);
+      }
+      const spec: SubtaskCoreSpec = {
+        title: sanitizeString(s.title, `subtasks[${index}].title`),
+        ...(s.description !== undefined
+          ? { description: sanitizeString(s.description, `subtasks[${index}].description`) }
+          : {}),
+        ...(s.dueDate !== undefined ? { dueDate: s.dueDate } : {}),
+        ...(s.startDate !== undefined ? { startDate: s.startDate } : {}),
+        ...(s.endDate !== undefined ? { endDate: s.endDate } : {}),
+        ...(s.priority !== undefined ? { priority: s.priority } : {}),
+        ...(s.percentDone !== undefined ? { percentDone: s.percentDone } : {}),
+        ...(s.labels !== undefined ? { labels: s.labels } : {}),
+        ...(s.assignees !== undefined ? { assignees: s.assignees } : {}),
+        ...(s.bucketId !== undefined ? { bucketId: s.bucketId } : {}),
+      };
+      return { ok: true, spec };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, title: s.title, error: message };
     }
-    if (s.dueDate) {
-      validateDateString(s.dueDate, `subtasks[${index}].dueDate`);
-    }
-    if (s.startDate) {
-      validateDateString(s.startDate, `subtasks[${index}].startDate`);
-    }
-    if (s.endDate) {
-      validateDateString(s.endDate, `subtasks[${index}].endDate`);
-    }
-    if (s.percentDone !== undefined)
-      assertValidPercentDone(s.percentDone, `subtasks[${index}].percentDone`);
-    if (s.labels && s.labels.length > 0) {
-      s.labels.forEach((id) => validateId(id, `subtasks[${index}].label ID`));
-    }
-    if (s.assignees && s.assignees.length > 0) {
-      s.assignees.forEach((id) => validateId(id, `subtasks[${index}].assignee ID`));
-    }
-    if (s.bucketId !== undefined) {
-      validateId(s.bucketId, `subtasks[${index}].bucketId`);
-    }
-    return {
-      title: sanitizeString(s.title),
-      ...(s.description !== undefined ? { description: sanitizeString(s.description) } : {}),
-      ...(s.dueDate !== undefined ? { dueDate: s.dueDate } : {}),
-      ...(s.startDate !== undefined ? { startDate: s.startDate } : {}),
-      ...(s.endDate !== undefined ? { endDate: s.endDate } : {}),
-      ...(s.priority !== undefined ? { priority: s.priority } : {}),
-      ...(s.percentDone !== undefined ? { percentDone: s.percentDone } : {}),
-      ...(s.labels !== undefined ? { labels: s.labels } : {}),
-      ...(s.assignees !== undefined ? { assignees: s.assignees } : {}),
-      ...(s.bucketId !== undefined ? { bucketId: s.bucketId } : {}),
-    };
   });
 
   const parentTaskId = args.parentTaskId;
@@ -703,7 +723,20 @@ export async function bulkCreateSubtasks(
   const results: BulkCreateSubtaskResult[] = [];
 
   // Sequential on purpose — see the function doc comment above.
-  for (const [index, spec] of specs.entries()) {
+  for (const [index, specResult] of specResults.entries()) {
+    if (!specResult.ok) {
+      // Validation/sanitization failed for this item alone — record it as a failed
+      // result and move on to the next subtask, rather than aborting the batch.
+      results.push({
+        index,
+        title: specResult.title ?? '(missing title)',
+        created: false,
+        related: false,
+        error: specResult.error,
+      });
+      continue;
+    }
+    const spec = specResult.spec;
     const op = new CompositeOperation();
     const { getCreatedTaskId } = addSubtaskCreationSteps(
       op,
@@ -755,7 +788,7 @@ export async function bulkCreateSubtasks(
   const response = createStandardResponse(
     'bulk-create-subtasks',
     partial
-      ? `Bulk create-subtasks partially completed under parent ${parentTaskId}. Successfully created and related ${succeeded.length} of ${specs.length} subtask(s). Failed indexes: ${failedIndexes.join(', ')}`
+      ? `Bulk create-subtasks partially completed under parent ${parentTaskId}. Successfully created and related ${succeeded.length} of ${specResults.length} subtask(s). Failed indexes: ${failedIndexes.join(', ')}`
       : `Successfully created and related ${succeeded.length} subtask(s) under parent ${parentTaskId}`,
     {
       parentTaskId,
@@ -767,7 +800,17 @@ export async function bulkCreateSubtasks(
     {
       timestamp: new Date().toISOString(),
       count: succeeded.length,
-      ...(partial ? { failedCount: failed.length, success: false } : {}),
+      // `failures` is the same shape bulk-operations-simplified.ts/labels.ts use — the error
+      // response renderer (formatErrorMessage) prints it as JSON, so a caller actually sees
+      // which index failed and why instead of only the aggregate `Failed indexes: ...` count
+      // (issue #226: a rejected item's field name + matched rule need to be reportable).
+      ...(partial
+        ? {
+            failedCount: failed.length,
+            success: false,
+            failures: failed.map((f) => ({ index: f.index, title: f.title, error: f.error })),
+          }
+        : {}),
     },
     args.sessionId,
   );

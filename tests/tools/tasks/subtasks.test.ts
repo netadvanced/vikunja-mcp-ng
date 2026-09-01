@@ -409,6 +409,44 @@ describe('subtask composites', () => {
       ).rejects.toThrow(MCPError);
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
+
+    // Issue #226: false positives on ordinary free-text descriptions, matching the parity
+    // fix applied to createTask/updateTask (tests/tools/tasks-crud-validation.test.ts).
+    describe('description dangerous-content check (#226)', () => {
+      const acceptedStrings = [
+        "2. Quelle nominale retenir (13,75 V = 13 j d'autonomie, 12 V = 44 j) ?",
+        'a = 13 j autonomie, b = 44 j',
+        '(13,75 V = 13 j d\'autonomie, 12 V = 44 j)',
+      ];
+
+      it.each(acceptedStrings)('accepts description %p', async (description) => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) }))
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) }))
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) }),
+          );
+
+        await expect(
+          createSubtask({ parentTaskId: 1, title: 'Child', description }, authManager),
+        ).resolves.toBeDefined();
+      });
+
+      it('rejects real dangerous content and names the field/rule', async () => {
+        await expect(
+          createSubtask(
+            { parentTaskId: 1, title: 'Child', description: '<script>alert(1)</script>' },
+            authManager,
+          ),
+        ).rejects.toThrow('description: String contains potentially dangerous content');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+    });
   });
 
   // -------------------------------------------------------------------

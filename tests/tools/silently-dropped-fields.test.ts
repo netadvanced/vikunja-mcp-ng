@@ -383,13 +383,19 @@ describe('silently dropped fields', () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('rejects a fractional percentDone on bulk-create-subtasks, naming the index', async () => {
-      await expect(
-        bulkCreateSubtasks(
-          { parentTaskId: 10, subtasks: [{ title: 'a' }, { title: 'b', percentDone: 0.5 }] },
-          authManager,
-        ),
-      ).rejects.toThrow('subtasks[1].percentDone must be a whole number between 0 and 100');
+    it('reports a fractional percentDone on bulk-create-subtasks as a per-item failure, naming the index, without blocking its valid sibling', async () => {
+      // Since issue #226, a single item's pre-flight validation failure is caught per-item
+      // rather than thrown out of the batch's eager validation pass — item 'a' (valid) must
+      // still be created even though item 'b' (fractional percentDone) fails.
+      routeSubtaskCreation();
+      const result = await bulkCreateSubtasks(
+        { parentTaskId: 10, subtasks: [{ title: 'a' }, { title: 'b', percentDone: 0.5 }] },
+        authManager,
+      );
+      const text = result.content[0].text;
+      expect(text).toContain('Successfully created and related 1 of 2 subtask(s)');
+      expect(text).toContain('Failed indexes: 1');
+      expect(text).toContain('subtasks[1].percentDone must be a whole number between 0 and 100');
     });
   });
 
