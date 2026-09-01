@@ -99,6 +99,31 @@ function resolveModulesConfig(): ModulesConfig {
 }
 
 /**
+ * Whether the running server is in `oidc-http` transport mode, failing safe
+ * to "no" (the `stdio` behavior) on a config-load error — mirrors
+ * `resolveModulesConfig`'s fail-safe shape. This gates per-identity rate
+ * limiting (see `withRateLimitedTools` below): rate limiting exists to
+ * contain a noisy neighbour when one process serves many Vikunja identities
+ * (docs/ROADMAP.md decision 16(c)), a scenario that is structurally
+ * impossible in `stdio` mode (one process, one identity, one operator). The
+ * default `stdio` deployment must stay byte-for-byte the pre-OIDC-epic
+ * behavior (see `src/index.ts`'s "Transport mode selection" doc comment and
+ * `docs/ROADMAP.md`'s OIDC epic entry) — applying a real per-minute ceiling
+ * to every tool call in the single-tenant default deployment would violate
+ * that invariant for no protective benefit, since there is no other tenant
+ * to protect from. Failing safe to "no" here, rather than "yes", is
+ * deliberate: a config-load error must never cause the default deployment to
+ * start rate-limiting when it didn't ask to.
+ */
+function isOidcHttpTransport(): boolean {
+  try {
+    return ConfigurationManager.getInstance().loadConfiguration().transport === 'http';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Module-gated tool registration.
  *
  * Every module toggle (see `src/config/types.ts` ModulesConfigSchema) is
@@ -122,8 +147,13 @@ export function registerTools(
   // the server itself, which is what makes per-identity rate limiting apply
   // to the whole tool surface instead of just `vikunja_auth` (#263 CRIT-2 —
   // and the premise decision 16(c) leans on when it accepts sharing circuit
-  // breakers across tenants). See src/middleware/tool-rate-limit.ts.
-  const meteredServer = withRateLimitedTools(server);
+  // breakers across tenants). See src/middleware/tool-rate-limit.ts. Applied
+  // only in oidc-http mode (see `isOidcHttpTransport` above): the default
+  // `stdio` deployment has exactly one identity per process, so there is no
+  // noisy-neighbour scenario for rate limiting to contain, and applying a
+  // real per-minute ceiling there would be a behavior change to the
+  // must-stay-byte-for-byte default deployment for no protective benefit.
+  const meteredServer = isOidcHttpTransport() ? withRateLimitedTools(server) : server;
 
   registerAuthTool(meteredServer, authManager);
 
