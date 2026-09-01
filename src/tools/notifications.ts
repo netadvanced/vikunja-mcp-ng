@@ -22,17 +22,24 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
+import {
+  createBudget,
+  DEFAULT_SERVER_PAGE_CAP,
+  fetchAllPages,
+  readServerPageCap,
+} from '../utils/filtering/pagination';
 
 /**
  * Shape of a notification as returned by `GET /notifications`
  * (`notifications.DatabaseNotification` in the spec) and by
  * `POST /notifications/{id}` (`models.DatabaseNotifications`, which adds a
- * `read` boolean alongside the same fields). The spec leaves `notification`
- * completely untyped (`"description": "The actual content of the
- * notification."`, no `type`/`$ref`) — its shape varies by notification kind
- * and is not documented, so it is passed through as `unknown` rather than
- * guessed at (see docs/ENDPOINT-PLAYBOOK.md §2: never infer field shapes
- * that aren't in the spec).
+ * `read` boolean alongside the same fields — `GET /notifications`'s own
+ * schema has NO `read` field, only `read_at`). The spec leaves
+ * `notification` completely untyped (`"description": "The actual content of
+ * the notification."`, no `type`/`$ref`) — its shape varies by notification
+ * kind and is not documented, so it is passed through as `unknown` rather
+ * than guessed at (see docs/ENDPOINT-PLAYBOOK.md §2: never infer field
+ * shapes that aren't in the spec).
  */
 interface VikunjaNotification {
   id: number;
@@ -41,6 +48,23 @@ interface VikunjaNotification {
   notification?: unknown;
   read_at?: string | null;
   read?: boolean;
+}
+
+/**
+ * CONFIRMED live against a Vikunja 2.4.0 instance (issue #286 / audit
+ * HIGH-15, previously "suspected"): `read_at` for a genuinely unread
+ * notification serializes as the truthy Go zero-time string
+ * `"0001-01-01T00:00:00Z"`, not `null` — the same sentinel pattern this
+ * codebase already handles for task date fields
+ * (`src/tools/tasks/filtering/evaluators.ts`'s `startDate`/`endDate`/
+ * `doneAt` handling). A bare `!notification.read_at` truthiness check is
+ * therefore always false, never matching "unread" — it would make
+ * `unreadOnly: true` filter out every notification, and would make
+ * `ensureNotificationRead`'s idempotency check never detect "still unread"
+ * (see that function's doc comment).
+ */
+function isNotificationUnread(readAt: string | null | undefined): boolean {
+  return !readAt || readAt.startsWith('0001-');
 }
 
 /**
@@ -79,6 +103,14 @@ function extractRelatedTask(content: unknown): { id: number; title: string } | u
  * idempotent (verify-then-apply, docs/ENDPOINT-PLAYBOOK.md §1) by checking
  * the response and, if the toggle landed on "unread", toggling once more.
  * At most 2 requests; typically 1.
+ *
+ * Checks the response's own explicit `read` boolean rather than
+ * `read_at` truthiness (issue #286 / HIGH-15): `read_at` is always a
+ * non-empty string — either a real timestamp or the zero-time sentinel
+ * `"0001-01-01T00:00:00Z"` for "unread" (see `isNotificationUnread`'s doc
+ * comment, confirmed live) — so a truthiness check can never detect "the
+ * toggle actually landed on unread," which is exactly the case this
+ * function exists to catch and correct.
  */
 async function ensureNotificationRead(
   authManager: AuthManager,
@@ -89,7 +121,7 @@ async function ensureNotificationRead(
     'POST',
     `/notifications/${notificationId}`,
   );
-  if (!notification?.read_at) {
+  if (notification?.read !== true) {
     notification = await vikunjaRestRequest<VikunjaNotification>(
       authManager,
       'POST',
@@ -147,28 +179,58 @@ export function registerNotificationsTool(
       try {
         switch (subcommand) {
           case 'list': {
-            const query: string[] = [];
-            if (args.page !== undefined) {
-              query.push(`page=${encodeURIComponent(String(args.page))}`);
-            }
-            if (args.perPage !== undefined) {
-              query.push(`per_page=${encodeURIComponent(String(args.perPage))}`);
-            }
-            const qs = query.length > 0 ? `?${query.join('&')}` : '';
+            // Paginate only when the caller expressed no pagination intent
+            // of their own — the same silent-page-clamp pattern issue #268
+            // fixed for task listing recurs here (issue #289 / audit
+            // HIGH-18): a single unpaged `GET /notifications` could report
+            // "Retrieved 0" (or an incomplete page) while more notifications
+            // — unread ones included — exist beyond page 1. See
+            // `src/utils/filtering/pagination.ts` for the shared
+            // pagination/resultComplete pattern this reuses.
+            const autoPaginate = args.page === undefined && args.perPage === undefined;
+            const firstPage = args.page ?? 1;
+            const cap = readServerPageCap(authManager) ?? DEFAULT_SERVER_PAGE_CAP;
+            const budget = createBudget();
 
-            const allNotifications =
-              (await vikunjaRestRequest<VikunjaNotification[]>(
+            const requestPage = async (page: number): Promise<VikunjaNotification[]> => {
+              const query: string[] = [];
+              // Preserve the exact original query spelling for the first
+              // page (no `page` param at all when the caller didn't supply
+              // one) — only pages synthesised by the auto-pagination walk
+              // itself (page !== firstPage) force an explicit `page`.
+              const pageParam = page === firstPage ? args.page : page;
+              if (pageParam !== undefined) {
+                query.push(`page=${encodeURIComponent(String(pageParam))}`);
+              }
+              if (args.perPage !== undefined) {
+                query.push(`per_page=${encodeURIComponent(String(args.perPage))}`);
+              }
+              const qs = query.length > 0 ? `?${query.join('&')}` : '';
+              const result = await vikunjaRestRequest<VikunjaNotification[]>(
                 authManager,
                 'GET',
                 `/notifications${qs}`,
-              )) ?? [];
+              );
+              return Array.isArray(result) ? result : [];
+            };
+
+            const allNotifications = await fetchAllPages(requestPage, {
+              autoPaginate,
+              firstPage,
+              budget,
+              cap,
+              resourceLabel: 'GET /notifications',
+            });
 
             // The spec's page/per_page are the only server-side filters
             // documented for this endpoint — there is no server-side
             // unread filter, so `unreadOnly` is applied client-side over the
-            // fetched page.
+            // fetched page. Uses `isNotificationUnread` (issue #286 /
+            // HIGH-15), not a bare `read_at` truthiness check — see its doc
+            // comment for why a truthiness check would filter out every
+            // notification.
             const notifications = args.unreadOnly
-              ? allNotifications.filter((n) => !n.read_at)
+              ? allNotifications.filter((n) => isNotificationUnread(n.read_at))
               : allNotifications;
 
             // Read-composite (docs/ENDPOINT-PLAYBOOK.md §1): attach a
@@ -185,14 +247,24 @@ export function registerNotificationsTool(
               unreadOnly: !!args.unreadOnly,
             });
 
+            // A result that is knowingly a subset of what was asked for is
+            // never reported as a plain success — same rule tasks listing
+            // follows (src/tools/tasks/index.ts) for the pattern issue #268
+            // established.
+            const incomplete = budget.truncated || budget.warnings.length > 0;
+            const reliabilityMessage = incomplete
+              ? ` — INCOMPLETE RESULT: ${budget.warnings.join(' ')}`
+              : '';
+
             const aorpResult = createAorpResponse(
               'list',
-              `Retrieved ${enriched.length} notification(s)`,
+              `Retrieved ${enriched.length} notification(s)${reliabilityMessage}`,
               { notifications: enriched },
               {
                 success: true,
                 metadata: {
                   count: enriched.length,
+                  ...(incomplete ? { resultComplete: false, warnings: budget.warnings } : {}),
                 },
               },
             );
