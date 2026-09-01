@@ -32,6 +32,7 @@ import { getAuthManagerFromContext, hasRequestContext } from '../client';
 import { getEffectiveSessionId } from '../context/requestContext';
 import type { Webhook } from '../types/vikunja';
 import { logger } from '../utils/logger';
+import { redactUrlSecrets } from '../utils/security';
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
@@ -57,19 +58,45 @@ interface EventCacheEntry {
   expiry: Date | null;
 }
 
+// #327: like `normalizedKeyCache` in src/utils/security.ts, this used to be
+// an unbounded `Map` - in `oidc-http` mode a distinct key accumulates
+// forever per (identity, scope) pair the process has ever seen, since
+// expiry only nulls a value's `expiry` field and never removes the map
+// entry. Bounded here with the same size-capped LRU shape: a `Map` iterates
+// in insertion order, so a hit re-inserts its entry to mark it
+// most-recently-used, and an insert past the cap evicts the oldest (first)
+// entry before adding the new one.
+const EVENT_CACHE_MAX_SIZE = 10000;
 const eventCache = new Map<string, EventCacheEntry>();
 
 function eventCacheKey(authManager: AuthManager, scope: WebhookScope): string {
   return `${getEffectiveSessionId(authManager)}::${scope}`;
 }
 
-function getOrCreateEventCacheEntry(authManager: AuthManager, scope: WebhookScope): EventCacheEntry {
+// Exported for testing - lets the LRU-eviction test drive cache growth
+// directly instead of exercising 10,000+ full tool-handler round trips.
+export function getOrCreateEventCacheEntry(
+  authManager: AuthManager,
+  scope: WebhookScope,
+): EventCacheEntry {
   const key = eventCacheKey(authManager, scope);
-  let entry = eventCache.get(key);
-  if (!entry) {
-    entry = { events: null, expiry: null };
-    eventCache.set(key, entry);
+  const existing = eventCache.get(key);
+  if (existing) {
+    // Bump to most-recently-used: delete + re-set moves it to the end of
+    // the Map's iteration order.
+    eventCache.delete(key);
+    eventCache.set(key, existing);
+    return existing;
   }
+
+  const entry: EventCacheEntry = { events: null, expiry: null };
+  if (eventCache.size >= EVENT_CACHE_MAX_SIZE) {
+    const oldestKey = eventCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      eventCache.delete(oldestKey);
+    }
+  }
+  eventCache.set(key, entry);
   return entry;
 }
 
@@ -111,6 +138,16 @@ const DEFAULT_WEBHOOK_EVENTS = [
  * struct as-is, so a freshly created webhook comes back with its secret
  * intact. This redacts it on our side so the value never reaches a tool
  * response, matching the server's own read-path behaviour.
+ *
+ * `target_url` gets the same treatment as the logging path below (~line
+ * 390-391 in this file): provider webhook URLs such as Slack's/Discord's
+ * embed a secret directly in the path (`https://hooks.slack.com/services/
+ * T…/B…/<secret>`), so the URL itself is credential-bearing even though it
+ * isn't a dedicated `secret`/`basic_auth_password` field. `redactUrlSecrets`
+ * (src/utils/security.ts) is the same high-entropy-path-segment masking
+ * already used to keep these URLs out of logs; reused here so a
+ * secret-bearing `target_url` never round-trips through a tool response
+ * either (#327).
  */
 function redactWebhookCredentials<T extends Partial<Webhook> | null | undefined>(webhook: T): T {
   if (webhook === null || webhook === undefined) {
@@ -123,12 +160,20 @@ function redactWebhookCredentials<T extends Partial<Webhook> | null | undefined>
       redacted[key] = '[REDACTED]';
     }
   }
+  if (typeof redacted.target_url === 'string' && redacted.target_url.length > 0) {
+    redacted.target_url = redactUrlSecrets(redacted.target_url);
+  }
   return redacted as T;
 }
 
 // Export for testing purposes - clears every identity/scope cache entry.
 export function clearWebhookEventCache(): void {
   eventCache.clear();
+}
+
+// Export for testing - current entry count and the bound it's kept under.
+export function getWebhookEventCacheStats(): { size: number; maxSize: number } {
+  return { size: eventCache.size, maxSize: EVENT_CACHE_MAX_SIZE };
 }
 
 // Export for testing - expire every cached entry but keep its events.
