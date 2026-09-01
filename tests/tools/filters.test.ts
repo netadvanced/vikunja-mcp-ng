@@ -468,6 +468,53 @@ describe('vikunja_filters tool', () => {
       expect(markdown).toContain('description');
     });
 
+    it('does not report "filter" in affectedFields when passed an empty string that changes nothing (LOW-4)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({ body: savedFilter({ id: 4, filters: { filter: 'done = false' } }) }),
+        )
+        .mockResolvedValueOnce(mockResponse({ body: savedFilter({ id: 4 }) }));
+
+      const result = await toolHandler({
+        action: 'update',
+        parameters: { id: 4, filter: '', description: 'New description' },
+      });
+
+      // The merge logic uses a truthy check (`if (params.filter)`), so an
+      // empty-string filter leaves filterQuery untouched — the POST body
+      // must carry the original filter forward unchanged.
+      const postCall = mockFetch.mock.calls[1];
+      const body = JSON.parse((postCall[1] as { body?: string }).body as string);
+      expect(body.filters.filter).toBe('done = false');
+
+      const markdown = result.content[0].text;
+      const affectedFieldsSection = markdown.split('**affectedFields:**')[1]?.split('**filter:**')[0];
+      expect(affectedFieldsSection).toContain('description');
+      expect(affectedFieldsSection).not.toContain('filter');
+    });
+
+    it('does not report "conditions" in affectedFields when passed an empty array that changes nothing (LOW-4)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({ body: savedFilter({ id: 4, filters: { filter: 'done = false' } }) }),
+        )
+        .mockResolvedValueOnce(mockResponse({ body: savedFilter({ id: 4 }) }));
+
+      const result = await toolHandler({
+        action: 'update',
+        parameters: { id: 4, conditions: [], title: 'Renamed' },
+      });
+
+      const postCall = mockFetch.mock.calls[1];
+      const body = JSON.parse((postCall[1] as { body?: string }).body as string);
+      expect(body.filters.filter).toBe('done = false');
+
+      const markdown = result.content[0].text;
+      const affectedFieldsSection = markdown.split('**affectedFields:**')[1]?.split('**filter:**')[0];
+      expect(affectedFieldsSection).toContain('title');
+      expect(affectedFieldsSection).not.toContain('conditions');
+    });
+
     it('rebuilds the filter from structured conditions when supplied instead of a string', async () => {
       mockFetch
         .mockResolvedValueOnce(

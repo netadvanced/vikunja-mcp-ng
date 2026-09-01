@@ -218,19 +218,31 @@ describe('subtask composites', () => {
       });
     });
 
-    it('attaches labels and assignees via the additive per-item endpoints before relating', async () => {
+    it('attaches labels and assignees via the additive per-item endpoints before relating, verifying each with a read-back', async () => {
+      const createdChildWithLabels = {
+        ...createdChild,
+        labels: [{ id: 7 }, { id: 8 }],
+      };
+      const createdChildWithLabelsAndAssignees = {
+        ...createdChildWithLabels,
+        assignees: [{ id: 3 }],
+      };
       mockFetch
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-labels: label 7
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-labels: label 8
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChildWithLabels) })) // verify-labels: GET /tasks/42
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-assignees: user 3
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify(createdChildWithLabelsAndAssignees) }),
+        ) // verify-assignees: GET /tasks/42
         .mockResolvedValueOnce(
           mockResponse({
             text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
           }),
         ) // create-relation
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify-relation
 
       await createSubtask(
         { parentTaskId: 1, title: 'Child', labels: [7, 8], assignees: [3] },
@@ -242,8 +254,40 @@ describe('subtask composites', () => {
       expect(JSON.parse(calls[2][1]?.body as string)).toEqual({ label_id: 7 });
       expect(calls[3][0]).toBe('https://vikunja.test/api/v1/tasks/42/labels');
       expect(JSON.parse(calls[3][1]?.body as string)).toEqual({ label_id: 8 });
-      expect(calls[4][0]).toBe('https://vikunja.test/api/v1/tasks/42/assignees');
-      expect(JSON.parse(calls[4][1]?.body as string)).toEqual({ user_id: 3 });
+      expect(calls[4][0]).toBe('https://vikunja.test/api/v1/tasks/42');
+      expect(calls[4][1]?.method ?? 'GET').toBe('GET');
+      expect(calls[5][0]).toBe('https://vikunja.test/api/v1/tasks/42/assignees');
+      expect(JSON.parse(calls[5][1]?.body as string)).toEqual({ user_id: 3 });
+      expect(calls[6][0]).toBe('https://vikunja.test/api/v1/tasks/42');
+      expect(calls[6][1]?.method ?? 'GET').toBe('GET');
+    });
+
+    it('fails when a label attach PUT reports success but the label does not actually persist (LOW-22)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+        .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-labels: label 7 (PUT reports 200)
+        // verify-labels: re-read shows the label never actually landed
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ ...createdChild, labels: [] }) }));
+
+      await expect(
+        createSubtask({ parentTaskId: 1, title: 'Child', labels: [7] }, authManager),
+      ).rejects.toThrow(/label\(s\) \[7\] did not appear/);
+    });
+
+    it('fails when an assignee attach PUT reports success but the assignee does not actually persist (LOW-22)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+        .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-assignees: user 3 (PUT reports 200)
+        // verify-assignees: re-read shows the assignee never actually landed
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ ...createdChild, assignees: [] }) }),
+        );
+
+      await expect(
+        createSubtask({ parentTaskId: 1, title: 'Child', assignees: [3] }, authManager),
+      ).rejects.toThrow(/assignee\(s\) \[3\] did not appear/);
     });
 
     it('places the new subtask into a Kanban bucket via the existing set-bucket path', async () => {
