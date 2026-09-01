@@ -53,12 +53,33 @@ function normalizeAndValidateSort(sort: string): { normalized: string; invalidTo
 }
 
 /**
- * True for a value that is already a Vikunja label id rather than a title.
- * A boolean or an empty/non-numeric string is a title (or nonsense), never
- * an id — `Number('true')` and `Number('')`'s zero are both rejected here.
+ * True only for a value that arrived as an already-resolved Vikunja label id
+ * — a genuine `number`, never a numeric-*looking* string.
+ *
+ * A label's TITLE can itself be a numeric-looking string (a label named
+ * `"123"` or `"2024"` is a perfectly valid title). Treating `'123'` as "id
+ * 123" on sight — the old behaviour — silently misresolves such a filter to
+ * the wrong label (or to no label at all) instead of looking up the label
+ * actually titled `"123"`. So a numeric-looking *string* is always run
+ * through `resolveLabelIdByTitle` first; only a genuine `number` (which can
+ * only have arrived pre-resolved, since the filter DSL parses bare tokens as
+ * strings) skips the lookup. See `isNumericLabelString` for the fallback
+ * used when title resolution finds no such label.
  */
-function isNumericLabelValue(value: string | number | boolean): boolean {
-  const trimmed = String(value).trim();
+function isNumericLabelValue(value: string | number | boolean): value is number {
+  return typeof value === 'number';
+}
+
+/**
+ * True for a string that *looks* like a label id (parses as a finite
+ * number), used only as a fallback once title resolution has already come
+ * back empty for that exact string — never as the first check. This is what
+ * preserves the pre-#227 behaviour of accepting a literal numeric id typed
+ * as a string (`labels in '5'`) for a value that turns out not to match any
+ * label's title.
+ */
+function isNumericLabelString(value: string): boolean {
+  const trimmed = value.trim();
   return trimmed !== '' && Number.isFinite(Number(trimmed));
 }
 
@@ -158,16 +179,24 @@ async function resolveLabelTitlesInExpression(
       const resolved: Array<string | number> = [];
       const unresolved: string[] = [];
       for (const raw of rawValues) {
+        // Already an id (a genuine `number`): nothing to resolve.
         if (isNumericLabelValue(raw)) {
-          resolved.push(Number(raw));
+          resolved.push(raw);
           continue;
         }
+        // Try the value as a title FIRST, even when it looks numeric — a
+        // label can be titled "123". Only once no label has that exact
+        // title do we fall back to treating a numeric-looking string as a
+        // literal id, preserving `labels in '5'` for callers who filter by
+        // id-as-string.
         const title = String(raw);
         const id = await resolve(title);
-        if (id === undefined) {
-          unresolved.push(title);
-        } else {
+        if (id !== undefined) {
           resolved.push(id);
+        } else if (isNumericLabelString(title)) {
+          resolved.push(Number(title));
+        } else {
+          unresolved.push(title);
         }
       }
 
