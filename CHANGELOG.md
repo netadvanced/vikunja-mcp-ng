@@ -36,6 +36,87 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
   the outcome is unknown and should be re-checked rather than blindly retried, and does not
   count against the shared circuit breakers. (#296, LOW-20)
 
+
+## [0.7.0-beta.3] - 2026-09-01
+
+_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._
+
+### Fixed
+
+- stop false-positiving on free-text descriptions, make create/update consistent
+- send explicit read:true instead of the non-functional empty-body toggle
+- validate base64 shape before decoding upload-avatar fileContent
+- allowlist the Host header used in discovery metadata (#292 LOW-19)
+- escape the issuer|sub delimiter in identityKey (#292 LOW-11)
+- enforce the normalized-key cache's advertised max size (#292 LOW-14)
+- stop flagging REST paths and version strings as credentials (#292 LOW-13)
+- mask OIDC identity values in logs (#292 MED-15)
+- key event-validation cache by identity, not globally (#292 MED-9)
+- report instantiate as failed when a task or label fails
+- scope persisted templates to their owning identity
+- scope templates by namespace, not a name-prefix convention
+- fix idle-eviction race that silently drops persisted templates
+- coordinate concurrent per-project budget checks when autoPaginate is false (audit #290 MED-19, verified)
+- preserve quoting on re-serialization for values needing it (audit #290 MED-4)
+- respect quote boundaries when splitting in/not-in comma lists (audit #290 MED-4/5, MED-5 part)
+- treat dueDate zero-date sentinel as unset, same as startDate/endDate/doneAt (#285)
+- reject unparenthesized mixed && / || instead of silently collapsing (#272)
+- paginate list and fix zero-time read_at handling (#289 HIGH-18, #286 HIGH-15)
+- flag possible truncation on list-assignees/attachments/labels/teams (#289 HIGH-18 spot-check)
+- paginate list-comments (#289 HIGH-18)
+- warn when cross-project-only listing params are ignored (#290 LOW-3)
+- thread orderBy/filterTimezone/filterIncludeNulls through the cross-project fallback (#290 MED-7)
+- flag truncation on the first-page-short budget-cut branch (#290 MED-6)
+- paginate cross-project and server-side task listing (#268)
+- retry the jose import after a transient load failure
+- fix breaker name-collision fallback for a third anonymous op
+- add the missing preRequest marker to the multipart error path
+- stop re-multiplying repeat_after on a repeatMode-only update
+- make per-identity rate limiting real across the tool surface
+- redact credentials on the thrown-error and REST-response surface
+- surface an aborted import as an error with its partial-result summary (#269)
+- reject non-integer CSV numerics and recognize common done spellings (LOW-7, LOW-8 from #294)
+- honor skipErrors for JSON imports like CSV already does (MED-14 from #294)
+- parse CSV quotes before splitting rows, fixing multiline fields (#275)
+- include reminders in the task creation body instead of dropping them (#284)
+- stop misdiagnosing "search found nobody" as an auth failure (#283)
+- paginate label lookup during import (MED-10 from #294)
+- paginate share-with-user/team's atomic verification read
+- keep per-index error detail when every bulk-create task fails
+- strip password from create-share response
+- paginate the share-by-id list lookup
+- resolve JWT gating, connect reconnects and user names per caller
+- share one semaphore per BatchProcessor so concurrency binds across requests
+- report get-tree truncation at maxDepth (#291 LOW-2)
+- stop rejecting right:0 (read-only) at dispatch time
+- surface teams-read failure honestly in list-members
+- fsync atomic writes so a provision survives power loss
+- never repurpose the kanban view's done-bucket in setup-kanban (#273)
+- stop misreporting parent-not-found on a failed fetch (#291 LOW-1)
+- close three silent-data-loss paths in bulk-update assignee snapshot/restore
+- report real decrypt health in status and write lastUsedAt
+- verify label/assignee attach PUTs with a post-attach read
+- only mutate the in-memory map after the write succeeds
+- normalize add-reminder's date through normalizeDateForApi
+- refuse to write the vault back after an incomplete load
+- align affectedFields reporting with the merge logic
+- carry response.success through to formatted metadata
+- validate base64 shape before decoding fileContent
+- bind AES-GCM records to identity and vikunjaUrl via AAD
+- wire _metadata into project response payloads (#280)
+
+### Documentation
+
+- clarify enrollment identity-pinning matching behavior (#223, #224)
+- record the live-verified label/assignee attach contract (#295 LOW-22)
+- state that oidc-http mode is single-process per vault file
+
+### Chores
+
+- keep the fsync durability tests under writeTemplatesFileAtomic
+- remove dead storage-layer filter modules
+- match paginated GET /labels in the tool-level mock (MED-10 from #294)
+
 ## [0.7.0-beta.2] - 2026-09-01
 
 **A correctness pass over the whole write surface, and one breaking change.** Nearly every
