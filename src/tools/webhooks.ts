@@ -37,6 +37,12 @@ import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
+import {
+  createBudget,
+  DEFAULT_SERVER_PAGE_CAP,
+  fetchAllPages,
+  readServerPageCap,
+} from '../utils/filtering/pagination';
 
 type WebhookScope = 'project' | 'user';
 
@@ -504,13 +510,40 @@ export function registerWebhooksTool(
             const webhookId = validateAndConvertId(args.webhookId, 'webhookId');
 
             // Get all webhooks and find the specific one - the spec has no
-            // single-webhook GET in either scope.
-            const webhooks = (
-              (await vikunjaRestRequest<Webhook[]>(
+            // single-webhook GET in either scope. `get` has no page/perPage
+            // argument of its own (unlike `list`, which forwards the
+            // caller's), so a webhook whose id lands past the server's
+            // first (clamped) page used to be indistinguishable from one
+            // that doesn't exist at all - it must walk every page itself.
+            // `scope: 'user'` has no documented page/per_page at all
+            // (see `webhookCollectionPath`'s comment), so pagination only
+            // applies to `scope: 'project'`; repeating the identical
+            // unpaged request for 'user' would just refetch the same page
+            // forever.
+            const requestWebhookPage = async (page: number): Promise<Webhook[]> => {
+              // Page 1 keeps the original unpaged spelling exactly (no
+              // `page` query param at all) so the common single-page case
+              // issues the identical request it always did; only pages
+              // synthesised by the walk below (page > 1) force an explicit
+              // `page` number, matching the pattern in `notifications.ts`.
+              const result = await vikunjaRestRequest<Webhook[]>(
                 authManager,
                 'GET',
-                webhookCollectionPath(scope, projectId),
-              )) ?? []
+                webhookCollectionPath(scope, projectId, page === 1 ? undefined : page, undefined),
+              );
+              return Array.isArray(result) ? result : [];
+            };
+
+            const webhooks = (
+              scope === 'project'
+                ? await fetchAllPages(requestWebhookPage, {
+                    autoPaginate: true,
+                    firstPage: 1,
+                    budget: createBudget(),
+                    cap: readServerPageCap(authManager) ?? DEFAULT_SERVER_PAGE_CAP,
+                    resourceLabel: `GET /projects/${projectId}/webhooks`,
+                  })
+                : await requestWebhookPage(1)
             ).map(redactWebhookCredentials);
 
             const webhook = webhooks.find((w: Webhook) => w.id === webhookId);
