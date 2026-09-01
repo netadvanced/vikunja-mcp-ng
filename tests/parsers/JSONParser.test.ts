@@ -75,7 +75,7 @@ describe('JSONParser', () => {
   describe('parseJSONInput', () => {
     it('should parse a single task object', () => {
       const json = '{"title": "Single Task"}';
-      const result = parseJSONInput(json);
+      const { tasks: result } = parseJSONInput(json);
 
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual({ title: 'Single Task' });
@@ -83,7 +83,7 @@ describe('JSONParser', () => {
 
     it('should parse an array of task objects', () => {
       const json = '[{"title": "Task 1"}, {"title": "Task 2"}]';
-      const result = parseJSONInput(json);
+      const { tasks: result } = parseJSONInput(json);
 
       expect(result).toHaveLength(2);
       expect(result[0]).toEqual({ title: 'Task 1' });
@@ -110,7 +110,7 @@ describe('JSONParser', () => {
         },
       ]);
 
-      const result = parseJSONInput(json);
+      const { tasks: result } = parseJSONInput(json);
       expect(result).toHaveLength(1);
       expect(result[0].title).toBe('Complete Task');
       expect(result[0].description).toBe('Description');
@@ -119,7 +119,7 @@ describe('JSONParser', () => {
 
     it('should handle empty array', () => {
       const json = '[]';
-      const result = parseJSONInput(json);
+      const { tasks: result } = parseJSONInput(json);
       expect(result).toHaveLength(0);
     });
 
@@ -170,7 +170,7 @@ describe('JSONParser', () => {
         }
       `;
 
-      const result = parseJSONInput(json);
+      const { tasks: result } = parseJSONInput(json);
       expect(result).toHaveLength(1);
       expect(result[0].title).toBe('Formatted Task');
       expect(result[0].description).toBe('Task with\nnewlines');
@@ -183,7 +183,7 @@ describe('JSONParser', () => {
       }));
 
       const json = JSON.stringify(tasks);
-      const result = parseJSONInput(json);
+      const { tasks: result } = parseJSONInput(json);
 
       expect(result).toHaveLength(100);
       expect(result[0].title).toBe('Task 1');
@@ -200,7 +200,7 @@ describe('JSONParser', () => {
         repeatMode: 2,
       });
 
-      const result = parseJSONInput(json);
+      const { tasks: result } = parseJSONInput(json);
       const task = result[0];
 
       expect(typeof task.title).toBe('string');
@@ -218,7 +218,7 @@ describe('JSONParser', () => {
         labels: ['emoji 🎉', 'symbols @#$%'],
       });
 
-      const result = parseJSONInput(json);
+      const { tasks: result } = parseJSONInput(json);
       expect(result[0].title).toContain('quotes');
       expect(result[0].description).toContain('中文');
       expect(result[0].labels).toContain('emoji 🎉');
@@ -235,7 +235,7 @@ describe('JSONParser', () => {
 
     it('should accept optional fields as undefined', () => {
       const json = JSON.stringify({ title: 'Minimal Task' });
-      const result = parseJSONInput(json);
+      const { tasks: result } = parseJSONInput(json);
       const task = result[0];
 
       expect(task.description).toBeUndefined();
@@ -261,7 +261,7 @@ describe('JSONParser', () => {
         { title: 'Third Task' },
       ]);
 
-      const result = parseJSONInput(json);
+      const { tasks: result } = parseJSONInput(json);
       expect(result).toHaveLength(3);
       expect(result[0].title).toBe('First Task');
       expect(result[1].title).toBe('Second Task');
@@ -273,7 +273,7 @@ describe('JSONParser', () => {
     it('should drop an invalid task and keep the valid ones when skipErrors is true', () => {
       const json = '[{"title": "Valid Task"}, {"invalid": "task"}, {"title": "Also Valid"}]';
 
-      const result = parseJSONInput(json, true);
+      const { tasks: result } = parseJSONInput(json, true);
 
       expect(result).toHaveLength(2);
       expect(result[0]).toEqual({ title: 'Valid Task' });
@@ -294,12 +294,43 @@ describe('JSONParser', () => {
       expect(() => parseJSONInput(invalidJson, true)).toThrow('Invalid JSON data');
     });
 
-    it('should return an empty array if every task in the batch is invalid and skipErrors is true', () => {
+    it('should return an empty tasks array if every task in the batch is invalid and skipErrors is true', () => {
       const json = '[{"invalid": "a"}, {"invalid": "b"}]';
 
-      const result = parseJSONInput(json, true);
+      const { tasks: result } = parseJSONInput(json, true);
 
       expect(result).toHaveLength(0);
+    });
+
+    // #323: a dropped row/task must be recorded, not silently discarded.
+    it('should record a dropped task in `skipped` with its index and error, not just omit it from `tasks`', () => {
+      const json = '[{"title": "Valid Task"}, {"invalid": "task"}, {"title": "Also Valid"}]';
+
+      const { tasks, skipped } = parseJSONInput(json, true);
+
+      expect(tasks).toHaveLength(2);
+      expect(skipped).toHaveLength(1);
+      expect(skipped[0]?.index).toBe(1);
+      expect(skipped[0]?.error).toEqual(expect.any(String));
+      expect(skipped[0]?.error.length).toBeGreaterThan(0);
+    });
+
+    it('should record every dropped task when the whole batch is invalid, with correct indices', () => {
+      const json = '[{"invalid": "a"}, {"invalid": "b"}]';
+
+      const { tasks, skipped } = parseJSONInput(json, true);
+
+      expect(tasks).toHaveLength(0);
+      expect(skipped).toHaveLength(2);
+      expect(skipped.map((s) => s.index)).toEqual([0, 1]);
+    });
+
+    it('should return an empty `skipped` array when nothing was dropped', () => {
+      const json = '[{"title": "Valid Task"}]';
+
+      const { skipped } = parseJSONInput(json, true);
+
+      expect(skipped).toEqual([]);
     });
   });
 

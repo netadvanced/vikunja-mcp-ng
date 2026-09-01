@@ -505,6 +505,44 @@ describe('Batch Import Tool', () => {
       expect(result.content[0].text).toContain('Successfully imported: 1 tasks');
     });
 
+    // #323: a row dropped by the parser (schema validation failure under
+    // skipErrors:true) must be visible in the response, not silently
+    // discarded with zero record of what happened to it.
+    it('reports a JSON row the parser dropped, not just the ones that survived (#323)', async () => {
+      const tasksData = [{ title: 'Valid Task' }, { invalidField: 'oops' }];
+
+      mockClient.tasks.createTask.mockResolvedValue({ id: 999, title: 'Valid Task' });
+
+      const result = await toolHandler({
+        projectId: 1,
+        format: 'json',
+        data: JSON.stringify(tasksData),
+        skipErrors: true,
+      });
+
+      const text = result.content[0].text;
+      expect(text).toContain('Successfully imported: 1 tasks');
+      // The dropped row must be named somewhere in the response — the
+      // pre-fix behavior reported "1 task imported" with zero mention of the
+      // second, invalid row that was silently discarded.
+      expect(text).toContain('Skipped during parsing');
+      expect(text).toContain('Input row 2');
+    });
+
+    it('reports every dropped JSON row when the whole batch fails validation (#323)', async () => {
+      const tasksData = [{ invalidField: 'a' }, { invalidField: 'b' }];
+
+      await expect(
+        toolHandler({
+          projectId: 1,
+          format: 'json',
+          data: JSON.stringify(tasksData),
+          skipErrors: true,
+        }),
+      ).rejects.toThrow(/No valid tasks found to import.*2 row\(s\) were skipped/s);
+      expect(mockClient.tasks.createTask).not.toHaveBeenCalled();
+    });
+
     it('should still throw for an invalid JSON task when skipErrors is unset', async () => {
       const tasksData = [{ title: 'Valid Task' }, { invalidField: 'oops' }];
 
@@ -1343,6 +1381,10 @@ Description,1`;
       // Should create 2 tasks (skip the invalid one)
       expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(2);
       expect(result.content[0].text).toContain('Successfully imported: 2 tasks');
+      // #323: the dropped CSV row must be named in the response, not just
+      // silently missing from the count.
+      expect(result.content[0].text).toContain('Skipped during parsing');
+      expect(result.content[0].text).toContain('Input row 2');
     });
 
     it('should log debug for parsed labels from CSV', async () => {
