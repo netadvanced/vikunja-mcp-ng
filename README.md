@@ -83,7 +83,7 @@ For Docker Desktop's MCP Toolkit rather than a bare `docker run`, there is a ste
 | npm tag | Version | What you get |
 |---|---|---|
 | `latest` | 0.6.2 | The single-user stdio server, which is what the quick start above installs |
-| `beta` | 0.7.0-beta.1 | The same, plus an opt-in OIDC resource-server mode |
+| `beta` | 0.7.0-beta.4 | The same, plus an opt-in OIDC resource-server mode |
 
 OIDC resource-server mode makes the server a hosted, multi-user deployment: a Streamable HTTP transport, per-user identity taken from a validated OIDC access token, MCP authorization discovery, and an enrollment flow where each user links their own Vikunja token once. It is off by default. Installing the beta changes nothing until you turn it on, and the stdio transport behaves as it does on stable.
 

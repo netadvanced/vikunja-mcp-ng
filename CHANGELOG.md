@@ -8,6 +8,8 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+## [0.7.0-beta.4] - 2026-09-02
+
 **A second independent-review pass on the beta.3 audit fixes themselves.** Two more
 non-Claude models (Grok and Codex, via `cursor-agent`) re-reviewed the same
 `v0.7.0-beta.1..beta.3` diffs after #297 shipped, specifically looking for seams *between*
@@ -85,6 +87,19 @@ against the merged tree below.
   `(identity, scope)` pair the process had ever seen in `oidc-http` mode; it is now a
   bounded LRU (cap 10,000, evict-then-insert), mirroring the pattern already used for the
   redaction path's `normalizedKeyCache`. (#327)
+
+### Documentation
+
+- Synced `CHANGELOG.md`/`CONFIGURATION.md`/`TOOLS.md` with the six fixes above (#334). A
+  follow-up independent audit of the docs themselves (Gemini and Grok again, via
+  `cursor-agent`) then found and fixed 11 more doc discrepancies — some predating this
+  release entirely (a stale `SimpleFilterStorage` claim, a self-contradicting webhook
+  pagination row, wrong `VaultStatus` field names) — plus one real code bug: the CSV
+  batch-importer's skipped-row reporting stacked two different row-numbering schemes for
+  the same row in one confusing message (#335).
+- Added a mandatory README-currency check (the `README.md`/`.github/README.md`
+  dist-tag/version tables, which had drifted stale) to the release pre-tag checklist
+  (#336).
 
 ## [0.7.0-beta.3] - 2026-09-01
 
