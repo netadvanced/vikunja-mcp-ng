@@ -324,9 +324,16 @@ export function registerAuthTool(
               // actually be decrypted and used, not merely whether a record
               // exists (issue #278) — so when the vault reports a specific
               // `issue`, say that instead of the generic "not linked yet".
+              // A linked-but-outdated record (legacy pre-binding format, or a
+              // JWT vaulted before that was refused) still works, so it is
+              // reported as linked — but the notice rides along in the
+              // message, not just in the response data, because that is the
+              // line a human actually reads (issue #322 finding 2).
               const statusMessage =
                 vaultStatus.provisioned === true
-                  ? 'Vikunja API token linked'
+                  ? typeof vaultStatus.migrationNotice === 'string'
+                    ? `Vikunja API token linked — action recommended: ${vaultStatus.migrationNotice}`
+                    : 'Vikunja API token linked'
                   : typeof vaultStatus.issue === 'string'
                     ? vaultStatus.issue
                     : 'No Vikunja API token linked yet — run vikunja_auth provision';
@@ -572,6 +579,23 @@ export function registerAuthTool(
                 ErrorCode.VALIDATION_ERROR,
                 'No Vikunja URL is configured for this server. Pass vikunjaUrl explicitly, ' +
                   'or have the operator set VIKUNJA_URL.',
+              );
+            }
+
+            // The vault is an API-token store (issue #322). Refuse a
+            // JWT-shaped token HERE, before the network round-trip below, so
+            // the caller gets an actionable validation error rather than a
+            // confusing failure deeper in — `VaultFileStore.provision`
+            // enforces the same invariant as the last line of defense for
+            // every other write path.
+            if (AuthManager.detectAuthType(args.apiToken) === 'jwt') {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'That looks like a JWT (eyJ...), and this mode links Vikunja API tokens ' +
+                  'only. Create one in Vikunja → Settings → API Tokens — it starts with ' +
+                  '"tk_" — and provision that instead. A Vikunja JWT comes from an ' +
+                  'interactive login, expires within hours, and this server has no way to ' +
+                  'refresh it on your behalf.',
               );
             }
 

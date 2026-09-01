@@ -287,4 +287,39 @@ export async function setupOidcHttpAuth(
     'OIDC HTTP authentication middleware registered (resource-server mode; ' +
       'vault-backed credential provisioning via vikunja_auth provision)'
   );
+  reportVaultMigrationState(vaultStore);
+}
+
+/**
+ * Boot-time operator visibility for records still on an outdated vault
+ * format (issue #322 finding 2).
+ *
+ * Before this, the only signal was `decryptRecord`'s once-per-identity
+ * warning, which fires only if that identity happens to make a request — an
+ * operator could run for months without learning that half the vault still
+ * lacked the #262 identity/URL binding. This is deterministic, emitted once
+ * per start, and names the count so it can be alerted on. Each affected user
+ * additionally sees it in their own `vikunja_auth status`, which is where
+ * the fix (re-provision) is actually available to them.
+ */
+function reportVaultMigrationState(vaultStore: VaultFileStore): void {
+  const summary = vaultStore.getMigrationSummary();
+  if (summary.legacyRecords === 0) {
+    logger.debug('Credential vault format check: no records need migration', {
+      totalRecords: summary.totalRecords,
+    });
+    return;
+  }
+  logger.warn(
+    `Credential vault: ${summary.legacyRecords} of ${summary.totalRecords} record(s) are ` +
+      'still in the legacy pre-binding format (keyVersion 1); their vikunjaUrl and identity ' +
+      'binding are not covered by the encryption tag (issue #262). Each affected user can ' +
+      'upgrade their own record by re-running vikunja_auth provision, and sees this in ' +
+      'vikunja_auth status.',
+    {
+      totalRecords: summary.totalRecords,
+      legacyRecords: summary.legacyRecords,
+      legacyIdentities: summary.legacyIdentities,
+    },
+  );
 }

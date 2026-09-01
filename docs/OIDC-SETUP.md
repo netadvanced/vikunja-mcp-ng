@@ -54,6 +54,16 @@ Two consequences worth internalising:
 - **This server adds no authorization layer above Vikunja's own.** A provisioned user can do
   exactly what their own `tk_*` token permits in Vikunja — no more, no less.
 
+**What this mode cannot do: the JWT-only tools.** Because the vault holds `tk_*` API tokens
+(`vikunja_auth provision` rejects a JWT — it would expire within hours and nothing here can
+refresh it), every identity in this mode authenticates to Vikunja as an API token. The tools
+that require a JWT session — `vikunja_users`, the four export tools,
+`vikunja_caldav_tokens`, `vikunja_admin`, `vikunja_user_deletion` — therefore never appear in
+`tools/list` here, whatever the module keys say. That is not a bug and not a module you
+forgot to enable: Vikunja's `/user/*`, `/admin/*` and CalDAV-token endpoints reject `tk_*`
+tokens server-side anyway. Run those from a `stdio` deployment with a JWT session. See
+[CONFIGURATION.md § Composing with Auth-Type Gating](CONFIGURATION.md#composing-with-auth-type-gating).
+
 ---
 
 ## 2. Before you start

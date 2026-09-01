@@ -1383,6 +1383,46 @@ describe('Auth Tool', () => {
         );
       });
 
+      it('rejects a JWT-shaped token before it ever reaches Vikunja or the vault (#322)', async () => {
+        // The vault stores API tokens: `getCredential` labels every resolved
+        // credential 'api-token', and the JWT-only registration gate reads
+        // that label, so a vaulted JWT would be silently mislabeled — and
+        // would expire within hours with no refresh path here anyway.
+        await expect(
+          callTool('provision', {
+            apiToken: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.sig',
+            vikunjaUrl: 'https://vikunja.example.com',
+          }),
+        ).rejects.toThrow(/API tokens/i);
+
+        expect(mockVault.provision).not.toHaveBeenCalled();
+        // Refused locally: no round-trip is spent validating a token this
+        // mode would refuse to keep.
+        expect(mockVikunjaRestRequest).not.toHaveBeenCalled();
+      });
+
+      it('tells the user where to get an API token instead of just refusing', async () => {
+        await expect(
+          callTool('provision', {
+            apiToken: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.sig',
+            vikunjaUrl: 'https://vikunja.example.com',
+          }),
+        ).rejects.toThrow(/Settings → API Tokens/);
+      });
+
+      it('does not mistake an opaque token that merely starts with eyJ for a JWT', async () => {
+        await callTool('provision', {
+          apiToken: 'eyJopaque-but-not-a-jwt',
+          vikunjaUrl: 'https://vikunja.example.com',
+        });
+
+        expect(mockVault.provision).toHaveBeenCalledWith(
+          identity,
+          'https://vikunja.example.com',
+          'eyJopaque-but-not-a-jwt',
+        );
+      });
+
       it('requires apiToken when no SSO enrollment service is registered', async () => {
         await expect(
           callTool('provision', { vikunjaUrl: 'https://vikunja.example.com' }),
@@ -1537,6 +1577,46 @@ describe('Auth Tool', () => {
         const markdown = result.content[0].text;
         expect(markdown).toContain('cannot be decrypted');
         expect(markdown).not.toContain('No Vikunja API token linked yet');
+      });
+
+      it("surfaces a usable-but-outdated record's migration notice in the message (#322)", async () => {
+        // A legacy keyVersion 1 record still works, so it is reported as
+        // linked — but the operator/user must learn it needs re-provisioning
+        // somewhere other than a log line they may never read.
+        mockVault.getStatus.mockReturnValue({
+          provisioned: true,
+          recordPresent: true,
+          vikunjaUrl: 'https://vikunja.example.com',
+          maskedToken: 'tk_r...',
+          keyVersion: 1,
+          needsMigration: true,
+          migrationNotice:
+            'Your credential is stored in the legacy pre-binding format (keyVersion 1). ' +
+            'Re-run vikunja_auth provision with the same token to upgrade it.',
+        });
+
+        const result = await callTool('status');
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('keyVersion 1');
+        expect(markdown).toContain('action recommended');
+        expect(markdown).toContain('vikunja_auth provision');
+      });
+
+      it('stays quiet about migration when the record is already current', async () => {
+        mockVault.getStatus.mockReturnValue({
+          provisioned: true,
+          recordPresent: true,
+          vikunjaUrl: 'https://vikunja.example.com',
+          maskedToken: 'tk_r...',
+          keyVersion: 2,
+        });
+
+        const result = await callTool('status');
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('Vikunja API token linked');
+        expect(markdown).not.toContain('action recommended');
       });
     });
 

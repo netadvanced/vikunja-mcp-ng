@@ -32,12 +32,21 @@ import {
   writeVaultFileAtomic,
   setActiveVaultStore,
   getActiveVaultStore,
+  assertVaultableToken,
   type VaultRecord,
 } from '../../src/storage/vaultFileStore';
 import type { Identity } from '../../src/context/requestContext';
 
 const KEY = crypto.randomBytes(32);
 const OTHER_KEY = crypto.randomBytes(32);
+
+/**
+ * A structurally valid JWT (header.payload.signature, `eyJ` prefix) — what a
+ * user pastes when they copy Vikunja's own login token instead of creating an
+ * API token. Never a real credential; the signature is not checked anywhere
+ * in this path.
+ */
+const JWT_TOKEN = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLWEifQ.not-a-real-signature';
 
 const IDENTITY_A: Identity = { issuer: 'https://idp.example/realm', sub: 'user-a' };
 const IDENTITY_B: Identity = { issuer: 'https://idp.example/realm', sub: 'user-b' };
@@ -571,6 +580,198 @@ describe('VaultFileStore', () => {
       const store = new VaultFileStore(filePath, KEY);
       expect(() => store.getCredential(IDENTITY_A)).not.toThrow();
       expect(store.getCredential(IDENTITY_A)).toBeNull();
+    });
+  });
+
+  describe('API-token-only invariant (issue #322)', () => {
+    it('refuses to store a JWT-shaped token, and writes nothing at all', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+
+      await expect(
+        store.provision(IDENTITY_A, 'https://vikunja.example.com', JWT_TOKEN),
+      ).rejects.toThrow(/API tokens only/i);
+
+      // Not merely un-returned: never written. A partially-applied refusal
+      // would leave a mislabeled credential live for every later request.
+      expect(fs.existsSync(filePath)).toBe(false);
+      expect(store.getCredential(IDENTITY_A)).toBeNull();
+      expect(store.getStatus(IDENTITY_A)).toEqual({ provisioned: false });
+    });
+
+    it("points the operator at Vikunja's API tokens rather than just saying no", async () => {
+      const store = new VaultFileStore(filePath, KEY);
+
+      await expect(
+        store.provision(IDENTITY_A, 'https://vikunja.example.com', JWT_TOKEN),
+      ).rejects.toThrow(/tk_/);
+      await expect(
+        store.provision(IDENTITY_A, 'https://vikunja.example.com', JWT_TOKEN),
+      ).rejects.toThrow(/Settings → API Tokens/);
+    });
+
+    it('leaves an existing good record untouched when a JWT re-provision is refused', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_good-token');
+
+      await expect(
+        store.provision(IDENTITY_A, 'https://vikunja.example.com', JWT_TOKEN),
+      ).rejects.toThrow(/API tokens only/i);
+
+      expect(store.getCredential(IDENTITY_A)).toEqual({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_good-token',
+        authType: 'api-token',
+      });
+    });
+
+    it('still accepts an opaque non-tk_ token (unrecognized shapes stay API tokens)', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'legacy-opaque-token');
+
+      expect(store.getCredential(IDENTITY_A)?.authType).toBe('api-token');
+    });
+
+    it('exposes the guard directly so every future write path can reuse it', () => {
+      expect(() => assertVaultableToken('tk_fine')).not.toThrow();
+      expect(() => assertVaultableToken(JWT_TOKEN)).toThrow(/API tokens only/i);
+      // Only the positively-identified JWT shape is refused — a bare "eyJ"
+      // prefix without the three JWT segments is not a JWT.
+      expect(() => assertVaultableToken('eyJnot-a-jwt')).not.toThrow();
+    });
+
+    it('tells an identity holding a pre-guard vaulted JWT to swap it for an API token', () => {
+      // A record an older build (before the guard) could write: current
+      // format, but the plaintext is a JWT.
+      const enc = encryptToken(
+        JWT_TOKEN,
+        KEY,
+        vaultRecordAad('https://idp.example/realm|user-a', 'https://vikunja.example.com'),
+      );
+      writeVaultFileAtomic(
+        filePath,
+        new Map([
+          [
+            'https://idp.example/realm|user-a',
+            {
+              vikunjaUrl: 'https://vikunja.example.com',
+              ...enc,
+              keyVersion: 2,
+              createdAt: '2026-01-01T00:00:00.000Z',
+              updatedAt: '2026-01-01T00:00:00.000Z',
+              lastUsedAt: null,
+            } satisfies VaultRecord,
+          ],
+        ]),
+      );
+
+      const store = new VaultFileStore(filePath, KEY);
+      const status = store.getStatus(IDENTITY_A);
+      expect(status.provisioned).toBe(true);
+      expect(status.needsMigration).toBe(true);
+      expect(status.migrationNotice).toMatch(/JWT/);
+      expect(status.migrationNotice).toMatch(/vikunja_auth provision/);
+
+      // It keeps working meanwhile, and is still labeled api-token: the
+      // registration gate must not start exposing JWT-only tools off the
+      // back of a record the vault would refuse to write today.
+      expect(store.getCredential(IDENTITY_A)?.authType).toBe('api-token');
+    });
+  });
+
+  describe('migration visibility (issue #322 finding 2)', () => {
+    /** Write a pre-#262 record: encrypted with no AAD, `keyVersion: 1`. */
+    const writeLegacy = (identityKeyValue: string, token: string): VaultRecord => {
+      const enc = encryptToken(token, KEY);
+      return {
+        vikunjaUrl: 'https://vikunja.example.com',
+        ...enc,
+        keyVersion: 1,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        lastUsedAt: null,
+      };
+    };
+
+    it("flags the caller's own legacy record in status, with the remedy", () => {
+      writeVaultFileAtomic(
+        filePath,
+        new Map([['https://idp.example/realm|user-a', writeLegacy('a', 'tk_legacy')]]),
+      );
+
+      const store = new VaultFileStore(filePath, KEY);
+      const status = store.getStatus(IDENTITY_A);
+      expect(status.provisioned).toBe(true);
+      expect(status.keyVersion).toBe(1);
+      expect(status.needsMigration).toBe(true);
+      expect(status.migrationNotice).toMatch(/keyVersion 1/);
+      expect(status.migrationNotice).toMatch(/vikunja_auth provision/);
+    });
+
+    it('flags nothing for a record written in the current format', async () => {
+      const store = new VaultFileStore(filePath, KEY);
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_current');
+
+      const status = store.getStatus(IDENTITY_A);
+      expect(status.keyVersion).toBe(2);
+      expect(status.needsMigration).toBeUndefined();
+      expect(status.migrationNotice).toBeUndefined();
+    });
+
+    it('counts unmigrated records vault-wide for the operator, with masked identities', () => {
+      writeVaultFileAtomic(
+        filePath,
+        new Map([
+          ['https://idp.example/realm|user-a', writeLegacy('a', 'tk_legacy-a')],
+          ['https://idp.example/realm|user-b', writeLegacy('b', 'tk_legacy-b')],
+        ]),
+      );
+
+      const store = new VaultFileStore(filePath, KEY);
+      const summary = store.getMigrationSummary();
+      expect(summary).toEqual({
+        totalRecords: 2,
+        legacyRecords: 2,
+        legacyIdentities: ['http...', 'http...'],
+      });
+      // Masked: the summary goes to operator logs, so no raw identity keys.
+      expect(JSON.stringify(summary)).not.toContain('user-a');
+    });
+
+    it('drops the count back to zero once the identity re-provisions', async () => {
+      writeVaultFileAtomic(
+        filePath,
+        new Map([['https://idp.example/realm|user-a', writeLegacy('a', 'tk_legacy')]]),
+      );
+
+      const store = new VaultFileStore(filePath, KEY);
+      expect(store.getMigrationSummary().legacyRecords).toBe(1);
+
+      await store.provision(IDENTITY_A, 'https://vikunja.example.com', 'tk_rotated');
+
+      expect(store.getMigrationSummary()).toEqual({
+        totalRecords: 1,
+        legacyRecords: 0,
+        legacyIdentities: [],
+      });
+      expect(store.getStatus(IDENTITY_A).needsMigration).toBeUndefined();
+    });
+
+    it('reports an empty vault as nothing to migrate', () => {
+      const store = new VaultFileStore(filePath, KEY);
+      expect(store.getMigrationSummary()).toEqual({
+        totalRecords: 0,
+        legacyRecords: 0,
+        legacyIdentities: [],
+      });
+    });
+
+    it('says so when the count is taken from an incomplete read of the vault (#266)', () => {
+      fs.writeFileSync(filePath, 'not json at all', 'utf-8');
+
+      const store = new VaultFileStore(filePath, KEY);
+      const summary = store.getMigrationSummary();
+      expect(summary.totalRecords).toBe(0);
+      expect(summary.incompleteReason).toBeDefined();
     });
   });
 
