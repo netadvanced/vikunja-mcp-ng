@@ -16,6 +16,8 @@ import {
   registerWebhooksTool,
   clearWebhookEventCache,
   expireWebhookEventCache,
+  getOrCreateEventCacheEntry,
+  getWebhookEventCacheStats,
 } from '../../src/tools/webhooks';
 import { MCPError, ErrorCode } from '../../src/types';
 import { getAuthManagerFromContext } from '../../src/client';
@@ -1225,6 +1227,57 @@ describe('Webhooks Tool', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // #327: the event cache is keyed by `${sessionId}::${scope}`, one entry
+  // per distinct identity the process has ever seen. Expiry only nulls a
+  // value's `expiry` field - it never removes the map entry - so before
+  // this fix a long-running `oidc-http` process leaked one entry forever
+  // per new (identity, scope) pair. Verified here as a bounded LRU, the
+  // same shape `normalizedKeyCache` uses in src/utils/security.ts.
+  // -------------------------------------------------------------------------
+  describe('Event cache growth bound', () => {
+    it('never grows the event cache past its advertised maxSize', () => {
+      const { maxSize } = getWebhookEventCacheStats();
+      const overflowCount = maxSize + 500;
+
+      for (let i = 0; i < overflowCount; i++) {
+        const fakeAuthManager = {
+          getSession: () => ({
+            apiUrl: `https://identity-${i}.example.com`,
+            apiToken: `token-${i}`,
+          }),
+        } as unknown as AuthManager;
+        getOrCreateEventCacheEntry(fakeAuthManager, 'project');
+      }
+
+      const stats = getWebhookEventCacheStats();
+      expect(stats.size).toBeLessThanOrEqual(maxSize);
+    });
+
+    it('keeps a distinct entry per (identity, scope) pair up to the cap', () => {
+      const authManagerA = {
+        getSession: () => ({ apiUrl: 'https://a.example.com', apiToken: 'token-a' }),
+      } as unknown as AuthManager;
+      const authManagerB = {
+        getSession: () => ({ apiUrl: 'https://b.example.com', apiToken: 'token-b' }),
+      } as unknown as AuthManager;
+
+      const entryA = getOrCreateEventCacheEntry(authManagerA, 'project');
+      entryA.events = ['task.created'];
+      const entryAScopedUser = getOrCreateEventCacheEntry(authManagerA, 'user');
+      const entryB = getOrCreateEventCacheEntry(authManagerB, 'project');
+
+      // Same identity + scope returns the same entry, so the earlier write
+      // is visible...
+      expect(getOrCreateEventCacheEntry(authManagerA, 'project').events).toEqual([
+        'task.created',
+      ]);
+      // ...but a different scope or a different identity is a distinct entry.
+      expect(entryAScopedUser).not.toBe(entryA);
+      expect(entryB).not.toBe(entryA);
+    });
+  });
+
   describe('Error Handling', () => {
     it('should handle unknown subcommand', async () => {
       await expect(mockHandler({ subcommand: 'unknown' })).rejects.toThrow(
@@ -1609,6 +1662,74 @@ describe('Webhooks Tool', () => {
         debugSpy.mockRestore();
         errorSpy.mockRestore();
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #327: `target_url` itself can embed a secret (Slack/Discord/Teams-style
+  // webhook URLs put the shared secret directly in the path), so it needs
+  // the same response-side masking as `secret`/`basic_auth_password` -
+  // reusing `redactUrlSecrets`'s high-entropy-path-segment detection
+  // (src/utils/security.ts), the same logic already used to keep these URLs
+  // out of log lines.
+  // -------------------------------------------------------------------------
+  describe('credential hygiene for `target_url`', () => {
+    // 20+ chars, mixed-case + digits: matches looksLikeSecretPathSegment.
+    const SECRET_PATH_SEGMENT = 'T00000000B1111111Xyz9AbCdEf';
+    const SECRET_URL = `https://hooks.slack.com/services/T1/B2/${SECRET_PATH_SEGMENT}`;
+
+    it('redacts a secret-bearing target_url leaked by a list response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: [{ ...mockWebhook, target_url: SECRET_URL }] }),
+      );
+
+      const result = await mockHandler({ subcommand: 'list', projectId: 1 });
+
+      expect(result.content[0].text).not.toContain(SECRET_PATH_SEGMENT);
+      // The host stays visible - only the secret path segment is masked.
+      expect(result.content[0].text).toContain('hooks.slack.com');
+      expect(result.content[0].text).toContain('REDACTED');
+    });
+
+    it('redacts a secret-bearing target_url leaked by a get response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: [{ ...mockWebhook, target_url: SECRET_URL }] }),
+      );
+
+      const result = await mockHandler({ subcommand: 'get', projectId: 1, webhookId: 1 });
+
+      expect(result.content[0].text).not.toContain(SECRET_PATH_SEGMENT);
+      expect(result.content[0].text).toContain('hooks.slack.com');
+    });
+
+    it('redacts a secret-bearing target_url echoed back by create', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: { ...mockWebhook, target_url: SECRET_URL } }),
+      );
+
+      const result = await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: SECRET_URL,
+        events: ['task.created'],
+      });
+
+      // Still forwarded on the wire - this is the one place it must be sent.
+      const sent = JSON.parse(
+        (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+      ) as Record<string, unknown>;
+      expect(sent.target_url).toBe(SECRET_URL);
+
+      expect(result.content[0].text).not.toContain(SECRET_PATH_SEGMENT);
+    });
+
+    it('leaves an ordinary (non-secret-shaped) target_url untouched', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [mockWebhook] }));
+
+      const result = await mockHandler({ subcommand: 'list', projectId: 1 });
+
+      expect(result.content[0].text).toContain('https://example.com/webhook');
     });
   });
 
