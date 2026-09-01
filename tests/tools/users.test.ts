@@ -741,9 +741,36 @@ describe('Users Tool', () => {
       expect(vikunjaRestMultipartRequest).not.toHaveBeenCalled();
     });
 
-    it('should reject fileContent that decodes to empty bytes', async () => {
+    it('should reject a padding-only string as malformed base64', async () => {
+      // '====' has no leading alphabet characters — not a valid base64
+      // group under any padding rule, so it must be rejected as malformed
+      // rather than silently decoded (Buffer.from's lenient parser turns it
+      // into an empty buffer, which is why this used to be reported as
+      // "decodes to empty bytes" instead of the real problem: it isn't
+      // valid base64).
       await expect(callTool('upload-avatar', { fileContent: '====' })).rejects.toThrow(
-        'upload-avatar: decoded fileContent is empty',
+        'upload-avatar: fileContent is not valid base64',
+      );
+      expect(vikunjaRestMultipartRequest).not.toHaveBeenCalled();
+    });
+
+    it('should reject genuinely malformed base64 (invalid characters) instead of silently uploading corrupted bytes', async () => {
+      // Node's Buffer.from(str, 'base64') is lenient and silently skips
+      // characters outside the base64 alphabet rather than throwing, so
+      // this decodes to a non-empty (but garbage) buffer if not explicitly
+      // validated first.
+      await expect(
+        callTool('upload-avatar', { fileContent: 'not valid base64!!!@#$%' }),
+      ).rejects.toThrow('upload-avatar: fileContent is not valid base64');
+      expect(vikunjaRestMultipartRequest).not.toHaveBeenCalled();
+    });
+
+    it('should reject base64 with incorrect padding length', async () => {
+      // 'aGkK' is valid (length 4); 'aGkK=' (length 5) is not a valid
+      // base64 group length and must be rejected rather than passed to
+      // Buffer.from.
+      await expect(callTool('upload-avatar', { fileContent: 'aGkK=' })).rejects.toThrow(
+        'upload-avatar: fileContent is not valid base64',
       );
     });
 

@@ -912,8 +912,12 @@ While building the "mark one read" capture, sending an empty body (as
 **not** persist a read state on the pinned server version, even after
 repeated calls; sniffing the real frontend's own request showed it sends
 `{"read": true}` explicitly, which does persist. The capture script does
-the same. This is a capture-script-only workaround, not a change to
-`src/tools/notifications.ts` (out of scope for the item that added this
-script); worth checking if `vikunja_notifications`'s `mark-read`
-subcommand is ever reported as silently not sticking against a real
-server.
+the same.
+
+**Update (issue #314, 2026-09-01):** this was indeed reported — re-verified
+live against two more 2.4.0 stacks (a 4-day-old postgres instance and a
+fresh sqlite instance), reproducing identically on both, so it is general
+server behavior rather than one stack's accumulated state. `src/tools/
+notifications.ts`'s `ensureNotificationRead` now sends the same explicit
+`{ read: true }` body this capture script always used. See
+`docs/VIKUNJA_API_ISSUES.md` item #21 for the full writeup.

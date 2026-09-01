@@ -4,7 +4,11 @@
  * Wraps Vikunja's `/notifications` endpoints (see docs/vikunja-openapi.json):
  *   - GET  /notifications        -> list, with page/per_page pagination
  *   - POST /notifications        -> mark every notification read
- *   - POST /notifications/{id}   -> toggle a single notification's read state
+ *   - POST /notifications/{id}   -> mark a single notification's read state.
+ *     Documented as a bodyless toggle, but confirmed live (issue #314,
+ *     docs/VIKUNJA_API_ISSUES.md item #21) that an empty body never
+ *     persists — this codebase sends an explicit `{ read: true }` body
+ *     instead, which does. See `ensureNotificationRead`'s doc comment.
  *
  * All calls go through `vikunjaRestRequest` (direct-REST rule, see
  * docs/ENDPOINT-PLAYBOOK.md §3) — legacy client has no notifications support
@@ -95,40 +99,71 @@ function extractRelatedTask(content: unknown): { id: number; title: string } | u
 }
 
 /**
- * Ensures a notification ends up marked READ, working around
- * `POST /notifications/{id}` being a pure toggle in the API (per the spec:
- * "Marks a notification as either read or unread", no request body to pick
- * which). A blind single POST would silently mark an already-read
- * notification unread again on a repeat call — this makes `mark-read`
- * idempotent (verify-then-apply, docs/ENDPOINT-PLAYBOOK.md §1) by checking
- * the response and, if the toggle landed on "unread", toggling once more.
- * At most 2 requests; typically 1.
+ * Ensures a notification ends up marked READ.
  *
- * Checks the response's own explicit `read` boolean rather than
- * `read_at` truthiness (issue #286 / HIGH-15): `read_at` is always a
- * non-empty string — either a real timestamp or the zero-time sentinel
- * `"0001-01-01T00:00:00Z"` for "unread" (see `isNotificationUnread`'s doc
- * comment, confirmed live) — so a truthiness check can never detect "the
- * toggle actually landed on unread," which is exactly the case this
- * function exists to catch and correct.
+ * `POST /notifications/{id}` is documented (docs/vikunja-openapi.json) as a
+ * pure toggle with NO request body ("Marks a notification as either read or
+ * unread"). Issue #314 confirmed live against Vikunja 2.4.0 — on BOTH a
+ * postgres-backed and a freshly-provisioned sqlite-backed instance, so this
+ * is general server behavior, not stale state on one long-running stack —
+ * that sending the toggle with an empty body per the spec never actually
+ * persists: repeated empty-body calls leave `read_at` at the Go zero-time
+ * sentinel forever and the response's own `read` field never flips to
+ * `true`. Sniffing the real Vikunja frontend's own request (see
+ * docs/LOCAL-TESTING.md, "A note on POST /notifications/{id}", found
+ * independently while building a docs screenshot capture) showed it sends
+ * `{"read": true}` explicitly instead of an empty body, and that DOES
+ * persist correctly on both backends. This function does the same, rather
+ * than relying on the documented-but-non-functional empty-body toggle. See
+ * docs/VIKUNJA_API_ISSUES.md item #21 for the full writeup.
+ *
+ * The retry-if-still-unread step is kept as a defensive fallback (e.g. a
+ * server version that reverts to genuine toggle semantics, where an
+ * explicit `read: true` sent while already-read could still flip to
+ * unread) — this makes `mark-read` idempotent (verify-then-apply,
+ * docs/ENDPOINT-PLAYBOOK.md §1) by checking the response and retrying once
+ * if it didn't land on `read: true`. At most 2 requests; typically 1.
+ *
+ * Checks the response's own explicit `read` boolean rather than `read_at`
+ * truthiness (issue #286 / HIGH-15): `read_at` is always a non-empty
+ * string — either a real timestamp or the zero-time sentinel for "unread"
+ * (see `isNotificationUnread`'s doc comment) — so a truthiness check can
+ * never detect "the toggle actually landed on unread."
+ *
+ * If the retry ALSO fails to land on `read: true`, a warning is returned
+ * alongside the notification instead of silently reporting success (#314's
+ * suggested next step) — this can no longer happen against the specific
+ * empty-body-never-persists behavior this function now works around, but
+ * still guards against a genuinely unresponsive server or some other
+ * as-yet-unseen persistence failure.
  */
 async function ensureNotificationRead(
   authManager: AuthManager,
   notificationId: number,
-): Promise<VikunjaNotification> {
+): Promise<{ notification: VikunjaNotification; warning?: string }> {
   let notification = await vikunjaRestRequest<VikunjaNotification>(
     authManager,
     'POST',
     `/notifications/${notificationId}`,
+    { read: true },
   );
   if (notification?.read !== true) {
     notification = await vikunjaRestRequest<VikunjaNotification>(
       authManager,
       'POST',
       `/notifications/${notificationId}`,
+      { read: true },
     );
   }
-  return notification;
+  if (notification?.read !== true) {
+    return {
+      notification,
+      warning:
+        `Notification ${notificationId} may not actually be marked read server-side: ` +
+        "the server did not confirm read: true after 2 attempts sending { read: true }.",
+    };
+  }
+  return { notification };
 }
 
 export function registerNotificationsTool(
@@ -277,17 +312,29 @@ export function registerNotificationsTool(
           case 'mark-read': {
             const notificationId = validateAndConvertId(args.notificationId, 'notificationId');
 
-            const notification = await ensureNotificationRead(authManager, notificationId);
+            const { notification, warning } = await ensureNotificationRead(
+              authManager,
+              notificationId,
+            );
 
-            logger.info('Marked notification read', { notificationId });
+            logger.info('Marked notification read', { notificationId, warning });
 
+            // A result that could not be confirmed server-side is never
+            // reported as a plain, unqualified success — same reliability
+            // rule the `list` case above follows for pagination (issue
+            // #268), applied here for #314's mark-read persistence warning.
             const aorpResult = createAorpResponse(
               'mark-read',
-              `Notification ${notificationId} marked as read`,
+              warning
+                ? `Notification ${notificationId} marked as read — WARNING: ${warning}`
+                : `Notification ${notificationId} marked as read`,
               { notification },
               {
                 success: true,
-                metadata: { count: 1 },
+                metadata: {
+                  count: 1,
+                  ...(warning ? { resultComplete: false, warnings: [warning] } : {}),
+                },
               },
             );
 

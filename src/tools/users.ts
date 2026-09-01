@@ -51,6 +51,17 @@ const AVATAR_PROVIDERS = [
   'default',
 ] as const;
 
+/**
+ * Strict base64 shape check: groups of 4 alphabet characters, with an
+ * optional final group padded by 1-2 `=`. Whitespace is not tolerated — a
+ * base64-encoding caller has no reason to inject it, and permitting it would
+ * widen what `Buffer.from` is trusted to decode. Mirrors the identical
+ * pattern in `vikunja_tasks attach` (`src/tools/tasks/attach.ts`, MED-12
+ * fix, #295) — same defect, same fix, applied here for `upload-avatar`
+ * (#300).
+ */
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
 interface SearchParams {
   page?: number;
   per_page?: number;
@@ -605,14 +616,28 @@ export function registerUsersTool(
               name = filename || basename(filePath);
               source = 'filePath';
             } else if (fileContent) {
-              const decoded = Buffer.from(fileContent, 'base64');
-              if (decoded.length === 0) {
+              // Node's `Buffer.from(str, 'base64')` is lenient: it silently
+              // skips characters outside the base64 alphabet instead of
+              // rejecting them, so a genuinely malformed string (bad
+              // characters, wrong padding) still decodes to *some* bytes
+              // rather than throwing or landing on `length === 0`. Validate
+              // the string's shape first — proper alphabet, length a
+              // multiple of 4, at most two trailing `=` padding characters —
+              // before trusting the decode, so corrupted input is rejected
+              // rather than silently uploaded as a corrupted avatar. Same
+              // fix as `vikunja_tasks attach` (MED-12, #295).
+              if (!BASE64_PATTERN.test(fileContent)) {
                 throw new MCPError(
                   ErrorCode.VALIDATION_ERROR,
-                  'upload-avatar: decoded fileContent is empty (not valid base64 or empty input)',
+                  'upload-avatar: fileContent is not valid base64 (invalid characters or padding)',
                 );
               }
-              bytes = decoded;
+              // A non-empty string that passes BASE64_PATTERN always decodes
+              // to at least one byte (the shortest valid non-empty group,
+              // e.g. 'AA==', yields 1 byte), so there is no reachable
+              // empty-decode case left to guard here once the shape is
+              // validated above.
+              bytes = Buffer.from(fileContent, 'base64');
               name = filename || 'avatar.png';
               source = 'fileContent';
             } else {

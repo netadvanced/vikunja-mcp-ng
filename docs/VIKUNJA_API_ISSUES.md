@@ -848,21 +848,42 @@ mark-read idempotency retry (`ensureNotificationRead`) checked the same way
 and so could never detect "the toggle actually landed on unread," making the
 retry dead code against a real server.
 
-**A separate, likely-unrelated server-side quirk observed while verifying
-this, NOT fixed here (out of scope — it is Vikunja's own behavior, not this
-client's):** repeated `POST /notifications/{id}` calls against the live
-2.4.0 instance used for verification never actually flipped the DB's
+**A separate server-side quirk, observed while verifying this and tracked
+separately as issue #314 — now confirmed and fixed client-side (2026-09-01):**
+repeated `POST /notifications/{id}` calls against the live 2.4.0 instance
+used for the original verification never actually flipped the DB's
 `read_at` away from NULL, regardless of call count — every response's own
-`read` field came back `false`. Worth re-verifying independently before
-assuming it is fixed elsewhere.
+`read` field came back `false`.
+
+Issue #314 re-verified this independently against two more live 2.4.0
+stacks: a 4-day-old postgres instance (same backend as the original
+observation, ruling out "it was just stale by then") and a freshly
+provisioned sqlite instance with almost no accumulated state (ruling out
+"it's specific to that one long-running container"). **It reproduces
+identically on both**, so this is general Vikunja 2.4.0 server behavior,
+not an artifact of one stack's accumulated state.
+
+Root cause identified: `POST /notifications/{id}` sent with an empty body —
+the shape `docs/vikunja-openapi.json` documents ("no request body")  — never
+persists the read toggle on either backend, no matter how many times it is
+called. Sending an explicit `{"read": true}` body instead **does** persist
+correctly, confirmed by a follow-up `GET` on both stacks. This matches what
+the real Vikunja frontend itself sends (found independently while building
+a docs screenshot-capture script — see `docs/LOCAL-TESTING.md`, "A note on
+`POST /notifications/{id}`").
 
 **Resolution:** `isNotificationUnread` (`src/tools/notifications.ts`) checks
 `!readAt || readAt.startsWith('0001-')`, matching the existing task-date
 sentinel pattern, used for `unreadOnly` filtering.
-`ensureNotificationRead`'s retry now checks the response's own explicit
-`read` boolean (present on `POST /notifications/{id}`'s response shape,
-`models.DatabaseNotifications`, though NOT on the plain `GET /notifications`
-list shape) instead of `read_at` truthiness.
+`ensureNotificationRead` now sends `{ read: true }` explicitly on every
+`POST /notifications/{id}` call rather than the documented-but-non-functional
+empty body, and checks the response's own explicit `read` boolean (present
+on `POST /notifications/{id}`'s response shape, `models.DatabaseNotifications`,
+though NOT on the plain `GET /notifications` list shape) rather than
+`read_at` truthiness. The retry-once-if-not-confirmed step is kept as a
+defensive fallback; if both attempts still fail to confirm `read: true`,
+`mark-read` now surfaces a warning in its response instead of silently
+reporting success (issue #314's suggested next step).
 
 ## Recommendations for Vikunja Maintainers
 
