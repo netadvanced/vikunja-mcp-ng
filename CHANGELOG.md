@@ -8,6 +8,82 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+**A second independent-review pass on the beta.3 audit fixes themselves.** Two more
+non-Claude models (Grok and Codex, via `cursor-agent`) re-reviewed the same
+`v0.7.0-beta.1..beta.3` diffs after #297 shipped, specifically looking for seams *between*
+the 36 independently-fixed findings rather than bugs within any one of them. Six more
+confirmed defects surfaced this way; every one is fixed and independently re-verified
+against the merged tree below.
+
+### Security
+
+- **The credential vault reported every credential as an API token, even when a JWT had
+  been stored.** `VaultFileStore.getCredential` hardcoded `authType: 'api-token'`, so in
+  `oidc-http` mode the JWT-only tool gate (`vikunja_users`, the export tools, `vikunja_admin`,
+  `vikunja_user_deletion`, `vikunja_caldav_tokens`) could never see a `jwt` auth type and those
+  tools were silently unreachable even for an operator who deliberately provisioned one.
+  `vikunja_auth provision` also accepted a JWT-shaped token without validating its format.
+  Resolved by making the vault an enforced API-token-only store: `provision` now rejects a
+  JWT outright with an actionable error (a Vikunja JWT expires within hours and this server
+  has no refresh path for it), so the `api-token` label is true by construction. A record
+  written before this guard existed, or still in the pre-AAD `keyVersion: 1` format (#262),
+  now surfaces `needsMigration`/`migrationNotice` in `vikunja_auth status`, plus a
+  deterministic startup log naming how many vault-wide records still need re-provisioning.
+  (#322)
+- **A secret-bearing webhook `target_url` was never redacted in tool responses.**
+  `redactWebhookCredentials` only stripped `secret` and `basic_auth_password`; a provider
+  webhook URL that embeds a credential in its path (Slack/Discord/Teams-style) passed
+  through unredacted into every `list`/`get`/`create`/`update` response, even though the
+  same file's logging path already treated these URLs as secret-bearing. Now masked with
+  the same high-entropy-path-segment detection already used for log redaction; the raw URL
+  is still sent on the wire when creating or updating. (#327)
+
+### Fixed: oidc-http availability
+
+- **Three of the four `vikunja_export_project`/user-export tools always failed with
+  `AUTH_REQUIRED` in `oidc-http` mode**, even for a correctly JWT-authenticated caller.
+  `vikunja_request_user_export`, `vikunja_download_user_export`, and
+  `vikunja_user_export_status` checked the closure/process-global `AuthManager` (never
+  connected in `oidc-http`, where per-caller credentials live behind the request-scoped
+  context) instead of resolving the calling identity's own manager the way
+  `vikunja_export_project` already did. All four now resolve consistently; a latent bug in
+  `vikunja_export_project` itself (it computed the correct per-request manager but still
+  passed the closure one to the actual export call) was caught and fixed alongside. `stdio`
+  behavior is unchanged. (#329)
+
+### Fixed: answers that were wrong, partial, or quietly ignored
+
+- **Both the JSON and CSV batch-import parsers silently dropped invalid rows under
+  `skipErrors: true`**, with no record of what was dropped or why — a JSON/CSV import could
+  report "imported N tasks" with zero visibility into how many rows never made it past
+  parsing. Both parsers now report every skipped row (index + reason), and
+  `vikunja_batch_import`'s response surfaces them alongside the task-creation failures it
+  already tracked. (#323)
+- **A label whose *title* happened to look numeric (`"123"`, `"1e2"`) was resolved as a
+  label *id* instead of by title**, silently matching the wrong label (or none at all).
+  Only a value that arrives as a genuine `number` is now treated as a pre-resolved id; a
+  numeric-looking *string* always tries title resolution first, falling back to
+  numeric-as-id only when no label has that exact title. (#324)
+- **`vikunja_webhooks get` never paginated**, so a webhook whose id landed past the
+  server's default first page (`service.maxitemsperpage`, default 50) was reported
+  `NOT_FOUND` even though it exists. `get` now walks every page for `scope: 'project'`
+  (`scope: 'user'` has no page/per_page support at all, so it is unaffected). (#332)
+
+### Changed
+
+- **Cross-project task aggregation no longer fires one request per accessible project at
+  once.** `loadTasksAcrossProjects`'s `Promise.all` over every project's task fetch had no
+  concurrency cap, so a user with hundreds of accessible projects could trigger hundreds of
+  simultaneous upstream requests and an equally large peak of in-flight per-project result
+  arrays, independent of `VIKUNJA_MAX_TASKS_LIMIT`. Now bounded by a small concurrency pool
+  (default 10 in flight, tunable via `VIKUNJA_CROSS_PROJECT_CONCURRENCY`, capped at 50). The
+  existing per-project budget accounting (#290 MED-19) is unaffected — this only bounds
+  fan-out, not the task-count budget. (#324)
+- **The credential vault's `eventCache` (webhook event-type cache) no longer grows without
+  bound.** A distinct entry accumulated forever per `(identity, scope)` pair the process had
+  ever seen in `oidc-http` mode; it is now a bounded LRU (cap 10,000, evict-then-insert),
+  mirroring the pattern already used for the redaction path's `normalizedKeyCache`. (#327)
+
 ## [0.7.0-beta.3] - 2026-09-01
 
 **A security and reliability hardening pass, not a feature release.** Two independent code
