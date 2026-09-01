@@ -16,10 +16,11 @@ import { storageManager } from '../storage';
 // concern (see templateFileStore.ts's header).
 import {
   loadTemplatesFile,
-  writeTemplatesFileAtomic,
+  persistIdentityTemplateRecords,
   resolveTemplatesPersistPath,
 } from '../storage/templateFileStore';
 import type { PersistedTemplateRecord } from '../storage/templateFileStore';
+import type { SavedFilter } from '../types/filters';
 import { ConfigurationManager } from '../config';
 import { logger } from '../utils/logger';
 import { getEffectiveSessionId } from '../context/requestContext';
@@ -78,30 +79,62 @@ function getTemplatesPersistPath(): string | undefined {
 }
 
 /**
- * Templates already hydrated from disk in this process, keyed by
- * `${persistPath}:${sessionId}` — hydration happens once per session per
- * configured path, not on every call, so repeated tool invocations don't
- * re-read the file or attempt to re-create already-loaded templates.
+ * Templates already hydrated from disk in this process, per configured
+ * persist path, for the currently-live storage *instance*.
+ *
+ * Keyed by the `SimpleFilterStorage` object itself (a `WeakMap`), not by the
+ * session id string it was previously keyed by — this is the #264 / MED-11
+ * fix. The old string key (`${persistPath}:${sessionId}`) survived eviction:
+ * `FilterStorageManager`'s 1h idle sweep discards a session's storage
+ * instance and hands back a brand-new, empty one on the next lookup, but the
+ * hydration key stayed marked "already done" forever, so `list` reported "0
+ * templates" while the file still held them, and the next `create`
+ * write-through overwrote the disk file with that near-empty set —
+ * permanently deleting everything. Keying on the instance reference instead
+ * makes that impossible structurally: an evicted-then-recreated session gets
+ * a storage object with no entry in this `WeakMap`, so hydration simply runs
+ * again, and the stale entry for the discarded instance is garbage-collected
+ * on its own. Paired with the `getStorage` fix in `SimpleFilterStorage.ts`
+ * (bump `lastAccessAt` on every lookup, not just on filter CRUD) as
+ * defense-in-depth against the eviction race itself, not just its
+ * consequence here.
  */
-const hydratedPersistenceKeys = new Set<string>();
+const hydratedPersistPathsByStorage = new WeakMap<
+  Awaited<ReturnType<typeof storageManager.getStorage>>,
+  Set<string>
+>();
 
 async function hydrateTemplatesFromDiskIfNeeded(
   storage: Awaited<ReturnType<typeof storageManager.getStorage>>,
   persistPath: string,
 ): Promise<void> {
-  const sessionId = storage.getSession().id;
-  const key = `${persistPath}:${sessionId}`;
-  if (hydratedPersistenceKeys.has(key)) {
+  let hydratedPaths = hydratedPersistPathsByStorage.get(storage);
+  if (!hydratedPaths) {
+    hydratedPaths = new Set<string>();
+    hydratedPersistPathsByStorage.set(storage, hydratedPaths);
+  }
+  if (hydratedPaths.has(persistPath)) {
     return;
   }
-  hydratedPersistenceKeys.add(key);
+  hydratedPaths.add(persistPath);
 
-  const records = loadTemplatesFile(persistPath);
+  // Identity = the same stable session-id string SimpleFilterStorage
+  // instances are keyed by (see getEffectiveSessionId), so hydration only
+  // ever loads records this identity itself persisted — #265 (CRIT-4): a
+  // record with no matching identity belongs to a different tenant and
+  // must never be hydrated into this session.
+  const identity = storage.getSession().id;
+  const records = loadTemplatesFile(persistPath).filter((record) => record.identity === identity);
   for (const record of records) {
     try {
-      const existing = await storage.findByName(record.name);
+      const existing = await findTemplateByName(storage, record.name);
       if (!existing) {
-        await storage.create({ name: record.name, filter: record.data, isGlobal: true });
+        await storage.create({
+          name: record.name,
+          filter: record.data,
+          isGlobal: true,
+          namespace: 'template',
+        });
       }
     } catch (error) {
       logger.warn('Failed to hydrate a template from the persistence file, skipping it', {
@@ -114,12 +147,33 @@ async function hydrateTemplatesFromDiskIfNeeded(
 }
 
 /**
- * Write-through: persist the full current template set for this session to
+ * Look up a saved-filter record by name, but only if it actually belongs to
+ * the `template` namespace. `SimpleFilterStorage` is a shared per-session
+ * bucket (tasks' cross-project filtering also reads from it — see
+ * `src/tools/tasks/index.ts`); without this check, a non-template record
+ * that happened to share a template's generated name would be treated as a
+ * template — see #293 (LOW-12).
+ */
+async function findTemplateByName(
+  storage: Awaited<ReturnType<typeof storageManager.getStorage>>,
+  name: string,
+): Promise<SavedFilter | null> {
+  const filter = await storage.findByName(name);
+  return filter && filter.namespace === 'template' ? filter : null;
+}
+
+/**
+ * Write-through: persist the full current template set for this identity to
  * disk, atomically, when persistence is configured. A write failure is
  * logged but never surfaced as a tool error — the in-memory mutation the
  * caller just made already succeeded, and durability is a best-effort
  * bonus, not a correctness requirement (per the "in memory by default"
  * contract templates.ts documents).
+ *
+ * `persistIdentityTemplateRecords` merges this identity's records into the
+ * file rather than overwriting it wholesale — see #265 (CRIT-4): the old
+ * behavior wrote only the mutating session's full set over the *entire*
+ * file, so concurrent identities silently erased each other's templates.
  */
 async function persistTemplatesIfConfigured(
   storage: Awaited<ReturnType<typeof storageManager.getStorage>>,
@@ -129,11 +183,12 @@ async function persistTemplatesIfConfigured(
     return;
   }
   try {
+    const identity = storage.getSession().id;
     const all = await storage.list();
     const records: PersistedTemplateRecord[] = all
-      .filter((filter) => filter.name.startsWith('template_'))
-      .map((filter) => ({ id: filter.name, name: filter.name, data: filter.filter }));
-    writeTemplatesFileAtomic(persistPath, records);
+      .filter((filter) => filter.namespace === 'template')
+      .map((filter) => ({ id: filter.name, name: filter.name, data: filter.filter, identity }));
+    await persistIdentityTemplateRecords(persistPath, identity, records);
   } catch (error) {
     logger.error('Failed to persist templates to disk', {
       persistPath,
@@ -285,11 +340,15 @@ export function registerTemplatesTool(
                 variables: {},
               };
 
-              // Save template as a saved filter
+              // Save template as a saved filter, tagged with the `template`
+              // namespace (not just the `template_` name prefix) so it can
+              // never be confused with an unrelated saved filter that
+              // happens to share the storage bucket — see #293 (LOW-12).
               await storage.create({
                 name: templateId,
                 filter: JSON.stringify(templateData),
                 isGlobal: true,
+                namespace: 'template',
               });
               await persistTemplatesIfConfigured(storage);
 
@@ -329,9 +388,11 @@ export function registerTemplatesTool(
           case 'list': {
             try {
               const savedFilters = await storage.list();
-              // Convert saved filters back to templates
+              // Convert saved filters back to templates. Filtered by the
+              // `template` namespace field (not the `template_` name
+              // prefix) — see #293 (LOW-12).
               const templates = savedFilters
-                .filter((f) => f.name.startsWith('template_'))
+                .filter((f) => f.namespace === 'template')
                 .map((f) => {
                   try {
                     return JSON.parse(f.filter) as TemplateData;
@@ -370,7 +431,7 @@ export function registerTemplatesTool(
             }
 
             try {
-              const savedFilter = await storage.findByName(args.id);
+              const savedFilter = await findTemplateByName(storage, args.id);
               if (!savedFilter) {
                 throw new MCPError(ErrorCode.NOT_FOUND, `Template with ID ${args.id} not found`);
               }
@@ -405,7 +466,7 @@ export function registerTemplatesTool(
             }
 
             try {
-              const savedFilter = await storage.findByName(args.id);
+              const savedFilter = await findTemplateByName(storage, args.id);
               if (!savedFilter) {
                 throw new MCPError(ErrorCode.NOT_FOUND, `Template with ID ${args.id} not found`);
               }
@@ -417,7 +478,7 @@ export function registerTemplatesTool(
               if (args.tags !== undefined) template.tags = args.tags;
 
               // Update the saved filter by finding it first
-              const existingFilter = await storage.findByName(args.id);
+              const existingFilter = await findTemplateByName(storage, args.id);
               if (existingFilter) {
                 await storage.update(existingFilter.id, {
                   filter: JSON.stringify(template),
@@ -459,7 +520,7 @@ export function registerTemplatesTool(
             }
 
             try {
-              const savedFilter = await storage.findByName(args.id);
+              const savedFilter = await findTemplateByName(storage, args.id);
               if (!savedFilter) {
                 throw new MCPError(ErrorCode.NOT_FOUND, `Template with ID ${args.id} not found`);
               }
@@ -500,7 +561,7 @@ export function registerTemplatesTool(
             }
 
             try {
-              const savedFilter = await storage.findByName(args.id);
+              const savedFilter = await findTemplateByName(storage, args.id);
               if (!savedFilter) {
                 throw new MCPError(ErrorCode.NOT_FOUND, `Template with ID ${args.id} not found`);
               }
@@ -533,8 +594,16 @@ export function registerTemplatesTool(
                 templateId: args.id,
               });
 
-              // Create tasks from template
+              // Create tasks from template. Both a task-creation failure and
+              // a label-attach failure are collected below (not just
+              // logged) so the response can be honest about the outcome —
+              // see #271 (CRIT-10): previously every per-task error was
+              // `logger.warn`-only, label failures were swallowed entirely,
+              // and the response always read as a clean success even when
+              // zero tasks were created.
               const createdTasks: VikunjaTask[] = [];
+              const taskFailures: Array<{ title: string; error: string }> = [];
+              const labelFailures: Array<{ taskId: number; title: string; error: string }> = [];
               for (const taskTemplate of template.tasks) {
                 try {
                   const taskData: VikunjaTask = {
@@ -576,6 +645,11 @@ export function registerTemplatesTool(
                         labels: taskTemplate.labels,
                         error: labelError,
                       });
+                      labelFailures.push({
+                        taskId: createdTask.id ?? 0,
+                        title: taskTemplate.title,
+                        error: labelError instanceof Error ? labelError.message : String(labelError),
+                      });
                     }
                   }
                 } catch (taskError) {
@@ -583,18 +657,65 @@ export function registerTemplatesTool(
                     taskTitle: taskTemplate.title,
                     error: taskError,
                   });
+                  taskFailures.push({
+                    title: taskTemplate.title,
+                    error: taskError instanceof Error ? taskError.message : String(taskError),
+                  });
                 }
               }
 
+              // Honest partial-failure reporting, following the same
+              // pattern `setup-kanban` (src/tools/projects/kanban-setup.ts)
+              // and the task bulk paths already use correctly: never claim
+              // success when something the caller asked for did not land.
+              // The fully-successful message is left byte-identical to
+              // before this fix.
+              const partial = taskFailures.length > 0 || labelFailures.length > 0;
+              const baseMessage = `Project "${newProject.title}" created from template "${template.name}"`;
+              const detailParts: string[] = [];
+              if (taskFailures.length > 0) {
+                detailParts.push(
+                  `Failed tasks: ${taskFailures.map((t) => `"${t.title}" (${t.error})`).join('; ')}.`,
+                );
+              }
+              if (labelFailures.length > 0) {
+                detailParts.push(
+                  `Failed to attach labels: ${labelFailures
+                    .map((l) => `task ${l.taskId} "${l.title}" (${l.error})`)
+                    .join('; ')}.`,
+                );
+              }
+              const summaryLine = partial
+                ? `Template instantiation partially completed: ${baseMessage}, ` +
+                  `${createdTasks.length}/${template.tasks.length} tasks created.`
+                : baseMessage;
+              const message =
+                detailParts.length > 0 ? `${summaryLine} ${detailParts.join(' ')}` : summaryLine;
+
+              const failures = [
+                ...taskFailures.map((t) => ({ type: 'task' as const, title: t.title, error: t.error })),
+                ...labelFailures.map((l) => ({
+                  type: 'label' as const,
+                  taskId: l.taskId,
+                  title: l.title,
+                  error: l.error,
+                })),
+              ];
+
               const response = createStandardResponse(
                 'instantiate-template',
-                `Project "${newProject.title}" created from template "${template.name}"`,
+                message,
                 {
                   project: newProject,
                   createdTasks: createdTasks.length,
-                  failedTasks: template.tasks.length - createdTasks.length,
+                  failedTasks: taskFailures.length,
                 },
-                { templateId: args.id, templateName: template.name },
+                {
+                  templateId: args.id,
+                  templateName: template.name,
+                  success: !partial,
+                  ...(partial && { failures, failedCount: failures.length }),
+                },
               );
 
               return {

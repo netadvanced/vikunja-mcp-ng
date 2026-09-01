@@ -97,6 +97,16 @@ export interface SavedFilter {
   updated: Date;
   projectId?: number;
   isGlobal: boolean;
+  /**
+   * Which feature owns this record in the shared per-session
+   * `SimpleFilterStorage` bucket. Optional and unset for ordinary saved
+   * filters; `vikunja_templates` stamps `'template'` on every record it
+   * creates and filters strictly on this field (rather than the old
+   * `template_` name-prefix convention) so a saved filter a caller happens
+   * to name with that prefix can never be persisted/hydrated as a template
+   * — see #293 (LOW-12).
+   */
+  namespace?: 'template';
 }
 
 /**
