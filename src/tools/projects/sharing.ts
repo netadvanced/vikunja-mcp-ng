@@ -172,27 +172,47 @@ function truncateForMessage(value: string, maxLength = 40): string {
  * Whoever picks it up: delete this helper, call
  * `GET /projects/{project}/shares/{share}` directly from `getProjectShare`
  * and `deleteProjectShare`, and re-run `npm run test:e2e:mcp`.
+ *
+ * FIXED (audit #291 MED-2): this used to make a single unpaginated
+ * `GET /projects/{project}/shares` call, so a share past the server's
+ * default page size read as not-found — silently no-oping `delete-share`
+ * for it. Now walks `page` (bounded by `FIND_SHARE_MAX_PAGES`, same
+ * short-final-page stop condition as `fetchAllProjects` in crud.ts) until
+ * the target id is found or every page has been read.
  */
+// Safety valve for findShareByIdViaList's pagination loop below: bounds the
+// number of `GET /projects/{id}/shares` round trips so a misbehaving server
+// (one that never returns a short final page) can't turn a single-share
+// lookup into an unbounded loop. Mirrors fetchAllProjects' page size/cap
+// choice in crud.ts.
+const FIND_SHARE_PAGE_SIZE = 200;
+const FIND_SHARE_MAX_PAGES = 50;
+
 async function findShareByIdViaList(
   authManager: AuthManager,
   projectId: number,
   shareId: string,
 ): Promise<VikunjaLinkShare> {
-  const shares = await vikunjaRestRequest<VikunjaLinkShare[]>(
-    authManager,
-    'GET',
-    `/projects/${projectId}/shares`,
-  );
-  const shareList = Array.isArray(shares) ? shares : [];
   const numericShareId = Number(shareId);
-  const share = shareList.find((candidate) => candidate.id === numericShareId);
-  if (!share) {
-    throw new MCPError(
-      ErrorCode.NOT_FOUND,
-      `Share with ID ${shareId} not found for project ${projectId}`,
+  for (let page = 1; page <= FIND_SHARE_MAX_PAGES; page++) {
+    const shares = await vikunjaRestRequest<VikunjaLinkShare[]>(
+      authManager,
+      'GET',
+      `/projects/${projectId}/shares?per_page=${FIND_SHARE_PAGE_SIZE}&page=${page}`,
     );
+    const shareList = Array.isArray(shares) ? shares : [];
+    const share = shareList.find((candidate) => candidate.id === numericShareId);
+    if (share) {
+      return share;
+    }
+    if (shareList.length < FIND_SHARE_PAGE_SIZE) {
+      break;
+    }
   }
-  return share;
+  throw new MCPError(
+    ErrorCode.NOT_FOUND,
+    `Share with ID ${shareId} not found for project ${projectId}`,
+  );
 }
 
 /**
@@ -261,10 +281,21 @@ export async function createProjectShare(
       body,
     );
 
+    // FIXED (audit #291 MED-17): `models.LinkSharing.password` is
+    // documented as write-only ("You can only set it, not retrieve it
+    // after the link share has been created" — the vendored OpenAPI spec's
+    // description for this field). Strip it from the response defensively
+    // rather than trust that every server build actually omits it: this
+    // response otherwise reflects exactly what the PUT returned, and the
+    // caller-supplied plaintext password has no business round-tripping
+    // back out through an MCP tool response.
+    const shareWithoutPassword: VikunjaLinkShare = { ...createdShare };
+    delete shareWithoutPassword.password;
+
     const result = createProjectResponse(
       'create_project_share',
       `Share created successfully for project ID ${projectId}`,
-      { share: createdShare },
+      { share: shareWithoutPassword },
       {
         projectId,
         shareRight: right,

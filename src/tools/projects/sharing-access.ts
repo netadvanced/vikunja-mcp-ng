@@ -89,6 +89,44 @@ function rethrow(error: unknown, notFoundMessage: string | undefined, context: s
   throw transformApiError(error, context);
 }
 
+// Safety valve for fetchAllPaginated's loop below: bounds the number of
+// round trips a single paginated read can make so a misbehaving server
+// (one that never returns a short final page) can't turn a verification
+// read into an unbounded loop. Mirrors fetchAllProjects' page size/cap
+// choice in crud.ts.
+const FETCH_ALL_PAGE_SIZE = 200;
+const FETCH_ALL_MAX_PAGES = 50;
+
+/**
+ * Fetches every item from a paginated `GET` list endpoint, walking `page`
+ * until a page comes back shorter than `per_page` (this API's standard
+ * "last page" signal — see docs/API_NOTES.md), bounded by
+ * `FETCH_ALL_MAX_PAGES` as a safety valve.
+ *
+ * FIXED (audit #291 MED-3): `share-with-user`/`share-with-team`'s
+ * atomic-rollback verification step used to read only the first page of
+ * `/projects/{id}/users` or `/projects/{id}/teams`. On a project with more
+ * members than fit on one page, a grant that actually landed but sorted
+ * onto a later page read as "verification failed", and `atomic: true`
+ * would then revoke a grant that had, in fact, succeeded.
+ */
+async function fetchAllPaginated<T>(authManager: AuthManager, path: string): Promise<T[]> {
+  const all: T[] = [];
+  for (let page = 1; page <= FETCH_ALL_MAX_PAGES; page++) {
+    const batch = await vikunjaRestRequest<T[]>(
+      authManager,
+      'GET',
+      `${path}${buildQuery({ per_page: FETCH_ALL_PAGE_SIZE, page })}`,
+    );
+    const items = Array.isArray(batch) ? batch : [];
+    all.push(...items);
+    if (items.length < FETCH_ALL_PAGE_SIZE) {
+      break;
+    }
+  }
+  return all;
+}
+
 // ---------------------------------------------------------------------------
 // Primitives — users
 // ---------------------------------------------------------------------------
@@ -572,9 +610,11 @@ export async function shareProjectWithUser(
       const resolvedUser = ctx.results.get('resolve-user') as VikunjaUser;
       let users: VikunjaUserWithPermission[];
       try {
-        users = await vikunjaRestRequest<VikunjaUserWithPermission[]>(
+        // Paginated (audit #291 MED-3) — a single-page read could miss a
+        // grant that landed but sorted onto a later page, causing
+        // `atomic: true` to revoke a share that actually succeeded.
+        users = await fetchAllPaginated<VikunjaUserWithPermission>(
           authManager,
-          'GET',
           `/projects/${projectId}/users`,
         );
       } catch (error) {
@@ -698,9 +738,10 @@ export async function shareProjectWithTeam(
     execute: async () => {
       let teams: VikunjaTeamWithPermission[];
       try {
-        teams = await vikunjaRestRequest<VikunjaTeamWithPermission[]>(
+        // Paginated (audit #291 MED-3) — see the `share-with-user` verify
+        // step above for why a single-page read is unsafe here.
+        teams = await fetchAllPaginated<VikunjaTeamWithPermission>(
           authManager,
-          'GET',
           `/projects/${projectId}/teams`,
         );
       } catch (error) {
@@ -782,6 +823,7 @@ export async function listProjectMembers(
     usersResult.status === 'fulfilled' && Array.isArray(usersResult.value) ? usersResult.value : [];
   const teams =
     teamsResult.status === 'fulfilled' && Array.isArray(teamsResult.value) ? teamsResult.value : [];
+  const teamsError = teamsResult.status === 'rejected' ? describeSettledError(teamsResult) : undefined;
 
   // listProjectShares() already returns a fully-formatted MCP response, not
   // raw data — extract the share count from it best-effort for the summary
@@ -801,6 +843,7 @@ export async function listProjectMembers(
       projectId,
       users,
       teams,
+      ...(teamsError !== undefined ? { teamsError } : {}),
       linkShares:
         sharesResult.status === 'fulfilled'
           ? { available: true, summary: sharesResult.value.content[0]?.text }

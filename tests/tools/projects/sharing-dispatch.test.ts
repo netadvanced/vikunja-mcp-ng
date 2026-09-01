@@ -81,7 +81,9 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
       {
         subcommand: 'add-project-user',
         args: { projectId: 1, username: 'alice' },
-        message: 'Share right is required for add-project-user operation',
+        // Comes from the shared `resolvePermission()` helper now, not a
+        // dispatch-level falsy check (that would reject `right: 0`).
+        message: 'Share right is required',
       },
       {
         subcommand: 'update-project-user-permission',
@@ -96,7 +98,7 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
       {
         subcommand: 'update-project-user-permission',
         args: { projectId: 1, userId: 2 },
-        message: 'Share right is required for update-project-user-permission operation',
+        message: 'Share right is required',
       },
       {
         subcommand: 'remove-project-user',
@@ -126,7 +128,7 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
       {
         subcommand: 'add-project-team',
         args: { projectId: 1, teamId: 2 },
-        message: 'Share right is required for add-project-team operation',
+        message: 'Share right is required',
       },
       {
         subcommand: 'update-project-team-permission',
@@ -141,7 +143,7 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
       {
         subcommand: 'update-project-team-permission',
         args: { projectId: 1, teamId: 2 },
-        message: 'Share right is required for update-project-team-permission operation',
+        message: 'Share right is required',
       },
       {
         subcommand: 'remove-project-team',
@@ -166,7 +168,7 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
       {
         subcommand: 'share-with-user',
         args: { projectId: 1, username: 'alice' },
-        message: 'Share right is required for share-with-user operation',
+        message: 'Share right is required',
       },
       {
         subcommand: 'share-with-team',
@@ -181,7 +183,7 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
       {
         subcommand: 'share-with-team',
         args: { projectId: 1, teamName: 'Eng' },
-        message: 'Share right is required for share-with-team operation',
+        message: 'Share right is required',
       },
       {
         subcommand: 'list-members',
@@ -231,6 +233,17 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ permission: 2 }) }));
       await callTool('update-project-user-permission', { projectId: 1, userId: 5, right: 'admin' });
       expect(mockFetch.mock.calls[0][0]).toBe('https://vikunja.test/api/v1/projects/1/users/5');
+    });
+
+    // Regression: `right: 0` (read-only) is a valid, falsy value. The
+    // dispatch layer must not reject it with "Share right is required" —
+    // `resolvePermission()` inside the handler is the single source of
+    // truth for whether `right` was actually omitted.
+    it('update-project-user-permission accepts a downgrade to right: 0 (read-only)', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ permission: 0 }) }));
+      await callTool('update-project-user-permission', { projectId: 1, userId: 5, right: 0 });
+      const init = mockFetch.mock.calls[0][1] as RequestInit;
+      expect(JSON.parse(init.body as string)).toEqual({ permission: 0 });
     });
 
     it('remove-project-user', async () => {
@@ -292,6 +305,27 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
         right: 'write',
       });
       expect(result.content[0].text).toContain('Shared project 1 with user "alice"');
+    });
+
+    it('share-with-user accepts a downgrade to right: 0 (read-only)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'alice', permission: 0 }) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice', permission: 0 }]) }),
+        );
+
+      const result = await callTool('share-with-user', {
+        projectId: 1,
+        username: 'alice',
+        right: 0,
+      });
+      expect(result.content[0].text).toContain('Shared project 1 with user "alice"');
+      expect(result.content[0].text).toContain('permission 0');
     });
 
     it('share-with-team (composite)', async () => {
