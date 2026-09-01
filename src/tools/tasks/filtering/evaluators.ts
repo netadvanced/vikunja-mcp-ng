@@ -36,12 +36,13 @@ export function evaluateCondition(task: Task, condition: FilterCondition): boole
         percentDoneToFraction(Number(value)),
       );
 
-    case 'dueDate':
-      if (!task.due_date) {
-        // Null due dates are only matched by != operator
-        return operator === '!=';
-      }
-      return evaluateDateComparison(task.due_date, operator, String(value));
+    case 'dueDate': {
+      // Vikunja returns '0001-01-01T00:00:00Z' for unset dates instead of null.
+      const dd = task.due_date;
+      const isUnset = !dd || dd.startsWith('0001-');
+      if (isUnset) return operator === '!=';
+      return evaluateDateComparison(dd, operator, String(value));
+    }
 
     case 'startDate': {
       // Vikunja returns '0001-01-01T00:00:00Z' for unset dates instead of null.

@@ -293,6 +293,20 @@ describe('evaluateCondition', () => {
       expect(evaluateCondition(t, condition('dueDate', '=', '2026-03-04'))).toBe(false);
       expect(evaluateCondition(t, condition('dueDate', '<', '2026-03-04'))).toBe(false);
     });
+
+    // #285 (HIGH-14): Vikunja returns '0001-01-01T00:00:00Z', not null, for an
+    // unset due date. Before the fix, only `!task.due_date` was checked, so
+    // this non-empty sentinel string passed straight through to
+    // evaluateDateComparison as if it were a real (very old) due date -
+    // meaning an "overdue" filter (`dueDate < now`) matched every task with
+    // no due date at all on the client-side fallback path.
+    it("treats Vikunja's '0001-01-01' zero-date sentinel as unset, same as startDate/endDate/doneAt (only != matches)", () => {
+      const t = task({ due_date: '0001-01-01T00:00:00Z' });
+      expect(evaluateCondition(t, condition('dueDate', '!=', '2026-03-04'))).toBe(true);
+      expect(evaluateCondition(t, condition('dueDate', '=', '2026-03-04'))).toBe(false);
+      // The regression: this used to be `true` for every no-due-date task.
+      expect(evaluateCondition(t, condition('dueDate', '<', '2099-01-01'))).toBe(false);
+    });
   });
 
   describe.each(['startDate', 'endDate', 'doneAt'] as const)('%s unset sentinel', (field) => {
