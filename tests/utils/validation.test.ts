@@ -112,6 +112,60 @@ describe('Security Validation Utilities', () => {
         expect(() => sanitizeString(xssString)).toThrow();
       }
     });
+
+    // Issue #226: the dangerous-content check false-positived on ordinary free text.
+    // Root cause was `/on\w+[^&]*=/gi` (an unanchored "HTML-encoded on-attribute" pattern) —
+    // it matched any word containing "on" (e.g. "autonomie") followed anywhere later in the
+    // string by an `=` sign, which is exactly the shape of ordinary measurement notes like
+    // "13,75 V = 13 j d'autonomie". That pattern has been removed as redundant (real
+    // onXXX/javascript: content is still caught by the un-encoded patterns below it).
+    describe('issue #226: false positives on free-text measurement notes', () => {
+      it('accepts the reporter\'s exact rejected string', () => {
+        const reporterString =
+          "2. Quelle nominale retenir (13,75 V = 13 j d'autonomie, 12 V = 44 j) ?";
+        expect(() => sanitizeString(reporterString)).not.toThrow();
+        expect(sanitizeString(reporterString)).toBe(reporterString);
+      });
+
+      // Every row from the issue's reproduction table.
+      const acceptedStrings = [
+        'a = 13 j autonomie, b = 44 j',
+        'a = 13 j, b = 44 j',
+        'a = 13 j autonomie',
+        'a = 1, b = 2',
+        'Fifo=2',
+        'Main=50000',
+        '(13,75 V = 13 j)',
+        "retenir (13,75 V = 13 j d'autonomie)",
+        "(13,75 V = 13 j d'autonomie, 12 V = 44 j)",
+      ];
+
+      it.each(acceptedStrings)('accepts %p', (input) => {
+        expect(() => sanitizeString(input)).not.toThrow();
+      });
+    });
+
+    it('includes the field name and the matched rule in the error when fieldName is passed', () => {
+      expect(() => sanitizeString('<script>alert(1)</script>', 'description')).toThrow(
+        'description: String contains potentially dangerous content (matched rule "script tag" on "<script>")',
+      );
+    });
+
+    it('omits the field prefix when no fieldName is passed (backward compatible)', () => {
+      expect(() => sanitizeString('<script>alert(1)</script>')).toThrow(
+        'String contains potentially dangerous content (matched rule "script tag" on "<script>")',
+      );
+    });
+
+    it('still rejects real XSS/injection payloads that resemble the false-positive shape (guard against over-correction)', () => {
+      // Real onXXX event-handler content is still caught by the un-encoded patterns,
+      // entity-encoded or not — removing the redundant `on\w+[^&]*=` pattern did not
+      // widen what's accepted for actual attack payloads.
+      expect(() => sanitizeString('<div onclick="alert(1)">click</div>')).toThrow(MCPError);
+      expect(() => sanitizeString('&lt;img src=x onerror=alert(1)&gt;')).toThrow(MCPError);
+      expect(() => sanitizeString('javascript:alert(1)')).toThrow(MCPError);
+      expect(() => sanitizeString("' OR '1'='1")).toThrow(MCPError);
+    });
   });
 
   describe('validateField', () => {

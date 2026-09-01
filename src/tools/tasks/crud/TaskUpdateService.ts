@@ -13,6 +13,7 @@ import {
   validateId,
   convertRepeatConfiguration,
 } from '../validation';
+import { sanitizeString } from '../../../utils/validation';
 import { assertValidPercentDone, percentDoneToFraction } from '../../../utils/percent-done';
 import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { RETRY_CONFIG } from '../../../utils/retry';
@@ -99,6 +100,18 @@ export async function updateTask(
       throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Task id is required for update operation');
     }
     validateId(args.id, 'id');
+
+    // Sanitize title/description the same way TaskCreationService does — previously this
+    // service passed both straight through unsanitized, so `update` silently accepted
+    // content that `create`/`create-subtask`/`bulk-create-subtasks` rejected (issue #226).
+    // Mutating args in place so every downstream read (affected-field diffing in
+    // analyzeUpdateState, the payload built in buildUpdateData) sees the sanitized value.
+    if (args.title !== undefined) {
+      args.title = sanitizeString(args.title, 'title');
+    }
+    if (args.description !== undefined) {
+      args.description = sanitizeString(args.description, 'description');
+    }
 
     // Validate dates if provided
     if (args.dueDate) {
