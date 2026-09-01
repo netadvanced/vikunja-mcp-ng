@@ -539,6 +539,35 @@ victim's Vikunja token under the attacker's identity. Consequence for operators:
 connector's access tokens must include the `email` (or `preferred_username`) claim, and
 under the same-IdP precondition these match what Vikunja stores for OpenID users.
 
+**Real matching behavior on Vikunja 2.4.0.** `GET /user` on Vikunja 2.4.0 does not return
+an `email` field at all (confirmed against the live e2e stack, issue #223). That makes the
+email-first path above dead code in practice on 2.4.0: `enrolled.email` is always
+`undefined`, so the email comparison can never succeed, and matching falls through to the
+`preferred_username` fallback every time. The fallback is what actually protects
+enrollment today, so treat matching on 2.4.0 as effectively username-only, not
+email-or-username as the code reads. The email-first check itself is not wrong; it is
+written for a Vikunja version (or a future one) where `GET /user` includes email, and a
+2.4.0 operator should not rely on it doing anything. Keep the connector issuing
+`preferred_username` (ideally both claims) so the fallback has something to match
+against. A real fix, either fetching email a different way or making username the
+documented primary key, is tracked in the still-open issue #223.
+
+> **Warning: do not pre-create a local Vikunja account with the same username an SSO
+> user will later get.** If a local account already holds the username an OIDC login
+> would auto-create (`preferred_username`), Vikunja does not fail or merge accounts; it
+> silently assigns the new OpenID account a random username instead (for example
+> `quickly-touched-buzzard`). Identity pinning then has nothing to match against: the
+> enrollment link was issued to `preferred_username`, but the account Vikunja just
+> authenticated carries a different, randomly generated username, so the callback
+> refuses the link with a 403, even though the person enrolling is legitimate. This
+> mostly comes from staging or setup shortcuts, such as hand-creating a local admin or
+> test account before SSO is wired up. The operational rule: never pre-create a local
+> Vikunja account sharing a username with an identity that will enroll through SSO
+> later. If the collision already happened, rename or remove the colliding local
+> account (or have the user re-authenticate once it is gone); see the troubleshooting
+> table in [§12](#12-troubleshooting) for the symptom-first version. Not yet fixed in
+> code, tracked in the still-open issue #224.
+
 Two more behaviours worth knowing: an enrollment ticket is only consumed once the code
 exchange with Vikunja **succeeds** — a transient upstream failure leaves the link
 redeemable — and a token-less `provision` by an **already-linked** identity returns
@@ -615,6 +644,7 @@ have completely different fixes.
 | `403` with `WWW-Authenticate: Bearer error="insufficient_scope"` | Scope gate | Token is valid but lacks `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` |
 | `403` with an `Invalid Host header` JSON-RPC body, despite a token you just verified by hand | Transport | `allowedHosts` does not list the `Host` header as it actually arrives (exact `host:port` string match). See §5.4 |
 | `AUTH_REQUIRED` — "haven't linked a Vikunja API token" | Tool level | Expected for a first-time user: run `provision`. If the user insists they already did, check they are signing in as the *same* identity, and check the vault is on persistent storage |
+| Enrollment `403`, "signed-in account does not match" for a real, legitimate user | Enrollment / identity pinning | Their `preferred_username` was already taken by an existing local Vikunja account, so Vikunja auto-created their SSO account under a random username instead of the expected one. Rename or remove the colliding local account, then have them re-authenticate. See §9a's warning and issue #224 |
 | *Many* users unprovisioned at once | Storage | The vault file was lost — ephemeral volume, or a failed restore. Not an auth problem |
 | Server exits at startup complaining about configuration | Config | HTTP mode requires all six of transport, issuer, audience, JWKS URI, vault path, vault key. See §5.1 |
 | Every user's calls behave as the same person | Gateway | Your gateway is authenticating with its own service credential instead of forwarding the caller's token. See §8 |
