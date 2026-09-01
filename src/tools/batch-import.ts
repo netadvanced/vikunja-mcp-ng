@@ -75,10 +75,22 @@ export function registerBatchImportTool(
           ...(args.skipErrors !== undefined && { skipErrors: args.skipErrors }),
         };
 
-        const tasks = parseInputData(parseOptions);
+        const { tasks, skipped } = parseInputData(parseOptions);
 
         // Validate tasks
         if (tasks.length === 0) {
+          // Every row may have been dropped by the parser itself (schema
+          // validation failures under skipErrors:true) — surface that
+          // instead of a bare "no valid tasks" with no explanation (#323).
+          if (skipped.length > 0) {
+            const details = skipped
+              .map((row) => `Input row ${row.index + 1}: ${row.error}`)
+              .join('; ');
+            throw new MCPError(
+              ErrorCode.VALIDATION_ERROR,
+              `No valid tasks found to import. ${skipped.length} row(s) were skipped during parsing due to validation errors: ${details}`,
+            );
+          }
           throw new MCPError(ErrorCode.VALIDATION_ERROR, 'No valid tasks found to import');
         }
 
@@ -91,11 +103,16 @@ export function registerBatchImportTool(
 
         // Handle dry run
         if (args.dryRun) {
+          const skippedNote =
+            skipped.length > 0
+              ? ` ${skipped.length} row(s) were skipped during parsing due to validation errors ` +
+                `(input rows: ${skipped.map((row) => row.index + 1).join(', ')}).`
+              : '';
           return {
             content: [
               {
                 type: 'text',
-                text: `Validation successful. ${tasks.length} tasks ready to import.`,
+                text: `Validation successful. ${tasks.length} tasks ready to import.${skippedNote}`,
               },
             ],
           };
@@ -122,6 +139,7 @@ export function registerBatchImportTool(
           failed: 0,
           errors: [],
           createdTasks: [],
+          ...(skipped.length > 0 && { skippedRows: skipped }),
         };
         // Computed up front (not just for the final response) so a
         // mid-batch abort can also format an accurate partial summary.

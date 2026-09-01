@@ -1,6 +1,12 @@
 import { MCPError, ErrorCode } from '../types';
 import { parseCSVLine, splitCSVRows } from './CSVParser';
-import { parseJSONInput, importedTaskSchema, type ImportedTask } from './JSONParser';
+import {
+  parseJSONInput,
+  importedTaskSchema,
+  type ImportedTask,
+  type ParsedTasksResult,
+  type SkippedRow,
+} from './JSONParser';
 import { logger } from '../utils/logger';
 
 export interface ParseInputOptions {
@@ -9,18 +15,21 @@ export interface ParseInputOptions {
   skipErrors?: boolean;
 }
 
-// Re-export ImportedTask for convenience
-export type { ImportedTask } from './JSONParser';
+// Re-export ImportedTask (and the shared skipped-row types) for convenience
+export type { ImportedTask, ParsedTasksResult, SkippedRow } from './JSONParser';
 
 /**
  * Factory function to parse input data based on format.
  * This centralizes format detection and parser orchestration logic.
  *
  * @param options - Parsing options including format, data, and error handling
- * @returns Array of parsed and validated ImportedTask objects
+ * @returns `{ tasks, skipped }` — the validated tasks and every row dropped
+ *   during parsing (see {@link ParsedTasksResult}); non-empty `skipped` only
+ *   ever happens when `skipErrors` is set, since otherwise the first invalid
+ *   row throws instead (#323).
  * @throws MCPError if parsing fails or validation errors occur
  */
-export function parseInputData(options: ParseInputOptions): ImportedTask[] {
+export function parseInputData(options: ParseInputOptions): ParsedTasksResult {
   const { format, data, skipErrors = false } = options;
 
   // Validate input parameters
@@ -137,11 +146,15 @@ function parseCSVIntegerField(value: string): number {
  *
  * @param data - Raw CSV string data
  * @param skipErrors - Whether to skip invalid rows or throw an error
- * @returns Array of parsed and validated ImportedTask objects
+ * @returns `{ tasks, skipped }` — the validated tasks and every data row that
+ *   failed `importedTaskSchema` validation and was dropped (#323); `index` in
+ *   each skipped entry is the row's 0-based position among data rows (the
+ *   first data row, right after the header, is index 0).
  * @throws MCPError if CSV structure is invalid or validation fails (when skipErrors=false)
  */
-function parseCSVInput(data: string, skipErrors: boolean = false): ImportedTask[] {
+function parseCSVInput(data: string, skipErrors: boolean = false): ParsedTasksResult {
   const tasks: ImportedTask[] = [];
+  const skipped: SkippedRow[] = [];
 
   // Split into logical CSV rows (quote-aware — see splitCSVRows's doc
   // comment for why this must run before, not on top of, a naive '\n'
@@ -277,15 +290,17 @@ function parseCSVInput(data: string, skipErrors: boolean = false): ImportedTask[
       const validatedTask = importedTaskSchema.parse(taskData);
       tasks.push(validatedTask);
     } catch (error) {
+      const message = `Invalid task data at row ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`;
       if (!skipErrors) {
-        throw new MCPError(
-          ErrorCode.VALIDATION_ERROR,
-          `Invalid task data at row ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        );
+        throw new MCPError(ErrorCode.VALIDATION_ERROR, message);
       }
-      // If skipErrors is true, we skip this row and continue
+      // If skipErrors is true, we skip this row and continue — but record it
+      // so the caller can report it instead of silently losing it (#323).
+      // 0-based among data rows: the first data row (line index 1, right
+      // after the header) is index 0.
+      skipped.push({ index: i - 1, error: message });
     }
   }
 
-  return tasks;
+  return { tasks, skipped };
 }

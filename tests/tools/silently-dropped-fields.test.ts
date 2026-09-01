@@ -415,7 +415,7 @@ describe('silently dropped fields', () => {
     });
 
     it('still imports (dropping the column) when skipErrors is set', () => {
-      const tasks = parseInputData({
+      const { tasks } = parseInputData({
         format: 'csv',
         data: 'title,notes\nShip it,some notes',
         skipErrors: true,
@@ -424,7 +424,7 @@ describe('silently dropped fields', () => {
     });
 
     it('accepts every supported column', () => {
-      const tasks = parseInputData({ format: 'csv', data: 'title,percentDone\nShip it,75' });
+      const { tasks } = parseInputData({ format: 'csv', data: 'title,percentDone\nShip it,75' });
       expect(tasks).toEqual([{ title: 'Ship it', percentDone: 75 }]);
     });
   });
