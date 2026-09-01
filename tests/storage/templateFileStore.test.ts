@@ -200,7 +200,9 @@ describe('writeTemplatesFileAtomic', () => {
     const writeSpy = jest.spyOn(fs, 'writeFileSync');
     const renameSpy = jest.spyOn(fs, 'renameSync');
 
-    writeTemplatesFileAtomic(filePath, [{ id: 't', name: 't', data: '{}', identity: 'identity-a' }]);
+    writeTemplatesFileAtomic(filePath, [
+      { id: 't', name: 't', data: '{}', identity: 'identity-a' },
+    ]);
 
     expect(writeSpy).toHaveBeenCalledTimes(1);
     const writtenPath = writeSpy.mock.calls[0]![0] as string;
@@ -227,6 +229,67 @@ describe('writeTemplatesFileAtomic', () => {
     expect(loadTemplatesFile(filePath)).toEqual([
       { id: 'new', name: 'new', data: '{}', identity: 'identity-a' },
     ]);
+  });
+
+  describe('durability (issue #293 / LOW-10)', () => {
+    it('fsyncs the temp file before the rename, and the directory after it', () => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      const fsyncSpy = jest.spyOn(fs, 'fsyncSync');
+      const renameSpy = jest.spyOn(fs, 'renameSync');
+
+      writeTemplatesFileAtomic(filePath, [
+        { id: 't', name: 't', data: '{}', identity: 'identity-a' },
+      ]);
+
+      // One flush for the temp file, one for the directory entry.
+      expect(fsyncSpy).toHaveBeenCalledTimes(2);
+      const renameOrder = renameSpy.mock.invocationCallOrder[0]!;
+      expect(fsyncSpy.mock.invocationCallOrder[0]!).toBeLessThan(renameOrder);
+      expect(fsyncSpy.mock.invocationCallOrder[1]!).toBeGreaterThan(renameOrder);
+    });
+
+    it('does not apply the rename when the temp file cannot be flushed', () => {
+      writeTemplatesFileAtomic(filePath, [
+        { id: 'old', name: 'old', data: '{}', identity: 'identity-a' },
+      ]);
+      const fsyncSpy = jest.spyOn(fs, 'fsyncSync').mockImplementation(() => {
+        throw new Error('simulated fsync failure');
+      });
+      const renameSpy = jest.spyOn(fs, 'renameSync');
+
+      expect(() =>
+        writeTemplatesFileAtomic(filePath, [
+          { id: 'new', name: 'new', data: '{}', identity: 'identity-a' },
+        ]),
+      ).toThrow('simulated fsync failure');
+
+      expect(renameSpy).not.toHaveBeenCalled();
+      fsyncSpy.mockRestore();
+      expect(loadTemplatesFile(filePath)).toEqual([
+        { id: 'old', name: 'old', data: '{}', identity: 'identity-a' },
+      ]);
+    });
+
+    it('tolerates a platform that cannot fsync a directory', () => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      const realOpen = fs.openSync;
+      jest.spyOn(fs, 'openSync').mockImplementation(((target: string, flags: string) => {
+        if (flags === 'r') {
+          throw new Error('EISDIR: simulated Windows behaviour');
+        }
+        return (realOpen as (t: string, f: string) => number)(target, flags);
+      }) as unknown as typeof fs.openSync);
+
+      expect(() =>
+        writeTemplatesFileAtomic(filePath, [
+          { id: 't', name: 't', data: '{}', identity: 'identity-a' },
+        ]),
+      ).not.toThrow();
+      jest.restoreAllMocks();
+      expect(loadTemplatesFile(filePath)).toEqual([
+        { id: 't', name: 't', data: '{}', identity: 'identity-a' },
+      ]);
+    });
   });
 });
 
@@ -288,55 +351,6 @@ describe('persistIdentityTemplateRecords', () => {
     const nestedPath = path.join(tmpDir, 'nested', 'templates.json');
     return persistIdentityTemplateRecords(nestedPath, 'identity-a', []).then(() => {
       expect(fs.existsSync(nestedPath)).toBe(true);
-    });
-  });
-
-  describe('durability (issue #293 / LOW-10)', () => {
-    it('fsyncs the temp file before the rename, and the directory after it', () => {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      const fsyncSpy = jest.spyOn(fs, 'fsyncSync');
-      const renameSpy = jest.spyOn(fs, 'renameSync');
-
-      writeTemplatesFileAtomic(filePath, [{ id: 't', name: 't', data: '{}' }]);
-
-      // One flush for the temp file, one for the directory entry.
-      expect(fsyncSpy).toHaveBeenCalledTimes(2);
-      const renameOrder = renameSpy.mock.invocationCallOrder[0]!;
-      expect(fsyncSpy.mock.invocationCallOrder[0]!).toBeLessThan(renameOrder);
-      expect(fsyncSpy.mock.invocationCallOrder[1]!).toBeGreaterThan(renameOrder);
-    });
-
-    it('does not apply the rename when the temp file cannot be flushed', () => {
-      writeTemplatesFileAtomic(filePath, [{ id: 'old', name: 'old', data: '{}' }]);
-      const fsyncSpy = jest.spyOn(fs, 'fsyncSync').mockImplementation(() => {
-        throw new Error('simulated fsync failure');
-      });
-      const renameSpy = jest.spyOn(fs, 'renameSync');
-
-      expect(() =>
-        writeTemplatesFileAtomic(filePath, [{ id: 'new', name: 'new', data: '{}' }]),
-      ).toThrow('simulated fsync failure');
-
-      expect(renameSpy).not.toHaveBeenCalled();
-      fsyncSpy.mockRestore();
-      expect(loadTemplatesFile(filePath)).toEqual([{ id: 'old', name: 'old', data: '{}' }]);
-    });
-
-    it('tolerates a platform that cannot fsync a directory', () => {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      const realOpen = fs.openSync;
-      jest.spyOn(fs, 'openSync').mockImplementation(((target: string, flags: string) => {
-        if (flags === 'r') {
-          throw new Error('EISDIR: simulated Windows behaviour');
-        }
-        return (realOpen as (t: string, f: string) => number)(target, flags);
-      }) as unknown as typeof fs.openSync);
-
-      expect(() =>
-        writeTemplatesFileAtomic(filePath, [{ id: 't', name: 't', data: '{}' }]),
-      ).not.toThrow();
-      jest.restoreAllMocks();
-      expect(loadTemplatesFile(filePath)).toEqual([{ id: 't', name: 't', data: '{}' }]);
     });
   });
 });
