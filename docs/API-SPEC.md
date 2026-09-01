@@ -41,14 +41,22 @@ and fetch straight from it:
 npm run fetch:api-spec:container
 ```
 
-(equivalent to `curl -sS http://localhost:8240/api/v1/docs.json -o
-docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json`)
+Which stack it reads is **resolved, never hard-coded** — the script
+(`scripts/fetch-api-spec.sh`) asks `scripts/lib/e2e-target.ts` for the port,
+honouring `VIKUNJA_E2E_TARGET` exactly like every other harness:
 
-`8240` is the **default e2e target**'s API port (`2.4.0-postgres`). Since
-issue #205 each `<version>-<db>` target is its own stack on its own derived
-port (`scripts/lib/e2e-target.ts` owns the formula; `2.4.0-sqlite` is on
-`9240`) — fetch from the port of whichever target you actually brought up, and
-see [docs/LOCAL-TESTING.md](LOCAL-TESTING.md) for the target table.
+```bash
+VIKUNJA_E2E_TARGET=2.6.0-postgres npm run fetch:api-spec:container
+```
+
+It refuses to write the file if nothing answers on that port, or if what
+answers reports a different version than the target's — so a spec can never
+be vendored from the wrong server.
+
+That guard exists because the port used to be the literal `8240` in
+`package.json` (issue #254, item C1). `8240` is the *current* default target's
+port, so re-vendoring against a newer stack silently re-captured the old
+version's spec and looked perfectly green.
 
 This gives an exactly-reproducible spec/behavior pairing tied to the pinned
 tag in `docker/e2e/docker-compose.yml` — the spec documents precisely what
@@ -189,9 +197,8 @@ endpoint:
 npm run fetch:api-spec:v2:container
 ```
 
-(equivalent to `curl -sS http://localhost:8240/api/v2/openapi.json -o
-docs/vikunja-openapi-v2.json && jq -e . docs/vikunja-openapi-v2.json`; same
-per-target port caveat as the v1 fetch above)
+(the same resolved-port script as the v1 fetch above, so
+`VIKUNJA_E2E_TARGET` selects the stack and the version guard applies here too)
 
 This gives the same exactly-reproducible spec/behavior pairing as the v1
 fetch, tied to the pinned tag in `docker/e2e/docker-compose.yml`. There is no

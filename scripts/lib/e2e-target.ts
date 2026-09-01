@@ -26,6 +26,33 @@
  *   - Shell (docker/e2e/bootstrap.sh) evaluates `e2e-target-cli.ts --shell`.
  */
 
+/**
+ * How a target gets its database.
+ *
+ *   `dedicated`  its own `postgres:16-alpine` container and volume inside its
+ *                own Compose project — the original issue #205 design.
+ *   `shared`     a database of its own inside ONE long-lived Postgres server
+ *                shared by every non-legacy postgres target
+ *                (docker/e2e/docker-compose.shared-db-server.yml).
+ *   `sqlite`     no database service at all; an embedded file.
+ */
+export type E2eDbMode = 'dedicated' | 'shared' | 'sqlite';
+
+/**
+ * Postgres targets that keep a DEDICATED Postgres container, rather than a
+ * database inside the shared server.
+ *
+ * Grandfathered, not preferred: 2.4.0-postgres is a long-running stack whose
+ * stable API token other worktrees hold (see docker/e2e/bootstrap.sh's
+ * "STABLE TOKENS" note), and moving its data into another server would rotate
+ * that credential for no benefit. 2.3.0 is kept alongside it because it is
+ * still occasionally stood up ad hoc against the same expectations.
+ *
+ * Every other version — including any future release — is `shared` by
+ * default, so adding a version needs no edit here.
+ */
+const DEDICATED_DB_VERSIONS = new Set(['2.3.0', '2.4.0']);
+
 /** Parsed `<version>-<db>` target identity plus everything derived from it. */
 export interface E2eTarget {
   /** Canonical `<version>-<db>` id, e.g. `2.4.0-postgres`. */
@@ -36,14 +63,24 @@ export interface E2eTarget {
   project: string;
   /** Host port publishing Vikunja's API. */
   port: number;
-  /** Host port publishing Postgres (postgres targets only), for ad-hoc psql. */
+  /** Host port publishing Postgres (dedicated-Postgres targets only), for ad-hoc psql. */
   dbPort: number;
   /** Base API URL, always localhost — see the safety note in mcp-e2e.ts. */
   apiUrl: string;
   /** Credentials file for this target, relative to the repo root. */
   envFile: string;
-  /** Compose service name; the two DB variants are separate service blocks. */
+  /** Compose service name; each DB variant is a separate service block. */
   service: string;
+  /** Where this target's database lives — see `E2eDbMode`. */
+  dbMode: E2eDbMode;
+  /** Compose profile selecting this target's service block. */
+  profile: string;
+  /**
+   * Postgres database name. `vikunja` for a dedicated server (it has the
+   * server to itself), `vikunja_<version>` inside the shared one. Empty for
+   * sqlite targets, which have no database name.
+   */
+  dbName: string;
 }
 
 /** The target every harness uses when the caller doesn't choose one. */
@@ -99,6 +136,14 @@ export function resolveTarget(id: string = DEFAULT_TARGET): E2eTarget {
   const offset = versionOffset(version);
   const port = (db === 'sqlite' ? 9000 : 8000) + offset;
 
+  const dbMode: E2eDbMode =
+    db === 'sqlite' ? 'sqlite' : DEDICATED_DB_VERSIONS.has(version) ? 'dedicated' : 'shared';
+  const service =
+    dbMode === 'sqlite' ? 'vikunja-sqlite' : dbMode === 'shared' ? 'vikunja-shared' : 'vikunja';
+  const profile = dbMode === 'sqlite' ? 'sqlite' : dbMode === 'shared' ? 'postgres-shared' : 'postgres';
+  const dbName =
+    dbMode === 'sqlite' ? '' : dbMode === 'shared' ? `vikunja_${version.replace(/\./g, '_')}` : 'vikunja';
+
   return {
     id: `${version}-${db}`,
     version,
@@ -110,7 +155,10 @@ export function resolveTarget(id: string = DEFAULT_TARGET): E2eTarget {
     dbPort: (db === 'sqlite' ? 19000 : 18000) + offset,
     apiUrl: `http://localhost:${port}/api/v1`,
     envFile: `docker/e2e/.env.${version}-${db}`,
-    service: db === 'sqlite' ? 'vikunja-sqlite' : 'vikunja',
+    service,
+    dbMode,
+    profile,
+    dbName,
   };
 }
 

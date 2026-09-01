@@ -35,6 +35,9 @@ function main(argv: string[]): void {
     console.log(`E2E_API_URL='${target.apiUrl}'`);
     console.log(`E2E_ENV_FILE='${target.envFile}'`);
     console.log(`E2E_SERVICE='${target.service}'`);
+    console.log(`E2E_DB_MODE='${target.dbMode}'`);
+    console.log(`E2E_PROFILE='${target.profile}'`);
+    console.log(`E2E_DB_NAME='${target.dbName}'`);
     return;
   }
 
