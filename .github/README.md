@@ -28,7 +28,7 @@ Worked examples, each paired with the exact tool call and the resulting Vikunja 
 | | Version | Notes |
 |---|---|---|
 | npm `latest` | 0.6.2 | Single-user `stdio` server |
-| npm `beta` | 0.7.0-beta.1 | Adds opt-in OIDC resource-server mode: Streamable HTTP transport, per-user identity, MCP auth discovery, SSO enrollment. `stdio` is unchanged and still the default |
+| npm `beta` | 0.7.0-beta.4 | Adds opt-in OIDC resource-server mode: Streamable HTTP transport, per-user identity, MCP auth discovery, SSO enrollment. `stdio` is unchanged and still the default |
 
 OIDC mode has been exercised against a real gateway, identity provider and Vikunja, but has not seen sustained production use. See the [OIDC setup manual](../docs/OIDC-SETUP.md) and the [resource-server design and threat model](../docs/OIDC-RESOURCE-SERVER.md).
 
