@@ -24,10 +24,13 @@ export async function handleComment(
 
     // If no comment text provided, list comments
     if (!commentValidationService.shouldCreateComment(commentText)) {
-      const comments = await CommentOperationsService.fetchTaskComments(authManager, taskId);
+      const { comments, ...truncation } = await CommentOperationsService.fetchTaskComments(
+        authManager,
+        taskId,
+      );
 
       // Format and return response
-      const response = commentResponseFormatter.formatListCommentsResponse(comments);
+      const response = commentResponseFormatter.formatListCommentsResponse(comments, truncation);
       return commentResponseFormatter.formatMcpResponse(response);
     }
 
@@ -67,10 +70,13 @@ export async function listComments(
   try {
     const { taskId } = commentValidationService.validateListInput(args);
 
-    const comments = await CommentOperationsService.fetchTaskComments(authManager, taskId);
+    const { comments, ...truncation } = await CommentOperationsService.fetchTaskComments(
+      authManager,
+      taskId,
+    );
 
     // Format and return response
-    const response = commentResponseFormatter.formatListCommentsResponse(comments);
+    const response = commentResponseFormatter.formatListCommentsResponse(comments, truncation);
     return commentResponseFormatter.formatMcpResponse(response);
   } catch (error) {
     throw new MCPError(

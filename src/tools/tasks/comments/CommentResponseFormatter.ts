@@ -28,17 +28,30 @@ export const commentResponseFormatter = {
   },
 
   /**
-   * Format successful comment list response
+   * Format successful comment list response.
+   *
+   * `truncation` carries `resultComplete`/`warnings` when the underlying
+   * fetch (`CommentOperationsService.fetchTaskComments`) hit a pagination
+   * limit — issue #268's "never report a knowingly incomplete result as a
+   * plain success" rule, reused here for issue #289 / HIGH-18.
    */
-  formatListCommentsResponse(comments: TaskComment[]): StandardTaskResponse {
+  formatListCommentsResponse(
+    comments: TaskComment[],
+    truncation?: { resultComplete?: false; warnings?: string[] },
+  ): StandardTaskResponse {
+    const incomplete = truncation?.resultComplete === false;
+    const reliabilityMessage = incomplete
+      ? ` — INCOMPLETE RESULT: ${(truncation?.warnings ?? []).join(' ')}`
+      : '';
     return {
       success: true,
       operation: 'list',
-      message: `Found ${comments.length} comments`,
+      message: `Found ${comments.length} comments${reliabilityMessage}`,
       comments: comments,
       metadata: {
         timestamp: new Date().toISOString(),
         count: comments.length,
+        ...(incomplete ? { resultComplete: false, warnings: truncation?.warnings ?? [] } : {}),
       },
     };
   },
