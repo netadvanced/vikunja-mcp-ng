@@ -550,6 +550,140 @@ describe('GET /enroll/callback', () => {
     });
   });
 
+  describe('username-squatting mismatch (issue #224)', () => {
+    // Mallory's Vikunja account already owns username "mallory", so when
+    // Alice's IdP presents preferred_username "mallory" during her own SSO
+    // enrollment, Vikunja auto-creates her account under a random username
+    // instead. Alice's ticket carries no email claim (2.4.0's realistic
+    // shape per issue #223), so the mismatch falls all the way through to
+    // the username fallback, which also fails.
+    const aliceNoEmail: Identity = {
+      issuer: alice.issuer,
+      sub: alice.sub,
+      preferredUsername: 'mallory',
+    };
+    const randomUsernameAccount = {
+      id: 77,
+      username: 'quickly-touched-buzzard',
+      email: 'quickly-touched-buzzard@example.test',
+    };
+
+    it('detects a live username collision via GET /users?s= and surfaces a squatting-specific 403', async () => {
+      const scripted = scriptedRest([
+        ...happyScript({
+          user: { match: (m, p) => m === 'GET' && p === '/user', result: randomUsernameAccount },
+        }),
+        {
+          match: (m, p) => m === 'GET' && p === '/users?s=mallory',
+          result: [{ id: 42, username: 'mallory' }],
+        },
+      ]);
+      const { res, provisioned } = await runCallback(
+        { restRequest: scripted.impl },
+        undefined,
+        aliceNoEmail,
+      );
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).toMatch(/squatting/i);
+      expect(res.body).toContain('mallory');
+      expect(provisioned).toHaveLength(0);
+
+      const search = scripted.calls.find(c => c.path === '/users?s=mallory');
+      expect(search?.token).toBe('vikunja-user-jwt');
+    });
+
+    it('does not flag squatting when the /users search finds no OTHER account holding the username', async () => {
+      const scripted = scriptedRest([
+        ...happyScript({
+          user: { match: (m, p) => m === 'GET' && p === '/user', result: randomUsernameAccount },
+        }),
+        {
+          match: (m, p) => m === 'GET' && p === '/users?s=mallory',
+          result: [],
+        },
+      ]);
+      const { res, provisioned } = await runCallback(
+        { restRequest: scripted.impl },
+        undefined,
+        aliceNoEmail,
+      );
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).not.toMatch(/squatting/i);
+      expect(res.body).toMatch(/does not match|another account/i);
+      expect(provisioned).toHaveLength(0);
+    });
+
+    it('falls back to the generic mismatch message (not a 502) when the squatting-detection search itself fails', async () => {
+      const scripted = scriptedRest([
+        ...happyScript({
+          user: { match: (m, p) => m === 'GET' && p === '/user', result: randomUsernameAccount },
+        }),
+        {
+          match: (m, p) => m === 'GET' && p === '/users?s=mallory',
+          error: new Error('network blip'),
+        },
+      ]);
+      const { res, provisioned } = await runCallback(
+        { restRequest: scripted.impl },
+        undefined,
+        aliceNoEmail,
+      );
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).not.toMatch(/squatting/i);
+      expect(provisioned).toHaveLength(0);
+    });
+
+    it('treats a non-array /users search response as inconclusive rather than crashing', async () => {
+      const scripted = scriptedRest([
+        ...happyScript({
+          user: { match: (m, p) => m === 'GET' && p === '/user', result: randomUsernameAccount },
+        }),
+        {
+          match: (m, p) => m === 'GET' && p === '/users?s=mallory',
+          result: { unexpected: 'shape' },
+        },
+      ]);
+      const { res, provisioned } = await runCallback(
+        { restRequest: scripted.impl },
+        undefined,
+        aliceNoEmail,
+      );
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).not.toMatch(/squatting/i);
+      expect(provisioned).toHaveLength(0);
+    });
+
+    it('never calls GET /users when the identity carries no preferred_username to search for', async () => {
+      const bareEmailOnly: Identity = {
+        issuer: alice.issuer,
+        sub: alice.sub,
+        email: 'alice@example.test',
+      };
+      const scripted = scriptedRest(
+        happyScript({
+          user: {
+            match: (m, p) => m === 'GET' && p === '/user',
+            result: { id: 9, username: 'someone-else', email: 'someone-else@example.test' },
+          },
+        }),
+      );
+      const { res, provisioned } = await runCallback(
+        { restRequest: scripted.impl },
+        undefined,
+        bareEmailOnly,
+      );
+
+      expect(res.statusCode).toBe(403);
+      expect(res.body).not.toMatch(/squatting/i);
+      expect(scripted.calls.some(c => c.path.startsWith('/users?s='))).toBe(false);
+      expect(provisioned).toHaveLength(0);
+    });
+  });
+
   describe('ticket redemption timing (finding #4)', () => {
     it('a failed code exchange does NOT burn the ticket — the link stays redeemable', async () => {
       const failing = scriptedRest(

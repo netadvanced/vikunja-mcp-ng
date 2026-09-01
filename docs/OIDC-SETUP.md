@@ -549,34 +549,66 @@ victim's Vikunja token under the attacker's identity. Consequence for operators:
 connector's access tokens must include the `email` (or `preferred_username`) claim, and
 under the same-IdP precondition these match what Vikunja stores for OpenID users.
 
-**Real matching behavior on Vikunja 2.4.0.** `GET /user` on Vikunja 2.4.0 does not return
-an `email` field at all (confirmed against the live e2e stack, issue #223). That makes the
-email-first path above dead code in practice on 2.4.0: `enrolled.email` is always
-`undefined`, so the email comparison can never succeed, and matching falls through to the
-`preferred_username` fallback every time. The fallback is what actually protects
-enrollment today, so treat matching on 2.4.0 as effectively username-only, not
-email-or-username as the code reads. The email-first check itself is not wrong; it is
-written for a Vikunja version (or a future one) where `GET /user` includes email, and a
-2.4.0 operator should not rely on it doing anything. Keep the connector issuing
+**Real matching behavior, per Vikunja version (issue #223).** Design is not the bug here
+— email-first with a username fallback is the right approach, and it is exactly what
+`verifyEnrolledAccount` implements. The gap is that `GET /user` on Vikunja 2.4.0, the
+current floor and tested default, **does not return an `email` field at all** (confirmed
+against the live e2e stack). That makes the email-first path dead code in practice on
+2.4.0: `enrolled.email` is always `undefined`, so the email comparison can never succeed,
+and matching falls through to the `preferred_username` fallback every time. **Treat
+matching on 2.4.0 as effectively username-only**, not email-or-username as the code
+reads. The email-first check itself is not wrong; it activates automatically, with no
+code change, the moment a Vikunja version's `GET /user` starts returning `email` — this
+is a version-shaped gap, not a broken branch. Keep the connector issuing
 `preferred_username` (ideally both claims) so the fallback has something to match
-against. A real fix, either fetching email a different way or making username the
-documented primary key, is tracked in the still-open issue #223.
+against today.
 
-> **Warning: do not pre-create a local Vikunja account with the same username an SSO
-> user will later get.** If a local account already holds the username an OIDC login
-> would auto-create (`preferred_username`), Vikunja does not fail or merge accounts; it
+We looked at fetching email a different way on 2.4.0 (issue #223 raised this as an
+option) and found no viable route: `GET /user` is the only per-session "who am I"
+endpoint and it omits email outright, and the global `GET /users?s=` search does not
+help either — it is a search-*by* username/name/email endpoint, so using it here would
+require already knowing the target's email to search by, which is precisely the piece
+`GET /user` fails to supply. There is no endpoint that hands back the current session's
+own email when `GET /user` won't. There is nothing to add on 2.4.0 beyond documenting the
+gap here; this is intentionally not coded around.
+
+**Forward-looking, not yet actionable:** Vikunja 2.6.0 adds a `pending_email` field to
+some user-facing responses (tracked for this project in issue #237). Nothing in this
+repository has been verified against 2.6.0, `pending_email` is not the same thing as a
+confirmed `email` and is not known to appear on `GET /user` under the enrollment JWT
+specifically, and 2.6.0 is not this project's floor or tested default. Do not assume
+email-matching starts working on 2.6.0 without re-verifying live; this paragraph is
+context for when that version alignment happens, not a claim about today's behavior.
+
+> **Warning: do not pre-create a local Vikunja account with a username an SSO user will
+> later present.** If a local account already holds the username an OIDC login would
+> auto-create (`preferred_username`), Vikunja does not fail or merge accounts; it
 > silently assigns the new OpenID account a random username instead (for example
 > `quickly-touched-buzzard`). Identity pinning then has nothing to match against: the
 > enrollment link was issued to `preferred_username`, but the account Vikunja just
-> authenticated carries a different, randomly generated username, so the callback
-> refuses the link with a 403, even though the person enrolling is legitimate. This
-> mostly comes from staging or setup shortcuts, such as hand-creating a local admin or
-> test account before SSO is wired up. The operational rule: never pre-create a local
-> Vikunja account sharing a username with an identity that will enroll through SSO
-> later. If the collision already happened, rename or remove the colliding local
-> account (or have the user re-authenticate once it is gone); see the troubleshooting
-> table in [§12](#12-troubleshooting) for the symptom-first version. Not yet fixed in
-> code, tracked in the still-open issue #224.
+> authenticated carries a different, randomly generated username. This mostly comes from
+> staging or setup shortcuts, such as hand-creating a local admin or test account before
+> SSO is wired up. **The operational rule: never pre-create a local Vikunja account whose
+> username collides with a value an IdP user will present as `preferred_username`** — that
+> collision is exactly what triggers Vikunja's auto-rename-on-collision behavior. If the
+> collision already happened, rename or remove the colliding local account (or have the
+> user re-authenticate once it is gone).
+>
+> **Mitigation shipped for issue #224:** the callback still fails closed on a mismatch —
+> that part is deliberately unchanged — but it no longer returns the same generic message
+> for every mismatch. Before giving up, it makes one best-effort `GET /users?s=<username>`
+> lookup (searching by username never requires the target account to be discoverable,
+> unlike a name/email search) for the `preferred_username` the identity presented. If that
+> confirms a **different** account already holds it, the 403 names the squatting scenario
+> explicitly and points at the fix (rename or remove the colliding account) instead of the
+> generic "opened by another account" wording. When the lookup is inconclusive — the
+> search itself fails, or turns up no other holder — the original generic message is used,
+> because a plain forwarded-link attack looks identical from the server's side and must
+> still fail closed. This is a diagnostic improvement, not a bypass: nothing is
+> auto-linked or auto-renamed, and Vikunja's random-username *pattern* is never
+> pattern-matched (it is undocumented and not guaranteed) — only a live, checkable account
+> lookup is used. See the troubleshooting table in [§12](#12-troubleshooting) for the
+> symptom-first version.
 
 Two more behaviours worth knowing: an enrollment ticket is only consumed once the code
 exchange with Vikunja **succeeds** — a transient upstream failure leaves the link
