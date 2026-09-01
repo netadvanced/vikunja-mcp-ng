@@ -543,6 +543,35 @@ describe('Assignee operations', () => {
       expect(markdown).toContain('Task 123 has 2 assignee(s)');
     });
 
+    // Regression for issue #289 / HIGH-18 spot-check: a page the caller
+    // didn't pin themselves that comes back exactly full cannot be told
+    // apart from "that's everyone" without a completeness signal.
+    it('warns when an unpinned page comes back exactly at the server page cap', async () => {
+      fetchMock.mockResolvedValue(
+        restOk(Array.from({ length: 50 }, (_, i) => ({ id: i + 1, username: `user${i + 1}` }))),
+      );
+
+      const result = await listAssignees({ id: 123 }, authManager);
+
+      // Still exactly one request — this is the "at minimum" signal-only
+      // fix, not full auto-pagination.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('INCOMPLETE RESULT');
+      expect(markdown).toContain('Task 123 has 50 assignee(s)');
+    });
+
+    it('does not warn when the caller pinned an explicit page even if it comes back full', async () => {
+      fetchMock.mockResolvedValue(
+        restOk(Array.from({ length: 50 }, (_, i) => ({ id: i + 1, username: `user${i + 1}` }))),
+      );
+
+      const result = await listAssignees({ id: 123, page: 1, perPage: 50 }, authManager);
+
+      const markdown = result.content[0].text;
+      expect(markdown).not.toContain('INCOMPLETE RESULT');
+    });
+
     it('should handle task with no assignees', async () => {
       fetchMock.mockResolvedValue(restOk([]));
 

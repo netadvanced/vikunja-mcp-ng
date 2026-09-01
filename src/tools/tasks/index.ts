@@ -127,15 +127,38 @@ async function listTasks(
         ? ` — ${incomplete ? 'INCOMPLETE RESULT' : 'PARTIAL FILTER'}: ${resultWarnings.join(' ')}`
         : '';
 
+    // orderBy/filterTimezone/filterIncludeNulls/expand are GET /tasks query
+    // params only honored by the cross-project direct-REST path
+    // (RestCrossProjectFilteringStrategy) — single-project listing calls
+    // GET /projects/{id}/tasks, which never supported them (see the schema
+    // comment above these fields). Supplying one on a single-project
+    // listing used to be silently accepted and silently ignored, with no
+    // signal at all (issue #290 LOW-3).
+    const isCrossProjectListing = args.projectId === undefined || args.allProjects === true;
+    const ignoredParams: string[] = [];
+    if (!isCrossProjectListing) {
+      if (args.orderBy !== undefined) ignoredParams.push('orderBy');
+      if (args.filterTimezone !== undefined) ignoredParams.push('filterTimezone');
+      if (args.filterIncludeNulls !== undefined) ignoredParams.push('filterIncludeNulls');
+      if (args.expand !== undefined && args.expand.length > 0) ignoredParams.push('expand');
+    }
+    const ignoredParamsMessage =
+      ignoredParams.length > 0
+        ? ` — NOTE: ${ignoredParams.join(', ')} ${ignoredParams.length === 1 ? 'is' : 'are'} ` +
+          'ignored on this single-project listing (only honored for cross-project listing — ' +
+          'omit projectId or pass allProjects: true).'
+        : '';
+
     const taskCount = filteringResult.tasks?.length || 0;
     const response = createTaskResponse(
       'list-tasks',
-      `Found ${taskCount} tasks${filteringMessage}${reliabilityMessage}`,
+      `Found ${taskCount} tasks${filteringMessage}${reliabilityMessage}${ignoredParamsMessage}`,
       { tasks: filteringResult.tasks || [] },
       {
         timestamp: new Date().toISOString(),
         count: taskCount,
         ...(filteringResult.metadata || {}),
+        ...(ignoredParams.length > 0 ? { ignoredParams } : {}),
       },
       undefined, // verbosity (ignored - using standard AORP)
       undefined, // useOptimizedFormat (ignored - using standard AORP)
@@ -380,10 +403,36 @@ export function registerTasksTool(
       // listing (ClientSideFilteringStrategy/ServerSideFilteringStrategy)
       // calls GET /projects/{id}/tasks, which never supported these extra
       // params, so they are silently unused in that case.
-      orderBy: z.enum(['asc', 'desc']).optional(),
-      filterTimezone: z.string().optional(),
-      filterIncludeNulls: z.boolean().optional(),
-      expand: z.array(z.enum(['subtasks', 'buckets', 'reactions', 'comments'])).optional(),
+      orderBy: z
+        .enum(['asc', 'desc'])
+        .optional()
+        .describe(
+          'Sort direction paired with sort_by. Cross-project listing only (no projectId, or ' +
+            'allProjects: true) — ignored (with a response warning) on a single-project listing.',
+        ),
+      filterTimezone: z
+        .string()
+        .optional()
+        .describe(
+          'Timezone for filter date literals. Cross-project listing only (no projectId, or ' +
+            'allProjects: true) — ignored (with a response warning) on a single-project listing.',
+        ),
+      filterIncludeNulls: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether filtered fields with a null value should be included. Cross-project ' +
+            'listing only (no projectId, or allProjects: true) — ignored (with a response ' +
+            'warning) on a single-project listing.',
+        ),
+      expand: z
+        .array(z.enum(['subtasks', 'buckets', 'reactions', 'comments']))
+        .optional()
+        .describe(
+          'Extra relations to embed in each task. Cross-project listing only (no projectId, ' +
+            'or allProjects: true) — ignored (with a response warning) on a single-project ' +
+            'listing.',
+        ),
       // Comment fields
       comment: z.string().optional(),
       commentId: z.number().optional(),

@@ -174,6 +174,108 @@ describe('Notifications Tool', () => {
       expect(result.content[0].text).not.toContain('"id": 1');
     });
 
+    // Regression for issue #286 / HIGH-15, confirmed live against a real
+    // Vikunja 2.4.0 instance: `read_at` for a genuinely unread notification
+    // serializes as the truthy zero-time string "0001-01-01T00:00:00Z", not
+    // `null`. A bare `!n.read_at` truthiness check treats that as "read"
+    // and would filter it OUT of `unreadOnly: true` results.
+    it('treats the zero-time read_at sentinel as unread for unreadOnly filtering', async () => {
+      const notifications = [
+        {
+          id: 1,
+          name: 'a',
+          created: '2026-01-01T00:00:00Z',
+          notification: {},
+          read_at: '2026-01-02T00:00:00Z',
+        },
+        {
+          id: 2,
+          name: 'b',
+          created: '2026-01-01T00:00:00Z',
+          notification: {},
+          read_at: '0001-01-01T00:00:00Z',
+        },
+      ];
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: notifications }));
+
+      const result = await mockHandler({ subcommand: 'list', unreadOnly: true });
+
+      expect(result.content[0].text).toContain('**count:** 1');
+      expect(result.content[0].text).toContain('"id": 2');
+      expect(result.content[0].text).not.toContain('"id": 1');
+    });
+
+    // Regression for issue #289 / HIGH-18: a single unpaged GET
+    // /notifications used to silently cap out at whatever the server's
+    // page clamp is, with no signal more notifications existed.
+    describe('pagination (issue #289 / HIGH-18)', () => {
+      const makeNotification = (id: number) => ({
+        id,
+        name: 'a',
+        created: '2026-01-01T00:00:00Z',
+        notification: {},
+        read_at: '2026-01-02T00:00:00Z',
+      });
+
+      it('fetches a second page when the first page comes back full', async () => {
+        const page1 = Array.from({ length: 50 }, (_, i) => makeNotification(i + 1));
+        const page2 = [makeNotification(51)];
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ body: page1 }))
+          .mockResolvedValueOnce(mockResponse({ body: page2 }));
+
+        const result = await mockHandler({ subcommand: 'list' });
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(mockFetch).toHaveBeenNthCalledWith(
+          1,
+          'https://api.vikunja.test/api/v1/notifications',
+          expect.objectContaining({ method: 'GET' }),
+        );
+        expect(mockFetch).toHaveBeenNthCalledWith(
+          2,
+          'https://api.vikunja.test/api/v1/notifications?page=2',
+          expect.objectContaining({ method: 'GET' }),
+        );
+        expect(result.content[0].text).toContain('**count:** 51');
+        expect(result.content[0].text).not.toContain('INCOMPLETE');
+      });
+
+      it('does not auto-paginate when the caller supplied an explicit page/perPage', async () => {
+        const page1 = Array.from({ length: 50 }, (_, i) => makeNotification(i + 1));
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: page1 }));
+
+        const result = await mockHandler({ subcommand: 'list', page: 1, perPage: 50 });
+
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        expect(result.content[0].text).toContain('**count:** 50');
+      });
+
+      it('marks the result INCOMPLETE when the VIKUNJA_MAX_TASKS_LIMIT budget is hit mid-walk', async () => {
+        const originalEnv = process.env.VIKUNJA_MAX_TASKS_LIMIT;
+        process.env.VIKUNJA_MAX_TASKS_LIMIT = '60';
+        try {
+          const page1 = Array.from({ length: 50 }, (_, i) => makeNotification(i + 1));
+          const page2 = Array.from({ length: 50 }, (_, i) => makeNotification(51 + i));
+          mockFetch
+            .mockResolvedValueOnce(mockResponse({ body: page1 }))
+            .mockResolvedValueOnce(mockResponse({ body: page2 }));
+
+          const result = await mockHandler({ subcommand: 'list' });
+
+          expect(result.content[0].text).toContain('**count:** 60');
+          expect(result.content[0].text).toContain('INCOMPLETE');
+          expect(result.content[0].text).toContain('VIKUNJA_MAX_TASKS_LIMIT');
+        } finally {
+          if (originalEnv === undefined) {
+            delete process.env.VIKUNJA_MAX_TASKS_LIMIT;
+          } else {
+            process.env.VIKUNJA_MAX_TASKS_LIMIT = originalEnv;
+          }
+        }
+      });
+    });
+
     it('should handle an empty notification list', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ body: [] }));
 
@@ -284,6 +386,11 @@ describe('Notifications Tool', () => {
     });
 
     it('should call POST once when the toggle already lands on read', async () => {
+      // The idempotency check reads the response's own explicit `read`
+      // boolean (issue #286 / HIGH-15), not `read_at` truthiness — `read_at`
+      // is always a non-empty string on a real server (a real timestamp, or
+      // the zero-time sentinel for "unread"), so it can never signal
+      // "unread" via truthiness alone.
       mockFetch.mockResolvedValueOnce(
         mockResponse({
           body: {
@@ -291,6 +398,7 @@ describe('Notifications Tool', () => {
             name: 'x',
             created: '2026-01-01T00:00:00Z',
             read_at: '2026-01-02T00:00:00Z',
+            read: true,
           },
         }),
       );
@@ -309,13 +417,22 @@ describe('Notifications Tool', () => {
     });
 
     it('should call POST a second time to re-toggle when the first call lands on unread', async () => {
-      // First toggle flips an already-read notification to unread (read_at
-      // absent); the handler must detect this and toggle again so mark-read
-      // stays idempotent no matter the notification's starting state.
+      // First toggle flips an already-read notification to unread — `read:
+      // false` alongside `read_at` still being a (real-server-realistic)
+      // non-empty string, since the check is on the explicit `read`
+      // boolean, not `read_at` truthiness (issue #286 / HIGH-15). The
+      // handler must detect this and toggle again so mark-read stays
+      // idempotent no matter the notification's starting state.
       mockFetch
         .mockResolvedValueOnce(
           mockResponse({
-            body: { id: 5, name: 'x', created: '2026-01-01T00:00:00Z', read_at: null },
+            body: {
+              id: 5,
+              name: 'x',
+              created: '2026-01-01T00:00:00Z',
+              read_at: '0001-01-01T00:00:00Z',
+              read: false,
+            },
           }),
         )
         .mockResolvedValueOnce(
@@ -325,6 +442,7 @@ describe('Notifications Tool', () => {
               name: 'x',
               created: '2026-01-01T00:00:00Z',
               read_at: '2026-01-02T00:00:00Z',
+              read: true,
             },
           }),
         );

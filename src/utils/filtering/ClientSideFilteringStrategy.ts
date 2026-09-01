@@ -7,7 +7,13 @@
  */
 
 import type { TaskFilteringStrategy } from './TaskFilteringStrategy';
-import type { FilteringParams, FilteringResult, TaskListApiParams, VikunjaTask } from './types';
+import type {
+  FilteringArgs,
+  FilteringParams,
+  FilteringResult,
+  TaskListApiParams,
+  VikunjaTask,
+} from './types';
 import type { AuthManager } from '../../auth/AuthManager';
 import { vikunjaRestRequest } from '../vikunja-rest';
 import { MCPError, ErrorCode } from '../../types';
@@ -113,6 +119,15 @@ async function fetchProjectTasks(
   projectId: number,
   params: TaskListApiParams,
   options: { autoPaginate: boolean; budget: TaskLoadBudget },
+  /**
+   * `orderBy`/`filterTimezone`/`filterIncludeNulls` from the original
+   * `FilteringArgs`, threaded through ONLY when this is the cross-project
+   * fallback (`loadTasksAcrossProjects`) — see that function's doc comment
+   * (issue #290 MED-7). The plain single-project call site below never
+   * passes this, matching `FilteringArgs`'s documented REST-cross-project-
+   * only scope for these fields.
+   */
+  extras: Pick<FilteringArgs, 'orderBy' | 'filterTimezone' | 'filterIncludeNulls'> = {},
 ): Promise<VikunjaTask[]> {
   const { autoPaginate, budget } = options;
 
@@ -123,7 +138,7 @@ async function fetchProjectTasks(
     const query = buildTasksListQuery(
       page === undefined ? params : { ...params, page },
       undefined,
-      {},
+      extras,
     );
     const path = `/projects/${projectId}/tasks${query ? `?${query}` : ''}`;
     const tasks = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
@@ -159,8 +174,22 @@ async function fetchProjectTasks(
       // in one response — nothing more to fetch.
       if (pageSize === 0) break;
       if (serverPageCap !== undefined && pageSize < serverPageCap) {
-        collected.push(...page.slice(0, Math.max(0, budget.remaining)));
-        budget.remaining = Math.max(0, budget.remaining - page.length);
+        // The whole project fits in this one page — but the budget can
+        // still cut it short. Sibling branch below (`page.length >
+        // budget.remaining`, a few lines down) sets `truncated`/warnings
+        // when that happens; this branch must too (issue #290 MED-6).
+        if (page.length > budget.remaining) {
+          collected.push(...page.slice(0, budget.remaining));
+          budget.remaining = 0;
+          budget.truncated = true;
+          budget.warnings.push(
+            `Project ${projectId}: stopped loading at the ${getMaxTasksLimit()}-task limit ` +
+              `(VIKUNJA_MAX_TASKS_LIMIT); more tasks exist that are not in this result.`,
+          );
+        } else {
+          collected.push(...page);
+          budget.remaining -= page.length;
+        }
         break;
       }
     }
@@ -271,6 +300,18 @@ async function loadTasksAcrossProjects(
   authManager: AuthManager,
   params: TaskListApiParams,
   options: { autoPaginate: boolean; budget: TaskLoadBudget },
+  /**
+   * `orderBy`/`filterTimezone`/`filterIncludeNulls` from the original
+   * `FilteringArgs`, threaded through to every per-project GET. This
+   * function is ONLY ever reached as the cross-project listing path — the
+   * plain aggregate branch of `execute()` below, or
+   * `RestCrossProjectFilteringStrategy`'s fallback when its direct
+   * `GET /tasks` call fails — so these REST-cross-project-only params
+   * (see `FilteringArgs`) are always in scope here, unlike the
+   * single-project branch of `execute()` (issue #290 MED-7: these used to
+   * be dropped on ANY fallback cause, not just the tracked #237 chain).
+   */
+  extras: Pick<FilteringArgs, 'orderBy' | 'filterTimezone' | 'filterIncludeNulls'> = {},
 ): Promise<VikunjaTask[]> {
   const safeProjects = await loadAllProjects(authManager, options.budget);
   const skipped: number[] = [];
@@ -283,7 +324,7 @@ async function loadTasksAcrossProjects(
         return [];
       }
       try {
-        return await fetchProjectTasks(authManager, projectId, params, options);
+        return await fetchProjectTasks(authManager, projectId, params, options, extras);
       } catch (error) {
         logger.warn('Skipping a project that failed during all-projects task aggregation', {
           projectId,
@@ -357,7 +398,22 @@ export class ClientSideFilteringStrategy implements TaskFilteringStrategy {
       });
     } else {
       // Aggregate tasks across all projects (GET /tasks/all is unreliable).
-      tasks = await loadTasksAcrossProjects(authManager, apiParams, { autoPaginate, budget });
+      // Thread orderBy/filterTimezone/filterIncludeNulls through this
+      // cross-project path (issue #290 MED-7) — they stay unsupported on
+      // the single-project branch above, matching FilteringArgs's
+      // documented REST-cross-project-only scope for these fields.
+      tasks = await loadTasksAcrossProjects(
+        authManager,
+        apiParams,
+        { autoPaginate, budget },
+        {
+          ...(args.orderBy !== undefined && { orderBy: args.orderBy }),
+          ...(args.filterTimezone !== undefined && { filterTimezone: args.filterTimezone }),
+          ...(args.filterIncludeNulls !== undefined && {
+            filterIncludeNulls: args.filterIncludeNulls,
+          }),
+        },
+      );
     }
 
     logger.info('Tasks loaded for client-side filtering', {

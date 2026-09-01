@@ -460,5 +460,65 @@ describe('Comment operations', () => {
         'Failed to list comments:',
       );
     });
+
+    // Regression for issue #289 / HIGH-18, confirmed live against a real
+    // Vikunja 2.4.0 instance: GET /tasks/{id}/comments has no page/per_page
+    // in the OpenAPI spec, but the server clamps it to
+    // service.maxitemsperpage (50) anyway — a single unpaged request
+    // silently dropped comments past that clamp.
+    describe('pagination', () => {
+      const makeComment = (id: number) => ({
+        id,
+        comment: `Comment ${id}`,
+        created: '2026-01-01',
+      });
+
+      it('fetches a second page when the first page comes back full', async () => {
+        const page1 = Array.from({ length: 50 }, (_, i) => makeComment(i + 1));
+        const page2 = [makeComment(51)];
+        fetchMock.mockResolvedValueOnce(restOk(page1)).mockResolvedValueOnce(restOk(page2));
+
+        const result = await listComments({ id: 123 }, authManager);
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(fetchMock).toHaveBeenNthCalledWith(
+          1,
+          'https://vikunja.test/api/v1/tasks/123/comments',
+          expect.objectContaining({ method: 'GET' }),
+        );
+        expect(fetchMock).toHaveBeenNthCalledWith(
+          2,
+          'https://vikunja.test/api/v1/tasks/123/comments?page=2',
+          expect.objectContaining({ method: 'GET' }),
+        );
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('Found 51 comments');
+        expect(markdown).not.toContain('INCOMPLETE');
+      });
+
+      it('marks the result INCOMPLETE when the VIKUNJA_MAX_TASKS_LIMIT budget is hit mid-walk', async () => {
+        const originalEnv = process.env.VIKUNJA_MAX_TASKS_LIMIT;
+        process.env.VIKUNJA_MAX_TASKS_LIMIT = '60';
+        try {
+          const page1 = Array.from({ length: 50 }, (_, i) => makeComment(i + 1));
+          const page2 = Array.from({ length: 50 }, (_, i) => makeComment(51 + i));
+          fetchMock.mockResolvedValueOnce(restOk(page1)).mockResolvedValueOnce(restOk(page2));
+
+          const result = await listComments({ id: 123 }, authManager);
+
+          const markdown = result.content[0].text;
+          expect(markdown).toContain('Found 60 comments');
+          expect(markdown).toContain('INCOMPLETE');
+          expect(markdown).toContain('VIKUNJA_MAX_TASKS_LIMIT');
+        } finally {
+          if (originalEnv === undefined) {
+            delete process.env.VIKUNJA_MAX_TASKS_LIMIT;
+          } else {
+            process.env.VIKUNJA_MAX_TASKS_LIMIT = originalEnv;
+          }
+        }
+      });
+    });
   });
 });

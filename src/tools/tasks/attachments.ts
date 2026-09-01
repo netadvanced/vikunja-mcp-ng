@@ -27,6 +27,11 @@ import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/respon
 import { vikunjaRestRequest, resolveBaseUrl } from '../../utils/vikunja-rest';
 import { getRequestContext } from '../../context/requestContext';
 import type { components } from '../../types/generated/vikunja-openapi';
+import {
+  DEFAULT_SERVER_PAGE_CAP,
+  describePossibleTruncation,
+  readServerPageCap,
+} from '../../utils/filtering/pagination';
 
 type VikunjaTaskAttachment = components['schemas']['models.TaskAttachment'];
 
@@ -115,9 +120,20 @@ export async function listAttachments(
   const taskId = requireTaskId(args, 'list-attachments operation');
   const attachments = await fetchAttachments(authManager, taskId, args);
 
+  // "At minimum" half of the CRIT-7 pattern (issue #289 / HIGH-18
+  // spot-check) — see `describePossibleTruncation`'s doc comment.
+  const truncation = describePossibleTruncation(attachments.length, {
+    autoPaginate: args.page === undefined && args.perPage === undefined,
+    cap: readServerPageCap(authManager) ?? DEFAULT_SERVER_PAGE_CAP,
+    resourceLabel: `Task ${taskId} attachments`,
+  });
+
   const response = createStandardResponse(
     'list-attachments',
-    `Task ${taskId} has ${attachments.length} attachment(s)`,
+    `Task ${taskId} has ${attachments.length} attachment(s)` +
+      (truncation.resultComplete === false
+        ? ` — INCOMPLETE RESULT: ${truncation.warnings?.join(' ')}`
+        : ''),
     {
       taskId,
       attachments: attachments.map(summarizeAttachment),
@@ -128,6 +144,7 @@ export async function listAttachments(
       count: attachments.length,
       ...(args.page !== undefined ? { page: args.page } : {}),
       ...(args.perPage !== undefined ? { perPage: args.perPage } : {}),
+      ...truncation,
     },
     args.sessionId,
   );

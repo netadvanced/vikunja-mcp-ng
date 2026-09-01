@@ -260,6 +260,12 @@ export const FilterValidator = {
       // server-side (before pagination) rather than trimming an already
       // paginated page. Without this, `done=false` scattered open tasks
       // unpredictably across raw pages.
+      //
+      // `doneFoldedIntoExpression` tracks whether that fold happened at the
+      // `FilterExpression` level (0- or 1-group case, below) so the
+      // multi-group fallback (after serialisation, near `expressionToString`)
+      // knows whether it still needs to fold `done` in itself.
+      let doneFoldedIntoExpression = false;
       if (args.done !== undefined) {
         const doneGroup: FilterGroup = {
           conditions: [{ field: 'done', operator: '=', value: args.done }],
@@ -267,6 +273,7 @@ export const FilterValidator = {
         };
         if (!filterExpression) {
           filterExpression = { groups: [doneGroup] };
+          doneFoldedIntoExpression = true;
         } else if (filterExpression.groups.length === 1) {
           // Single user group: AND `done` on as a second group. The user's
           // group is parenthesised when serialised, so its own &&/|| operator
@@ -275,10 +282,21 @@ export const FilterValidator = {
             groups: [...filterExpression.groups, doneGroup],
             operator: '&&',
           };
+          doneFoldedIntoExpression = true;
         }
-        // Multi-group user filter: left untouched - appending a group here
-        // could change group-join semantics. `done` is still enforced by
-        // FilterExecutor.applyPostProcessingFilters in that case.
+        // Multi-group user filter (2+ top-level groups, only reachable via
+        // explicit parens like `(a && b) || (c && d)`): NOT folded here,
+        // because `FilterExpression` has a single top-level operator shared
+        // across every group, so naively appending a third group here would
+        // silently change `(a) || (b)`'s semantics to `(a) || (b) && done`.
+        // Folded onto the SERIALIZED string instead, below, by wrapping the
+        // whole thing in one set of parens before ANDing `done` on — see
+        // the `!doneFoldedIntoExpression` block near `expressionToString`.
+        // Previously this case was left to
+        // `FilterExecutor.applyPostProcessingFilters` alone, which ran on a
+        // possibly page-clamped result (issue #268 / CRIT-7's compounding
+        // case) — that post-filter still runs too, but is now redundant
+        // rather than load-bearing for this case.
       }
 
       // Serialise the final expression for Vikunja's server-side `filter`
@@ -319,6 +337,14 @@ export const FilterValidator = {
 
       if (filterExpression) {
         filterString = expressionToString(filterExpression);
+      }
+
+      // Multi-group case deferred from the fold above: AND `done` onto the
+      // fully-serialized string, wrapped in its own parens so it correctly
+      // applies to the WHOLE expression regardless of the expression's own
+      // top-level &&/|| operator.
+      if (args.done !== undefined && !doneFoldedIntoExpression && filterString) {
+        filterString = `(${filterString}) && done = ${args.done}`;
       }
 
       if (filterString) {

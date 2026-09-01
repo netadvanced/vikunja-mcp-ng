@@ -78,6 +78,33 @@ describe('FilterValidator.validateAndParseFilter — done folding', () => {
     expect(result.filterString).toBe('(priority >= 4 || priority = 3) && done = false');
   });
 
+  // Regression for the CRIT-7 compounding case (#268): a multi-group filter
+  // (only reachable with explicit parens around each group) has no single
+  // group to append `done` onto, and previously left `done` out of the
+  // server-side filter string entirely, relying solely on
+  // FilterExecutor.applyPostProcessingFilters to trim it afterward — which
+  // ran on a possibly page-clamped result. `done` must now still land in
+  // the server-side filter string, wrapped so it ANDs onto the WHOLE
+  // multi-group expression rather than just its last group.
+  it('wraps a multi-group user filter in parens before ANDing done onto the whole thing', async () => {
+    const result = await FilterValidator.validateAndParseFilter(
+      {
+        filter: '(priority >= 4 && priority <= 6) || (priority = 1 && priority = 2)',
+        done: false,
+      } as TaskListingArgs,
+      storage,
+    );
+
+    expect(result.filterString).toBe(
+      '((priority >= 4 && priority <= 6) || (priority = 1 && priority = 2)) && done = false',
+    );
+    // The FilterExpression itself is untouched (still 2 groups, no `done`
+    // condition folded in) — FilterExecutor.applyPostProcessingFilters is
+    // still the enforcement point for the client-side evaluator in this
+    // case, it just no longer has to be the ONLY one.
+    expect(result.filterExpression?.groups).toHaveLength(2);
+  });
+
   // Battle-testing finding #2: an agent reaching for the snake_case Task
   // JSON field spelling (due_date) in vikunja_tasks list's `filter` argument
   // used to fail here with "Invalid filter syntax: Expected condition after

@@ -257,4 +257,80 @@ describe('filtered listings never report a wrong or partial answer as success', 
       expect(text).toContain('1 project(s) could not be read');
     });
   });
+
+  // Regression for issue #290 LOW-3: orderBy/filterTimezone/
+  // filterIncludeNulls/expand are GET /tasks query params only honored for
+  // cross-project listing. Supplying one on a single-project listing used
+  // to be silently accepted and silently ignored, with no signal at all.
+  describe('single-project listing warns about cross-project-only params (issue #290 LOW-3)', () => {
+    it('warns in the response when orderBy is supplied on a single-project listing', async () => {
+      mockFetch.mockImplementation(async (url: string) => {
+        const path = new URL(url).pathname.replace(/^\/api\/v\d+/, '');
+        if (path === '/projects/1/tasks') {
+          return jsonResponse([{ id: 11, title: 'A task', project_id: 1 }]);
+        }
+        throw new Error(`unexpected path ${path}`);
+      });
+
+      const result = await toolHandler({ subcommand: 'list', projectId: 1, orderBy: 'desc' });
+      const text = result.content[0]?.text ?? '';
+
+      expect(text).toContain('NOTE');
+      expect(text).toContain('orderBy');
+      expect(text).toContain('ignored on this single-project listing');
+    });
+
+    it('lists every ignored param when several are supplied together', async () => {
+      mockFetch.mockImplementation(async (url: string) => {
+        const path = new URL(url).pathname.replace(/^\/api\/v\d+/, '');
+        if (path === '/projects/1/tasks') return jsonResponse([]);
+        throw new Error(`unexpected path ${path}`);
+      });
+
+      const result = await toolHandler({
+        subcommand: 'list',
+        projectId: 1,
+        orderBy: 'desc',
+        filterTimezone: 'Europe/Zurich',
+        filterIncludeNulls: true,
+        expand: ['comments'],
+      });
+      const text = result.content[0]?.text ?? '';
+
+      expect(text).toContain('orderBy, filterTimezone, filterIncludeNulls, expand');
+    });
+
+    it('does not warn when the same params are supplied on a cross-project (allProjects) listing', async () => {
+      mockFetch.mockImplementation(async (url: string) => {
+        const path = new URL(url).pathname.replace(/^\/api\/v\d+/, '');
+        if (path === '/tasks') return jsonResponse([{ id: 1, title: 'A task', project_id: 1 }]);
+        throw new Error(`unexpected path ${path}`);
+      });
+
+      const result = await toolHandler({
+        subcommand: 'list',
+        allProjects: true,
+        orderBy: 'desc',
+      });
+      const text = result.content[0]?.text ?? '';
+
+      expect(text).not.toContain('NOTE');
+      expect(text).not.toContain('ignored on this single-project listing');
+    });
+
+    it('does not warn on a single-project listing when none of these params are supplied', async () => {
+      mockFetch.mockImplementation(async (url: string) => {
+        const path = new URL(url).pathname.replace(/^\/api\/v\d+/, '');
+        if (path === '/projects/1/tasks') {
+          return jsonResponse([{ id: 11, title: 'A task', project_id: 1 }]);
+        }
+        throw new Error(`unexpected path ${path}`);
+      });
+
+      const result = await toolHandler({ subcommand: 'list', projectId: 1 });
+      const text = result.content[0]?.text ?? '';
+
+      expect(text).not.toContain('ignored on this single-project listing');
+    });
+  });
 });

@@ -15,6 +15,11 @@ import { validateAndConvertId } from '../utils/validation';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
+import {
+  DEFAULT_SERVER_PAGE_CAP,
+  describePossibleTruncation,
+  readServerPageCap,
+} from '../utils/filtering/pagination';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
 // docs/API-SPEC.md, replacing the legacy client's `Team` type (Wave D domain
@@ -191,11 +196,22 @@ export function registerTeamsTool(
             );
             const teams = teamsResult ?? [];
 
+            // "At minimum" half of the CRIT-7 pattern (issue #289 / HIGH-18
+            // spot-check) — see `describePossibleTruncation`'s doc comment.
+            const truncation = describePossibleTruncation(teams.length, {
+              autoPaginate: args.page === undefined && args.perPage === undefined,
+              cap: readServerPageCap(authManager) ?? DEFAULT_SERVER_PAGE_CAP,
+              resourceLabel: 'GET /teams',
+            });
+
             const response = createStandardResponse(
               'list-teams',
-              `Retrieved ${teams.length} team${teams.length !== 1 ? 's' : ''}`,
+              `Retrieved ${teams.length} team${teams.length !== 1 ? 's' : ''}` +
+                (truncation.resultComplete === false
+                  ? ` — INCOMPLETE RESULT: ${truncation.warnings?.join(' ')}`
+                  : ''),
               { teams },
-              { count: teams.length, params },
+              { count: teams.length, params, ...truncation },
             );
 
             return {

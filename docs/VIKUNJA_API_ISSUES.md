@@ -41,6 +41,7 @@ as unknown until it gets the same live-verification treatment 2.4.0 has had.
 | 18 | `per_page` silently clamped to `service.maxitemsperpage` (default 50) | ℹ️ By design upstream, client now paginates instead of over-requesting |
 | 19 | Date-only field values 400 on create, not silently dropped | ℹ️ Clarification, corrects a stale in-repo comment |
 | 20 | Label/assignee attach: 2xx is not proof, but every shape we send errors loudly | ℹ️ Clarification, disproves the LOW-22 audit suspicion |
+| 21 | Notification `read_at` is the zero-time sentinel for unread, not `null` | ✅ Resolved, confirmed live against 2.4.0 |
 
 ## 1. SQL-Like Filter Syntax Not Supported
 
@@ -708,6 +709,38 @@ task-count budget, whichever is hit first, surfacing `resultComplete: false`
 and a `warnings` entry when either bound truncates the result rather than
 silently reporting a partial list as complete.
 
+**2026-08-31 follow-up (issue #268 / audit CRIT-7): two more call sites had
+the SAME bug, unpaginated.** `RestCrossProjectFilteringStrategy` (the
+primary cross-project `GET /tasks` path) and `ServerSideFilteringStrategy`
+(single-project `GET /projects/{id}/tasks` with a server-side filter) each
+issued exactly one request with a large `per_page` and never checked
+whether the page came back full. Both now paginate via the shared
+`src/utils/filtering/pagination.ts` helper — a lighter algorithm than
+`ClientSideFilteringStrategy`'s self-referential one: it compares each
+page's length against the server's cached `max_items_per_page` (or the
+documented default of 50 when that isn't cached yet) rather than spending
+an extra probe request, so the common small-result-set case still costs
+exactly one request. Same `resultComplete`/`warnings` signal on truncation.
+
+**Also confirmed LIVE against a real Vikunja 2.4.0 instance (issue #289 /
+audit HIGH-18) that the clamp is not limited to the `/tasks` and
+`/projects/{id}/tasks` handlers documented above:**
+- `GET /notifications` (`vikunja_notifications list`) is clamped the same
+  way, confirmed via the response's own `X-Pagination-*` headers.
+- `GET /tasks/{taskID}/comments` is clamped too, even though the OpenAPI
+  spec documents NO `page`/`per_page` parameters for this endpoint at all
+  (only `order_by`) — verified live: 60 comments added to one task, an
+  unpaged `GET` returned exactly 50 with `X-Pagination-Total-Pages: 2`, and
+  `?page=2` (undocumented but functional) returned the remaining 10. Both
+  now paginate via the same shared helper.
+- `GET /tasks/{taskID}/assignees`, `GET /tasks/{id}/attachments`, `GET
+  /tasks/{id}/labels`, and `GET /teams` were spot-checked (not live-verified
+  per-endpoint) and given the lighter "at minimum" fix from the same
+  helper (`describePossibleTruncation`): they stay single-request, but now
+  set `resultComplete: false` with a warning when an unpinned page comes
+  back at or above the (known or assumed) page cap, rather than staying
+  silent.
+
 ## 19. Date-Only Field Values 400 on Create, Not Silently Dropped
 
 **Status:** ℹ️ Clarification, verified live against 2.4.0 (2026-08-31);
@@ -789,6 +822,48 @@ per-task assignee path used to re-add every requested id without excluding
 those already assigned, so an overlapping set aborted the update mid-flight.
 Fixed by reconciling as a set difference.
 
+## 21. `GET /notifications`'s `read_at` Is the Zero-Time Sentinel for Unread, Not `null`
+
+**Status:** ✅ Confirmed live against 2.4.0 (2026-08-31, issue #286 / audit
+HIGH-15), previously only suspected. Client-side handling shipped the same
+day.
+
+**Description:** `notifications.DatabaseNotification` (the `GET
+/notifications` list response schema) declares `read_at` as a plain
+`string`, and a genuinely unread notification serializes it as the Go
+zero-time string `"0001-01-01T00:00:00Z"`, not `null` or an absent field —
+verified by creating a fresh notification, reading it back over the API, and
+cross-checking the underlying DB row (`read_at` NULL in Postgres, but
+`"0001-01-01T00:00:00Z"` over the wire). This is the same sentinel pattern
+already documented and handled for task date fields (`start_date`/
+`end_date`/`done_at`/`due_date` — see `src/tools/tasks/filtering/
+evaluators.ts`), just not previously known to apply to notifications.
+
+**Impact (before the fix):** `vikunja_notifications list`'s `unreadOnly:
+true` filter did `allNotifications.filter((n) => !n.read_at)` — a bare
+truthiness check that is always `false` for ANY non-empty string, sentinel
+or real, so it filtered out EVERY notification, reporting "0 unread" no
+matter how many actually were. Separately, `POST /notifications/{id}`'s
+mark-read idempotency retry (`ensureNotificationRead`) checked the same way
+and so could never detect "the toggle actually landed on unread," making the
+retry dead code against a real server.
+
+**A separate, likely-unrelated server-side quirk observed while verifying
+this, NOT fixed here (out of scope — it is Vikunja's own behavior, not this
+client's):** repeated `POST /notifications/{id}` calls against the live
+2.4.0 instance used for verification never actually flipped the DB's
+`read_at` away from NULL, regardless of call count — every response's own
+`read` field came back `false`. Worth re-verifying independently before
+assuming it is fixed elsewhere.
+
+**Resolution:** `isNotificationUnread` (`src/tools/notifications.ts`) checks
+`!readAt || readAt.startsWith('0001-')`, matching the existing task-date
+sentinel pattern, used for `unreadOnly` filtering.
+`ensureNotificationRead`'s retry now checks the response's own explicit
+`read` boolean (present on `POST /notifications/{id}`'s response shape,
+`models.DatabaseNotifications`, though NOT on the plain `GET /notifications`
+list shape) instead of `read_at` truthiness.
+
 ## Recommendations for Vikunja Maintainers
 
 Trimmed to what is **still open** upstream (the filter-syntax, team-API, bulk
@@ -837,6 +912,18 @@ clamp to `service.maxitemsperpage` affecting both `GET /projects` and `GET
 /projects/{id}/tasks` (#18), and a correction of a stale "silently drops"
 comment for date-only field values, which actually 400 (code 2004) on create
 endpoints (#19).*
+
+*Updated 2026-08-31 (third pass, same day, issues #268/#289/#286): item #18
+gained a follow-up confirming the SAME `per_page` clamp also silently
+truncated `RestCrossProjectFilteringStrategy`'s primary `GET /tasks` path,
+`ServerSideFilteringStrategy`'s single-project+filter path, `vikunja_
+notifications list`, and (confirmed live, despite the endpoint's own OpenAPI
+spec documenting no pagination parameters at all) `GET
+/tasks/{taskID}/comments` — all now paginate via a shared helper. Added item
+#21: `GET /notifications`'s `read_at` returns the Go zero-time sentinel
+string for an unread notification rather than `null`, confirmed live
+against 2.4.0, which broke both `unreadOnly` filtering and the mark-read
+idempotency retry's truthiness check.*
 
 *Updated 2026-09-01: added item #20, the label/assignee attach contract,
 probed live against the 2.4.0/sqlite stack while triaging audit finding

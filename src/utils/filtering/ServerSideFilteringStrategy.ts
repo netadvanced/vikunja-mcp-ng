@@ -13,6 +13,12 @@ import { validateId } from '../../tools/tasks/validation';
 import { logger } from '../logger';
 import { MCPError, ErrorCode } from '../../types';
 import { buildTasksListQuery } from './RestCrossProjectFilteringStrategy';
+import {
+  createBudget,
+  DEFAULT_SERVER_PAGE_CAP,
+  fetchAllPages,
+  readServerPageCap,
+} from './pagination';
 
 export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
   async execute(params: FilteringParams): Promise<FilteringResult> {
@@ -35,7 +41,6 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
       );
     }
 
-    const query = buildTasksListQuery(apiParams, filterString, {});
     const singleProject = args.projectId !== undefined && !args.allProjects;
 
     logger.info('Attempting server-side filtering', {
@@ -43,11 +48,30 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
       endpoint: singleProject ? 'getProjectTasks' : 'getAllTasks',
     });
 
-    let tasks;
+    // Only the single-project branch below paginates (issue #268 / CRIT-7):
+    // the `else` branch calls the non-existent, confirmed-unreachable
+    // `GET /tasks/all` path (see its own comment) that `FilteringContext`
+    // never routes a real cross-project listing through, so there is no
+    // truncation exposure there to fix.
+    const budget = createBudget();
+
     try {
+      let tasks: VikunjaTask[];
+
       if (singleProject && args.projectId !== undefined) {
         // Validate project ID
         validateId(args.projectId, 'projectId');
+        const projectId = args.projectId;
+
+        // Paginate only when the caller expressed no pagination intent of
+        // their own — see `./pagination`'s doc comment for the termination
+        // rule. Without this, a single `per_page=1000` request silently
+        // covered only the first `service.maxitemsperpage` (default 50)
+        // tasks of a larger project (issue #268 / CRIT-7).
+        const autoPaginate = args.perPage === undefined && args.page === undefined;
+        const firstPage = Math.max(1, apiParams.page ?? 1);
+        const cap = readServerPageCap(authManager) ?? DEFAULT_SERVER_PAGE_CAP;
+
         // Get tasks for specific project with server-side filter. Calls the
         // same `GET /projects/{id}/tasks` path the legacy client's
         // `getProjectTasks` used pre-migration — a literal call-site
@@ -55,8 +79,21 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
         // ClientSideFilteringStrategy's `fetchProjectTasks` doc comment for
         // why the spec's `get?: never` at this path doesn't block reusing it
         // here).
-        const path = `/projects/${args.projectId}/tasks${query ? `?${query}` : ''}`;
-        tasks = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
+        const requestPage = async (page: number): Promise<VikunjaTask[]> => {
+          const pageApiParams = page === firstPage ? apiParams : { ...apiParams, page };
+          const query = buildTasksListQuery(pageApiParams, filterString, {});
+          const path = `/projects/${projectId}/tasks${query ? `?${query}` : ''}`;
+          const result = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
+          return Array.isArray(result) ? result : [];
+        };
+
+        tasks = await fetchAllPages(requestPage, {
+          autoPaginate,
+          firstPage,
+          budget,
+          cap,
+          resourceLabel: `Project ${projectId}`,
+        });
       } else {
         // Get all tasks across all projects with server-side filter. Calls
         // the same (non-existent, confirmed 400 "Invalid model provided" on
@@ -68,24 +105,35 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
         // migration is preserved rather than silently redirected to a
         // different, working endpoint, per this item's byte-compatible
         // refactor-not-redesign scope.
+        const query = buildTasksListQuery(apiParams, filterString, {});
         const path = `/tasks/all${query ? `?${query}` : ''}`;
-        tasks = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
+        const result = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
+        tasks = Array.isArray(result) ? result : [];
       }
 
       logger.info('Server-side filtering completed successfully', {
-        taskCount: tasks?.length || 0,
+        taskCount: tasks.length,
         filter: filterString,
       });
 
-      return {
-        tasks: tasks || [],
-        metadata: {
-          serverSideFilteringUsed: true,
-          serverSideFilteringAttempted: true,
-          clientSideFiltering: false,
-          filteringNote: 'Server-side filtering used (modern Vikunja)',
-        },
+      const metadata: FilteringResult['metadata'] = {
+        serverSideFilteringUsed: true,
+        serverSideFilteringAttempted: true,
+        clientSideFiltering: false,
+        filteringNote: 'Server-side filtering used (modern Vikunja)',
       };
+
+      if (budget.truncated || budget.warnings.length > 0) {
+        metadata.resultComplete = false;
+        metadata.warnings = budget.warnings;
+        metadata.filteringNote = `${metadata.filteringNote} — INCOMPLETE: ${budget.warnings.join(' ')}`;
+        logger.warn('Server-side filtering pagination returned an incomplete result', {
+          warnings: budget.warnings,
+          filter: filterString,
+        });
+      }
+
+      return { tasks, metadata };
     } catch (error) {
       logger.error('Server-side filtering failed', {
         error: error instanceof Error ? error.message : String(error),
