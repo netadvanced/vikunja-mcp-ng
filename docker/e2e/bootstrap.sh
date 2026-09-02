@@ -7,6 +7,14 @@
 # versions run side by side — see scripts/lib/e2e-target.ts, which owns the
 # port formula and is evaluated below rather than duplicated here.
 #
+# Postgres targets come in two arrangements (issue #254). The legacy lanes
+# (2.3.0, 2.4.0 — see `DEDICATED_DB_VERSIONS` in scripts/lib/e2e-target.ts)
+# each run a dedicated Postgres container inside their own project. Every
+# newer postgres target instead gets a database of its own inside ONE shared
+# Postgres server (docker-compose.shared-db-server.yml), brought up on demand
+# by `ensure_shared_db` below. Either way the target's ports, project and
+# credentials stay exactly as isolated as before.
+#
 #   npm run e2e:up                          # the default target (2.4.0-postgres, API on 8240)
 #   VIKUNJA_E2E_TARGET=2.4.0-sqlite npm run e2e:up      # the sqlite backend, API on 9240
 #   npm run e2e:up:all                      # every standard target at once
@@ -39,7 +47,7 @@ COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 # `docker compose` interpolates E2E_PROJECT/E2E_PORT/E2E_DB_PORT out of this
 # process's environment (see docker-compose.yml).
 eval "$(cd "$REPO_ROOT" && npx tsx scripts/lib/e2e-target-cli.ts --shell "${VIKUNJA_E2E_TARGET:-}")"
-export E2E_PROJECT E2E_PORT E2E_DB_PORT
+export E2E_PROJECT E2E_PORT E2E_DB_PORT E2E_DB_NAME
 # Kept exported for the vikunja image tag interpolation in docker-compose.yml.
 export VIKUNJA_VERSION="$E2E_VERSION"
 
@@ -66,12 +74,38 @@ log() { echo "[bootstrap] $*" >&2; }
 # container without the provider again (compose config-hash change).
 export E2E_OIDC_IDP_PORT="${E2E_OIDC_IDP_PORT:-$((E2E_PORT + 4000))}"
 
+SHARED_DB_FILE="$SCRIPT_DIR/docker-compose.shared-db-server.yml"
+
 compose() {
   local files=(-f "$COMPOSE_FILE")
+  # Shared-Postgres lanes (issue #254): a third service block living in an
+  # overlay, so the dedicated-Postgres and sqlite lanes never even parse it.
+  if [ "$E2E_DB_MODE" = "shared" ]; then
+    files+=(-f "$SCRIPT_DIR/docker-compose.shared-db.yml")
+  fi
   if [ "${VIKUNJA_E2E_OIDC:-0}" = "1" ]; then
     files+=(-f "$SCRIPT_DIR/docker-compose.oidc.yml")
   fi
-  docker compose "${files[@]}" --profile "$E2E_DB" "$@"
+  docker compose "${files[@]}" --profile "$E2E_PROFILE" "$@"
+}
+
+# Shared-Postgres lanes only: bring up the one long-lived Postgres server
+# (its own Compose project, which also owns the external network the target
+# stack joins) and make sure this target's own database exists inside it.
+# Both steps are idempotent, so this is a cheap no-op on every later run.
+ensure_shared_db() {
+  [ "$E2E_DB_MODE" = "shared" ] || return 0
+  log "Shared Postgres: ensuring the server project is up..."
+  docker compose -f "$SHARED_DB_FILE" up -d --wait --wait-timeout 120
+  if docker compose -f "$SHARED_DB_FILE" exec -T shared-db \
+      psql -U vikunja -d postgres -tAc \
+      "SELECT 1 FROM pg_database WHERE datname = '$E2E_DB_NAME'" | grep -q 1; then
+    log "Shared Postgres: database '$E2E_DB_NAME' already exists."
+  else
+    log "Shared Postgres: creating database '$E2E_DB_NAME'..."
+    docker compose -f "$SHARED_DB_FILE" exec -T shared-db \
+      psql -U vikunja -d postgres -c "CREATE DATABASE \"$E2E_DB_NAME\" OWNER vikunja"
+  fi
 }
 
 wait_for_health() {
@@ -188,7 +222,8 @@ mint_api_token() {
 }
 
 main() {
-  log "Target: $E2E_TARGET_ID (Vikunja $E2E_VERSION, $E2E_DB, API port $E2E_PORT)"
+  log "Target: $E2E_TARGET_ID (Vikunja $E2E_VERSION, $E2E_DB/$E2E_DB_MODE, API port $E2E_PORT)"
+  ensure_shared_db
   wait_for_health
 
   ensure_user "$TEST_USERNAME" "$TEST_EMAIL"

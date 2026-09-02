@@ -33,6 +33,19 @@ services:
     extra_hosts:
       - 'host.docker.internal:host-gateway'
 
+  # Shared-Postgres variant (docker-compose.shared-db.yml). Only ever merged
+  # when that overlay is also passed, i.e. for a shared target.
+  vikunja-shared:
+    profiles: [postgres-shared]
+    environment:
+      VIKUNJA_AUTH_OPENID_ENABLED: 'true'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_NAME: 'mockidp'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_AUTHURL: 'http://host.docker.internal:${E2E_OIDC_IDP_PORT:-12240}'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_CLIENTID: 'vikunja-e2e'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_CLIENTSECRET: 'vikunja-e2e-oidc-secret'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+
   vikunja-sqlite:
     profiles: [sqlite]
     environment:

@@ -133,6 +133,52 @@ npm run e2e:status                               # what's up, on which port, run
 Each target writes its own credentials file,
 `docker/e2e/.env.<version>-<db>` (gitignored, since these hold live tokens).
 
+### One shared Postgres server, one database per target
+
+Per-target isolation originally meant a **whole Postgres container** per
+postgres target. Three supported versions is then three Postgres containers
+idling for no benefit, since the databases never talk to each other.
+
+So there is now one long-lived `postgres:16-alpine`
+(`docker/e2e/docker-compose.shared-db-server.yml`, its own Compose project
+`vikunja-e2e-shared-db`, host port **15432**), and each participating target
+gets its own **database** inside it — `vikunja_2_5_0`, `vikunja_2_6_0`, and so
+on, created on demand by `bootstrap.sh`. Everything else about a target is
+unchanged: still its own Compose project, its own derived ports, its own
+credentials file.
+
+Which arrangement a target uses is decided in one place,
+`DEDICATED_DB_VERSIONS` in `scripts/lib/e2e-target.ts`:
+
+| Target | Database |
+|---|---|
+| `2.3.0-postgres`, `2.4.0-postgres` | **dedicated** Postgres container, as before |
+| every other `*-postgres` | a database inside the shared server |
+| every `*-sqlite` | an embedded file, no database service at all |
+
+The two legacy lanes are grandfathered on purpose, not preferred:
+`2.4.0-postgres` is a running stack whose stable API token other worktrees
+hold, and moving its data would rotate that credential for nothing. A future
+release needs no edit — anything outside that set is shared by default.
+
+Two consequences worth knowing:
+
+- `npm run e2e:down` leaves the shared server running. It belongs to no
+  single target, and stopping it would take every other shared lane down
+  too. Remove it deliberately:
+  `docker compose -f docker/e2e/docker-compose.shared-db-server.yml down -v`.
+- `npm run e2e:reset <target>` **drops that target's database** as well as
+  its volumes. A shared lane's data lives in a database, not a volume, so
+  `down -v` alone would leave a "reset" stack fully intact.
+
+Mechanically it is the same opt-in overlay idiom as the OIDC lane:
+`docker-compose.shared-db.yml` is passed as a second `-f` only for a shared
+target, and adds a third service block (`vikunja-shared`, profile
+`postgres-shared`) alongside the existing `vikunja` and `vikunja-sqlite`. A
+third block rather than re-pointing `vikunja` at the shared server because
+Compose merges `depends_on` maps by key and cannot *delete* the dedicated
+`db` entry — the same constraint that already forced a separate sqlite block.
+
 ### Credentials are stable
 
 `bootstrap.sh` is idempotent about tokens: if the target's env file holds a
