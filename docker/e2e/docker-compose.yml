@@ -9,30 +9,31 @@
 # so it cannot collide with anything else the machine happens to be running
 # — including another Vikunja instance, or a *production* Vikunja.
 #
-# WHERE THE VERSION PIN LIVES. Not here. `DEFAULT_TARGET` in
-# scripts/lib/e2e-target.ts is the aligned/tested version, and
-# `FLOOR_VERSION` beside it is the minimum supported one. The literals in
-# this file are only the fallback a resolver-less `docker compose -f ...`
-# invocation lands on (see the note above `name:` below); bootstrap.sh always
-# overrides them.
+# WHERE THE VERSION PIN LIVES. Not here. `SUPPORTED_VERSIONS` in
+# scripts/lib/e2e-target.ts is the single source of truth — `DEFAULT_TARGET`
+# (aligned/tested, the newest entry) and `FLOOR_VERSION` (minimum supported,
+# the oldest entry) both derive from it. The literals in this file are only
+# the fallback a resolver-less `docker compose -f ...` invocation lands on
+# (see the note above `name:` below); bootstrap.sh always overrides them.
 #
-# Policy since 2026-09-02 (issue #254): **aligned/tested is 2.6.0**,
-# **minimum supported is 2.4.0**. They no longer coincide, so the standard
-# target set is four stacks again (both versions x both DB backends) and the
-# floor lane is back.
+# Policy since 2026-09-02 (docs/ROADMAP.md §3 decision 29): support and test
+# the TRAILING THREE released versions, not just a floor and an aligned
+# default. Currently **2.4.0** (floor), **2.5.0**, **2.6.0** (aligned/tested).
+# All three are full `test:matrix` lanes on both DB backends — six stacks,
+# not four. When a new version ships, the window shifts: drop the oldest
+# entry in `SUPPORTED_VERSIONS`, append the new one, rather than growing the
+# window.
 #
-# The floor stays at 2.4.0 deliberately. It was raised from 2.3.0 because
-# nine operations this server ships as implemented (the eight /admin/*
-# operations and GET /projects/{project}/tasks/by-index/{index}) turned out
-# not to exist on a released 2.3.0 at all (docs/ROADMAP.md §3 decision 27).
-# Nothing about 2.6.0 makes 2.4.0 unsupportable, and 2.6.0 is weeks old, so
-# a self-hoster on 2.4.0 or 2.5.0 is the normal case. Some workarounds in
-# src/ still target upstream bugs fixed only in 2.4.0 (e.g. the by-id share
-# GET bug — src/tools/projects/sharing.ts, docs/API-COVERAGE.md); their
-# removal condition has fired but is deliberately a separate change.
-#
-# 2.5.0 is supported on the strength of a source diff plus the two tested
-# neighbours, NOT a lane of its own — see `standardTargets()`.
+# The floor stays at 2.4.0 for now. It was raised from 2.3.0 because nine
+# operations this server ships as implemented (the eight /admin/* operations
+# and GET /projects/{project}/tasks/by-index/{index}) turned out not to exist
+# on a released 2.3.0 at all (docs/ROADMAP.md §3 decision 27). Some
+# workarounds in src/ still target upstream bugs fixed only in 2.4.0 (e.g.
+# the by-id share GET bug — src/tools/projects/sharing.ts,
+# docs/API-COVERAGE.md); their removal condition has fired but is
+# deliberately a separate change. 2.4.0 will drop out of the window (and
+# those workarounds' removal condition would then apply) the next time the
+# window shifts.
 #
 # The vendored OpenAPI spec at docs/vikunja-openapi.json is captured from
 # the ALIGNED version's container, via `npm run fetch:api-spec:container`
@@ -47,7 +48,7 @@
 # scripts/test-matrix.ts and docs/LOCAL-TESTING.md) can bring this stack
 # up against a different Vikunja release without editing this file:
 #
-#   VIKUNJA_E2E_TARGET=2.5.0-postgres npm run e2e:up   # ad hoc, not a lane
+#   VIKUNJA_E2E_TARGET=2.3.0-postgres npm run e2e:up   # ad hoc, below the floor, not a lane
 #
 # Plain `npm run e2e:up` (no override) uses `DEFAULT_TARGET`. Re-pin by
 # editing that constant in scripts/lib/e2e-target.ts — not by editing the
@@ -79,8 +80,9 @@
 # volumes and its own ports and they all run at once:
 #
 #   2.6.0-postgres -> project vikunja-e2e-2.6.0-postgres, API on 8260  (aligned)
+#   2.5.0-postgres -> project vikunja-e2e-2.5.0-postgres, API on 8250  (middle)
 #   2.4.0-postgres -> project vikunja-e2e-2.4.0-postgres, API on 8240  (floor)
-#   2.3.0-postgres -> project vikunja-e2e-2.3.0-postgres, API on 8230
+#   2.3.0-postgres -> project vikunja-e2e-2.3.0-postgres, API on 8230  (below floor, ad hoc)
 #
 # (The 2.3.0 line is kept purely as a worked example of the arithmetic — the
 # formula resolves any version, supported or not.)

@@ -139,29 +139,36 @@ and no undo for an npm publish.
 - [ ] **Full local gates, clean.** `npm run lint && npm run typecheck && npm run test:coverage`:
       all three green on the exact commit you're about to tag. This should already be true from
       Step 3's merge gate, but re-confirm on `main` post-merge, not just on the branch beforehand.
-- [ ] **Version-matrix regression, both DBs, on the version this release aligns to.** Run
-      `VIKUNJA_VERSION=<aligned> npm run test:matrix` for both `VIKUNJA_DB=postgres` and
+- [ ] **Version-matrix regression, both DBs, on ALL THREE `SUPPORTED_VERSIONS`.** Policy since
+      2026-09-02 (docs/ROADMAP.md §3 decision 29): support and test exactly the trailing three
+      released Vikunja versions, so a pre-tag run is six invocations, not four or two. Run
+      `VIKUNJA_VERSION=<version> npm run test:matrix` for each of the three versions named in
+      `SUPPORTED_VERSIONS` (`scripts/lib/e2e-target.ts`), for both `VIKUNJA_DB=postgres` and
       `VIKUNJA_DB=sqlite`; see
       [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-matrix-testing-npm-run-testmatrix) for what
-      the runner does and how to read a verdict file. `<aligned>` is whatever `DEFAULT_TARGET`
-      in `scripts/lib/e2e-target.ts` currently names (currently `2.6.0`; see LOCAL-TESTING.md's
-      "Version pinning and refresh"); omit `VIKUNJA_VERSION` to use that default, which the
-      runner now derives from the resolver rather than a literal.
-  - [ ] `VIKUNJA_VERSION=<aligned> VIKUNJA_DB=postgres npm run test:matrix`: PASS.
-  - [ ] `VIKUNJA_VERSION=<aligned> VIKUNJA_DB=sqlite npm run test:matrix`: PASS.
-  - [ ] **Minimum-supported-version floor regression: LIVE AGAIN since 2026-09-02.** Aligned
-        moved to `2.6.0` (issue #254) while the floor stayed at `2.4.0`, so the floor is once
-        more *deliberately different from the default and therefore never exercised by
-        accident*. Both floor runs are required, and neither is covered by the two above:
-  - [ ] `VIKUNJA_VERSION=2.4.0 VIKUNJA_DB=postgres npm run test:matrix`: PASS.
-  - [ ] `VIKUNJA_VERSION=2.4.0 VIKUNJA_DB=sqlite npm run test:matrix`: PASS.
-        Several 2.6.0 changes are permission *tightenings*, so a number of e2e checks assert a
-        DIFFERENT expected value per version (see LOCAL-TESTING.md's "Version-conditional
-        expectations"). A floor lane that passes is therefore load-bearing evidence, not a
-        formality: it is what proves the 2.6.0 work did not quietly require 2.6.0.
-        The floor lives in `FLOOR_VERSION` (`scripts/lib/e2e-target.ts`) and
-        `MIN_SUPPORTED_VIKUNJA` (`scripts/lib/vikunja-compat-version.sh`); both must agree.
-        **2.5.0 is not a lane** and is not expected to be run here.
+      the runner does and how to read a verdict file. Omitting `VIKUNJA_VERSION` uses
+      `DEFAULT_TARGET` (the newest entry).
+  - [ ] `VIKUNJA_VERSION=<aligned, newest> VIKUNJA_DB=postgres npm run test:matrix`: PASS.
+  - [ ] `VIKUNJA_VERSION=<aligned, newest> VIKUNJA_DB=sqlite npm run test:matrix`: PASS.
+  - [ ] `VIKUNJA_VERSION=<middle> VIKUNJA_DB=postgres npm run test:matrix`: PASS.
+  - [ ] `VIKUNJA_VERSION=<middle> VIKUNJA_DB=sqlite npm run test:matrix`: PASS.
+  - [ ] **Minimum-supported-version floor regression.** The floor is deliberately different from
+        the default and therefore never exercised by accident — both floor runs are required, and
+        aren't covered by the four above:
+  - [ ] `VIKUNJA_VERSION=<floor, oldest> VIKUNJA_DB=postgres npm run test:matrix`: PASS.
+  - [ ] `VIKUNJA_VERSION=<floor, oldest> VIKUNJA_DB=sqlite npm run test:matrix`: PASS.
+        A number of e2e checks assert a DIFFERENT expected value per version (see
+        LOCAL-TESTING.md's "Version-conditional expectations") — a floor lane that passes is
+        therefore load-bearing evidence, not a formality.
+        The floor lives in `FLOOR_VERSION` (`scripts/lib/e2e-target.ts`, derived from
+        `SUPPORTED_VERSIONS[0]`) and `MIN_SUPPORTED_VIKUNJA`
+        (`scripts/lib/vikunja-compat-version.sh`); both must agree.
+  - [ ] **When a new Vikunja version has shipped since the last release:** before running the
+        six invocations above, update `SUPPORTED_VERSIONS` in `scripts/lib/e2e-target.ts` to
+        shift the window — drop the oldest entry, append the new one — per that constant's own
+        doc comment. This is a policy/behavioral change (live-verify the new version's actual
+        behavior, per #254's approach), not a mechanical bump; do it as its own reviewed change
+        before the release that claims the new alignment, not silently inside the release PR.
 - [ ] **Live MCP harness expectations, read honestly, not assumed.** The matrix run above already
       executes both `npm run test:mcp` and `npm run test:e2e:mcp` per version/DB combination, but
       confirm you're reading the results against the *current* tolerances, not stale memory of a
@@ -267,11 +274,21 @@ How this project tracks new upstream Vikunja releases, proven end-to-end alignin
 
 1. A new upstream Vikunja version ships.
 2. Validate the tool surface against it before touching any pins:
-   `VIKUNJA_VERSION=<new> npm run test:matrix` for both `VIKUNJA_DB=postgres` and `sqlite`, **and**
-   the minimum-supported floor to confirm the floor still holds; see
-   [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-matrix-testing-npm-run-testmatrix). The floor
-   is `2.4.0` and the aligned version is `2.6.0`, so this really is four runs, not two.
-3. Refresh the vendored spec from the pinned container and regenerate types:
+   `VIKUNJA_VERSION=<new> npm run test:matrix` for both `VIKUNJA_DB=postgres` and `sqlite` —
+   live-verify actual behavior against the new server, don't infer from its changelog (see how
+   #254 found the changelog's own description of the 2.6.0 `expand`-scope fix was wrong about
+   the response body). See
+   [docs/LOCAL-TESTING.md](LOCAL-TESTING.md#version-matrix-testing-npm-run-testmatrix).
+3. **Shift the support window** (policy since 2026-09-02, docs/ROADMAP.md §3 decision 29: support
+   exactly the trailing three released versions). Update `SUPPORTED_VERSIONS` in
+   `scripts/lib/e2e-target.ts` — drop the oldest entry, append `<new>` — which moves
+   `DEFAULT_TARGET` (now `<new>`) and `FLOOR_VERSION` (now the version that used to be in the
+   middle) automatically, since both derive from it. Also bump `MIN_SUPPORTED_VIKUNJA` in
+   `scripts/lib/vikunja-compat-version.sh` to match the new `FLOOR_VERSION` — that file can't
+   import the TypeScript constant, so it's a second literal kept deliberately adjacent. The
+   version dropping out of the window (its version-conditional branches, e2e fixtures) is a
+   separate cleanup pass, not implied by this step.
+4. Refresh the vendored spec from the pinned container and regenerate types:
    `VIKUNJA_E2E_TARGET=<new>-postgres npm run e2e:up && npm run fetch:api-spec:container && npm run
    generate:api-types`. Use the container spec, not `npm run fetch:api-spec` (which hits
    `try.vikunja.io`'s `unstable` build, always ahead of any tag); see
@@ -281,20 +298,20 @@ How this project tracks new upstream Vikunja releases, proven end-to-end alignin
    from `VIKUNJA_VERSION`: `docker/e2e/bootstrap.sh` derives and re-exports `VIKUNJA_VERSION` from
    the resolved target, so setting it yourself is silently ignored and you get the default
    stack. (`npm run test:matrix` is the exception: it still reads
-   `VIKUNJA_VERSION`/`VIKUNJA_DB` and translates them into a target, so Step 4's commands are
+   `VIKUNJA_VERSION`/`VIKUNJA_DB` and translates them into a target, so Step 2's commands are
    unaffected.) Second, each target gets its **own port** (`8000 + MMP` for postgres, so `2.4.0` →
    8240, `2.6.0` → 8260; see `scripts/lib/e2e-target.ts`). `fetch:api-spec:container` used to curl
    a hardcoded `localhost:8240`, which meant re-vendoring against a newer stack silently
    re-captured the old version's spec and looked green; since #254 it resolves the port through
    the same resolver, honours `VIKUNJA_E2E_TARGET`, and refuses to write when the port answers
    with a different version than the target's.
-4. Audit the coverage delta: diff the refreshed spec against `docs/API-COVERAGE.md` for new,
+5. Audit the coverage delta: diff the refreshed spec against `docs/API-COVERAGE.md` for new,
    removed, or changed endpoints and update that doc's counts accordingly.
-5. Bump the default `e2e` pin in `docker/e2e/docker-compose.yml` (and `docker/e2e/bootstrap.sh`'s
+6. Bump the default `e2e` pin in `docker/e2e/docker-compose.yml` (and `docker/e2e/bootstrap.sh`'s
    matching default) to the new version.
-6. Open an alignment PR containing the spec/type refresh, the coverage audit update, and the pin
-   bump.
-7. Ship it as a **minor** release (§1): a change to the base Vikunja version is a change to the
+7. Open an alignment PR containing the `SUPPORTED_VERSIONS` shift, the spec/type refresh, the
+   coverage audit update, and the pin bump.
+8. Ship it as a **minor** release (§1): a change to the base Vikunja version is a change to the
    server baseline the tool contract is validated against, never a patch. Lead the changelog entry
    with *"now aligned to Vikunja X.Y.Z"*.
 

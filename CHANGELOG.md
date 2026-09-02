@@ -8,14 +8,22 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
-### Vikunja 2.6.0 alignment
+### Vikunja 2.6.0 alignment, and a rolling three-version support window
 
 The aligned/tested Vikunja version moves **2.4.0 → 2.6.0**. The supported
-minimum stays **2.4.0**, and it stays a full test lane: both versions now run
-`npm run test:matrix` on both database backends, four lanes, all green.
-**2.5.0 is supported but is deliberately not a lane** — it rests on a source
-diff and on its two tested neighbours, and adding a fifth target would claim
-coverage that does not exist.
+minimum stays **2.4.0**.
+
+**Policy changed again the same day (decision 29), superseding the "2.5.0 is
+supported but not a lane" call made when the alignment work started:** this
+project now supports and tests the trailing **three** released Vikunja
+versions as a rolling window, not just a floor and an aligned default.
+Currently `2.4.0` / `2.5.0` / `2.6.0`, all three full `npm run test:matrix`
+lanes on both database backends — **six lanes**, all green. When a new
+version ships, the window shifts: the oldest version drops out, the new one
+takes its place, rather than the range simply growing. `SUPPORTED_VERSIONS`
+(`scripts/lib/e2e-target.ts`) is the single source of truth; `DEFAULT_TARGET`
+and `FLOOR_VERSION` both derive from it now instead of being set
+independently.
 
 Everything below was measured against a live 2.6.0 server with a live 2.4.0
 control running beside it. That mattered: a spec diff between the two finds
@@ -55,6 +63,21 @@ changed the fix.
   (`403`).
 
 ### Fixed
+
+- **`npm run test:matrix`'s REST-layer harness (`npm run test:mcp`) silently tested
+  the wrong Vikunja version, or crashed outright, for every non-default lane.**
+  `scripts/test-matrix.ts` explicitly passed `VIKUNJA_URL`/`VIKUNJA_API_TOKEN` to
+  the `test:mcp` child process, but `scripts/test-mcp.ts` never reads those —
+  it resolves its own target from `VIKUNJA_E2E_TARGET` (falling back to
+  `DEFAULT_TARGET` when unset) and reads that target's own credentials file
+  directly. Since `test-matrix.ts` never set `VIKUNJA_E2E_TARGET` for this
+  child, a request for any version other than the current aligned default
+  either errored (no local credentials file for the default target in that
+  checkout) or, worse, silently tested the default stack instead of the
+  requested one if a stale credentials file for it happened to exist. Found
+  live while adding the 2.5.0 lane above — every floor-lane `test:mcp` run
+  before this fix was affected. Fixed by passing `VIKUNJA_E2E_TARGET`, the
+  same fix the sibling `test:e2e:mcp` invocation already had.
 
 - **Circuit-breaker names included the query string.** `deriveRestBreakerName`
   documents one breaker per endpoint group and demonstrates `/tasks/7` →

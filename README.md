@@ -41,11 +41,11 @@ Node.js 22 or newer. Node 20 reached end of life in April 2026.
 | Vikunja | Status |
 |---|---|
 | 2.6.0 | Supported and tested. The version the e2e stacks and live test lanes run against by default |
-| 2.5.0 | Supported, but not a test lane. Covered by a source diff and by its two tested neighbours, not by a run of its own |
+| 2.5.0 | Supported and tested |
 | 2.4.0 | Supported and tested. The minimum, and a full test lane on both database backends |
 | below 2.4.0 | Not supported |
 
-Both 2.4.0 and 2.6.0 run as full `test:matrix` lanes on both database backends, so the range is tested at each end rather than only at the top.
+This project supports and tests the trailing three released Vikunja versions — currently 2.4.0, 2.5.0 and 2.6.0 — as full `test:matrix` lanes on both database backends. When a new version ships, the window shifts: the oldest version drops out and the new one takes its place, rather than the range simply growing.
 
 2.6.0 tightened several permission checks. Where it now refuses something 2.4.0 accepted, this server surfaces the refusal with an explanation instead of degrading quietly — the cases are listed in [docs/VIKUNJA_API_ISSUES.md](docs/VIKUNJA_API_ISSUES.md) and each one is asserted per-version in the e2e harness. One is worth knowing about if you use a scoped API token: asking a task listing to expand `comments` or `reactions` with a token that lacks those scopes is rejected, and Vikunja's rejection is indistinguishable from an expired token, so the error names both possibilities.
 
