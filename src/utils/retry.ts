@@ -139,7 +139,12 @@ const OPEN_BREAKER_CODE = 'EOPENBREAKER';
  * rolling stats instead of a 'failure'.
  *
  * 401 is deliberately EXCLUDED from this filter — i.e. it still counts
- * toward opening the breaker, unchanged from before this fix. Auth errors
+ * toward opening the breaker, unchanged from before this fix, with ONE
+ * carve-out added for #254: a 401 carrying `details.insufficientScope`,
+ * which is Vikunja >= 2.6.0 refusing an `expand` value the API token has no
+ * scope for. That one is a property of the call rather than the session (the
+ * same request without `expand` succeeds), so it belongs with the 4xx below;
+ * see the check for it in the body. Auth errors
  * already have dedicated handling one layer up (`isAuthenticationError` /
  * `RETRY_CONFIG.AUTH_ERRORS`), and a storm of 401s across otherwise-unrelated
  * calls (e.g. a revoked/expired session) is arguably still a "stop hammering
@@ -161,6 +166,18 @@ export function isClientErrorExcludedFromBreaker(error: unknown): boolean {
   // identity's slow or oversized calls trip breakers that, per decision
   // 16(c), every other tenant in the process shares.
   if (error instanceof MCPError && error.details?.cancelled === true) {
+    return true;
+  }
+
+  // A 401 that is really "this API token lacks the scope for the `expand`
+  // values you asked for" (Vikunja >= 2.6.0 — see
+  // `describeLikelyExpandScopeFailure` in src/utils/vikunja-rest.ts). It is
+  // a permanent property of the CALL, not of the service: the identical
+  // request without `expand` succeeds, and retrying or tripping a breaker
+  // over it only spreads a per-call permission problem across every other
+  // caller sharing that endpoint group's breaker. Excluded for exactly the
+  // same reason the ordinary 4xx below are.
+  if (error instanceof MCPError && error.details?.insufficientScope === true) {
     return true;
   }
 

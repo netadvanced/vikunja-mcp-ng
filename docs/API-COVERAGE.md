@@ -18,15 +18,32 @@ So **169 has always been the 2.4.0 surface, never the released-2.3.0 one (160)**
 
 ## Summary
 
-Vikunja documents **169** distinct API operations (method+path). Of those:
+Vikunja documents **170** distinct API operations (method+path). Of those:
 
 | Status | Count | % |
 |---|---|---|
-| ✅ Implemented | 123 | 73% |
+| ✅ Implemented | 123 | 72% |
 | ⚠️ Implemented (bug) | 1 | 1% |
 | 🟡 Partial | 1 | 1% |
-| ❌ Not implemented | 44 | 26% |
-| **Total** | **169** | 100% |
+| ❌ Not implemented | 45 | 26% |
+| **Total** | **170** | 100% |
+
+**Denominator moved 169 → 170 on 2026-09-02** with the alignment to Vikunja
+2.6.0 (issue #254, item A8). A full method-level diff of the re-vendored
+spec against the 2.4.0 one shows **exactly one added operation and none
+removed**: `DELETE /notifications` ("delete all notifications of the current
+user"). It is ❌ not implemented, which is the whole reason the denominator
+had to move rather than staying quietly at 169 — an un-moved denominator
+would have reported the same coverage percentage while the surface grew.
+Everything else in the 2.4.0 → 2.6.0 spec diff is descriptive: prose
+`description` changes (notably `GET /notifications`, which now documents
+that notifications about projects you can no longer read are filtered out in
+the query, so the `x-pagination-*` headers describe visible notifications
+only) and no schema property was added or removed on any model this document
+has a row for. **None of the 2.6.0 behaviour changes that actually affect a
+client are visible in this diff at all** — they live in handler enforcement,
+which is why #237/#254 were worked from live probes rather than a spec
+diff.
 
 - **✅ Implemented** — implementation matches the documented endpoint (method, path, request/response fields all checked).
 - **⚠️ Implemented (bug)** — the tool exists and calls something, but the audit found a concrete divergence from the documented contract (wrong field name, dropped required param, wrong response shape assumption, etc.). See the Issues table below.
@@ -249,6 +266,7 @@ Team `members list` (the default when no member subcommand is given) reads the `
 | PUT | `/subscriptions/{entity}/{entityID}` | ✅ Implemented | vikunja_subscriptions (`subscribe`) | Direct call via `vikunjaRestRequest`. Correct `PUT /subscriptions/{entity}/{entityID}`, `entity` in `{project, task}` enforced by Zod. |
 | DELETE | `/subscriptions/{entity}/{entityID}` | ✅ Implemented | vikunja_subscriptions (`unsubscribe`) | Correct `DELETE /subscriptions/{entity}/{entityID}`. A 404 ("subscription does not exist") is treated as an idempotent no-op success rather than an error. |
 | GET | `/notifications` | ✅ Implemented | vikunja_notifications (`list`) | Direct GET with page/per_page forwarded when supplied. `unreadOnly` is applied client-side (the spec has no server-side unread filter). |
+| DELETE | `/notifications` | ❌ Not implemented | — | **New in Vikunja 2.6.0** (the single operation behind the 169 → 170 denominator move). Deletes every notification belonging to the caller. Not exposed: it is irreversible and unscoped — there is no "delete the ones I've read" variant — so it is a poor fit for an agent-driven surface without a confirmation step this protocol has no way to render. `mark-all-read` covers the ordinary "clear my notifications" intent non-destructively. Revisit if a caller actually asks for it. |
 | POST | `/notifications` | ✅ Implemented | vikunja_notifications (`mark-all-read`) | Correct POST, no body. |
 | POST | `/notifications/{id}` | ✅ Implemented | vikunja_notifications (`mark-read`) | This endpoint is a pure toggle server-side (no request body to pick read vs. unread) — the tool checks the response and re-toggles once more if the first call landed on "unread", making `mark-read` idempotent regardless of starting state. |
 | GET | `/{kind}/{id}/reactions` | ✅ Implemented | vikunja_reactions (`list`) | Correct GET, `kind` in `{tasks, comments}` enforced by Zod. Response passed through as the spec's documented `models.ReactionMap[]` shape without reshaping. |

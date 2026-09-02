@@ -89,7 +89,13 @@ describe('vikunja_tasks dispatch — set-position / get-by-index', () => {
   });
 
   it('routes set-position through the switch statement to setTaskPosition', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse({ text: '' }));
+    // An explicit projectViewId is verified against the task's own project
+    // first (issue #254 A3), so the dispatch now makes three calls: the task
+    // lookup, the project's views, then the position write.
+    mockFetch
+      .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, project_id: 5 }) }))
+      .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 10, view_kind: 'list' }]) }))
+      .mockResolvedValueOnce(mockResponse({ text: '' }));
 
     const result = await toolHandler({
       subcommand: 'set-position',
@@ -99,8 +105,8 @@ describe('vikunja_tasks dispatch — set-position / get-by-index', () => {
       projectViewId: 10,
     });
 
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    const [url] = mockFetch.mock.calls[2] as [string];
     expect(url).toBe('https://api.vikunja.test/api/v1/tasks/1/position');
     expect(result.content[0].text).toContain('Task 1 repositioned to 100');
   });

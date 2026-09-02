@@ -27,13 +27,22 @@
 # `down -v` in `e2e:down` — silently rotated the credential out from under
 # any process holding it, which broke a concurrent worktree on 2026-07-28.
 #
-# TWO USERS, DELIBERATELY:
+# THREE USERS, DELIBERATELY:
 #   e2e-test     the shared identity every harness authenticates as. Its
 #                token is THE test token. Nothing may mutate its
 #                user-level state.
 #   e2e-mutable  for tests that change identity-scoped state — API tokens,
 #                user settings, avatar provider. Breaking this user cannot
 #                break anyone else's run.
+#   e2e-other    a stranger (issue #254, item B2). Owns projects, teams and
+#                tasks that e2e-test must NOT be able to read, so the
+#                harnesses can exercise the 2.6.0 permission tightenings —
+#                unreadable teams scrubbed out of GET /projects/{id}/teams,
+#                relation deletes refused when the other task is unreadable.
+#                A single all-owning user cannot express any of that.
+#                Deliberately not e2e-mutable: that user exists to have its
+#                identity state burned, and an avatar test must not be able
+#                to perturb a permissions fixture.
 #
 # See docs/LOCAL-TESTING.md for the full workflow.
 
@@ -61,6 +70,8 @@ TEST_PASSWORD="VikunjaMcpE2E-2026!"
 # localhost-only stack, and one constant keeps every harness's login trivial.
 MUTABLE_USERNAME="e2e-mutable"
 MUTABLE_EMAIL="e2e-mutable@vikunja-mcp.local"
+OTHER_USERNAME="e2e-other"
+OTHER_EMAIL="e2e-other@vikunja-mcp.local"
 TOKEN_TITLE="vikunja-mcp-e2e"
 
 log() { echo "[bootstrap] $*" >&2; }
@@ -230,6 +241,8 @@ main() {
   # Created up front so tests that mutate identity-scoped state always have a
   # user to burn; see the header note.
   ensure_user "$MUTABLE_USERNAME" "$MUTABLE_EMAIL"
+  # The stranger the permission fixtures need; see the header note.
+  ensure_user "$OTHER_USERNAME" "$OTHER_EMAIL"
 
   local token token_kind
   if token="$(reuse_existing_token)"; then
@@ -256,6 +269,7 @@ main() {
     echo "VIKUNJA_E2E_USERNAME=$TEST_USERNAME"
     echo "VIKUNJA_E2E_PASSWORD=$TEST_PASSWORD"
     echo "VIKUNJA_E2E_MUTABLE_USERNAME=$MUTABLE_USERNAME"
+    echo "VIKUNJA_E2E_OTHER_USERNAME=$OTHER_USERNAME"
   } > "$ENV_FILE"
 
   log "Wrote $E2E_ENV_FILE"

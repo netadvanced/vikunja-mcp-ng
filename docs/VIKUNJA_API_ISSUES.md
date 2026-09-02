@@ -6,18 +6,24 @@ This document tracks issues discovered with the Vikunja API that should be repor
 and tests cite them by number (`VIKUNJA_API_ISSUES.md #2`, `#7`, `#8`), so
 numbers are never reused or reshuffled; resolved items keep their number and get
 a status line. Each item carries a **Status** and the Vikunja version the claim
-was last checked against. The supported floor is **Vikunja 2.4.0**, which is
-also the aligned/tested default (`docker/e2e/docker-compose.yml`). The floor
+was last checked against. The supported floor is **Vikunja 2.4.0**; the
+aligned/tested default is **2.6.0** since 2026-09-02 (`DEFAULT_TARGET` and
+`FLOOR_VERSION` in `scripts/lib/e2e-target.ts`). The floor
 rose from 2.3.0 on 2026-08-31, so an item verified only against 2.3.0 now
 describes a version below the floor, and anything only ever verified on 0.22.x
 is doubly so. Both should be re-checked before being relied on. Note that
 "verified against go-vikunja source, pinned v2.3.0" lines below record *where a
 handler was read*, not a compatibility claim; handler source rarely moves, so
-those stay as provenance. Vikunja **2.5.0** and **2.6.0** have since been released upstream
-(2.6.0 on 2026-08-31, primarily a security release with 18 fixes), but neither
-is the floor nor the tested default here. Nothing in `src/` or this file
-has been verified against either, so treat any 2.5- or 2.6-specific behavior
-as unknown until it gets the same live-verification treatment 2.4.0 has had.
+those stay as provenance.
+
+**2.6.0 status (updated 2026-09-02, issue #254).** Both 2.4.0 and 2.6.0 now
+run as full `test:matrix` lanes on both DB backends, so an item verified on
+either is verified on a tested version. **2.5.0 is still not a lane**: it is
+supported on the strength of a source diff plus its two tested neighbours, and
+was stood up ad hoc only to bisect one fix (item C3 below). An item that has
+only ever been checked on 2.4.0 says nothing about 2.6.0 and vice versa —
+several of the entries added in this pass exist precisely because the two
+answer differently.
 
 | # | Issue | Status |
 |---|---|---|
@@ -42,6 +48,9 @@ as unknown until it gets the same live-verification treatment 2.4.0 has had.
 | 19 | Date-only field values 400 on create, not silently dropped | ℹ️ Clarification, corrects a stale in-repo comment |
 | 20 | Label/assignee attach: 2xx is not proof, but every shape we send errors loudly | ℹ️ Clarification, disproves the LOW-22 audit suspicion |
 | 21 | Notification `read_at` is the zero-time sentinel for unread, not `null` | ✅ Resolved, confirmed live against 2.4.0 |
+| 22 | 2.6.0 refuses an out-of-scope `expand` with a 401 indistinguishable from a bad token | ⚠️ Open upstream, inference-based guidance shipped |
+| 23 | `models.Project.max_permission` returns `null` while the spec declares it a non-nullable integer | ⚠️ Open upstream (spec bug), no client impact |
+| 24 | `DELETE /projects/{projectID}/users/{userID}` takes a USERNAME, not the documented integer id | ⚠️ Open upstream (spec bug), fixture uses the username |
 
 ## 1. SQL-Like Filter Syntax Not Supported
 
@@ -885,6 +894,94 @@ defensive fallback; if both attempts still fail to confirm `read: true`,
 `mark-read` now surfaces a warning in its response instead of silently
 reporting success (issue #314's suggested next step).
 
+## 22. An Out-of-Scope `expand` Returns a 401 Indistinguishable From a Bad Token
+
+**Status:** ⚠️ Open upstream. Verified live against **2.6.0** (and confirmed
+absent on 2.4.0) on 2026-09-02, issue #254 probe C2. Client-side guidance
+shipped; see `describeLikelyExpandScopeFailure` in `src/utils/vikunja-rest.ts`.
+
+Vikunja 2.6.0 fixed a real security bug: API-token permission checks looked
+only at URL and method, so `expand=comments` pulled in data from scopes the
+token never had. The fix rejects the request — but the rejection it sends is:
+
+```
+HTTP 401
+{"code":11,"message":"missing, malformed, expired or otherwise invalid token provided"}
+```
+
+which is **byte-for-byte identical** to what an expired or revoked token
+gets. Error code 11 is the generic invalid-token code. Measured with one
+token that deliberately omitted `tasks_comments` and `reactions`:
+
+| Request | 2.4.0 | 2.6.0 |
+|---|---|---|
+| `GET /tasks` | 200 | 200 |
+| `GET /tasks?expand=comments` | 200 | **401 code 11** |
+| `GET /tasks?expand=reactions` | 200 | **401 code 11** |
+| `GET /tasks?expand=subtasks` | 200 | 200 |
+
+A client therefore cannot tell "your token lacks a scope" from "your token is
+dead", and the two call for opposite responses: re-authenticating fixes one
+and is useless for the other. **What upstream could change:** send `403` for
+the scope case, or keep 401 but use a distinct error code naming the missing
+permission group. Either would make this mechanically classifiable.
+
+What we do instead: infer it from the request (a scope-checked `expand` value
+was requested, on a `tk_*` session, and the answer was 401) and say plainly
+in the error that it is the LIKELY cause, with the "token really is expired"
+branch named second and a one-line experiment that separates them — the same
+request without `expand`. The inference also sets `details.insufficientScope`,
+which keeps the failure out of the shared circuit breaker and stops the
+cross-project listing strategy from silently falling back (the fallback drops
+`expand` entirely, so falling back turned the refusal into a successful
+listing quietly missing the expanded data).
+
+## 23. `Project.max_permission` Returns `null` Where the Spec Says Integer
+
+**Status:** ⚠️ Open upstream, spec bug only. Verified live on 2026-09-02
+against 2.4.0 and 2.6.0 (issue #254, item A2). No client impact here.
+
+`models.Project.max_permission` is declared `$ref: models.Permission`, i.e. a
+non-nullable integer enum of 0/1/2. On 2.6.0 the three single-project
+responses — `GET /projects/{id}`, `POST /projects/{id}` (update) and
+`PUT /projects` (create) — return `null` for it. On 2.4.0 the same three
+returned `0`. The list endpoint `GET /projects` returned `null` on both.
+
+The change is a correction, not a regression: `0` is `PermissionRead`, and
+these responses were emitting an unassigned zero value that read as a real
+"read-only" grant. `null` is the honest encoding. The bug is that the spec
+was not updated to match, so a generated client types the field as a plain
+integer and a strict deserializer would reject the response.
+
+No impact on this project: nothing in `src/` reads `max_permission`, and the
+generated type already marks it optional. Recorded so a future reader who
+starts consuming the field knows it is nullable regardless of what the
+vendored spec says.
+
+## 24. `DELETE /projects/{projectID}/users/{userID}` Wants a Username
+
+**Status:** ⚠️ Open upstream, spec bug. Verified live on 2.6.0, 2026-09-02
+(issue #254, item B2). Used by the e2e access-revocation fixture.
+
+The vendored spec declares the path parameter as `userID`, `type: integer`,
+"User ID". Passing the numeric user id answers:
+
+```
+HTTP 404
+{"code":1005,"message":"The user does not exist."}
+```
+
+for a user who demonstrably does exist and is listed by
+`GET /projects/{id}/users` with that exact id. Passing the **username** in
+the same position succeeds with 200 and really does revoke access.
+
+Note the companion `PUT /projects/{id}/users` has the same shape mismatch in
+the other direction: its body is `{ "username": ..., "permission": ... }`,
+not the `{ "user_id": ..., "right": ... }` the surrounding field naming leads
+you to try — that combination also answers `1005 The user does not exist.`
+Both are encoded once in `shareProjectWithUser`/`revokeProjectUser`
+(`scripts/lib/e2e-fixtures.ts`) so nobody has to rediscover them.
+
 ## Recommendations for Vikunja Maintainers
 
 Trimmed to what is **still open** upstream (the filter-syntax, team-API, bulk
@@ -945,6 +1042,22 @@ spec documenting no pagination parameters at all) `GET
 string for an unread notification rather than `null`, confirmed live
 against 2.4.0, which broke both `unreadOnly` filtering and the mark-read
 idempotency retry's truthiness check.*
+
+*Updated 2026-09-02 (Vikunja 2.6.0 alignment, issue #254): added items #22,
+#23 and #24, all probed live against a 2.6.0 stack with a 2.4.0 control
+running beside it. The header's version paragraph was rewritten — 2.6.0 is
+now a tested lane, 2.5.0 still is not. Two of the 2.6.0 behaviour changes
+recorded elsewhere rather than here, because they are the server working as
+intended rather than API defects: `GET /tasks/{id}/assignees` no longer
+returns `email` (it did on 2.4.0), and writes to an archived project's
+buckets, webhooks and views now answer `412` code `3008` whose message only
+mentions tasks. Both are covered by version-gated e2e checks in
+`scripts/mcp-e2e.ts` and, for the second, by a teaching paragraph appended at
+the REST layer. Also confirmed here: the v2 `PATCH`-on-subscribed-task `422`
+(`expected integer at body.subscription.entity`) reproduces on 2.4.0 and is
+FIXED on 2.5.0 and 2.6.0 — so the `subscription: null` workaround #184 plans
+to carry is needed only for the floor, and its removal condition is "the
+floor moves past 2.4.0", not "2.6.0 is fine".*
 
 *Updated 2026-09-01: added item #20, the label/assignee attach contract,
 probed live against the 2.4.0/sqlite stack while triaging audit finding

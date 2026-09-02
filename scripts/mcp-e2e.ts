@@ -67,6 +67,18 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { resolveTarget, DEFAULT_TARGET } from './lib/e2e-target';
+import {
+  EXPAND_SCOPE_CHECK_VERSION,
+  EXPAND_VALUES_NEEDING_OMITTED_SCOPE,
+  EXPAND_VALUES_WITHIN_NARROW_SCOPE,
+  NARROW_TOKEN_OMITTED_GROUPS,
+  OTHER_USERNAME,
+  loginFor,
+  mintScopedToken,
+  revokeProjectUser,
+  serverAtLeast,
+  shareProjectWithUser,
+} from './lib/e2e-fixtures';
 
 // ============================================================================
 // Configuration
@@ -2142,6 +2154,373 @@ async function testUserWebhooks(h: McpHarness): Promise<void> {
   );
 }
 
+// ============================================================================
+// Vikunja 2.6.0 permission tightening (issue #254, items A3-A7)
+//
+// Every check here asserts a DIFFERENT expected outcome per server version,
+// because each of these is a tightening: below 2.6.0 the server accepts the
+// call and silently does something useless or leaks something it shouldn't;
+// from 2.6.0 it refuses. Asserting only the new behaviour would fail the
+// floor lane; asserting only the old one would let a real regression through.
+// `serverAtLeast` (scripts/lib/e2e-fixtures.ts) is the gate.
+//
+// The old-version expectations are not "tolerated drift" — they are the
+// documented behaviour of a version this project still supports, so they are
+// ordinary passes.
+// ============================================================================
+
+/** Minimal authenticated REST helper for the cases the tool surface can't reach. */
+async function rest(
+  jwt: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; text: string; json: unknown }> {
+  const res = await fetch(`${VIKUNJA_URL}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const text = await res.text();
+  let json: unknown = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    /* non-JSON body: `text` is the whole story */
+  }
+  return { status: res.status, text, json };
+}
+
+async function test260Tightening(h: McpHarness, jwt: string): Promise<void> {
+  const tightened = serverAtLeast(detectedServerVersion, '2.6.0');
+  log(
+    `\n[Vikunja 2.6.0 permission tightening — server ${detectedServerVersion ?? 'unknown'}, ` +
+      `expecting the ${tightened ? 'TIGHTENED (>=2.6.0)' : 'PRE-2.6.0'} behaviour]`,
+  );
+
+  // --- A3. set-position against a view belonging to ANOTHER project.
+  const pA = await h.call('vikunja_projects', { subcommand: 'create', title: `${NAME_PREFIX}a3-own` });
+  const pB = await h.call('vikunja_projects', { subcommand: 'create', title: `${NAME_PREFIX}a3-foreign` });
+  const projA = extractId(pA.text);
+  const projB = extractId(pB.text);
+  if (projA === undefined || projB === undefined) {
+    fail('A3 fixture: two projects created', `${pA.text.slice(0, 200)} | ${pB.text.slice(0, 200)}`);
+  } else {
+    const taskRes = await h.call('vikunja_tasks', {
+      subcommand: 'create',
+      projectId: projA,
+      title: `${NAME_PREFIX}a3-task`,
+    });
+    const taskId = extractId(taskRes.text);
+    const viewsB = await rest(jwt, 'GET', `/projects/${projB}/views`);
+    const foreignViewId = Array.isArray(viewsB.json)
+      ? (viewsB.json[0] as { id?: number } | undefined)?.id
+      : undefined;
+
+    if (taskId === undefined || foreignViewId === undefined) {
+      fail('A3 fixture: task and a foreign view id', `task=${String(taskId)} view=${String(foreignViewId)}`);
+    } else {
+      const res = await h.call('vikunja_tasks', {
+        subcommand: 'set-position',
+        id: taskId,
+        position: 100,
+        projectViewId: foreignViewId,
+      });
+      // Deliberately NOT version-gated. 2.6.0 answers 403 and 2.4.0 answers
+      // 200-and-does-nothing-useful, so this client refuses on every
+      // version (issue #254 A3, `assertViewBelongsToProject`): below 2.6.0
+      // the refusal is ours, above it the server would have refused anyway.
+      assertStep(
+        'set-position with a view from another project is refused (every version)',
+        res.isError,
+        `isError=${String(res.isError)} ${res.text.slice(0, 240)}`,
+      );
+      assertStep(
+        'the set-position refusal names the offending view and the task\'s project',
+        /does not belong to project/.test(res.text),
+        res.text.slice(0, 240),
+      );
+    }
+
+    // --- A5. Bucket and webhook writes on an ARCHIVED project.
+    const kanban = await rest(jwt, 'GET', `/projects/${projB}/views`);
+    const kanbanView = Array.isArray(kanban.json)
+      ? (kanban.json as Array<{ id: number; view_kind?: string }>).find((v) => v.view_kind === 'kanban')
+      : undefined;
+    await rest(jwt, 'POST', `/projects/${projB}`, { title: `${NAME_PREFIX}a3-foreign`, is_archived: true });
+
+    if (kanbanView) {
+      const bucket = await rest(jwt, 'PUT', `/projects/${projB}/views/${kanbanView.id}/buckets`, {
+        title: `${NAME_PREFIX}a5-bucket`,
+      });
+      assertStep(
+        `bucket create on an archived project ${tightened ? 'returns 412/3008' : 'is accepted'}`,
+        tightened ? bucket.status === 412 && /3008/.test(bucket.text) : bucket.status < 400,
+        `status=${bucket.status} ${bucket.text.slice(0, 200)}`,
+      );
+    } else {
+      skip('bucket create on an archived project', 'no kanban view on the fixture project');
+    }
+
+    const hook = await rest(jwt, 'PUT', `/projects/${projB}/webhooks`, {
+      target_url: 'http://example.invalid/hook',
+      events: ['task.created'],
+    });
+    assertStep(
+      `webhook create on an archived project ${tightened ? 'returns 412/3008' : 'is accepted'}`,
+      tightened ? hook.status === 412 && /3008/.test(hook.text) : hook.status < 400,
+      `status=${hook.status} ${hook.text.slice(0, 200)}`,
+    );
+
+    // Reads must keep working on an archived project on EVERY version — the
+    // tightening is write-only, and a client that stopped reading archived
+    // projects would be a far worse regression than the one being guarded.
+    const readBuckets = await rest(jwt, 'GET', `/projects/${projB}/views/${kanbanView?.id ?? 0}/buckets`);
+    assertStep(
+      'bucket READ on an archived project still succeeds (every version)',
+      readBuckets.status === 200,
+      `status=${readBuckets.status}`,
+    );
+
+    // Un-archive so final cleanup can delete it.
+    await rest(jwt, 'POST', `/projects/${projB}`, { title: `${NAME_PREFIX}a3-foreign`, is_archived: false });
+  }
+
+  // --- A6. GET /tasks/{id}/assignees no longer carries `email`.
+  const pC = await h.call('vikunja_projects', { subcommand: 'create', title: `${NAME_PREFIX}a6-proj` });
+  const projC = extractId(pC.text);
+  if (projC === undefined) {
+    fail('A6 fixture: project created', pC.text.slice(0, 200));
+  } else {
+    const t = await h.call('vikunja_tasks', {
+      subcommand: 'create',
+      projectId: projC,
+      title: `${NAME_PREFIX}a6-task`,
+    });
+    const taskId = extractId(t.text);
+    const me = await rest(jwt, 'GET', '/user');
+    const myId = (me.json as { id?: number } | null)?.id;
+    if (taskId === undefined || myId === undefined) {
+      fail('A6 fixture: task and self id', `task=${String(taskId)} user=${String(myId)}`);
+    } else {
+      await rest(jwt, 'PUT', `/tasks/${taskId}/assignees`, { user_id: myId });
+      const assignees = await rest(jwt, 'GET', `/tasks/${taskId}/assignees`);
+      const first = Array.isArray(assignees.json)
+        ? (assignees.json[0] as Record<string, unknown> | undefined)
+        : undefined;
+      const hasEmail = Boolean(first && typeof first.email === 'string' && first.email.length > 0);
+      assertStep(
+        `GET /tasks/{id}/assignees ${tightened ? 'omits' : 'still returns'} email`,
+        tightened ? !hasEmail : hasEmail,
+        `first assignee = ${JSON.stringify(first ?? null).slice(0, 200)}`,
+      );
+    }
+  }
+
+  // --- A4 and A7 need a SECOND user. Everything below is skipped, not
+  //     failed, when that fixture is missing: an older stack bootstrapped
+  //     before e2e-other existed is a stale fixture, not a product bug.
+  let otherJwt: string;
+  try {
+    otherJwt = await loginFor(VIKUNJA_URL, OTHER_USERNAME);
+  } catch (e) {
+    const reason = `cannot log in as ${OTHER_USERNAME} (${(e as Error).message.slice(0, 120)}) — re-run npm run e2e:up`;
+    skip('unreadable team is scrubbed from GET /projects/{id}/teams', reason);
+    skip('attaching an unreadable team to a project', reason);
+    skip('relation delete when the other task became unreadable', reason);
+    return;
+  }
+
+  // A7. `e2e-other` owns a project and a team, attaches the team, then
+  // shares only the PROJECT with us. The team stays unreadable.
+  const otherProject = await rest(otherJwt, 'PUT', '/projects', { title: `${NAME_PREFIX}a7-theirs` });
+  const otherProjectId = (otherProject.json as { id?: number } | null)?.id;
+  const otherTeam = await rest(otherJwt, 'PUT', '/teams', { name: `${NAME_PREFIX}a7-secret-team` });
+  const otherTeamId = (otherTeam.json as { id?: number } | null)?.id;
+
+  if (otherProjectId === undefined || otherTeamId === undefined) {
+    fail(
+      'A7 fixture: the other user owns a project and a team',
+      `project=${otherProject.status} team=${otherTeam.status}`,
+    );
+  } else {
+    await rest(otherJwt, 'PUT', `/projects/${otherProjectId}/teams`, { team_id: otherTeamId, right: 0 });
+    await shareProjectWithUser(VIKUNJA_URL, otherJwt, otherProjectId, TEST_USERNAME);
+
+    const seenTeams = await rest(jwt, 'GET', `/projects/${otherProjectId}/teams`);
+    const seen = Array.isArray(seenTeams.json)
+      ? (seenTeams.json as Array<{ id: number; name?: string; created_by?: unknown }>).find(
+          (t) => t.id === otherTeamId,
+        )
+      : undefined;
+    const leaked = Boolean(seen && typeof seen.name === 'string' && seen.name.length > 0);
+    assertStep(
+      `unreadable team is ${tightened ? 'scrubbed from' : 'fully exposed by'} GET /projects/{id}/teams`,
+      seen !== undefined && (tightened ? !leaked : leaked),
+      `entry = ${JSON.stringify(seen ?? null).slice(0, 220)}`,
+    );
+
+    const myProject = await rest(jwt, 'PUT', '/projects', { title: `${NAME_PREFIX}a7-mine` });
+    const myProjectId = (myProject.json as { id?: number } | null)?.id;
+    if (myProjectId === undefined) {
+      fail('A7 fixture: own project created', `status=${myProject.status}`);
+    } else {
+      const attach = await rest(jwt, 'PUT', `/projects/${myProjectId}/teams`, {
+        team_id: otherTeamId,
+        right: 0,
+      });
+      assertStep(
+        `attaching a team we cannot read is ${tightened ? 'refused (403)' : 'accepted'}`,
+        tightened ? attach.status === 403 : attach.status < 400,
+        `status=${attach.status} ${attach.text.slice(0, 200)}`,
+      );
+      await rest(jwt, 'DELETE', `/projects/${myProjectId}`);
+    }
+
+    // A4. Relate one of our tasks to one of theirs while we can still read
+    // it, then have them revoke our access and try to unrelate.
+    const theirTask = await rest(otherJwt, 'PUT', `/projects/${otherProjectId}/tasks`, {
+      title: `${NAME_PREFIX}a4-theirs`,
+    });
+    const theirTaskId = (theirTask.json as { id?: number } | null)?.id;
+    const myRelProject = await rest(jwt, 'PUT', '/projects', { title: `${NAME_PREFIX}a4-mine` });
+    const myRelProjectId = (myRelProject.json as { id?: number } | null)?.id;
+    const myTask =
+      myRelProjectId === undefined
+        ? null
+        : await rest(jwt, 'PUT', `/projects/${myRelProjectId}/tasks`, { title: `${NAME_PREFIX}a4-mine` });
+    const myTaskId = (myTask?.json as { id?: number } | null)?.id;
+
+    if (theirTaskId === undefined || myTaskId === undefined) {
+      fail('A4 fixture: a task on each side', `theirs=${String(theirTaskId)} mine=${String(myTaskId)}`);
+    } else {
+      const related = await h.call('vikunja_task_relations', {
+        operation: 'relate',
+        id: myTaskId,
+        otherTaskId: theirTaskId,
+        relationKind: 'related',
+      });
+      assertStep('A4 fixture: relation created while both tasks are readable', !related.isError, related.text.slice(0, 200));
+
+      await revokeProjectUser(VIKUNJA_URL, otherJwt, otherProjectId, TEST_USERNAME);
+      const readBack = await rest(jwt, 'GET', `/tasks/${theirTaskId}`);
+      assertStep(
+        'A4 fixture: the other task really is unreadable after revocation',
+        readBack.status === 403 || readBack.status === 404,
+        `status=${readBack.status}`,
+      );
+
+      const unrelate = await h.call('vikunja_task_relations', {
+        operation: 'unrelate',
+        id: myTaskId,
+        otherTaskId: theirTaskId,
+        relationKind: 'related',
+      });
+      assertStep(
+        `unrelate against an unreadable task is ${tightened ? 'refused' : 'accepted'}`,
+        tightened ? unrelate.isError : !unrelate.isError,
+        `isError=${String(unrelate.isError)} ${unrelate.text.slice(0, 240)}`,
+      );
+      if (myRelProjectId !== undefined) await rest(jwt, 'DELETE', `/projects/${myRelProjectId}`);
+    }
+
+    await rest(otherJwt, 'DELETE', `/projects/${otherProjectId}`);
+    await rest(otherJwt, 'DELETE', `/teams/${otherTeamId}`);
+  }
+}
+
+/**
+ * Narrow-token lane (issue #254, items B1 and A1).
+ *
+ * A third server session, booted with a `tk_*` token that holds every
+ * permission EXCEPT `tasks_comments` and `reactions`. From 2.6.0 Vikunja
+ * checks `expand` values against the token's scopes, and the failure it
+ * returns is a plain `401 {"code":11,...}` — indistinguishable from an
+ * expired token by status or body. That is why this lane exists at all: no
+ * amount of unit testing can tell you what the server actually sends, and
+ * the full-scope fixture every other lane uses can never see it.
+ */
+async function runNarrowTokenLane(narrowToken: string, inheritedEnv: Record<string, string>): Promise<void> {
+  const tightened = serverAtLeast(detectedServerVersion, EXPAND_SCOPE_CHECK_VERSION);
+  log('\n╔══════════════════════════════════════════════╗');
+  log('║   Narrow-scope tk_* lane (issue #254 B1/A1)   ║');
+  log('╚══════════════════════════════════════════════╝');
+  log(
+    `Token omits: ${NARROW_TOKEN_OMITTED_GROUPS.join(', ')}. Server ${detectedServerVersion ?? 'unknown'} ` +
+      `=> expecting expand scope checks to be ${tightened ? 'ENFORCED' : 'ABSENT'}.`,
+  );
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [DIST_ENTRY],
+    env: { ...inheritedEnv, VIKUNJA_URL, VIKUNJA_API_TOKEN: narrowToken },
+  });
+  const client = new Client({ name: 'mcp-e2e-harness-narrow', version: '1.0.0' }, { capabilities: {} });
+
+  try {
+    await client.connect(transport);
+    const h = new McpHarness(client);
+
+    // A listing with no expand must work on every version — this is the
+    // control that proves the token itself is good.
+    const plain = await h.call('vikunja_tasks', { subcommand: 'list', allProjects: true });
+    assertStep(
+      'narrow token: cross-project list with no expand succeeds',
+      !plain.isError,
+      plain.text.slice(0, 240),
+    );
+
+    for (const value of EXPAND_VALUES_NEEDING_OMITTED_SCOPE) {
+      const res = await h.call('vikunja_tasks', { subcommand: 'list', allProjects: true, expand: [value] });
+      if (tightened) {
+        // The point of A1: this must SURFACE, not degrade into a successful
+        // listing that quietly dropped the expansion.
+        assertStep(
+          `narrow token: expand=${value} surfaces the scope failure instead of silently degrading`,
+          res.isError,
+          `isError=${String(res.isError)} ${res.text.slice(0, 300)}`,
+        );
+        assertStep(
+          `narrow token: the expand=${value} error names the scope, not just "invalid token"`,
+          res.isError && /scope|permission|expand/i.test(res.text),
+          res.text.slice(0, 300),
+        );
+      } else {
+        assertStep(
+          `narrow token: expand=${value} is accepted (pre-${EXPAND_SCOPE_CHECK_VERSION} server does not scope-check expand)`,
+          !res.isError,
+          res.text.slice(0, 240),
+        );
+      }
+    }
+
+    for (const value of EXPAND_VALUES_WITHIN_NARROW_SCOPE) {
+      const res = await h.call('vikunja_tasks', { subcommand: 'list', allProjects: true, expand: [value] });
+      assertStep(
+        `narrow token: expand=${value} still succeeds (scope present on every version)`,
+        !res.isError,
+        res.text.slice(0, 240),
+      );
+    }
+
+    // A following unrelated /tasks call must be unaffected — the scope
+    // failure must never have opened the shared tasks breaker.
+    const after = await h.call('vikunja_tasks', { subcommand: 'list', allProjects: true });
+    assertStep(
+      'narrow token: a following no-expand list is unaffected (no breaker fallout)',
+      !after.isError && !/breaker/i.test(after.text),
+      after.text.slice(0, 240),
+    );
+  } catch (e) {
+    fail('narrow-scope tk_* lane', (e as Error).stack || String(e));
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
 async function finalCleanup(h: McpHarness, ctx: FlowContext): Promise<void> {
   log('\n[Final cleanup]');
 
@@ -2457,6 +2836,26 @@ async function main(): Promise<void> {
   // same token the child process was booted with (see testAuth).
   process.env.__MCP_E2E_TOKEN__ = token;
 
+  // A JWT for `e2e-test` itself, used by the direct-REST parts of
+  // `test260Tightening` (fixtures the tool surface cannot build: archiving a
+  // project, reading raw assignee JSON, attaching a team). Deliberately NOT
+  // the mutable user's — these fixtures belong to the main session's
+  // identity, and the JWT lane's avatar mutations must not collide with them.
+  const sessionJwt = await login(TEST_USERNAME);
+
+  // The narrow-scope token for the third lane (issue #254, B1). Minted per
+  // run rather than stored: it is defined by what it OMITS, and a stale one
+  // silently granting a scope that was later added to `GET /routes` would
+  // make the whole lane a false green.
+  let narrowToken: string | null = null;
+  try {
+    narrowToken = await mintScopedToken(VIKUNJA_URL, sessionJwt, {
+      title: `${TOKEN_TITLE}-narrow-${RUN_ID}`,
+    });
+  } catch (e) {
+    fail('narrow-scope token fixture', (e as Error).message);
+  }
+
   log(`\nSpawning dist/index.js against ${VIKUNJA_URL}...`);
   // Strip any ambient VIKUNJA_URL/VIKUNJA_API_TOKEN(_FILE) before overlaying
   // our own verified-local values — defense in depth on top of object-spread
@@ -2505,6 +2904,7 @@ async function main(): Promise<void> {
       await testAvatarSettings(h);
       await testSavedFilters(h, ctx);
       await testUserWebhooks(h);
+      await test260Tightening(h, sessionJwt);
     } finally {
       await finalCleanup(h, ctx);
     }
@@ -2531,6 +2931,14 @@ async function main(): Promise<void> {
     // A login failure here is a real gap in coverage, not a reason to go
     // quiet — the JWT-only surface would go unexercised.
     fail('JWT lane (login for the second session)', (e as Error).message);
+  }
+
+  // Third session, narrow-scope tk_* token (issue #254, B1). Same reason it
+  // is sequential rather than concurrent as the JWT lane above.
+  if (narrowToken) {
+    await runNarrowTokenLane(narrowToken, inheritedEnv);
+  } else {
+    skip('narrow-scope tk_* lane', 'the narrow token could not be minted (see the failure above)');
   }
 
   // ============================================================================

@@ -103,10 +103,10 @@ server.tool('vikunja_tasks', {
 ```json
 "coverageThreshold": {
   "global": {
-    "branches": 84.46,     // Current honest coverage: 85.65%
-    "functions": 83.47,    // Current honest coverage: 84.56%
-    "lines": 92.66,        // Current honest coverage: 93.80%
-    "statements": 92.9     // Current honest coverage: 93.70%
+    "branches": 86.56,     // Current honest coverage: 87.75%
+    "functions": 85.03,    // Current honest coverage: 86.12%
+    "lines": 94.31,        // Current honest coverage: 95.45%
+    "statements": 94.47    // Current honest coverage: 95.27%
   }
 }
 ```
@@ -233,7 +233,7 @@ try {
 
 - **Node.js**: 22+ LTS only (no EOL versions; Node 20 reached EOL April 2026)
 - **TypeScript**: Strict mode enabled
-- **Vikunja**: 2.4.0+ required (v1 API floor, raised from 2.3.0 in the `0.7.0-beta` line); 2.4.0 is also the aligned/tested default, so floor and aligned currently coincide (see `docker/e2e/docker-compose.yml`'s pin comment)
+- **Vikunja**: 2.4.0+ required (v1 API floor, raised from 2.3.0 in the `0.7.0-beta` line); the aligned/tested default is **2.6.0** since 2026-09-02, so floor and aligned no longer coincide and `npm run test:matrix` covers four targets. 2.5.0 is supported on a source diff plus its two tested neighbours, not a lane of its own. The pin lives in `DEFAULT_TARGET`/`FLOOR_VERSION` (`scripts/lib/e2e-target.ts`), not in the compose file.
 
 ## Repository Configuration
 

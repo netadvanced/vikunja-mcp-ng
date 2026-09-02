@@ -145,9 +145,23 @@ export function resolveBaseUrl(apiUrl: string): string {
  * so deeply nested paths still collapse to a reasonably-scoped group rather
  * than a breaker-per-exact-path (which would defeat the point of tracking a
  * rolling failure window).
+ *
+ * THE QUERY STRING IS STRIPPED FIRST, and that is a fix, not decoration
+ * (found while probing #254's item A1 against a live 2.6.0 server). `path`
+ * here is a full request path including its query, so `?...` rode along in
+ * the final segment and the derived names were really
+ * `vikunja-rest-tasks?page=1&per_page=1000&expand=comments`,
+ * `vikunja-rest-tasks?expand=comments`, `vikunja-rest-tasks` — one breaker
+ * per distinct QUERY, not per endpoint group, exactly what the paragraph
+ * above says must not happen. Two consequences, both real: the registry Map
+ * grew a new entry per distinct query string for the life of the process,
+ * and each group's rolling failure window was split across however many
+ * query shapes the caller happened to use, so a genuinely unhealthy endpoint
+ * needed far more failures to trip than the configured threshold implies.
  */
 export function deriveRestBreakerName(path: string): string {
-  const segments = path.split('/').filter((seg) => seg.length > 0 && !/^\d+$/.test(seg));
+  const pathOnly = path.split('?')[0] ?? path;
+  const segments = pathOnly.split('/').filter((seg) => seg.length > 0 && !/^\d+$/.test(seg));
   const group = segments.slice(0, 2).join('-') || 'root';
   return `vikunja-rest-${group}`;
 }
@@ -388,6 +402,133 @@ export interface VikunjaRestRequestOptions {
  *   about upstream Vikunja's health, so one tenant's slow calls cannot
  *   trip a breaker that every other tenant in the process shares.
  */
+/**
+ * `expand` values Vikunja 2.6.0 checks against the API token's scopes, and
+ * the `GET /routes` permission group each one needs.
+ *
+ * Measured on a live 2.6.0 server with a token deliberately missing those
+ * two groups (issue #254, probe C2): `expand=comments` and
+ * `expand=reactions` fail, while `expand=subtasks` and `expand=buckets`
+ * succeed with the same token.
+ */
+const EXPAND_SCOPE_REQUIREMENTS: Readonly<Record<string, string>> = {
+  comments: 'tasks_comments',
+  reactions: 'reactions',
+};
+
+/** Every `expand=` value in a request path's query string. */
+function expandValuesIn(path: string): string[] {
+  const queryIndex = path.indexOf('?');
+  if (queryIndex === -1) return [];
+  return new URLSearchParams(path.slice(queryIndex + 1)).getAll('expand');
+}
+
+/**
+ * Builds the teaching paragraph for a 401 that is most likely an
+ * insufficient-SCOPE rejection rather than a bad session — returning `null`
+ * when this request has nothing to do with expand scopes.
+ *
+ * WHY THIS IS AN INFERENCE, AND SAYS SO. From 2.6.0 Vikunja validates
+ * `expand` values against the API token's scopes, and the rejection it sends
+ * is `401` with the ordinary `{"code":11,"message":"missing, malformed,
+ * expired or otherwise invalid token provided"}` body — byte-for-byte what a
+ * revoked or expired token gets (verified live; #254's plan predicted a
+ * distinct bare-echo body, which turned out to be wrong). There is therefore
+ * NO way to tell the two apart from the response. The only signal available
+ * is the request: we asked for a scope-checked `expand` value, on a `tk_*`
+ * session, and got a 401. So the message names both possibilities in
+ * likelihood order rather than asserting a scope problem it cannot prove.
+ *
+ * JWT sessions are excluded because they never reach `CanDoAPIRoute` — a JWT
+ * carries the user's own permissions, not a token scope list, so a 401 there
+ * really is a bad session and dressing it up as a scope problem would send
+ * the caller down the wrong path.
+ */
+export function describeLikelyExpandScopeFailure(
+  status: number,
+  path: string,
+  authType: 'api-token' | 'jwt',
+): string | null {
+  if (status !== 401 || authType !== 'api-token') return null;
+  const scoped = expandValuesIn(path).filter((value) => value in EXPAND_SCOPE_REQUIREMENTS);
+  if (scoped.length === 0) return null;
+
+  const needed = [...new Set(scoped.map((value) => EXPAND_SCOPE_REQUIREMENTS[value] as string))];
+  return (
+    `This request asked for expand=${scoped.join(', expand=')}. From Vikunja 2.6.0 an API ` +
+    `token's scopes are checked against the expanded data too, and a token missing ` +
+    `${needed.join(' / ')} is refused with exactly this 401 — the same status and body an ` +
+    'expired or revoked token gets, so the server gives no way to tell them apart.\n' +
+    `Most likely: the tk_* token lacks the ${needed.join(' / ')} permission group(s). Fix it by ` +
+    'either granting those scopes to the token (Vikunja → Settings → API Tokens) or dropping ' +
+    `expand=${scoped.join('/')} from the call.\n` +
+    'Less likely, but check it if the scopes are already granted: the token really is expired ' +
+    'or revoked. A request WITHOUT expand on the same endpoint will tell you which — it ' +
+    'succeeds for a scope problem and fails for a bad token.'
+  );
+}
+
+/**
+ * Vikunja's "this project is archived" error code, returned with HTTP 412.
+ */
+const ARCHIVED_PROJECT_CODE = 3008;
+
+/**
+ * Extra guidance for refusals that Vikunja 2.6.0 introduced and whose own
+ * message does not explain what actually happened. Returns `null` for
+ * everything else, so an ordinary error is passed through untouched.
+ *
+ * All three cases were measured against live 2.4.0 and 2.6.0 servers (issue
+ * #254). Each is a TIGHTENING: the older server accepts the call, so a
+ * client that worked yesterday starts failing with a message that does not
+ * say why.
+ */
+export function describeTightenedRefusal(
+  status: number,
+  method: HttpMethod,
+  path: string,
+  body: string,
+): string | null {
+  // A5. Bucket and webhook writes on an archived project. 2.4.0 accepted
+  // them (201/200); 2.6.0 answers 412 with error code 3008, whose message
+  // only ever talks about TASKS ("Editing or creating new tasks is not
+  // possible") — actively misleading when you were creating a webhook.
+  if (status === 412 && new RegExp(`"code"\\s*:\\s*${ARCHIVED_PROJECT_CODE}\\b`).test(body)) {
+    return (
+      'The project is archived. From Vikunja 2.6.0 that blocks writes to the project\'s ' +
+      'buckets, webhooks and views too, not just its tasks — which is why the server\'s own ' +
+      'message mentions only tasks. Reads are unaffected. Un-archive the project ' +
+      '(vikunja_projects update with isArchived: false) before retrying this write.'
+    );
+  }
+
+  if (status !== 403) return null;
+
+  // A4. Relation delete now requires read access to the OTHER task.
+  if (method === 'DELETE' && /^\/tasks\/\d+\/relations\//.test(path)) {
+    return (
+      'From Vikunja 2.6.0, removing a task relation requires read access to BOTH tasks, not ' +
+      'just the one you are editing. On 2.4.0 this same call succeeded. The likely cause is ' +
+      'that the other task lives in a project that is no longer shared with you — ask ' +
+      'whoever owns it to restore read access, or have them remove the relation from their ' +
+      'side.'
+    );
+  }
+
+  // A7. Attaching a team you cannot read.
+  if (method === 'PUT' && /^\/projects\/\d+\/teams\b/.test(path)) {
+    return (
+      'From Vikunja 2.6.0, granting a team access to a project requires that YOU can read ' +
+      'that team; 2.4.0 accepted any team id. A team you are not a member of, and did not ' +
+      'create, is unreadable to you even though it exists — so it cannot be attached. Note ' +
+      'the same tightening scrubs unreadable teams out of GET /projects/{id}/teams, which is ' +
+      'why one may appear there with a blank name.'
+    );
+  }
+
+  return null;
+}
+
 function buildCancelledRequestError(method: string, path: string): MCPError {
   return new MCPError(
     ErrorCode.TIMEOUT_ERROR,
@@ -453,12 +594,17 @@ async function vikunjaRestRequestRaw(
     } catch {
       // Body could not be read — fall back to the status line only.
     }
+    const scopeHint = describeLikelyExpandScopeFailure(response.status, path, session.authType);
+    const guidance = scopeHint ?? describeTightenedRefusal(response.status, method, path, detail);
     const httpError = new MCPError(
       ErrorCode.API_ERROR,
       `Vikunja REST request failed (${method} ${path}): HTTP ${response.status} ${
         response.statusText
-      }${detail ? ` — ${detail}` : ''}`,
-      { statusCode: response.status },
+      }${detail ? ` — ${detail}` : ''}${guidance ? `\n\n${guidance}` : ''}`,
+      {
+        statusCode: response.status,
+        ...(scopeHint ? { insufficientScope: true } : {}),
+      },
     );
     // Also expose the conventional top-level `.status` (mirrors
     // `.details.statusCode`, which pre-dates this): shared classifiers

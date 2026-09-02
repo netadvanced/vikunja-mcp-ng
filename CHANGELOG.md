@@ -8,7 +8,64 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+### Vikunja 2.6.0 alignment
+
+The aligned/tested Vikunja version moves **2.4.0 → 2.6.0**. The supported
+minimum stays **2.4.0**, and it stays a full test lane: both versions now run
+`npm run test:matrix` on both database backends, four lanes, all green.
+**2.5.0 is supported but is deliberately not a lane** — it rests on a source
+diff and on its two tested neighbours, and adding a fifth target would claim
+coverage that does not exist.
+
+Everything below was measured against a live 2.6.0 server with a live 2.4.0
+control running beside it. That mattered: a spec diff between the two finds
+exactly **one** added operation and zero changed schema properties, while the
+behaviour a client actually depends on moved in seven places. Two predictions
+that had been made from reading the Go source turned out to be wrong, and both
+changed the fix.
+
+### Added
+
+- **`expand` scope failures are surfaced instead of silently degrading.** From
+  2.6.0, asking `GET /tasks` to expand `comments` or `reactions` with a `tk_*`
+  token that lacks those scopes is refused. Cross-project listing used to catch
+  that refusal and fall back to per-project aggregation — which rebuilds the
+  query without `expand`, so the caller received a perfectly successful task
+  list quietly missing the data they asked for. It now fails, with an error
+  naming the missing permission group and how to fix it.
+
+  The refusal is a `401` whose body is byte-for-byte identical to an expired
+  token's (`{"code":11,...}`), so there is no way to tell the two apart from the
+  response. The plan for this work assumed a distinguishable body; it was wrong.
+  The error therefore presents the scope explanation as the *likely* cause, names
+  the expired-token possibility second, and gives a one-line experiment that
+  separates them. JWT sessions are unaffected — a JWT never reaches the
+  token-scope check.
+- **`set-position` validates an explicitly-supplied `projectViewId`** against
+  the task's own project before writing, on **every** supported version. 2.6.0
+  answers `403` for a foreign view and `404` for one that does not exist; 2.4.0
+  accepts both with a `200` and orders the task in a view nobody will ever look
+  at. A version-dependent silent no-op is worse than either, so this is refused
+  everywhere, with the project's real view ids listed in the error.
+- **Teaching errors for three refusals 2.6.0 introduced**, each of which 2.4.0
+  accepted and whose server-side message does not explain itself: writes to an
+  archived project's buckets, webhooks or views (`412`/`3008`, whose message
+  only ever mentions *tasks*), removing a relation whose other task you can no
+  longer read (`403`), and attaching a team you cannot read to a project
+  (`403`).
+
 ### Fixed
+
+- **Circuit-breaker names included the query string.** `deriveRestBreakerName`
+  documents one breaker per endpoint group and demonstrates `/tasks/7` →
+  `vikunja-rest-tasks`, but the query rode along in the final path segment, so
+  the real names were `vikunja-rest-tasks?page=1&per_page=1000&expand=comments`
+  and friends. Two consequences: the registry grew an entry per distinct query
+  for the life of the process, and each group's rolling failure window was split
+  across however many query shapes a caller happened to use, so an unhealthy
+  endpoint needed far more failures to trip than the configured threshold
+  implies. Found while probing the `expand` behaviour above — the predicted
+  breaker fallout did not reproduce, and this was why.
 
 - **Enrollment identity pinning gave the same generic 403 for an SSO username-squatting
   false-positive as for an actual forwarded-link attack, with no way to self-diagnose.**
@@ -23,6 +80,30 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
   a genuine mismatch is unchanged; Vikunja's random-username *pattern* is never guessed at
   — only a live account lookup is used. (#224)
 
+### Changed
+
+- **Vendored OpenAPI spec and generated types re-captured from a 2.6.0
+  container.** The operation denominator in `docs/API-COVERAGE.md` moves
+  169 → 170: `DELETE /notifications` is new and is deliberately not exposed
+  (irreversible, unscoped, and `mark-all-read` covers the ordinary intent).
+- **`npm run fetch:api-spec:container` no longer hard-codes port 8240.** It
+  resolves the port through the e2e target resolver, honours
+  `VIKUNJA_E2E_TARGET`, and refuses to write when the port is silent or reports
+  a version other than the target's. Before this, re-vendoring against a newer
+  stack silently re-captured the *old* version's spec and looked green.
+- **One shared Postgres server for the newer e2e targets.** Each postgres target
+  used to run a full Postgres container of its own; the newer ones now keep a
+  database of their own inside a single shared server. The 2.3.0 and 2.4.0 lanes
+  keep their dedicated containers, grandfathered so a running stack's stable API
+  token is not rotated for nothing.
+- **The e2e fixture grew a stranger, a revocation path and a narrow-scoped
+  token.** Every harness authenticated as one user holding every permission and
+  owning everything it touched, which cannot see a missing token scope or an
+  unreadable resource *at all*. Without this, "aligned to 2.6.0" could have
+  shipped fully green while broken for every narrow-token user. Version-gated
+  checks now assert a different expected outcome per version rather than
+  tolerating a failure on one of them.
+
 ### Documentation
 
 - Clarified the real per-Vikunja-version behavior of enrollment identity pinning:
@@ -34,6 +115,21 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
   operational rule for the squatting scenario (never pre-create a local account whose
   username collides with a value an IdP user will present as `preferred_username`) in
   `docs/OIDC-SETUP.md` and `docs/CONFIGURATION.md`. (#223, #224)
+
+- Corrected a forward-looking note from #223/#224 while aligning to 2.6.0: `pending_email`
+  is **not** present on `GET /user` on 2.6.0 either, v1 or v2, so the email-first enrollment
+  path does not activate there. That note was explicitly marked unverified; this is the
+  verification, and the answer is no. (#254, #223)
+
+### Notes for users of the v2 API work (issue #184)
+
+The v2 `PATCH`-on-subscribed-task `422` (`expected integer` at
+`body.subscription.entity`) was re-tested under its original conditions:
+it **reproduces on 2.4.0** and is **fixed on 2.5.0 and 2.6.0**. Creator
+auto-subscribe is confirmed live on 2.6.0 and absent on 2.5.0, so the feared
+widening of that blocker lands on a bug that no longer exists above the floor.
+The `subscription: null` workaround is still needed, but only for 2.4.0, and its
+removal condition is "the floor moves past 2.4.0", not "2.6.0 is fine".
 
 ## [0.7.0-beta.4] - 2026-09-02
 
