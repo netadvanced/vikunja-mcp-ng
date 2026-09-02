@@ -71,6 +71,24 @@ interface MCPErrorDetails {
    * with `statusCode: 403`.
    */
   wwwAuthenticateError?: 'invalid_token' | 'insufficient_scope';
+  /**
+   * Set when a Vikunja 401 is most likely the API token lacking the SCOPE
+   * for a scope-checked `expand` value rather than a bad session (Vikunja
+   * >= 2.6.0 — see `describeLikelyExpandScopeFailure` in
+   * src/utils/vikunja-rest.ts, which also explains why this can only ever be
+   * an inference: the server sends the identical 401 body either way).
+   *
+   * Two things read it, both because this is a property of the CALL and not
+   * of the service: `isClientErrorExcludedFromBreaker` (src/utils/retry.ts)
+   * keeps it out of the shared circuit breakers, and
+   * `RestCrossProjectFilteringStrategy` refuses to fall back to per-project
+   * aggregation for it — the fallback drops `expand`, so falling back turns
+   * a refusal into a silently incomplete success.
+   *
+   * Unrelated to `wwwAuthenticateError: 'insufficient_scope'` above, which
+   * is about OIDC bearer tokens presented TO this server.
+   */
+  insufficientScope?: boolean;
 }
 
 export class MCPError extends Error {

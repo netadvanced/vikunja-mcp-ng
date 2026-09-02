@@ -24,15 +24,16 @@ module.exports = {
       // Ratcheted gate — see CLAUDE.md "Coverage Thresholds" for policy.
       // Raise these in lockstep with honest coverage growth; never lower
       // except by explicit owner decision.
-      // Raised 2026-08-31 (was 83/82/92/92, set 2026-07-27) after 16 merged
-      // PRs lifted coverage on every axis: honest numbers are
-      // 85.65 branches / 84.56 functions / 93.8 lines / 93.7 statements.
-      // Same per-axis buffer preserved as the prior raise (~1.19 branches /
-      // ~1.09 functions / ~1.14 lines / ~0.80 statements below honest).
-      branches: 84.46,
-      functions: 83.47,
-      lines: 92.66,
-      statements: 92.9,
+      // Raised 2026-09-02 (was 84.46/83.47/92.66/92.9, set 2026-08-31) with
+      // the Vikunja 2.6.0 alignment work: honest numbers are
+      // 87.75 branches / 86.12 functions / 95.45 lines / 95.27 statements.
+      // Same per-axis buffer preserved as the prior two raises (~1.19
+      // branches / ~1.09 functions / ~1.14 lines / ~0.80 statements below
+      // honest).
+      branches: 86.56,
+      functions: 85.03,
+      lines: 94.31,
+      statements: 94.47,
     },
   },
   // --- "A worker process has failed to exit gracefully" (T4 investigation, 2026-07-21) ---

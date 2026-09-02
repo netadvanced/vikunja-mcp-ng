@@ -9,45 +9,49 @@
 # so it cannot collide with anything else the machine happens to be running
 # — including another Vikunja instance, or a *production* Vikunja.
 #
-# Version pin: vikunja/vikunja:2.4.0 (the go-vikunja/vikunja v2.4.0 GitHub
-# release). Aligned 2026-07-20 (tracking issue #28, item A1) after a full
-# test:matrix pass on both DB backends confirmed it green with zero
-# tolerated drifts (see e2e-verdicts/ and the PR that bumped this pin).
-# This is also the version the vendored OpenAPI spec at
-# docs/vikunja-openapi.json is captured from — fetched directly from this
-# same pinned container's own /api/v1/docs.json (via `npm run
-# fetch:api-spec:container`, see docs/API-SPEC.md), not try.vikunja.io
-# (which always runs `unstable`, ahead of any tag — that's the drift class
-# the previous 2.3.0 pin's vendored spec had, e.g. `v2.3.0-1019-g95b7e673`).
-# Fetching from the pinned container itself instead means the vendored spec
-# and this pin are byte-for-byte in sync by construction.
+# WHERE THE VERSION PIN LIVES. Not here. `DEFAULT_TARGET` in
+# scripts/lib/e2e-target.ts is the aligned/tested version, and
+# `FLOOR_VERSION` beside it is the minimum supported one. The literals in
+# this file are only the fallback a resolver-less `docker compose -f ...`
+# invocation lands on (see the note above `name:` below); bootstrap.sh always
+# overrides them.
 #
-# Policy (raised 2026-08-31, `0.7.0-beta` line): **minimum supported Vikunja
-# is 2.4.0**, and 2.4.0 is also the **aligned/tested default** — floor and
-# aligned currently COINCIDE. The floor was 2.3.0 until nine operations this
-# server ships as implemented (the eight /admin/* operations and
-# GET /projects/{project}/tasks/by-index/{index}) turned out not to exist on
-# a released 2.3.0 at all; see docs/ROADMAP.md §3 decision 27. Some
-# workarounds in src/ still target upstream bugs fixed only in 2.4.0 (e.g.
-# the by-id share GET bug — src/tools/projects/sharing.ts,
-# docs/API-COVERAGE.md); their removal condition has now fired but is
-# deliberately a separate change, not part of the policy raise.
+# Policy since 2026-09-02 (issue #254): **aligned/tested is 2.6.0**,
+# **minimum supported is 2.4.0**. They no longer coincide, so the standard
+# target set is four stacks again (both versions x both DB backends) and the
+# floor lane is back.
+#
+# The floor stays at 2.4.0 deliberately. It was raised from 2.3.0 because
+# nine operations this server ships as implemented (the eight /admin/*
+# operations and GET /projects/{project}/tasks/by-index/{index}) turned out
+# not to exist on a released 2.3.0 at all (docs/ROADMAP.md §3 decision 27).
+# Nothing about 2.6.0 makes 2.4.0 unsupportable, and 2.6.0 is weeks old, so
+# a self-hoster on 2.4.0 or 2.5.0 is the normal case. Some workarounds in
+# src/ still target upstream bugs fixed only in 2.4.0 (e.g. the by-id share
+# GET bug — src/tools/projects/sharing.ts, docs/API-COVERAGE.md); their
+# removal condition has fired but is deliberately a separate change.
+#
+# 2.5.0 is supported on the strength of a source diff plus the two tested
+# neighbours, NOT a lane of its own — see `standardTargets()`.
+#
+# The vendored OpenAPI spec at docs/vikunja-openapi.json is captured from
+# the ALIGNED version's container, via `npm run fetch:api-spec:container`
+# (docs/API-SPEC.md) — never from try.vikunja.io, which always runs
+# `unstable`, ahead of any tag (the drift class the 2.3.0-era vendored spec
+# had, e.g. `v2.3.0-1019-g95b7e673`). Since #254 that script resolves the
+# port through the target resolver instead of hard-coding 8240, so it can no
+# longer silently re-vendor the old version's spec and look green.
 #
 # The tag is env-driven (`VIKUNJA_VERSION`, default `2.4.0` below) so the
 # version-matrix runner (`npm run test:matrix`, see
 # scripts/test-matrix.ts and docs/LOCAL-TESTING.md) can bring this stack
 # up against a different Vikunja release without editing this file:
 #
-#   VIKUNJA_VERSION=2.5.0 npm run e2e:up   # an unsupported version, ad hoc
+#   VIKUNJA_E2E_TARGET=2.5.0-postgres npm run e2e:up   # ad hoc, not a lane
 #
-# There is no separate floor lane while floor == aligned: the default run IS
-# the floor run. A distinct floor target returns as soon as the aligned
-# version moves past 2.4.0 (issue #237).
-#
-# Plain `npm run e2e:up` (no override) uses the `2.4.0` default. Re-pin the
-# *default* by bumping the fallback value below (see docs/LOCAL-TESTING.md's
-# version-refresh note) once a newer stable release ships and becomes the
-# new baseline everyone gets by default.
+# Plain `npm run e2e:up` (no override) uses `DEFAULT_TARGET`. Re-pin by
+# editing that constant in scripts/lib/e2e-target.ts — not by editing the
+# fallbacks below, which exist only for a resolver-less invocation.
 #
 # DB BACKEND VARIANT (`VIKUNJA_DB=postgres|sqlite`, default `postgres`):
 # item F2 (tracking issue #28) adds a SQLite-backed variant of this stack so
@@ -74,7 +78,8 @@
 # `<version>-<db>` target is a wholly separate Compose project with its own
 # volumes and its own ports and they all run at once:
 #
-#   2.4.0-postgres -> project vikunja-e2e-2.4.0-postgres, API on 8240
+#   2.6.0-postgres -> project vikunja-e2e-2.6.0-postgres, API on 8260  (aligned)
+#   2.4.0-postgres -> project vikunja-e2e-2.4.0-postgres, API on 8240  (floor)
 #   2.3.0-postgres -> project vikunja-e2e-2.3.0-postgres, API on 8230
 #
 # (The 2.3.0 line is kept purely as a worked example of the arithmetic — the
@@ -83,9 +88,15 @@
 # Ports are DERIVED from the version, never hand-assigned -- the formula and
 # the target ids live in scripts/lib/e2e-target.ts, which bootstrap.sh
 # evaluates to set these variables. Do not hardcode a port here or in a
-# harness; ask the resolver. The defaults below only exist so a bare
-# `docker compose -f docker/e2e/docker-compose.yml ...` (no bootstrap) still
-# resolves to the aligned target rather than failing on unset variables.
+# harness; ask the resolver.
+#
+# The fallbacks below exist only so a bare
+# `docker compose -f docker/e2e/docker-compose.yml ...` (no bootstrap) does
+# not fail on unset variables. They deliberately name the 2.4.0 DEDICATED-
+# Postgres target rather than the aligned one: 2.6.0 keeps its database in
+# the shared server (docker-compose.shared-db-server.yml), which a bare
+# invocation of this file alone cannot bring up, so defaulting to it would
+# produce a stack that contradicts the resolver. Use bootstrap.sh.
 name: ${E2E_PROJECT:-vikunja-e2e-2.4.0-postgres}
 
 services:

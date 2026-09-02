@@ -221,6 +221,56 @@ describe('RestCrossProjectFilteringStrategy', () => {
       });
     });
 
+    it('does NOT fall back when the failure is a missing expand scope (issue #254 A1)', async () => {
+      // Measured on 2.6.0: a narrow tk_* token asking for expand=comments is
+      // refused 401. The fallback rebuilds the query without `expand`, so
+      // falling back here would hand the caller a successful task list that
+      // is quietly missing the expanded data — indistinguishable downstream
+      // from "expanded, and there was nothing there".
+      const scopeError = new MCPError(ErrorCode.API_ERROR, 'HTTP 401 Unauthorized', {
+        statusCode: 401,
+        insufficientScope: true,
+      });
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(scopeError);
+      mockClientStrategy.execute.mockResolvedValue({
+        tasks: [mockTask],
+        metadata: {
+          serverSideFilteringUsed: false,
+          serverSideFilteringAttempted: false,
+          clientSideFiltering: true,
+          filteringNote: 'should never be reached',
+        },
+      });
+
+      await expect(
+        strategy.execute({ ...baseParams, args: { expand: ['comments'] } }),
+      ).rejects.toBe(scopeError);
+      expect(mockClientStrategy.execute).not.toHaveBeenCalled();
+    });
+
+    it('still falls back for a 401 that is NOT an expand-scope refusal', async () => {
+      // A genuinely bad session must keep the old behaviour: the fallback is
+      // how an older server without GET /tasks is handled, and narrowing it
+      // to "never on 401" would regress that.
+      const authError = new MCPError(ErrorCode.API_ERROR, 'HTTP 401 Unauthorized', {
+        statusCode: 401,
+      });
+      (vikunjaRestRequest as jest.Mock).mockRejectedValue(authError);
+      mockClientStrategy.execute.mockResolvedValue({
+        tasks: [mockTask],
+        metadata: {
+          serverSideFilteringUsed: false,
+          serverSideFilteringAttempted: false,
+          clientSideFiltering: true,
+          filteringNote: 'aggregated',
+        },
+      });
+
+      const result = await strategy.execute(baseParams);
+      expect(mockClientStrategy.execute).toHaveBeenCalled();
+      expect(result.tasks).toEqual([mockTask]);
+    });
+
     it('propagates a fallback failure when both the REST call and aggregation fail', async () => {
       (vikunjaRestRequest as jest.Mock).mockRejectedValue(new Error('HTTP 400'));
       const fallbackError = new Error('aggregation also failed');

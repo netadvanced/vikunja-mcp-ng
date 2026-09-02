@@ -83,17 +83,28 @@ export interface E2eTarget {
   dbName: string;
 }
 
-/** The target every harness uses when the caller doesn't choose one. */
-export const DEFAULT_TARGET = '2.4.0-postgres';
+/**
+ * The target every harness uses when the caller doesn't choose one — i.e.
+ * the ALIGNED/TESTED version.
+ *
+ * `2.4.0` -> `2.6.0` on 2026-09-02 (issue #254). This constant is the pin:
+ * `docker-compose.yml`'s `VIKUNJA_VERSION` fallback is not, it is only what
+ * a resolver-less `docker compose -f ...` invocation lands on.
+ */
+export const DEFAULT_TARGET = '2.6.0-postgres';
 
 /**
  * Minimum supported Vikunja (the v1 floor).
  *
- * Raised `2.3.0` -> `2.4.0` on 2026-08-31 (docs/ROADMAP.md §3 decision 27), so it currently
- * EQUALS `DEFAULT_TARGET`'s version — floor and aligned coincide, and `standardTargets()`
- * therefore yields one version's worth of stacks, not two. They separate again the moment the
- * aligned version moves past 2.4.0 (issue #237), at which point this constant is the only edit
- * needed to bring the floor lane back.
+ * Raised `2.3.0` -> `2.4.0` on 2026-08-31 (docs/ROADMAP.md §3 decision 27) and DELIBERATELY LEFT
+ * THERE when the aligned version moved to 2.6.0 on 2026-09-02 (issue #254). Floor and aligned no
+ * longer coincide, so `standardTargets()` yields two versions' worth of stacks again and the
+ * floor lane is back.
+ *
+ * Do not "tidy" this up to match `DEFAULT_TARGET`, and do not lower it: 2.4.0 is the oldest
+ * release on which every operation this server ships actually exists (nine of them do not exist
+ * on a released 2.3.0), and 2.6.0 is only weeks old — a self-hoster running 2.4.0 or 2.5.0 is the
+ * normal case, not a straggler.
  *
  * Note this is a *policy* value, not a limit of the resolver: `resolveTarget('2.3.0-postgres')`
  * still works and still derives port 8230 — the port formula is plain arithmetic over any
@@ -163,9 +174,15 @@ export function resolveTarget(id: string = DEFAULT_TARGET): E2eTarget {
 }
 
 /**
- * Every target the repo routinely runs: the aligned version and the floor, both DB backends.
- * De-duplicated, because those two versions currently coincide (see `FLOOR_VERSION`) and a
- * stack list with the same target twice would `e2e:up:all` it twice.
+ * Every target the repo routinely runs: the aligned version and the floor, both DB backends —
+ * four targets since 2026-09-02, when aligned moved to 2.6.0 and the floor stayed at 2.4.0.
+ * Still de-duplicated, because the two coincided before that and could again.
+ *
+ * 2.5.0 is deliberately NOT here. It is supported on the strength of a source diff plus the
+ * neighbouring tested lanes, not a lane of its own, and saying so honestly is the point — a
+ * fifth target would claim test coverage that does not exist. It still resolves
+ * (`VIKUNJA_E2E_TARGET=2.5.0-postgres npm run e2e:up`, port 8250) and was used ad hoc to bisect
+ * the v2 PATCH-on-subscribed-task fix to 2.5.0 (issue #254, probe C3).
  */
 export function standardTargets(): E2eTarget[] {
   const versions = [...new Set([DEFAULT_TARGET.split('-')[0] as string, FLOOR_VERSION])];

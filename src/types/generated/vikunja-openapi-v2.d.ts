@@ -78,7 +78,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List users (admin)
+         * @description Returns every user on the instance, paginated, with q matched against username and email. Exposes fields hidden from the normal user API (is_admin, status, auth provider). Each call is recorded in the audit log, since the response contains every user's email address. Restricted to instance admins on a licensed instance; unlicensed or non-admin callers get a 404, making the endpoint indistinguishable from one that is not registered.
+         */
+        get: operations["admin-users-list"];
         put?: never;
         /**
          * Create a user (admin)
@@ -479,6 +483,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/migration/planka/migrate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Migrate from planka
+         * @description Starts a migration of the authenticated user's data from the given instance into Vikunja. The credentials are verified synchronously and rejected with 400 if the instance refuses them; the migration itself runs asynchronously. Refuses with 412 if a migration for this service is already running.
+         */
+        post: operations["migration-planka-migrate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/migration/planka/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the migration status for planka
+         * @description Returns the migration status of the authenticated user for this service, i.e. whether and when they last migrated. Used to prevent starting a second migration while one is running.
+         */
+        get: operations["migration-planka-status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/migration/ticktick/migrate": {
         parameters: {
             query?: never;
@@ -608,7 +652,7 @@ export interface paths {
         };
         /**
          * List notifications
-         * @description Returns the authenticated user's own notifications, newest first. Link shares have no notifications and are refused.
+         * @description Returns the authenticated user's own notifications, newest first. Notifications about a project the caller can no longer read are omitted; the filtering happens in the query, so pages come back full and total and total_pages count the visible notifications only. Link shares have no notifications and are refused.
          */
         get: operations["notifications-list"];
         put?: never;
@@ -617,7 +661,11 @@ export interface paths {
          * @description Marks every notification of the authenticated user as read. Link shares have no notifications and are refused.
          */
         post: operations["notifications-mark-all-read"];
-        delete?: never;
+        /**
+         * Delete all notifications
+         * @description Deletes every notification of the authenticated user. Only the caller's own notifications are affected; link shares have no notifications and are refused.
+         */
+        delete: operations["notifications-delete-all"];
         options?: never;
         head?: never;
         patch?: never;
@@ -909,6 +957,26 @@ export interface paths {
          * @description Creates a task in the project from the URL. The authenticated user needs write access to that project and becomes the task's creator.
          */
         post: operations["tasks-create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project}/tasks/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create multiple tasks
+         * @description Creates up to 100 tasks in the project from the URL in one atomic request: if any task is invalid, none are created and the error names the failing index. Tasks are created in payload order and land on top of every view in that order. The authenticated user needs write access to the project and becomes the creator of every task. Bucket limits are only enforced for tasks with an explicit bucket_id; tasks left to land in a view's default bucket are not counted against its limit.
+         */
+        post: operations["tasks-bulk-create"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1314,12 +1382,12 @@ export interface paths {
         put?: never;
         /**
          * Subscribe to an entity
-         * @description Subscribes the authenticated user to a project or task so they receive its notifications. The user needs read access to the entity. Fails if a subscription already exists.
+         * @description Subscribes the authenticated user to a project or task so they receive its notifications. The user needs read access to the entity. Fails if the user is already subscribed, directly or through a parent project. Subscribing again after an opt-out lifts it.
          */
         post: operations["subscriptions-create"];
         /**
          * Unsubscribe from an entity
-         * @description Removes the authenticated user's own subscription to a project or task. Only affects the caller's subscription, not other users'.
+         * @description Stops notifications about a project or task for the authenticated user. If the subscription was inherited from a parent project, the opt-out is recorded for this entity instead, leaving the parent subscription in place. Only affects the caller's subscription, not other users'.
          */
         delete: operations["subscriptions-delete"];
         options?: never;
@@ -2278,7 +2346,7 @@ export interface paths {
         put?: never;
         /**
          * Request a password reset token
-         * @description Requests a token to reset the password for the account with the given email. The token is sent to that email; the response is the same whether or not an account exists.
+         * @description Requests a token to reset the password for the account with the given email. The token is sent to that email. Returns 404 if no account uses the given email.
          */
         post: operations["auth-password-token"];
         delete?: never;
@@ -2389,6 +2457,30 @@ export interface paths {
          */
         put: operations["user-update-email"];
         post?: never;
+        /**
+         * Cancel a pending email change
+         * @description Discards the unconfirmed new email address and invalidates its confirmation links. The current email stays as it is.
+         */
+        delete: operations["user-cancel-email-update"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/user/settings/email/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resend the confirmation mail for a pending email change
+         * @description Invalidates earlier confirmation links and sends a new one to the pending address. Fails with 412 if no email change is pending.
+         */
+        post: operations["user-resend-email-confirmation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3123,6 +3215,16 @@ export interface components {
             /** @description The task carrying the values to set. Only the fields named in fields are read from it and applied to every task. */
             values?: components["schemas"]["Task"];
         };
+        BulkTaskCreation: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v2/schemas/BulkTaskCreation.json
+             */
+            readonly $schema?: string;
+            /** @description The tasks to create. Each entry accepts the same fields as the single-task create endpoint. Creation is atomic: if one task is invalid, none are created. */
+            tasks?: components["schemas"]["Task"][] | null;
+        };
         ColumnMapping: {
             /**
              * @description The task attribute the column maps to. Use "ignore" to drop the column.
@@ -3631,6 +3733,22 @@ export interface components {
             /** @description A human-readable confirmation message. */
             readonly message?: string;
         };
+        MigrationCredentialsBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v2/schemas/MigrationCredentialsBody.json
+             */
+            readonly $schema?: string;
+            /** @description The password to log in with. Only used when no token is given. */
+            password?: string;
+            /** @description An API key or access token for the instance. Alternative to username and password. */
+            token?: string;
+            /** @description The base url of the instance to import from, e.g. https://planka.example.com. */
+            url?: string;
+            /** @description The username or email to log in with. Only used when no token is given. */
+            username?: string;
+        };
         MigrationStartedBodyBody: {
             /**
              * Format: uri
@@ -3685,6 +3803,23 @@ export interface components {
              */
             readonly $schema?: string;
             items?: components["schemas"]["APIToken"][] | null;
+            /** Format: int64 */
+            page?: number;
+            /** Format: int64 */
+            per_page?: number;
+            /** Format: int64 */
+            total?: number;
+            /** Format: int64 */
+            total_pages?: number;
+        };
+        PaginatedAdminUser: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v2/schemas/PaginatedAdminUser.json
+             */
+            readonly $schema?: string;
+            items?: components["schemas"]["AdminUser"][] | null;
             /** Format: int64 */
             page?: number;
             /** Format: int64 */
@@ -4079,16 +4214,16 @@ export interface components {
             is_favorite?: boolean;
             /**
              * Format: int64
-             * @description The maximum permission the requesting user has on this project (0 = read, 1 = read/write, 2 = admin).
+             * @description The maximum permission the requesting user has on this project (0 = read, 1 = read/write, 2 = admin), or null when the permission was not computed for this response.
              */
-            readonly max_permission?: number;
+            readonly max_permission?: number | null;
             /** @description The user who owns this project. Set by the server; ignored on write. */
             readonly owner?: components["schemas"]["User"];
             /**
              * Format: int64
-             * @description The id of the parent project. 0 or omitted for a top-level project. Sending an explicit 0 detaches the project to the top level and requires admin permission.
+             * @description The id of the parent project, or 0 for a top-level project. Always present in responses. Omit it on a write to leave the parent unchanged; sending an explicit 0 detaches the project to the top level and requires admin permission.
              */
-            parent_project_id?: number;
+            parent_project_id?: number | null;
             /**
              * Format: double
              * @description The position of this project when listing all projects. See the tasks.position property for how positions work.
@@ -4156,16 +4291,16 @@ export interface components {
             is_favorite?: boolean;
             /**
              * Format: int64
-             * @description The maximum permission the requesting user has on this project (0 = read, 1 = read/write, 2 = admin).
+             * @description The maximum permission the requesting user has on this project (0 = read, 1 = read/write, 2 = admin), or null when the permission was not computed for this response.
              */
-            readonly max_permission?: number;
+            readonly max_permission?: number | null;
             /** @description The user who owns this project. Set by the server; ignored on write. */
             readonly owner?: components["schemas"]["User"];
             /**
              * Format: int64
-             * @description The id of the parent project. 0 or omitted for a top-level project. Sending an explicit 0 detaches the project to the top level and requires admin permission.
+             * @description The id of the parent project, or 0 for a top-level project. Always present in responses. Omit it on a write to leave the parent unchanged; sending an explicit 0 detaches the project to the top level and requires admin permission.
              */
-            parent_project_id?: number;
+            parent_project_id?: number | null;
             /**
              * Format: double
              * @description The position of this project when listing all projects. See the tasks.position property for how positions work.
@@ -4537,10 +4672,10 @@ export interface components {
              */
             readonly created?: string;
             /**
-             * Format: int64
              * @description The kind of entity this subscription is for. Either project or task; derived server-side from the request path.
+             * @enum {string}
              */
-            readonly entity?: number;
+            readonly entity?: "project" | "task";
             /**
              * Format: int64
              * @description The numeric id of the subscribed entity; taken from the request path.
@@ -5628,6 +5763,8 @@ export interface components {
             readonly is_local_user?: boolean;
             /** @description The full name of the user. */
             name?: string;
+            /** @description A new email address waiting for confirmation, if the user requested a change. Empty otherwise. */
+            readonly pending_email?: string;
             /** @description The current user's settings. */
             readonly settings?: components["schemas"]["UserGeneralSettings"];
             /**
@@ -5916,6 +6053,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Project"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["VikunjaErrorModel"];
+                };
+            };
+        };
+    };
+    "admin-users-list": {
+        parameters: {
+            query?: {
+                /** @description 1-based page number. */
+                page?: number;
+                /** @description Items per page (max 1000). */
+                per_page?: number;
+                /** @description Search query; filters the list to items matching this string. */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedAdminUser"];
                 };
             };
             /** @description Error */
@@ -6992,6 +7165,68 @@ export interface operations {
             };
         };
     };
+    "migration-planka-migrate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MigrationCredentialsBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MigrationStartedBodyBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["VikunjaErrorModel"];
+                };
+            };
+        };
+    };
+    "migration-planka-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Status"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["VikunjaErrorModel"];
+                };
+            };
+        };
+    };
     "migration-ticktick-migrate": {
         parameters: {
             query?: never;
@@ -7249,6 +7484,33 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["MarkAllReadBodyBody"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["VikunjaErrorModel"];
+                };
+            };
+        };
+    };
+    "notifications-delete-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {
@@ -7616,14 +7878,14 @@ export interface operations {
                     is_favorite?: boolean;
                     /**
                      * Format: int64
-                     * @description The maximum permission the requesting user has on this project (0 = read, 1 = read/write, 2 = admin).
+                     * @description The maximum permission the requesting user has on this project (0 = read, 1 = read/write, 2 = admin), or null when the permission was not computed for this response.
                      */
                     readonly max_permission?: number;
                     /** @description The user who owns this project. Set by the server; ignored on write. */
                     readonly owner?: unknown;
                     /**
                      * Format: int64
-                     * @description The id of the parent project. 0 or omitted for a top-level project. Sending an explicit 0 detaches the project to the top level and requires admin permission.
+                     * @description The id of the parent project, or 0 for a top-level project. Always present in responses. Omit it on a write to leave the parent unchanged; sending an explicit 0 detaches the project to the top level and requires admin permission.
                      */
                     parent_project_id?: number;
                     /**
@@ -7676,14 +7938,14 @@ export interface operations {
                     is_favorite?: boolean;
                     /**
                      * Format: int64
-                     * @description The maximum permission the requesting user has on this project (0 = read, 1 = read/write, 2 = admin).
+                     * @description The maximum permission the requesting user has on this project (0 = read, 1 = read/write, 2 = admin), or null when the permission was not computed for this response.
                      */
                     readonly max_permission?: number;
                     /** @description The user who owns this project. Set by the server; ignored on write. */
                     readonly owner?: unknown;
                     /**
                      * Format: int64
-                     * @description The id of the parent project. 0 or omitted for a top-level project. Sending an explicit 0 detaches the project to the top level and requires admin permission.
+                     * @description The id of the parent project, or 0 for a top-level project. Always present in responses. Omit it on a write to leave the parent unchanged; sending an explicit 0 detaches the project to the top level and requires admin permission.
                      */
                     parent_project_id?: number;
                     /**
@@ -8129,6 +8391,45 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Task"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["VikunjaErrorModel"];
+                };
+            };
+        };
+    };
+    "tasks-bulk-create": {
+        parameters: {
+            query?: {
+                /** @description How rich-text fields are exchanged. See the API description. */
+                format?: "html" | "markdown";
+            };
+            header?: never;
+            path: {
+                /** @description The numeric id of the project to create the tasks in. */
+                project: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkTaskCreation"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkTaskCreation"];
                 };
             };
             /** @description Error */
@@ -12627,6 +12928,64 @@ export interface operations {
                 "application/json": components["schemas"]["User-update-emailRequest"];
             };
         };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserActionMessageBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["VikunjaErrorModel"];
+                };
+            };
+        };
+    };
+    "user-cancel-email-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserActionMessageBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["VikunjaErrorModel"];
+                };
+            };
+        };
+    };
+    "user-resend-email-confirmation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description OK */
             200: {

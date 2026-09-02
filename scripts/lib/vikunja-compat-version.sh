@@ -23,11 +23,14 @@ set -euo pipefail
 #
 # Raised 2.3.0 -> 2.4.0 on 2026-08-31 (docs/ROADMAP.md §3 decision 27): nine operations this
 # project ships as implemented do not exist on a released Vikunja 2.3.0, so the old floor was
-# never true. It now EQUALS the aligned version derived below, and that is deliberate, not a
-# mistake: .github/workflows/release.yml compares MIN against COMPAT and simply omits the
-# duplicate `-vikunja<min>` tag / release-notes row when they match, so a coinciding floor
-# publishes one compat alias instead of two identical ones. The two separate again when the
-# aligned version moves past 2.4.0 (issue #237).
+# never true.
+#
+# It briefly EQUALLED the aligned version; it no longer does. Aligned moved to 2.6.0 on
+# 2026-09-02 (issue #254) and the floor deliberately stayed here, so a release now publishes
+# TWO distinct compat aliases again (.github/workflows/release.yml compares MIN against COMPAT
+# and only omits the duplicate when they match). Do not raise this to match the aligned version
+# without an explicit decision: nothing in 2.6.0 makes 2.4.0 unsupportable, 2.6.0 is weeks old,
+# and the floor is a support promise rather than a convenience.
 MIN_SUPPORTED_VIKUNJA="2.4.0"
 
 # `--min-supported` prints the floor and exits (no spec/jq needed) — used by the release workflow
@@ -39,7 +42,6 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SPEC_FILE="${REPO_ROOT}/docs/vikunja-openapi.json"
-COMPOSE_FILE="${REPO_ROOT}/docker/e2e/docker-compose.yml"
 
 if [[ ! -f "$SPEC_FILE" ]]; then
   echo "ERROR: vendored OpenAPI spec not found at $SPEC_FILE" >&2
@@ -67,23 +69,24 @@ if [[ ! "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-# Cross-check against the e2e docker-compose pin, if present. This is a loud WARNING, not a
+# Cross-check against the e2e aligned pin, if present. This is a loud WARNING, not a
 # failure: the vendored spec is the single source of truth for the compat tag (see header comment
 # above); the e2e pin is a separately-maintained decision that should normally agree with it but
 # isn't required to gate a release publish.
 #
-# The compose file's image tag is env-driven (`vikunja/vikunja:${VIKUNJA_VERSION:-2.4.0}`, see
-# docker/e2e/docker-compose.yml) so a version-matrix run can override it without editing the
-# file — this cross-check reads the *default* fallback value, i.e. the baseline pin everyone gets
-# with a plain `npm run e2e:up`, not whatever VIKUNJA_VERSION a given test-matrix run happened to
-# override it to.
-if [[ -f "$COMPOSE_FILE" ]]; then
-  COMPOSE_PIN="$(grep -oE '\$\{VIKUNJA_VERSION:-[0-9]+\.[0-9]+\.[0-9]+\}' "$COMPOSE_FILE" \
+# WHICH PIN THIS COMPARES AGAINST. `DEFAULT_TARGET` in scripts/lib/e2e-target.ts, not the
+# compose file's `${VIKUNJA_VERSION:-...}` fallback. Since #254 that fallback deliberately names
+# the 2.4.0 DEDICATED-Postgres target rather than the aligned one (the aligned target keeps its
+# database in a shared server a bare compose invocation cannot start), so comparing against it
+# would warn on every single run. The resolver constant is the actual pin.
+TARGET_FILE="${REPO_ROOT}/scripts/lib/e2e-target.ts"
+if [[ -f "$TARGET_FILE" ]]; then
+  ALIGNED_PIN="$(grep -oE "DEFAULT_TARGET = '[0-9]+\.[0-9]+\.[0-9]+" "$TARGET_FILE" \
     | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
-  if [[ -n "$COMPOSE_PIN" && "$COMPOSE_PIN" != "$BASE_VERSION" ]]; then
-    echo "WARNING: vendored spec base version ($BASE_VERSION) does not match the e2e Vikunja pin" >&2
-    echo "         ($COMPOSE_PIN) in $COMPOSE_FILE — these should usually agree. If the spec was" >&2
-    echo "         just refreshed, consider bumping the e2e pin too (and vice versa)." >&2
+  if [[ -n "$ALIGNED_PIN" && "$ALIGNED_PIN" != "$BASE_VERSION" ]]; then
+    echo "WARNING: vendored spec base version ($BASE_VERSION) does not match DEFAULT_TARGET" >&2
+    echo "         ($ALIGNED_PIN) in $TARGET_FILE — these should usually agree. If the spec was" >&2
+    echo "         just refreshed, consider bumping DEFAULT_TARGET too (and vice versa)." >&2
   fi
 fi
 
