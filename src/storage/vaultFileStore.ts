@@ -212,7 +212,8 @@ function migrationNoticeFor(record: VaultRecord, token: string): string | undefi
     return (
       'Your credential is stored in the legacy pre-binding format (keyVersion 1): its ' +
       'Vikunja URL and identity binding are not covered by the encryption tag. It still ' +
-      'works — re-run vikunja_auth provision with the same token to upgrade it.'
+      'works — re-run vikunja_auth provision with a valid API token to upgrade it (it does ' +
+      'not need to be the one already stored).'
     );
   }
   return undefined;
