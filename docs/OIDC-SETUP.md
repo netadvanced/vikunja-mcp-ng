@@ -572,13 +572,13 @@ require already knowing the target's email to search by, which is precisely the 
 own email when `GET /user` won't. There is nothing to add on 2.4.0 beyond documenting the
 gap here; this is intentionally not coded around.
 
-**Forward-looking, not yet actionable:** Vikunja 2.6.0 adds a `pending_email` field to
-some user-facing responses (tracked for this project in issue #237). Nothing in this
-repository has been verified against 2.6.0, `pending_email` is not the same thing as a
-confirmed `email` and is not known to appear on `GET /user` under the enrollment JWT
-specifically, and 2.6.0 is not this project's floor or tested default. Do not assume
-email-matching starts working on 2.6.0 without re-verifying live; this paragraph is
-context for when that version alignment happens, not a claim about today's behavior.
+**Verified against a live 2.6.0 server (2026-09-02, during the #254 alignment work):**
+email-matching does NOT start working on 2.6.0 either. `GET /user` still omits `email`
+there, on both the v1 and v2 API, exactly as on 2.4.0. Vikunja 2.6.0 does add a
+`pending_email` field to some user-facing responses, but it is not the same thing as a
+confirmed `email`, and it does not appear on `GET /user` under the enrollment JWT. So
+matching stays effectively username-only through the current aligned/tested version too
+— this is not a 2.4.0-specific gap that 2.6.0 closes.
 
 > **Warning: do not pre-create a local Vikunja account with a username an SSO user will
 > later present.** If a local account already holds the username an OIDC login would
