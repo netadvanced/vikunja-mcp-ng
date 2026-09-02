@@ -1,9 +1,9 @@
 {
   "id": "share-project-by-user",
   "title": "Share a project via a public link",
-  "description": "Ergonomics probe for project-sharing discoverability: a project needs to exist and get a link share, exercising the create-share composite (src/tools/projects/sharing.ts). RE-VERIFIED 2026-07-25 (netadvanced/vikunja-mcp#28 C1): optimalCallCount reasoning unchanged -- create-project (1) + create-task (1, the single \"kickoff\" task) + create-share (1) = 3. Unrelated to both PR #178 (label taskIds) and PR #175 (setup-kanban, which has no create-share step).",
+  "description": "Ergonomics probe for project-sharing discoverability: a project needs to exist and get a link share, exercising the create-share composite (src/tools/projects/sharing.ts). RE-VERIFIED 2026-07-25 (netadvanced/vikunja-mcp#28 C1): optimalCallCount reasoning at the time -- create-project (1) + create-task (1, the single \"kickoff\" task) + create-share (1) = 3. RE-BASELINED 2026-09-02 (issue #202): the CREATION half of that estimate is now stale -- `setup-kanban`'s columns-less form (`title` + `tasks`, no `columns`; issue #185) creates the project and its single kickoff task in ONE call, with zero Kanban structure fabricated. `create-share` is still a distinct, unavoidable second call: it has no columns-less or any-other one-call fold-in with project/task creation (src/tools/projects/sharing.ts has no such composite). New optimum: setup-kanban columns-less (1) + create-share (1) = 2.",
   "promptTemplate": "Create a project called \"{{prefix}}Shared Roadmap\" with one task called \"{{prefix}}kickoff\", then share the project via a read-only public link so it can be sent to a client.",
-  "optimalCallCount": 3,
+  "optimalCallCount": 2,
   "verify": [
     { "type": "project-exists", "titleContains": "{{prefix}}Shared Roadmap" },
     { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Shared Roadmap", "min": 1 },

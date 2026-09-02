@@ -178,20 +178,20 @@ transcript that revealed it).
 |---|---|---|
 | `q3-offsite-kanban` | 1 | Pierre's canonical example: a single sentence hiding a multi-step composite (project + 3-column Kanban + 10 tasks + priorities + due dates). `optimalCallCount` dropped from 15 to 1 once the `setup-kanban` composite (issue #173) shipped — see `setup-kanban-composite` below |
 | `setup-kanban-composite` | 1 | added alongside issue #173's `setup-kanban` composite: a q3-offsite-kanban-style prompt (new project, 4-column board, 8 tasks distributed across columns, priorities, due dates) specifically probing whether the agent reaches for the one-call composite instead of hand-rolling create -> create-bucket (xN) -> bulk-create -> set-bucket/bulk-set-bucket (xN) |
-| `filter-high-priority-search` | 3 | the Vikunja filter query language ([docs/API_NOTES.md](API_NOTES.md)'s filter notes) |
-| `share-project-by-user` | 3 | project link-sharing discoverability |
-| `subtask-breakdown` | 3 | subtask creation (Vikunja has no first-class subtask resource — it's a task relation under the hood). Re-baselined 2026-07-25 from 5 to 3: `bulk-create-subtasks` reaches the same end state in one call instead of one `create-subtask` call per subtask — see "Re-baselining `optimalCallCount`" below |
+| `filter-high-priority-search` | 2 | the Vikunja filter query language ([docs/API_NOTES.md](API_NOTES.md)'s filter notes). Re-baselined 2026-09-02 (issue #202) from 3 to 2: the columns-less `setup-kanban` form collapses the create-project + bulk-create-with-priority/dueDate creation step to one call, leaving the filter `list` call as the only other step — see "Re-baselining `optimalCallCount`" below |
+| `share-project-by-user` | 2 | project link-sharing discoverability. Re-baselined 2026-09-02 (issue #202) from 3 to 2: the columns-less `setup-kanban` form collapses create-project + the single kickoff task into one call, leaving `create-share` as the only other step |
+| `subtask-breakdown` | 2 | subtask creation (Vikunja has no first-class subtask resource — it's a task relation under the hood). Re-baselined 2026-07-25 from 5 to 3 (`bulk-create-subtasks` reaches the same end state in one call instead of one `create-subtask` call per subtask), then again 2026-09-02 (issue #202) from 3 to 2: the columns-less `setup-kanban` form collapses create-project + the single parent task into one call, leaving `bulk-create-subtasks` as the only other step — see "Re-baselining `optimalCallCount`" below |
 | `bulk-create-subtasks` | 3 | bulk-create-subtasks composite discoverability vs. one `create-subtask` call per subtask |
-| `bulk-priority-bump` | 3 | bulk-edit discoverability vs. one-call-per-task. See the 2026-08-31 outstanding-work note below the friction table: its recorded optimum predates the columns-less `setup-kanban` form and is reported as likely stale (should be 2, not 3), but has not been re-derived yet — tracked against issue #202 |
+| `bulk-priority-bump` | 2 | bulk-edit discoverability vs. one-call-per-task. Re-baselined 2026-09-02 (issue #202) from 3 to 2, closing the 2026-08-31 outstanding-work note below: the columns-less `setup-kanban` form collapses create-project + bulk-create into one call, leaving the prompt's prescribed, separate `bulk-update` step as the only other call |
 | `bulk-set-bucket` | 1 | bulk-set-bucket composite discoverability vs. moving each task into its Kanban column one at a time. Re-baselined 2026-07-25 from 9 to 1: this scenario's prompt is a verbatim match for `setup-kanban` (PR #175) — see "Re-baselining `optimalCallCount`" below |
 | `labels-due-date-combo` | 1 | label creation + application + due dates combined in one ask, now solved by `setup-kanban`'s columns-less form (issue #185): `title` + `tasks` (each carrying `labels`/`dueDate`), no `columns` — one call, zero Kanban structure touched. PR #179 briefly re-baselined this to 1 via a fabricated placeholder column instead; reverted 2026-07-25 (netadvanced/vikunja-mcp#28 T1). Re-baselined to 1 again 2026-07-27 for the unrelated, legitimate reason above — see "Re-baselining `optimalCallCount`" below |
-| `single-task-smoke` | 2 | deliberately the simplest, most deterministic scenario — use this one for a first try or a live-smoke proof (see the note on `optimalCallCount` below — it is no longer necessarily the global minimum by raw call count, but remains the designated smoke-test scenario) |
-| `mixed-priority-batch` | 2 | varying a per-item field within a single batch-creation call |
+| `single-task-smoke` | 1 | deliberately the simplest, most deterministic scenario — use this one for a first try or a live-smoke proof. Re-baselined 2026-09-02 (issue #202) from 2 to 1: the columns-less `setup-kanban` form reaches 1 call with zero fabrication (no placeholder column needed, unlike the route this scenario previously declined to credit) — it remains the designated smoke-test scenario for its simplicity and determinism, not for being the lowest call count (see the note on `optimalCallCount` below) |
+| `mixed-priority-batch` | 1 | varying a per-item field within a single batch-creation call. Re-baselined 2026-09-02 (issue #202) from 2 to 1: the columns-less `setup-kanban` form varies `priority` per task within its own single `tasks` array just as `bulk-create` does, so it satisfies this scenario's signal (per-item variation within ONE call) without fabricating any Kanban structure — see "Re-baselining `optimalCallCount`" below |
 | `percent-done-scale` | 1 | the `percentDone` scale (decision 22): the prompt says "75% done" in plain English and the verify check reads the RAW REST field, which Vikunja stores as `0.75` — so it fails if the 0-100 -> 0-1 conversion in `src/utils/percent-done.ts` is removed (75 stored) or applied twice (0.0075 stored). Re-baselined from 2 to 1 (issue #236): `setup-kanban`'s per-task shape now declares `percentDone`, so `setup-kanban` with `title` + `tasks: [{title, percentDone: 75}]` and no `columns` reaches this end state in one call — see the scenario's own `description` for the full re-derivation |
 | `percent-done-update` | 3 | the `percentDone` scale on the UPDATE path (a separate call site from create): create-project (1) + create-task with an initial `percentDone` (1) + `vikunja_tasks update` with a revised `percentDone` (1) = 3. The revision is prescribed as a sequence (25% then 60%), so creating at the final value outright is not a faithful solve and is not credited |
 | `percent-done-bulk-update` | 2 | the `percentDone` scale on `vikunja_task_bulk bulk-update`'s generic `field`/`value` pair (`field: 'percent_done'`), a code path invisible from the tool schema. `setup-kanban` columns-less (1) + `bulk-update` with `taskIds` + `field: 'percent_done'` (1) = 2 |
 | `percent-done-filter-threshold` | 4 | the `percentDone` scale inside the filter DSL (`percent_done > 50` vs. the wire's `0.75`-shaped values) — the one leak that produces no error, just an empty result set. create-project (1) + bulk-create with per-task `percentDone` (1) + `list` with a `filter` (1) + `apply-label` with `taskIds` (1) = 4 |
-| `existing-label-reuse` | 3 | applying an already-existing label (find-then-apply path — seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open) |
+| `existing-label-reuse` | 1 | applying an already-existing label (find-then-apply path — seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open). Re-baselined 2026-09-02 (issue #202) from 3 to 1: the columns-less `setup-kanban` form's per-task `labels` field resolves-and-reuses an existing label by title via the same `ensureLabelByTitle` helper `apply-label` uses, so project + tasks + label-reuse all land in one call — see "Re-baselining `optimalCallCount`" below |
 | `project-rename-share` | 3 | project create + rename + share-by-name in one prompt — probes the `title`-vs-`name` field-naming footgun (`vikunja_projects`' flat args object has both) and exercises the share-by-name composite (`create-share` with a `name`) |
 | `task-position-after-create` | 2 | the teaching error shipped in PR #229: `position` is rejected on `vikunja_tasks create` (task order is per-view state, written through `set-position`), and this scenario measures whether that error actually teaches the agent the right subcommand instead of causing a retry. `setup-kanban` columns-less (1) + `set-position` (1) = 2 |
 | `bulk-update-partial-failure` | 3 | what the tool surface does when part of a bulk operation cannot succeed (a stale task id inside a `bulk-update` call) — measures whether the honest partial-failure report is preserved or papered over by fabricating a replacement for the deleted task. `setup-kanban` columns-less (1) + `delete` on the cancelled item (1) + `bulk-update` on the survivors (1) = 3 |
@@ -414,11 +414,22 @@ invents nothing.
    would fabricate unrequested Kanban boards across the suite and collapse
    almost every `optimalCallCount` to 1, destroying the harness's ability to
    ever show friction again. Only apply a composite's shortcut where it's
-   the tool's actual designed purpose for that prompt (rule 2); otherwise
-   keep the natural, intended-use derivation, and say so explicitly in the
-   scenario's `description` (see `mixed-priority-batch.json`,
-   `single-task-smoke.json` for scenarios that explicitly decline the
-   shortcut and state why).
+   the tool's actual designed purpose for that prompt (rule 2), or where
+   rule 3's zero-fabrication test is independently satisfied. The
+   columns-less `setup-kanban` form (see `labels-due-date-combo.json`) is a
+   plain project+tasks composite that fabricates no structure at all, so —
+   unlike the placeholder-column route this paragraph is warning about — it
+   qualifies for ANY "create a project with N tasks (with per-task fields)"
+   ask, not only Kanban-shaped ones: see the 2026-09-02 re-baseline of
+   `mixed-priority-batch.json`, `single-task-smoke.json`,
+   `existing-label-reuse.json`, `filter-high-priority-search.json`,
+   `share-project-by-user.json`, `subtask-breakdown.json`, and
+   `bulk-priority-bump.json` (issue #202). What stays excluded is the
+   placeholder-*column* fabrication specifically (rule 3), and
+   front-loading a value the prompt prescribes as a separate, later step
+   (see `bulk-priority-bump.json`'s description for that distinct,
+   still-in-force exclusion). Otherwise keep the natural, intended-use
+   derivation, and say so explicitly in the scenario's `description`.
 5. Record the reasoning in the scenario's own `description` field (this
    schema has no separate "why" field: `ScenarioSchema.parse` silently
    strips unknown keys, so `description` is the only place a comment
@@ -458,13 +469,55 @@ Two re-derivations are on record from this same round of evidence:
 
 - `percent-done-scale`'s optimum was re-derived 2 → 1 by issue #236 (see the
   scenario table above): **done**, reflected in `percent-done-scale.json`.
-- `bulk-priority-bump`'s optimum is reported as **stale and likely wrong**:
-  it should plausibly be 2, not the currently recorded 3, because that
-  scenario's optimum was last re-verified on 2026-07-25, which predates the
+- `bulk-priority-bump`'s optimum was reported as **stale and likely wrong**:
+  it should plausibly be 2, not the then-recorded 3, because that scenario's
+  optimum was last re-verified on 2026-07-25, which predates the
   columns-less `setup-kanban` form that shipped on 2026-07-27 (issue #185).
-  **This has NOT been re-derived yet**: it is outstanding work, tracked
-  against issue #202, not a claim this document is making about the current
-  `bulk-priority-bump.json` file.
+  At the time this section was written, that had **NOT been re-derived
+  yet**. **Done as of 2026-09-02** — see the next section.
+
+### Re-baseline, 2026-09-02 (issue #202)
+
+Closes issue #202. Re-derived, from the CURRENT tool schemas (never from the
+observed `actual` alone — see the re-baselining policy above), the
+`optimalCallCount` of every one of the 7 scenarios the 2026-07-28 and
+2026-08-31 sweeps found beating their own recorded optimum:
+`mixed-priority-batch`, `single-task-smoke`, `bulk-priority-bump`,
+`existing-label-reuse`, `filter-high-priority-search`,
+`share-project-by-user`, and `subtask-breakdown`. The issue's own hypothesis
+held for all 7: every one of them had a `create-project` + (`bulk-create` /
+`create-task`) creation step that predates `setup-kanban`'s `columns`
+argument becoming optional (issue #185), and that step collapses to ONE
+call via the columns-less form (`title` + `tasks`, no `columns` — verified
+against `src/tools/projects/kanban-setup.ts`, which never resolves a Kanban
+view or bucket on that path) without fabricating anything the prompt didn't
+ask for.
+
+Two scenarios (`mixed-priority-batch`, `single-task-smoke`) had previously
+declined this same shortcut on the grounds that reaching it required a
+fabricated placeholder column (rule 3) or would erode scenario-specific
+signal; both grounds are now stale (the columns-less route fabricates
+nothing, and it tests the identical "vary/set a field within one call"
+property `bulk-create` was chosen to probe), so both are re-baselined too —
+see rule 4 above and each scenario's own `description` for the full
+reasoning. `bulk-priority-bump` keeps its prescribed-sequence exclusion
+(rule 3's addendum): only the creation step collapses, the priority change
+still has to happen in a separate, later `bulk-update` call.
+
+| scenario | old optimal | new optimal | why |
+|---|---|---|---|
+| `mixed-priority-batch` | 2 | 1 | setup-kanban columns-less varies `priority` per task in its own one-call `tasks` array |
+| `single-task-smoke` | 2 | 1 | setup-kanban columns-less reaches 1 call with zero fabrication (no placeholder column needed) |
+| `bulk-priority-bump` | 3 | 2 | creation step (project + 8 tasks) collapses to 1 call; the prescribed separate `bulk-update` stays a second call |
+| `existing-label-reuse` | 3 | 1 | setup-kanban columns-less's per-task `labels` field reuses the seeded label by title via the same `ensureLabelByTitle` helper `apply-label` uses |
+| `filter-high-priority-search` | 3 | 2 | creation step collapses to 1 call; the filter `list` read stays a second, unreplaceable call |
+| `share-project-by-user` | 3 | 2 | creation step collapses to 1 call; `create-share` stays a second, unreplaceable call |
+| `subtask-breakdown` | 3 | 2 | creation step (project + parent task) collapses to 1 call, returning the parent's id for `bulk-create-subtasks` |
+
+Sanity-checked per the issue's own requirement: `npm run battle -- --scenario
+<name> --model haiku` was re-run for each changed scenario after the
+re-baseline to confirm no scenario still beats its new optimum on a routine
+run (see this PR's description for the results).
 
 ## Testing the harness itself (no live Claude needed)
 
