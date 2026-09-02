@@ -137,6 +137,12 @@ interface VikunjaUserResponse {
   email?: string;
 }
 
+/** One entry of a `GET /users?s=` search result — only the fields the squatting check needs. */
+interface VikunjaUserSearchResult {
+  id?: number;
+  username?: string;
+}
+
 /**
  * A flow failure with a browser-safe message. `userMessage` is rendered
  * (escaped) on the error page; anything sensitive belongs in the log call at
@@ -510,6 +516,28 @@ export class EnrollmentService {
    * claims the MCP bearer token carries — so the match is: `email` claim
    * (case-insensitive) first, `preferred_username` vs username as the
    * fallback, and FAIL CLOSED when the MCP token carries neither.
+   *
+   * Design is intentionally unchanged by issues #223/#224 — email-first
+   * with a username fallback is correct. What #223 found is that Vikunja
+   * 2.4.0's `GET /user` never returns `email` at all, so `emailMatches`
+   * above can never be true against 2.4.0 today; the username fallback is
+   * the only path that ever succeeds in practice (documented in
+   * docs/OIDC-SETUP.md §9a). #224 found the failure mode that falls out of
+   * that: when Vikunja auto-creates an SSO account whose
+   * `preferred_username` collides with an existing local account's
+   * username, Vikunja silently assigns the new account a random username
+   * instead — so the fallback ALSO fails, and the legitimate enrolling
+   * user gets the same 403 as a genuine forwarded-link attack. This method
+   * cannot tell those two cases apart from the mismatch alone (both look
+   * identical: neither claim matches the enrolled account), so on a
+   * mismatch it makes one best-effort, non-fatal `GET /users?s=` search for
+   * the wanted username (that search does not require target-user
+   * discoverability for an exact username match, per the OpenAPI spec) to
+   * see whether a DIFFERENT account already holds it. A positive hit is a
+   * real, checkable signal — not a guess at Vikunja's random-username word
+   * pattern, which is undocumented and deliberately not relied on here —
+   * and earns the caller a squatting-specific message instead of the
+   * generic mismatch one.
    */
   private async verifyEnrolledAccount(jwt: string, identity: Identity): Promise<void> {
     let enrolled: VikunjaUserResponse;
@@ -553,6 +581,34 @@ export class EnrollmentService {
       enrolled.username === wantUsername;
 
     if (!emailMatches && !usernameMatches) {
+      const squatter =
+        wantUsername !== undefined
+          ? await this.findUsernameSquatter(jwt, wantUsername, enrolled?.username)
+          : undefined;
+
+      if (squatter !== undefined) {
+        logger.error(
+          'Enrollment: preferred_username is already held by a different Vikunja account — ' +
+            'Vikunja auto-assigned the enrolled account a different, random username ' +
+            '(SSO username squatting, issue #224); refusing to link',
+          {
+            sub: identity.sub,
+            wantUsername,
+            enrolledUsername: enrolled?.username,
+            squattingAccountId: squatter.id,
+          },
+        );
+        throw new EnrollmentFlowError(
+          403,
+          `A different Vikunja account already uses the username "${wantUsername}" that your ` +
+            'identity provider presents, so Vikunja created your SSO account under a separate, ' +
+            'randomly generated username instead — the signed-in account still does not match ' +
+            'the identity this enrollment link was issued to. This is username squatting, not a ' +
+            'forwarded link: ask your Vikunja operator to rename or remove the account using ' +
+            `"${wantUsername}" (see docs/OIDC-SETUP.md, §9a), then request a fresh enrollment link.`,
+        );
+      }
+
       logger.error(
         'Enrollment: the account Vikunja authenticated does not match the identity ' +
           'that requested this enrollment link — refusing to link (forwarded-link protection)',
@@ -565,6 +621,49 @@ export class EnrollmentService {
           'was linked. Return to your chat and run vikunja_auth provision yourself.',
       );
     }
+  }
+
+  /**
+   * Best-effort, non-fatal check for issue #224's squatting scenario: does a
+   * DIFFERENT Vikunja account already hold the username the identity's
+   * `preferred_username` claims? `GET /users?s=` matches by username without
+   * requiring the target to be discoverable (unlike name/email matches, per
+   * the OpenAPI spec), so an exact hit here is a real signal, not a guess.
+   * Any failure (network, unexpected shape) is swallowed and treated as
+   * "not detected" — this is a diagnostic nicety on top of the fail-closed
+   * mismatch handling above, never a reason to change that outcome.
+   */
+  private async findUsernameSquatter(
+    jwt: string,
+    wantUsername: string,
+    enrolledUsername: string | undefined,
+  ): Promise<VikunjaUserSearchResult | undefined> {
+    let results: unknown;
+    try {
+      results = await this.restRequest(
+        this.manager(jwt),
+        'GET',
+        `/users?s=${encodeURIComponent(wantUsername)}`,
+        undefined,
+        { ignoreRequestContext: true },
+      );
+    } catch (error) {
+      logger.warn(
+        'Enrollment: /users search for squatting detection failed; falling back to the ' +
+          'generic mismatch message',
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+      return undefined;
+    }
+    if (!Array.isArray(results)) {
+      return undefined;
+    }
+    return (results as VikunjaUserSearchResult[]).find(
+      candidate =>
+        typeof candidate?.username === 'string' &&
+        candidate.username === wantUsername &&
+        candidate.username !== enrolledUsername,
+    );
   }
 
   /**

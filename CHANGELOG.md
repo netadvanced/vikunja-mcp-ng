@@ -8,6 +8,33 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+### Fixed
+
+- **Enrollment identity pinning gave the same generic 403 for an SSO username-squatting
+  false-positive as for an actual forwarded-link attack, with no way to self-diagnose.**
+  When Vikunja auto-creates an SSO account whose `preferred_username` is already taken by
+  an existing local account, it silently assigns the new account a random username
+  instead, so the enrollment callback's email/username identity check fails for a
+  legitimate user with no actionable signal. `verifyEnrolledAccount` now makes one
+  best-effort `GET /users?s=<preferred_username>` lookup on a mismatch (username search
+  never requires target discoverability) and, when it confirms a different account
+  already holds that username, returns a squatting-specific 403 naming the cause and the
+  fix instead of the generic "opened by another account" message. Fail-closed behavior on
+  a genuine mismatch is unchanged; Vikunja's random-username *pattern* is never guessed at
+  — only a live account lookup is used. (#224)
+
+### Documentation
+
+- Clarified the real per-Vikunja-version behavior of enrollment identity pinning:
+  matching is effectively username-only on Vikunja 2.4.0 (the current floor and tested
+  default) because `GET /user` never returns `email` there; the email-first path is not a
+  bug, it activates automatically once a Vikunja version starts returning email. Recorded
+  why fetching email another way on 2.4.0 has no viable route, and noted Vikunja 2.6.0's
+  `pending_email` field as unverified, forward-looking context only (#237). Documented the
+  operational rule for the squatting scenario (never pre-create a local account whose
+  username collides with a value an IdP user will present as `preferred_username`) in
+  `docs/OIDC-SETUP.md` and `docs/CONFIGURATION.md`. (#223, #224)
+
 ## [0.7.0-beta.4] - 2026-09-02
 
 **A second independent-review pass on the beta.3 audit fixes themselves.** Two more

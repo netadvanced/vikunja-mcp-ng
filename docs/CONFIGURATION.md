@@ -632,6 +632,13 @@ Enabling enrollment adds three hard config requirements (startup error otherwise
 Enrollment links and the OAuth `redirect_uri` are built from the public URL. The MCP
 access tokens must also carry an `email` (or `preferred_username`) claim: the callback
 pins the enrolled Vikunja account to the initiating identity and fails closed without it.
+In practice on Vikunja 2.4.0 (the current floor and tested default) this pinning is
+**username-only** — `GET /user` on 2.4.0 never returns `email`, so keep the connector
+issuing `preferred_username`. Also never pre-create a local Vikunja account whose
+username collides with a value an IdP user will present as `preferred_username`:
+Vikunja silently auto-renames the colliding SSO account instead of failing, which then
+false-403s that user's own enrollment. See `docs/OIDC-SETUP.md` §9a for the full
+matching behavior, the squatting scenario, and the mitigation.
 
 | Setting | Config key | Env var | Notes |
 |---|---|---|---|
