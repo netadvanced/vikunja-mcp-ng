@@ -6,24 +6,23 @@ This document tracks issues discovered with the Vikunja API that should be repor
 and tests cite them by number (`VIKUNJA_API_ISSUES.md #2`, `#7`, `#8`), so
 numbers are never reused or reshuffled; resolved items keep their number and get
 a status line. Each item carries a **Status** and the Vikunja version the claim
-was last checked against. The supported floor is **Vikunja 2.4.0**; the
-aligned/tested default is **2.6.0** since 2026-09-02 (`DEFAULT_TARGET` and
-`FLOOR_VERSION` in `scripts/lib/e2e-target.ts`). The floor
-rose from 2.3.0 on 2026-08-31, so an item verified only against 2.3.0 now
-describes a version below the floor, and anything only ever verified on 0.22.x
-is doubly so. Both should be re-checked before being relied on. Note that
-"verified against go-vikunja source, pinned v2.3.0" lines below record *where a
-handler was read*, not a compatibility claim; handler source rarely moves, so
-those stay as provenance.
+was last checked against. This project supports and tests the trailing THREE
+released versions (policy since 2026-09-02, decision 29) — currently
+**2.4.0** (floor), **2.5.0**, **2.6.0** (aligned/tested default); see
+`SUPPORTED_VERSIONS` in `scripts/lib/e2e-target.ts`, the single source of
+truth. The floor rose from 2.3.0 on 2026-08-31, so an item verified only
+against 2.3.0 now describes a version below the floor, and anything only ever
+verified on 0.22.x is doubly so. Both should be re-checked before being relied
+on. Note that "verified against go-vikunja source, pinned v2.3.0" lines below
+record *where a handler was read*, not a compatibility claim; handler source
+rarely moves, so those stay as provenance.
 
-**2.6.0 status (updated 2026-09-02, issue #254).** Both 2.4.0 and 2.6.0 now
-run as full `test:matrix` lanes on both DB backends, so an item verified on
-either is verified on a tested version. **2.5.0 is still not a lane**: it is
-supported on the strength of a source diff plus its two tested neighbours, and
-was stood up ad hoc only to bisect one fix (item C3 below). An item that has
-only ever been checked on 2.4.0 says nothing about 2.6.0 and vice versa —
-several of the entries added in this pass exist precisely because the two
-answer differently.
+**2.6.0 status (updated 2026-09-02, issue #254).** All three of 2.4.0, 2.5.0
+and 2.6.0 now run as full `test:matrix` lanes on both DB backends, so an item
+verified on any of them is verified on a tested version. An item that has only
+ever been checked on 2.4.0 says nothing about 2.6.0 and vice versa — several
+of the entries added in this pass exist precisely because they answer
+differently.
 
 | # | Issue | Status |
 |---|---|---|

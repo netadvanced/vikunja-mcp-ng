@@ -113,22 +113,21 @@ cannot disturb another's:
 |---|---|---|
 | `2.6.0-postgres` | **8260** | the default; aligned/tested |
 | `2.6.0-sqlite` | 9260 | aligned, SQLite-only failure classes |
+| `2.5.0-postgres` | 8250 | the middle of the support window |
+| `2.5.0-sqlite` | 9250 | middle, SQLite-only failure classes |
 | `2.4.0-postgres` | 8240 | the floor lane (minimum supported) |
 | `2.4.0-sqlite` | 9240 | floor, SQLite-only failure classes |
 
-Aligned moved to `2.6.0` on 2026-09-02 (issue #254) and the floor stayed at `2.4.0`, so the
-floor lane is back and the standard set is four stacks. The pin lives in `DEFAULT_TARGET` and
-`FLOOR_VERSION` in `scripts/lib/e2e-target.ts` — those two constants, nowhere else.
-
-**2.5.0 is deliberately not a lane.** It resolves like any other version
-(`VIKUNJA_E2E_TARGET=2.5.0-postgres npm run e2e:up`, port 8250) and was stood up ad hoc to
-bisect the v2 PATCH-on-subscribed-task fix to it, but it is not in `standardTargets()` and
-`npm run e2e:up:all` does not include it. Support for 2.5.0 rests on a source diff plus its two
-tested neighbours; adding a fifth target would claim test coverage that does not exist.
+Policy since 2026-09-02 (docs/ROADMAP.md §3 decision 29): support and test the TRAILING THREE
+released versions, not just a floor and an aligned default. All three are full `test:matrix`
+lanes on both DB backends — six stacks, the standard set. The single source of truth is
+`SUPPORTED_VERSIONS` in `scripts/lib/e2e-target.ts`; `DEFAULT_TARGET` (newest) and
+`FLOOR_VERSION` (oldest) both derive from it. When a new version ships, the window shifts —
+drop the oldest entry, append the new one — rather than growing past three.
 
 The **resolver is unchanged** for older versions too: `2.3.0-postgres` still resolves to port
-8230 and can still be stood up by hand if you ever need to look at the old floor. It is simply
-not a supported target any more.
+8230 and can still be stood up by hand if you ever need to look at a version below the floor.
+It is simply not a supported target.
 
 Ports are **derived, never hand-assigned**: `8000 + (major×100 + minor×10 +
 patch)` for Postgres, `9000 + …` for SQLite, so Vikunja 2.4.1 lands on 8241
@@ -138,6 +137,7 @@ harnesses consult. Never hardcode a port.
 
 ```bash
 npm run e2e:up                                   # default target (2.6.0-postgres, port 8260)
+VIKUNJA_E2E_TARGET=2.5.0-postgres npm run e2e:up # the middle lane, port 8250
 VIKUNJA_E2E_TARGET=2.4.0-postgres npm run e2e:up # the floor lane, port 8240
 npm run e2e:up:all                               # every standard target at once
 npm run e2e:status                               # what's up, on which port, running which version
@@ -274,6 +274,15 @@ computed expectation. An undetected server version deliberately evaluates as
 *not* new enough, so a missing `GET /info` can never be mistaken for the new
 behaviour.
 
+**2.5.0 became a full `test:matrix` lane in decision 29 without each row above being
+independently live-verified against it** (only the v2 PATCH-on-subscribed-task fix, a separate
+issue, was actually probed on 2.5.0 — see #254 probe C3, fixed there). `serverAtLeast(...,
+'2.6.0')` gates these on the 2.6.0 boundary, so a 2.5.0 run asserts the SAME expected values as
+2.4.0 for every row above, as an inherited assumption, not a checked one. If a 2.5.0-postgres or
+2.5.0-sqlite matrix run ever fails one of these specific checks, that is genuine new information
+about exactly where 2.5.0 sits relative to the 2.6.0 tightenings — add a row, don't treat it as
+a harness bug.
+
 One check is deliberately *not* gated: `set-position` with a view from
 another project is refused on every version, because this client refuses it
 itself (`assertViewBelongsToProject`) — 2.4.0 would otherwise accept it and
@@ -393,74 +402,81 @@ what makes them a stable fixture rather than something every run rebuilds.
 
 ## Version pinning and refresh
 
-**Policy: minimum supported Vikunja is 2.4.0 (the v1-floor); the
-aligned/tested default is 2.6.0 since 2026-09-02. The two no longer
-coincide, so the floor lane is live again.**
+**Policy since 2026-09-02 (docs/ROADMAP.md §3 decision 29): support and test
+the TRAILING THREE released Vikunja versions.** Currently `2.4.0` (floor),
+`2.5.0` (middle), `2.6.0` (aligned/tested default). This replaced the older
+"floor + aligned, sometimes coinciding" model: instead of one or two
+special-cased versions, there is one ordered window of three, and it slides
+forward every time a new version ships.
 
-The floor was `2.3.0` until 2026-08-31. It rose because nine operations this
-server ships as `✅ Implemented` (the eight `/admin/*` operations behind
+The floor was `2.3.0` until 2026-08-31, when it rose because nine operations
+this server ships as `✅ Implemented` (the eight `/admin/*` operations behind
 `vikunja_admin`, plus `GET /projects/{project}/tasks/by-index/{index}`,
 i.e. `vikunja_tasks get-by-index`) **do not exist on a released Vikunja 2.3.0
 at all**; the 169-operation denominator they were counted in came from a
 `try.vikunja.io` *unstable* build 1019 commits past the `v2.3.0` tag, not
-from the tag. Raising the floor makes the compatibility claim true rather
-than bolting a caveat onto a false one. Secondary reason: upstream moves
-fast and this project needs to keep up. See `docs/ROADMAP.md` §3 decision 27.
-
-Aligned moved 2.4.0 -> 2.6.0 on 2026-09-02 (issue #254) after a live probe
-pass and a clean four-lane `test:matrix` run. The floor deliberately did NOT
-move with it: nothing in 2.6.0 makes 2.4.0 unsupportable, and 2.6.0 is weeks
-old, so a self-hoster on 2.4.0 or 2.5.0 is the normal case rather than a
-straggler. Several 2.6.0 changes are permission *tightenings* that the two
-lanes must therefore assert differently — see "Version-conditional
-expectations" below.
+from the tag. See `docs/ROADMAP.md` §3 decision 27. Aligned moved 2.4.0 ->
+2.6.0 on 2026-09-02 (issue #254) after a live probe pass and a clean
+`test:matrix` run; the window then widened to include 2.5.0 as a real lane
+rather than an ad-hoc source-diff inference (decision 29), which is what
+made the window-of-three the standing policy rather than a one-off.
 
 Practical consequences:
 
-- The **floor lane is back**: four standard targets, and the floor row in
-  `docs/RELEASING.md`'s pre-tag checklist is live again.
+- **Six standard targets**, not four: all three versions × both DB backends.
+  The floor row in `docs/RELEASING.md`'s pre-tag checklist covers all three.
 - Some workarounds in `src/` (e.g. `src/tools/projects/sharing.ts`'s
   by-id-share-GET workaround) exist for upstream bugs fixed in 2.4.0. Their
   documented removal condition, "when the minimum supported version is raised
   to ≥ 2.4.0", **has now fired**, but removing them is a behaviour change
   needing live re-verification, so it is deliberately a separate change from
   the policy raise. Do not treat a stale "still needed at the 2.3.0 floor"
-  comment as current; check the dated note next to it.
+  comment as current; check the dated note next to it. The NEXT time the
+  window shifts and 2.4.0 drops out entirely, that removal condition becomes
+  unambiguous.
 
-The pin is `DEFAULT_TARGET` in `scripts/lib/e2e-target.ts`, not a literal in
-the compose file; see the comment block at the top of
-`docker/e2e/docker-compose.yml` for why its own fallbacks deliberately stay
-on the 2.4.0 dedicated-Postgres target. The vendored OpenAPI spec at
-`docs/vikunja-openapi.json` is fetched directly from the aligned version's
-container `/api/v1/docs.json` (`npm run fetch:api-spec:container`, see
-`[docs/API-SPEC.md](API-SPEC.md)`). Its `info.version`
-matches the pin exactly (`v2.6.0`, confirmed byte-for-byte, no ahead-of-tag
-drift), unlike the previous approach of fetching from `try.vikunja.io`
-(`npm run fetch:api-spec`), which always runs `unstable` and is confirmed
-to run ahead of any tagged release (the prior 2.3.0-era vendored spec
-reported `v2.3.0-1019-g95b7e673`, i.e. 1019 commits past the tag). Use
-`npm run fetch:api-spec:container` as the default refresh path; reach for
-`npm run fetch:api-spec` only if you deliberately want to preview
+The pin is `SUPPORTED_VERSIONS` in `scripts/lib/e2e-target.ts` — a single
+ordered array, not two separate constants to keep in sync by hand;
+`DEFAULT_TARGET` (aligned) and `FLOOR_VERSION` (floor) both derive from it.
+See the comment block at the top of `docker/e2e/docker-compose.yml` for why
+its own fallbacks deliberately stay on the 2.4.0 dedicated-Postgres target.
+The vendored OpenAPI spec at `docs/vikunja-openapi.json` is fetched directly
+from the aligned version's container `/api/v1/docs.json` (`npm run
+fetch:api-spec:container`, see `[docs/API-SPEC.md](API-SPEC.md)`). Its
+`info.version` matches the pin exactly (`v2.6.0`, confirmed byte-for-byte, no
+ahead-of-tag drift), unlike the previous approach of fetching from
+`try.vikunja.io` (`npm run fetch:api-spec`), which always runs `unstable`
+and is confirmed to run ahead of any tagged release (the prior 2.3.0-era
+vendored spec reported `v2.3.0-1019-g95b7e673`, i.e. 1019 commits past the
+tag). Use `npm run fetch:api-spec:container` as the default refresh path;
+reach for `npm run fetch:api-spec` only if you deliberately want to preview
 upstream's `unstable` build.
 
-To refresh the pin when a newer stable Vikunja release ships:
+To shift the window when a newer stable Vikunja release ships:
 
 1. Check available tags: `curl -s https://hub.docker.com/v2/repositories/vikunja/vikunja/tags?page_size=100`
    (or the [releases page](https://github.com/go-vikunja/vikunja/releases)).
-2. Bump `DEFAULT_TARGET` in `scripts/lib/e2e-target.ts` — that one constant.
-   Everything else derives from it: ports, project names, env-file names, and
-   `standardTargets()`. Decide deliberately whether `FLOOR_VERSION` moves with
-   it (it usually should not: the floor is a support promise, not a
-   convenience). A new version is `shared`-Postgres by default; nothing needs
-   adding to `DEDICATED_DB_VERSIONS`.
-3. Bring the stack up on the new tag and refresh `docs/vikunja-openapi.json`
+2. Live-verify the new version first (`VIKUNJA_VERSION=X.Y.Z npm run
+   test:matrix` on both DB backends) — don't infer behavior from its
+   changelog; #254 found the 2.6.0 changelog's own description of one fix
+   was wrong about the actual response body.
+3. Edit `SUPPORTED_VERSIONS` in `scripts/lib/e2e-target.ts` — drop the oldest
+   entry, append the new one. `DEFAULT_TARGET`, `FLOOR_VERSION`, ports,
+   project names, env-file names, and `standardTargets()` all derive from
+   this one array. Also bump `MIN_SUPPORTED_VIKUNJA` in
+   `scripts/lib/vikunja-compat-version.sh` to match the new `FLOOR_VERSION`
+   (that file is shell, so it can't import the constant — kept as a
+   deliberately-adjacent second literal instead). A new version is
+   `shared`-Postgres by default; nothing needs adding to
+   `DEDICATED_DB_VERSIONS`.
+4. Bring the stack up on the new tag and refresh `docs/vikunja-openapi.json`
    from it (`VIKUNJA_E2E_TARGET=X.Y.Z-postgres npm run e2e:up && npm run
    fetch:api-spec:container && npm run generate:api-types`), if you also
    want to re-check spec/tool alignment. `fetch:api-spec:container` resolves
    the port through the target resolver and refuses to write if that port
    answers with a different version than the target's, so it can no longer
    silently re-vendor the old version's spec.
-4. `npm run e2e:reset && npm run e2e:up && npm run test:mcp` and re-triage
+5. `npm run e2e:reset && npm run e2e:up && npm run test:mcp` and re-triage
    any new failures using the same (a)/(b)/(c) categories as any other
    real-server run (script staleness / real server drift / environment
    issue; see the PR that introduced this stack for the categorization

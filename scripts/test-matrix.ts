@@ -10,10 +10,9 @@
  *      version via GET /api/v1/info or a different DB backend (detected via
  *      `docker compose ps`, see `getRunningBackend`), or bringing it up
  *      fresh if it isn't running at all. The version defaults to
- *      `DEFAULT_TARGET`'s (scripts/lib/e2e-target.ts — 2.6.0 since
- *      2026-09-02; the v1 floor stayed at 2.4.0, so the floor is now a
- *      SEPARATE lane again) and is env-driven — this script drives it the
- *      same way a human would: `VIKUNJA_VERSION=X.Y.Z npm run e2e:up`. The DB
+ *      `DEFAULT_TARGET`'s (scripts/lib/e2e-target.ts — the newest of the
+ *      three `SUPPORTED_VERSIONS`) and is env-driven — this script drives it
+ *      the same way a human would: `VIKUNJA_VERSION=X.Y.Z npm run e2e:up`. The DB
  *      backend (item F2, tracking issue #28 — added so SQLite-only failure
  *      classes like #116's lock-storm-under-circuit-breaker aren't invisible
  *      to every run) works the same way: `VIKUNJA_DB=sqlite npm run e2e:up`,
@@ -32,15 +31,17 @@
  *      full per-check list.
  *
  * Usage:
- *   npm run test:matrix                                          # aligned (2.6.0) / postgres
+ *   npm run test:matrix                                          # aligned (newest) / postgres
  *   VIKUNJA_DB=sqlite npm run test:matrix                         # aligned, sqlite backend
+ *   VIKUNJA_VERSION=2.5.0 npm run test:matrix                     # the middle lane
+ *   VIKUNJA_VERSION=2.5.0 VIKUNJA_DB=sqlite npm run test:matrix   # middle, sqlite
  *   VIKUNJA_VERSION=2.4.0 npm run test:matrix                     # the floor lane
  *   VIKUNJA_VERSION=2.4.0 VIKUNJA_DB=sqlite npm run test:matrix   # floor, sqlite
  *
- * All four are the standard set (`standardTargets()`), and a pre-tag run
- * covers all four. VIKUNJA_VERSION still accepts any tag, supported or not
- * (2.5.0 included), because the resolver's port arithmetic is
- * version-agnostic — but only these four are lanes.
+ * All six are the standard set (`standardTargets()`, `SUPPORTED_VERSIONS` — the trailing three
+ * released versions, policy since 2026-09-02 decision 29), and a pre-tag run covers all six.
+ * VIKUNJA_VERSION still accepts any tag, supported or not, because the resolver's port
+ * arithmetic is version-agnostic — but only the versions in `SUPPORTED_VERSIONS` are lanes.
  *
  * See docs/LOCAL-TESTING.md's "Version-matrix testing" section for the full
  * writeup, including what to do when a new Vikunja release ships.
@@ -456,7 +457,21 @@ async function main(): Promise<void> {
   const runs: HarnessRun[] = [];
 
   log('\n=== Running: npm run test:mcp (REST layer) ===\n');
-  const restEnv = { ...safeBaseEnv(), VIKUNJA_URL: localUrl, VIKUNJA_API_TOKEN: localToken };
+  // Must be told WHICH target, same reason as the test:e2e:mcp invocation
+  // below. scripts/test-mcp.ts does NOT read a plain VIKUNJA_URL/
+  // VIKUNJA_API_TOKEN pair at all -- its own priority order is
+  // MCP_E2E_VIKUNJA_URL/MCP_E2E_VIKUNJA_API_TOKEN, then its OWN reading of
+  // `docker/e2e/.env.<target>` for whatever target VIKUNJA_E2E_TARGET names
+  // (defaulting to DEFAULT_TARGET when unset). Passing VIKUNJA_URL/
+  // VIKUNJA_API_TOKEN here (as this used to) was dead weight test-mcp.ts
+  // never reads: without VIKUNJA_E2E_TARGET it silently resolved
+  // DEFAULT_TARGET instead of the target this run just brought up --
+  // erroring outright when that target's env file doesn't happen to exist
+  // in this checkout, or worse, silently testing the WRONG stack when one
+  // does. Found live while adding the 2.5.0 lane (decision 29): every
+  // non-default `VIKUNJA_VERSION=... npm run test:matrix` run's REST-layer
+  // half has been affected by this since the per-target env files landed.
+  const restEnv = { ...safeBaseEnv(), VIKUNJA_E2E_TARGET: target.id };
   const restRun = await runCapture('npm', ['run', 'test:mcp'], restEnv);
   runs.push({
     label: 'REST layer',

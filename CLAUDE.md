@@ -233,7 +233,7 @@ try {
 
 - **Node.js**: 22+ LTS only (no EOL versions; Node 20 reached EOL April 2026)
 - **TypeScript**: Strict mode enabled
-- **Vikunja**: 2.4.0+ required (v1 API floor, raised from 2.3.0 in the `0.7.0-beta` line); the aligned/tested default is **2.6.0** since 2026-09-02, so floor and aligned no longer coincide and `npm run test:matrix` covers four targets. 2.5.0 is supported on a source diff plus its two tested neighbours, not a lane of its own. The pin lives in `DEFAULT_TARGET`/`FLOOR_VERSION` (`scripts/lib/e2e-target.ts`), not in the compose file.
+- **Vikunja**: this project supports and tests the trailing THREE released versions (policy since 2026-09-02, decision 29) — currently **2.4.0** (floor), **2.5.0**, **2.6.0** (aligned/tested default) — so `npm run test:matrix` covers six targets (three versions × two DB backends). When a new version ships, the window shifts: drop the oldest, add the new one. The single source of truth is `SUPPORTED_VERSIONS` (`scripts/lib/e2e-target.ts`), which `DEFAULT_TARGET` and `FLOOR_VERSION` both derive from — not the compose file.
 
 ## Repository Configuration
 
