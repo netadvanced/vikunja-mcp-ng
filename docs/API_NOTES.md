@@ -256,21 +256,34 @@ Project sharing allows creating public or private links to share projects with e
    `filter` on every field in that list the caller omits. `update-view` and
    the `set-done-bucket` composite both fetch the current view first and
    merge requested changes onto it (`buildViewUpdatePayload` in
-   `src/tools/projects/views.ts`) rather than sending a bare partial object,
-   which happens to close this the same way a true full-replace endpoint
-   would. But the underlying hazard is `Cols(...)`, not the zero-value skip
-   `UseBool`/`Cols` are usually contrasted against. See
+   `src/tools/projects/view-update/mapping.ts`) rather than sending a bare
+   partial object, which happens to close this the same way a true
+   full-replace endpoint would. But the underlying hazard is `Cols(...)`, not
+   the zero-value skip `UseBool`/`Cols` are usually contrasted against. See
    [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #15.
+
+   **v1 only, as of #184 P3 step 6.** v2's
+   `PATCH /api/v2/projects/{project}/views/{view}` applies a merge patch on
+   the server and never reaches the `Cols(...)` path with an incomplete
+   struct, so the client fetch is unnecessary there: a `PATCH` naming only
+   `title` left `position` and `filter` intact on 2.4.0, 2.5.0 and 2.6.0
+   (probed live 2026-09-05). `src/tools/projects/view-update/` picks the
+   single-`PATCH` strategy on any v2-capable server and keeps the
+   fetch-merge-`POST` one everywhere else.
 
 2. **Setting the Done Bucket**: `models.Bucket` has no `is_done_bucket`
    field. The done bucket is `done_bucket_id` on the `ProjectView`
    (see "Kanban 'Done' Bucket" above, which covers *reading* it via
    `list-buckets`). `set-done-bucket` is the only way to *set* it: resolve
    the Kanban view (auto-resolved from the project, or an explicit
-   `viewId`), fetch-merge-POST the `done_bucket_id` change, then verify the
-   response actually reflects the requested bucket before reporting
+   `viewId`), write the `done_bucket_id` change through the view-update
+   strategy pair (one v2 `PATCH`, or v1's fetch-merge-`POST`), then verify
+   the response actually reflects the requested bucket before reporting
    success. A mismatch (e.g. a stale `updated` snapshot on a concurrently
    edited view) raises an `API_ERROR` rather than silently claiming success.
+   On v2, asking for the bucket that already holds the role changes nothing
+   and the server answers `304` with no body; the strategy resolves that with
+   a read, so the verify step still sees a real view.
 
 3. **Per-View Task Listing Shape**: `GET /projects/{id}/views/{view}/tasks`
    (`list-view-tasks`) declares a flat `models.Task[]` response schema for
