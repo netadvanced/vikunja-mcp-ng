@@ -25,6 +25,7 @@
 
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import { buildProjectFieldPatch } from './analysis';
+import { toCanonicalProject } from './canonical';
 import type {
   ProjectUpdateFields,
   ProjectUpdateInput,
@@ -53,11 +54,16 @@ export class V1ProjectUpdateStrategy implements ProjectUpdateStrategy {
   async execute(input: ProjectUpdateInput): Promise<VikunjaProject> {
     const { authManager, projectId, fields, currentProject } = input;
 
-    return vikunjaRestRequest<VikunjaProject>(
+    const updated = await vikunjaRestRequest<VikunjaProject>(
       authManager,
       'POST',
       `/projects/${projectId}`,
       buildProjectUpdatePayload(currentProject, fields),
     );
+
+    // v1 answers with `max_permission` too, and with a different value from
+    // v2's. See ./canonical for the probed table and why both strategies
+    // strip it rather than only the v2 one.
+    return toCanonicalProject(updated);
   }
 }

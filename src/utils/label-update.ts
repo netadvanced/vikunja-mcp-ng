@@ -40,8 +40,11 @@
  * field on all three supported versions, so this selects v2 wherever the session
  * has v2 at all. The task-update floor of 2.5.0 comes from the subscription-422
  * bug, which is task-specific and does not exist here. `resolveApiVersion`
- * carries the rest of the policy: kill switch on means v1, and a server whose
- * version or capabilities were never detected means v1.
+ * carries the rest of the policy: kill switch on means v1, and a session whose
+ * capabilities were never detected, or whose probe found no v2 API, means v1.
+ * An undetected server *version* does not, because with no `minVersion` here
+ * the version is never compared against anything. Only the floored operations
+ * read "version unknown" as "not new enough".
  *
  * ## Response shape
  *

@@ -1,15 +1,20 @@
 /**
- * Session capability/version detection — backward-compatible groundwork for
- * a future v2 API migration.
+ * Session capability/version detection: the input to every v1-or-v2 routing
+ * decision this server makes.
  *
- * Today every call site goes through v1 (`vikunjaRestRequest`, which always
- * targets `/api/v1`). Nothing here changes that: this module only builds a
- * read-only `VikunjaCapabilities` snapshot — the raw `GET /info` payload
- * plus a one-time `GET /api/v2/openapi.json` probe — and caches it on the
- * session so a future v2 fast-path has something to consult without an
- * extra round trip. The only consumer today is `vikunja_auth`'s reporting
- * (`resolveApiVersion` in `./api-version`, surfaced as `activeApiVersion`) —
- * no operation routes on `hasV2Api` yet.
+ * This module only builds a read-only `VikunjaCapabilities` snapshot: the raw
+ * `GET /info` payload plus a one-time `GET /api/v2/openapi.json` probe,
+ * cached on the session so per-request routing can consult it without an
+ * extra round trip.
+ *
+ * That snapshot is load-bearing. Since #184 P3, `resolveApiVersion`
+ * (`./api-version`) routes real operations on `hasV2Api` and, for the
+ * operations that carry a `minVersion` floor, on `serverVersion`. Project,
+ * view, label, team, saved-filter and task update all pick their strategy
+ * from it, and `vikunja_auth` reports it as `activeApiVersion`. A change to
+ * what this probe concludes is a change to which API those operations write
+ * through, so treat a false positive here as a correctness bug rather than a
+ * reporting one.
  *
  * The v2 probe is intentionally isolated from `vikunjaRestRequest`: that
  * helper always resolves paths against the v1 base URL

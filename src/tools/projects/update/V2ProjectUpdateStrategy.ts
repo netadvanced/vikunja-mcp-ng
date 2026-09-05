@@ -33,10 +33,14 @@
  *   2.4.0 for any subscribed task, project `PATCH` answered 200 on every
  *   supported version. Routing it below 2.5.0 is safe, so `resolveApiVersion`
  *   is called without a floor.
- * - **Nothing to strip.** v1's `GET /projects/{id}` already returns
- *   `max_permission`, so unlike the task strategy this one has no v2-only
- *   field to remove. `$schema`, the only key v2 adds, is already dropped by
- *   the transport's response normalizer.
+ * - **`max_permission` is stripped, on this path and on v1's.** Both APIs
+ *   return the field, so it is not a v2-only addition, but they do not agree
+ *   on the value: on 2.4.0 and 2.5.0 v1 says `0` and v2's `PATCH` says
+ *   `null`. Key presence is not value equality, and the difference reached
+ *   callers. See ./canonical for the probed table and the argument for
+ *   stripping on both strategies rather than on this one alone. (`$schema`,
+ *   the only key v2 genuinely adds, is already dropped by the transport's
+ *   response normalizer.)
  *
  * Not done here, on purpose: no `?format=markdown` (v2 ignores it on `PATCH`,
  * and the owner decision of 2026-09-05 is that update responses keep today's
@@ -48,6 +52,7 @@ import { MCPError } from '../../../types';
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import { vikunjaRestV2Request } from '../../../utils/vikunja-rest-v2';
 import { buildProjectFieldPatch } from './analysis';
+import { toCanonicalProject } from './canonical';
 import type { ProjectUpdateInput, ProjectUpdateStrategy, VikunjaProject } from './types';
 
 /**
@@ -72,12 +77,13 @@ export class V2ProjectUpdateStrategy implements ProjectUpdateStrategy {
     const { authManager, projectId, fields } = input;
 
     try {
-      return await vikunjaRestV2Request<VikunjaProject>(
+      const patched = await vikunjaRestV2Request<VikunjaProject>(
         authManager,
         'PATCH',
         `/projects/${projectId}`,
         buildProjectFieldPatch(fields),
       );
+      return toCanonicalProject(patched);
     } catch (error) {
       if (isNotModified(error)) {
         return this.readProject(input);
@@ -98,10 +104,16 @@ export class V2ProjectUpdateStrategy implements ProjectUpdateStrategy {
    * the caller gets back is shaped identically whichever branch produced it.
    */
   private async readProject(input: ProjectUpdateInput): Promise<VikunjaProject> {
-    return vikunjaRestRequest<VikunjaProject>(
+    const current = await vikunjaRestRequest<VikunjaProject>(
       input.authManager,
       'GET',
       `/projects/${input.projectId}`,
     );
+
+    // The read is a v1 call, so it carries v1's `max_permission` value, which
+    // is not the one a real patch would have returned. Canonicalising here is
+    // what keeps the two branches of this strategy identical to each other as
+    // well as to the v1 strategy.
+    return toCanonicalProject(current);
   }
 }

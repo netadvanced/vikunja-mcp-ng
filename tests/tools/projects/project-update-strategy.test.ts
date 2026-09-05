@@ -444,39 +444,164 @@ describe('both strategies return the same canonical shape', () => {
   });
 
   /**
-   * Unlike the task pair, there is nothing to strip here: v1's
-   * `GET /projects/{id}` already returns `max_permission` (verified live on
-   * 2.4.0), and `$schema` is removed by the transport's response normalizer
-   * before a strategy ever sees it. This test is the guard on that claim — if
-   * v2 ever starts adding a project field v1 lacks, the two renderings stop
-   * matching and this fails.
+   * `max_permission` as each path actually returns it, probed live on
+   * 2026-09-06 against one owned project per supported version:
+   *
+   *   | version | v1 `GET` | v1 `POST` | v2 `GET` | v2 `PATCH` |
+   *   |---------|----------|-----------|----------|------------|
+   *   | 2.4.0   | `0`      | `0`       | `2`      | `null`     |
+   *   | 2.5.0   | `0`      | `0`       | `2`      | `null`     |
+   *   | 2.6.0   | `null`   | `null`    | `2`      | `null`     |
+   *
+   * Only the two columns a strategy can return are modelled here: v1's `POST`
+   * echo and v2's `PATCH` body. The `GET` columns matter for the `304` case
+   * below, where the v2 strategy falls back to a v1 read.
+   *
+   * The previous version of this fixture stubbed the v1 read with
+   * `max_permission: 2`, which is the v2 `GET` value and appears on no v1
+   * response on any version. The parity assertion therefore compared a value
+   * against itself and could not fail, which is precisely how the divergence
+   * it was written to guard got shipped.
    */
-  it('renders identically whichever strategy ran', async () => {
-    const updated = { ...BASE_PROJECT, title: 'New title', max_permission: 2 };
+  const PROBED_MAX_PERMISSION = [
+    { version: 'v2.4.0', v1: 0, v2Patch: null },
+    { version: 'v2.5.0', v1: 0, v2Patch: null },
+    { version: 'v2.6.0', v1: null, v2Patch: null },
+  ] as const;
 
-    stubV1Rest();
-    stubV2Patch(updated);
-    const viaV2 = await updateProject(
-      { id: 7, title: 'New title' },
-      authManagerFor({ serverVersion: 'v2.6.0' }),
-    );
+  /**
+   * Drops the rendered `timestamp:` line.
+   *
+   * The two renderings happen microseconds apart and the timestamp is
+   * millisecond-resolution, so comparing the raw text fails whenever the two
+   * calls straddle a millisecond boundary. That is a property of the clock,
+   * not of the strategies, and it is what the two runs must NOT differ in
+   * that this test is about.
+   */
+  function withoutTimestamp(text: string | undefined): string | undefined {
+    return text?.replace(/^\*\*timestamp:\*\* .*$/m, '**timestamp:** <normalized>');
+  }
 
+  /** Runs one update through the v2 strategy and returns the rendered text. */
+  async function renderViaV2(
+    version: string,
+    patchResult: Record<string, unknown>,
+  ): Promise<string | undefined> {
     jest.clearAllMocks();
-    mockRest.mockImplementation((...args: unknown[]) => {
-      const [, method, path] = args as [unknown, string, string];
-      if (method === 'GET' && path.startsWith('/projects?')) {
-        return Promise.resolve([{ id: 3, title: 'Parent', parent_project_id: 0 }]);
-      }
-      if (method === 'GET') {
-        return Promise.resolve({ ...BASE_PROJECT, max_permission: 2 });
-      }
-      return Promise.resolve(updated);
-    });
-    const viaV1 = await updateProject(
+    stubV1Rest();
+    stubV2Patch(patchResult);
+    const result = await updateProject(
+      { id: 7, title: 'New title' },
+      authManagerFor({ serverVersion: version }),
+    );
+    expect(mockRestV2).toHaveBeenCalled();
+    return result.content[0]?.text;
+  }
+
+  /** Runs the same update through the v1 strategy and returns its text. */
+  async function renderViaV1(current: Record<string, unknown>): Promise<string | undefined> {
+    jest.clearAllMocks();
+    stubV1Rest(current);
+    const result = await updateProject(
       { id: 7, title: 'New title' },
       authManagerFor({ hasV2Api: false }),
     );
+    expect(mockRestV2).not.toHaveBeenCalled();
+    return result.content[0]?.text;
+  }
 
-    expect(viaV2.content[0]?.text).toBe(viaV1.content[0]?.text);
+  it.each(PROBED_MAX_PERMISSION)(
+    'renders identically whichever strategy ran on $version',
+    async ({ version, v1, v2Patch }) => {
+      const viaV2 = await renderViaV2(version, {
+        ...BASE_PROJECT,
+        title: 'New title',
+        max_permission: v2Patch,
+      });
+
+      // v1's `POST` answers with the model it was sent, `max_permission`
+      // included, so the merged body carries this server's v1 value.
+      const viaV1 = await renderViaV1({ ...BASE_PROJECT, max_permission: v1 });
+
+      expect(withoutTimestamp(viaV2)).toBe(withoutTimestamp(viaV1));
+    },
+  );
+
+  /**
+   * The assertion that makes the parity above mean something rather than
+   * merely hold. Two paths could agree by both leaking the field; what P3
+   * asked for is that neither surfaces it at all.
+   */
+  it.each(PROBED_MAX_PERMISSION)(
+    'keeps max_permission off the tool surface on both paths on $version',
+    async ({ version, v1, v2Patch }) => {
+      const viaV2 = await renderViaV2(version, {
+        ...BASE_PROJECT,
+        title: 'New title',
+        max_permission: v2Patch,
+      });
+      const viaV1 = await renderViaV1({ ...BASE_PROJECT, max_permission: v1 });
+
+      expect(viaV2).not.toContain('max_permission');
+      expect(viaV1).not.toContain('max_permission');
+    },
+  );
+
+  /**
+   * The v2 strategy's own second path. A `304` sends it to a v1 `GET`, which
+   * carries v1's `max_permission` and not the one a real patch would have
+   * returned, so without canonicalising the read this branch diverges from
+   * the branch right next to it.
+   */
+  it('strips max_permission on the v2 304 no-op read as well', async () => {
+    stubV1Rest({ ...BASE_PROJECT, max_permission: 0 });
+    mockRestV2.mockImplementation(() =>
+      Promise.reject(
+        new MCPError(ErrorCode.API_ERROR, 'Vikunja REST request failed: HTTP 304 Not Modified', {
+          statusCode: 304,
+        }),
+      ),
+    );
+
+    const result = await updateProject(
+      { id: 7, title: 'Original title' },
+      authManagerFor({ serverVersion: 'v2.4.0' }),
+    );
+
+    expect(result.content[0]?.text).not.toContain('max_permission');
+  });
+
+  /**
+   * `archive`, `unarchive` and `move` are the same write through the same
+   * `ProjectUpdateContext`, so they inherit the stripping. This pins that
+   * they do rather than leaving it to the reader of the context class.
+   */
+  it('keeps max_permission off archive, unarchive and move too', async () => {
+    // Each starts from the state that makes its write actually happen:
+    // `archive` needs an unarchived project, `unarchive` an archived one.
+    // `archiveProject`/`unarchiveProject` short-circuit with the raw v1 read
+    // when the project is already in the requested state, and that early
+    // return never reaches a strategy.
+    const cases = [
+      {
+        current: { ...BASE_PROJECT, is_archived: false, max_permission: 0 },
+        run: () => archiveProject({ id: 7 }, authManagerFor({ hasV2Api: false })),
+      },
+      {
+        current: { ...BASE_PROJECT, is_archived: true, max_permission: 0 },
+        run: () => unarchiveProject({ id: 7 }, authManagerFor({ hasV2Api: false })),
+      },
+      {
+        current: { ...BASE_PROJECT, max_permission: 0 },
+        run: () => moveProject({ id: 7 }, undefined, authManagerFor({ hasV2Api: false })),
+      },
+    ];
+
+    for (const { current, run } of cases) {
+      jest.clearAllMocks();
+      stubV1Rest(current);
+      const result = await run();
+      expect(result.content[0]?.text).not.toContain('max_permission');
+    }
   });
 });
