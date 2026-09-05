@@ -8,6 +8,23 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+### Added: v2 response normalizer (#184, 0.8.0 P3 step 2)
+
+- **`src/utils/vikunja-v2-normalize.ts`**, the boundary that makes v2 responses indistinguishable
+  from v1 ones. It unwraps v2's pagination envelope (`{$schema, items, total, page, per_page,
+  total_pages}`, confirmed live on 2.4.0, 2.5.0 and 2.6.0) to the bare array callers expect, strips
+  `$schema` from single-entity responses too, and leaves bare arrays and non-objects alone. The
+  kanban `buckets/tasks` route is enveloped as `{$schema, items, total}` with no page fields, so
+  recognition never requires `total_pages`.
+- `total`, `page`, `per_page` and `total_pages` are kept in a `WeakMap` side table readable through
+  `getV2PaginationMeta`, so the counters are not thrown away while the return type and the tool
+  surface stay exactly as they were. Nothing consumes them yet: surfacing pagination totals is an
+  explicit non-goal of P3.
+- `vikunjaRestV2Request` normalizes by default and takes `normalize: false` for a future
+  per-operation strategy that needs the raw envelope.
+- **No behaviour change:** no operation routes through v2 yet, so nothing in the server calls this
+  code path in production.
+
 ### Added — Vikunja v2 API groundwork (#184, 0.7.0 P1+P2)
 
 Infrastructure for adopting Vikunja's v2 API as a capability-gated fast path. **No behaviour

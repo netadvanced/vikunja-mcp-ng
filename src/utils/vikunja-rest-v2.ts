@@ -26,6 +26,7 @@ import {
   type RetryOptions,
 } from './retry';
 import { resolveV2BaseUrl } from './vikunja-v2-url';
+import { normalizeV2Response } from './vikunja-v2-normalize';
 
 /**
  * Resolves the v2 API base URL for a session, normalizing whether or not
@@ -109,7 +110,9 @@ function readErrorDetails(value: unknown): ParsedErrorDetail[] {
     return [];
   }
   return value
-    .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+    .filter(
+      (entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null,
+    )
     .map((entry) => {
       const location = readString(entry.location);
       const message = readString(entry.message);
@@ -251,6 +254,24 @@ export interface VikunjaRestV2RequestOptions extends VikunjaRestRequestOptions {
    * comment above for the concrete P3 failure mode.
    */
   patchFormat?: PatchFormat;
+
+  /**
+   * Whether to run the response through `normalizeV2Response` (unwrap the
+   * pagination envelope, strip `$schema`). Defaults to `true`, which is what
+   * makes a v2 response indistinguishable from a v1 one downstream.
+   *
+   * Set it to `false` only in a v2 strategy that needs the raw envelope, for
+   * example to page through a list on `total_pages` before handing callers one
+   * flat array. The escape hatch exists because P3's later steps add
+   * per-operation strategies, and a normalizer that cannot be bypassed would
+   * force such a strategy to go around the transport entirely.
+   *
+   * v1-unaware in the same way as `patchFormat`: `vikunjaRestRequest` has no
+   * notion of this flag and silently ignores it. Harmless in that direction,
+   * since v1 responses need no normalization, but it is one more reason to
+   * build options per-transport rather than sharing one object.
+   */
+  normalize?: boolean;
 }
 
 /**
@@ -349,6 +370,11 @@ async function vikunjaRestV2RequestRaw(
  * assumptions — route through `resolveApiVersion` in ./api-version so the
  * v1 fallback stays honest.
  *
+ * The resolved body is normalized by `normalizeV2Response` before it is
+ * returned, so a list comes back as the bare array a v1 caller expects and no
+ * `$schema` key survives. Pass `normalize: false` to get the raw v2 body,
+ * envelope included.
+ *
  * @throws MCPError with `details.statusCode` set from the final attempt;
  *         for problem+json responses `details.vikunjaError` also carries
  *         Vikunja's numeric code and the per-field `errors[]` list.
@@ -375,5 +401,5 @@ export async function vikunjaRestV2Request<T = unknown>(
       }),
     retryOptions,
   );
-  return result as T;
+  return options?.normalize === false ? (result as T) : normalizeV2Response<T>(result);
 }
