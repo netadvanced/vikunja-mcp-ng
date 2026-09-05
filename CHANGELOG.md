@@ -164,6 +164,37 @@ widening of that blocker lands on a bug that no longer exists above the floor.
 The `subscription: null` workaround is still needed, but only for 2.4.0, and its
 removal condition is "the floor moves past 2.4.0", not "2.6.0 is fine".
 
+
+## [0.7.0-beta.5] - 2026-09-05
+
+_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._
+
+### Added
+
+- implement the real /readyz contract, clean up a stale H1b TODO (#347)
+- support the trailing 3 Vikunja versions as a rolling window, fix a real test:matrix bug (#345)
+- align to Vikunja 2.6.0, keep the floor at 2.4.0 (#342)
+- one shared Postgres for the newer targets, and resolve the spec-fetch port (#341)
+
+### Fixed
+
+- don't imply the legacy-format migration notice needs the same token (#343)
+- clarify identity-pinning matching and mitigate username squatting (#338)
+- empty-string target arg falls back to default; docs: #219 resolved (#339)
+
+### Documentation
+
+- correct the pending_email forward-looking note now that 2.6.0 is verified (#344)
+
+### Chores
+
+- bump qs override to ^6.16.0, closes the last known vulnerability (#349)
+- bump fast-uri in the npm_and_yarn group across 1 directory (#346)
+
+### Unclassified — review manually
+
+- battle: re-derive 7 stale optimalCallCount baselines (#202) (#340)
+
 ## [0.7.0-beta.4] - 2026-09-02
 
 **A second independent-review pass on the beta.3 audit fixes themselves.** Two more
