@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/) with
 pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that means in practice.
 
-## [Unreleased]
+## [0.7.0-beta.5] - 2026-09-05
 
 ### Vikunja 2.6.0 alignment, and a rolling three-version support window
 
@@ -112,6 +112,35 @@ changed the fix.
   fix instead of the generic "opened by another account" message. Fail-closed behavior on
   a genuine mismatch is unchanged; Vikunja's random-username *pattern* is never guessed at
   — only a live account lookup is used. (#224)
+
+- **The `keyVersion`-1 vault migration notice no longer implies the same
+  token is required.** It told the caller to "re-run `vikunja_auth provision`
+  with the same token to upgrade it," which reads as a dead end to an agent
+  that no longer has that exact token in context. Any valid API token
+  completes the upgrade, so the notice says that instead. Found during a live
+  PoC testing session. (#343)
+
+- **An empty-string `VIKUNJA_E2E_TARGET` broke a bare `npm run e2e:up`
+  instead of falling back to the default target.**
+  `docker/e2e/bootstrap.sh` invokes the target CLI as `--shell
+  "${VIKUNJA_E2E_TARGET:-}"`, so an unset env var arrived as an empty-string
+  *positional* argument rather than a missing one, and the CLI's
+  `positional[0] ?? env ?? DEFAULT_TARGET` only treats `null`/`undefined` as
+  absent — so `''` reached `resolveTarget()` and failed its regex. Fixed by
+  switching to `||`, matching the pattern already used elsewhere. Also
+  verified live that #219 (a stale `oidc-e2e.ts` port-hardcoding report) no
+  longer reproduces. Closes #218, #219. (#339)
+
+### Security
+
+- **Closed the last two known `npm audit` findings.** `fast-uri` (transitive,
+  npm/yarn group) bumped 3.1.5 → 3.1.7 (#346). `qs`, pinned via this repo's own
+  override for the last-vulnerable `^6.15.3` (array-limit bypass via
+  bracket-key comma parsing, GHSA-x5fp-wj9c-mxmx; DoS via attacker-controlled
+  `isBuffer`, GHSA-4mjr-xmp4-gh2g; transitive via
+  `@modelcontextprotocol/sdk` → `express` → `body-parser`/`qs`), bumped to
+  `^6.16.0`, the first fixed version for both advisories. `npm audit` now
+  reports 0 vulnerabilities. (#349)
 
 ### Changed
 
