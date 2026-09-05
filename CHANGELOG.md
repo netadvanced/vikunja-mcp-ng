@@ -75,6 +75,35 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
   three are covered. New code in `src/utils/label-update.ts`; no tool-surface or response-shape
   change.
 
+### Changed: `vikunja_filters update` runs on v2 `PATCH` on every supported version (#184, 0.8.0 P3 step 6)
+
+- **A strategy pair behind a context** (`src/tools/filters/update/`), mirroring
+  `src/tools/tasks/crud/update/`. `V1SavedFilterUpdateStrategy` is the previous sequence, moved
+  rather than rewritten: read the filter, overlay the caller's fields onto the whole model, `POST`
+  it back, because `POST /filters/{id}` replaces the resource and rejects a body without `filters`
+  outright (`412`, `filters: non zero value required`). `V2SavedFilterUpdateStrategy` sends one
+  `PATCH /filters/{filter}` carrying only what changed, and returns its response as the result.
+  Two calls become one, and the read-modify-write window in which a concurrent edit is clobbered by
+  a stale model disappears.
+- **No `minVersion` floor**, unlike task update. `PATCH /api/v2/filters/{filter}` was probed
+  against the live 2.4.0, 2.5.0 and 2.6.0 stacks on 2026-09-05 and behaved identically on all
+  three, so 2.4.0 gets the single-call path too.
+- **The `filters` sub-object merges per key.** A query-only patch rewrites `filters.filter` and
+  preserves the stored `s`, `sort_by`, `order_by` and `filter_include_nulls` server-side, which is
+  what makes dropping the v1 read safe rather than lossy.
+- **The saved filter's own query string is unaffected by v2.** Both versions store it verbatim and
+  parse it with the same server-side code: an invalid field is rejected with the same `400`
+  (Vikunja code 4016) on either path, so the project's Zod pipeline
+  (`src/tools/filters/query.ts`, extracted unchanged from `src/tools/filters.ts` so `create` and
+  `update` share one implementation) still runs first and still means what it meant. The `s` to `q`
+  search rename does not reach in here either: it is a query-string concern, and a saved filter's
+  own search term lives in the request body, where v2 still calls it `s`.
+- **No tool-surface change.** Same arguments, same response, same `affectedFields`, computed once
+  for both paths. `is_favorite: false` applies rather than being swallowed, a no-op patch answers
+  `304` and is resolved with a read, and v2's `max_permission` is stripped at the boundary.
+- `forceV1Api`, a server with no v2 API, and a session that never went through capability detection
+  all keep the v1 sequence unchanged.
+
 ### Fixed: `expand` is honoured on a single-project listing instead of dropped (#184, 0.8.0 P3 step 7)
 
 - `vikunja_tasks list` used to accept `expand` on a single-project listing, report it as ignored,
