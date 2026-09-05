@@ -94,7 +94,7 @@ full v2 equivalents.
 
 | MCP function | v1 call(s) | v2 call(s) | Planned | Notes |
 |---|---|---|---|---|
-| `vikunja_tasks update` | `GET /tasks/{id}`; `POST /tasks/{id}`; `GET /tasks/{id}` | `GET`; `PATCH /tasks/{id}`; `GET` | **v2 →v1** | Milestone payoff: PATCH + inline assignees replaces fetch-merge-POST. Needs the [subscription-422 workaround](#the-240-patch-blocker) |
+| `vikunja_tasks update` | `GET /tasks/{id}`; `POST /tasks/{id}`; `GET /tasks/{id}` | `GET`; `PATCH /tasks/{id}`; `GET` | **v2 (≥2.5.0) →v1** | Milestone payoff: PATCH + inline assignees replaces fetch-merge-POST. Carries a per-operation minimum server version of **2.5.0**: the subscription-422 (`VIKUNJA_API_ISSUES.md` #25) is fixed from 2.5.0 and unfixed on 2.4.0, so 2.4.0 stays on v1. No workaround is used (re-probed 2026-09-05) |
 | `vikunja_tasks get` | `GET /tasks/{id}` | `GET /tasks/{id}` | **v2 →v1** | |
 | `vikunja_tasks list` | `GET /tasks` or `GET /projects/{id}/tasks` | same | **v2 →v1** | v1's project-scoped route is undocumented; v2 documents it |
 | `vikunja_tasks create` | `PUT /projects/{id}/tasks` | `POST /projects/{project}/tasks` | **v2 →v1** | v2 accepts `assignees` inline (labels still need a separate call) |
@@ -126,11 +126,11 @@ full v2 equivalents.
 | `vikunja_tasks set-bucket` | `GET /tasks/{id}`; `GET .../views`; `POST .../buckets/{bucket}/tasks` | `GET`; `GET`; `PUT` | v1 (later) | Resolution GETs conditional |
 | `vikunja_tasks set-position` | `GET /tasks/{id}`; `GET .../views`; `POST /tasks/{id}/position` | `GET`; `GET`; `PUT` | v1 (later) | |
 | `vikunja_tasks bulk-create` | `PUT /projects/{id}/tasks`; `POST .../labels/bulk`; `PUT .../assignees`; `GET` | v2 verbs | v1 (later) | Label/assignee calls conditional per item |
-| `vikunja_tasks bulk-update` | `GET /tasks/{id}`; `POST /tasks/bulk`; `POST .../assignees/bulk` | `GET`; `PUT /tasks/bulk`; `PUT` | **v2 →v1** | Retires the assignee snapshot/restore |
+| `vikunja_tasks bulk-update` | `GET /tasks/{id}`; `POST /tasks/bulk`; `POST .../assignees/bulk` | `GET`; `PUT /tasks/bulk`; `PUT` | **v2 →v1** | Verb change only. Does **not** retire the assignee snapshot/restore: v2 `PUT /tasks/bulk` wipes assignees exactly as v1 does (re-probed live on 2.6.0, 2026-09-05), because both route into the same `models.BulkTask.Update()` chain |
 | `vikunja_tasks bulk-delete` | `GET /tasks/{id}`; `DELETE /tasks/{id}` | same | v1 (later) | |
 | `vikunja_tasks bulk-set-bucket` | `GET /tasks/{id}`; `GET .../views`; `POST .../buckets/{bucket}/tasks` | `GET`; `GET`; `PUT` | v1 (later) | |
 | `vikunja_task_bulk bulk-create` | As `vikunja_tasks bulk-create` | same | v1 (later) | |
-| `vikunja_task_bulk bulk-update` | As `vikunja_tasks bulk-update` | same | **v2 →v1** | Retires the assignee snapshot/restore |
+| `vikunja_task_bulk bulk-update` | As `vikunja_tasks bulk-update` | same | **v2 →v1** | Verb change only. Does **not** retire the assignee snapshot/restore: v2 `PUT /tasks/bulk` wipes assignees exactly as v1 does (re-probed live on 2.6.0, 2026-09-05), because both route into the same `models.BulkTask.Update()` chain |
 | `vikunja_task_bulk bulk-delete` | As `vikunja_tasks bulk-delete` | same | v1 (later) | |
 | `vikunja_task_bulk bulk-set-bucket` | As `vikunja_tasks bulk-set-bucket` | same | v1 (later) | |
 | `vikunja_task_assignees assign` | `PUT /tasks/{id}/assignees` | `POST /tasks/{id}/assignees` | v1 (later) | |
