@@ -48,7 +48,9 @@ import { vikunjaRestRequest, resolveKanbanViewId } from '../../src/utils/vikunja
 describe('Tasks CRUD - Edge Cases and Defensive Programming', () => {
   let mockClient: MockVikunjaClient;
   const { getClientFromContext } = require('../../src/client');
-  const mockAuthManager = {} as AuthManager;
+  // `getCapabilities` returning undefined is the pre-detection state of a real
+  // AuthManager, and it keeps `resolveApiVersion` on v1 for these reads.
+  const mockAuthManager = { getCapabilities: () => undefined } as unknown as AuthManager;
   const mockRest = vikunjaRestRequest as jest.Mock;
   const mockResolveKanbanViewId = resolveKanbanViewId as jest.Mock;
 

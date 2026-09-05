@@ -86,7 +86,10 @@ describe('ClientSideFilteringStrategy', () => {
     jest.clearAllMocks();
 
     strategy = new ClientSideFilteringStrategy();
-    mockAuthManager = {} as AuthManager;
+    // `getCapabilities` returning undefined is what a real, freshly connected
+    // AuthManager reports before capability detection, and is what makes
+    // `resolveApiVersion` keep these reads on v1.
+    mockAuthManager = { getCapabilities: () => undefined } as unknown as AuthManager;
 
     (validateId as jest.MockedFunction<typeof validateId>).mockImplementation(() => {});
   });

@@ -1,10 +1,17 @@
 # API Version Matrix — which Vikunja API version serves each MCP function
 
-> **Status: PLANNED, not shipped.** As of this writing **no MCP function routes through v2** —
-> the v2 transport, error adapter, routing decision, and kill switch exist (0.7.0 P1+P2) but are
-> wired to nothing except `vikunja_auth`'s reporting. The **Planned path** column below describes
-> the P3 target, not current behaviour. Rows flip as P3 lands, per the maintenance rule at the
-> bottom.
+> **Status: partly shipped.** P3 step 3 routed the **task read paths** through v2: `vikunja_tasks
+> get` and `vikunja_tasks list` now run against v2 on a v2-capable server, for `?format=markdown`.
+> Every other row still describes the P3 target rather than current behaviour — the v2 transport,
+> error adapter, routing decision and kill switch exist (0.7.0 P1+P2) but nothing else is wired to
+> them. Rows flip as P3 lands, per the maintenance rule at the bottom.
+>
+> **Read/write format asymmetry (deliberate, owner decision 2026-09-05).** v2 honours
+> `?format=markdown` on `GET` and ignores it on `PATCH`, so a task description read through
+> `vikunja_tasks get` or `list` comes back as GitHub-flavoured markdown while the same description
+> returned by an update comes back as HTML. Reads take markdown because that is where an LLM
+> consumes descriptions; updates are left exactly as they were rather than paying a re-read round
+> trip to make the two agree. This disappears if Vikunja adds `format` to `PATCH`.
 
 ## Why this document exists
 
@@ -52,10 +59,12 @@ session's cached capability probe, and any operation can be on a different versi
 neighbour. This is permanent by design: several functions below have no v2 path at all, so a global
 switch could never be correct.
 
-Regardless of which version runs, **callers see identical output**. v2's pagination envelope is
-unwrapped, `$schema` stripped, and errors normalized to the same `MCPError` shape v1 produces,
-before any result leaves the internal strategy layer. The version in use is observable only via
-`vikunja_auth status` (`activeApiVersion`).
+Regardless of which version runs, **callers see the same output shape**. v2's pagination envelope is
+unwrapped, `$schema` and `max_permission` stripped, and errors normalized to the same `MCPError`
+shape v1 produces, before any result leaves the internal strategy layer. The version in use is
+observable via `vikunja_auth status` (`activeApiVersion`) and, deliberately, through one content
+difference: a task description read over v2 is markdown where v1 returns HTML (see the asymmetry
+note at the top of this document).
 
 The `featureFlags.forceV1Api` config key (env: `VIKUNJA_MCP_FORCE_V1_API`) forces every function to
 the v1 column — see [CONFIGURATION.md](CONFIGURATION.md#forcing-the-v1-api).
@@ -95,8 +104,8 @@ full v2 equivalents.
 | MCP function | v1 call(s) | v2 call(s) | Planned | Notes |
 |---|---|---|---|---|
 | `vikunja_tasks update` | `GET /tasks/{id}`; `POST /tasks/{id}`; `GET /tasks/{id}` | `GET`; `PATCH /tasks/{id}`; `GET` | **v2 (≥2.5.0) →v1** | Milestone payoff: PATCH + inline assignees replaces fetch-merge-POST. Carries a per-operation minimum server version of **2.5.0**: the subscription-422 (`VIKUNJA_API_ISSUES.md` #25) is fixed from 2.5.0 and unfixed on 2.4.0, so 2.4.0 stays on v1. No workaround is used (re-probed 2026-09-05) |
-| `vikunja_tasks get` | `GET /tasks/{id}` | `GET /tasks/{id}` | **v2 →v1** | |
-| `vikunja_tasks list` | `GET /tasks` or `GET /projects/{id}/tasks` | same | **v2 →v1** | v1's project-scoped route is undocumented; v2 documents it |
+| `vikunja_tasks get` | `GET /tasks/{id}` | `GET /tasks/{id}?format=markdown` | **v2 →v1 (shipped)** | Markdown descriptions are the entire reason. No `minVersion` floor: `format` was verified on 2.4.0, 2.5.0 and 2.6.0. v2's `max_permission` is dropped at the boundary, so the payload is otherwise identical to v1's |
+| `vikunja_tasks list` | `GET /tasks` or `GET /projects/{id}/tasks` | same, plus `format=markdown`, with `s` spelled `q` | **v2 →v1 (shipped)** | Markdown, and nothing else. The earlier claim that `GET /projects/{id}/tasks` was v2-only was **disproved live**: v1 serves it on all three supported versions, so no discovery call is saved. `/tasks/all` has no v2 route and stays on v1 |
 | `vikunja_tasks create` | `PUT /projects/{id}/tasks` | `POST /projects/{project}/tasks` | **v2 →v1** | v2 accepts `assignees` inline (labels still need a separate call) |
 | `vikunja_tasks delete` | `GET /tasks/{id}` (best-effort); `DELETE` | same | v1 (later) | Context-fetch failure swallowed; delete proceeds |
 | `vikunja_tasks add-reminder` | `GET /tasks/{id}`; `POST /tasks/{id}` | `GET`; `PUT /tasks/{id}` | v1 (later) | Reminders are a task field — no dedicated endpoint in either version |
@@ -319,11 +328,12 @@ These affect many rows and are handled centrally rather than per-function:
 | Difference | Handling |
 |---|---|
 | List responses wrapped in `{$schema, items, total, page, per_page, total_pages}` | Envelope unwrapped at the strategy boundary; callers still receive an array |
-| Search parameter renamed `s` → `q` | Translated inside the v2 strategy |
+| Search parameter renamed `s` → `q` | Translated inside the v2 query builder (`src/utils/vikunja-task-reads.ts`). v2 **silently ignores** an unknown `s` and answers 200 with an unfiltered list, so a mis-ported name degrades to "no filter applied" rather than an error |
 | REST verb convention rewritten (v1 `PUT`=create/`POST`=update; v2 `POST`=create/`PATCH`=partial/`PUT`=replace) | Per-row above; most "missing endpoint" appearances are actually verb changes |
 | Errors are `application/problem+json` | Adapted to `MCPError`, preserving Vikunja's numeric `code` and per-field `errors[]` |
 | `ETag` on most single-entity `GET`s | Not yet used. `If-Match` is **not** enforced by the server (verified), so it provides no lost-update protection |
-| `?format=markdown` available for rich text | Planned for P3 reads |
+| `?format=markdown` available for rich text | **Shipped for task reads** (`vikunja_tasks get`/`list`). Honoured on `GET` and ignored on `PATCH`, so update responses stay HTML — see the asymmetry note at the top. Other rich-text reads (projects, labels, teams, comments) adopt it in later P3 steps |
+| `max_permission` on v2 single-entity reads | Dropped at the read boundary. The spec keeps it off P3's tool surface, and surfacing it would be a caller-visible schema change |
 
 ## Maintenance rule
 

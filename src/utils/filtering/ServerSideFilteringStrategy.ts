@@ -12,7 +12,7 @@ import { vikunjaRestRequest } from '../vikunja-rest';
 import { validateId } from '../../tools/tasks/validation';
 import { logger } from '../logger';
 import { MCPError, ErrorCode } from '../../types';
-import { buildTasksListQuery } from './RestCrossProjectFilteringStrategy';
+import { buildTasksListQuery, requestTaskListPage } from '../vikunja-task-reads';
 import {
   createBudget,
   DEFAULT_SERVER_PAGE_CAP,
@@ -81,10 +81,17 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
         // here).
         const requestPage = async (page: number): Promise<VikunjaTask[]> => {
           const pageApiParams = page === firstPage ? apiParams : { ...apiParams, page };
-          const query = buildTasksListQuery(pageApiParams, filterString, {});
-          const path = `/projects/${projectId}/tasks${query ? `?${query}` : ''}`;
-          const result = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
-          return Array.isArray(result) ? result : [];
+          // Version-aware since #184 P3 step 3 — see `requestTaskListPage`.
+          // The server-side `filter` string is spelled `filter` on both
+          // versions and was confirmed on 2.6.0 to actually apply on the v2
+          // route rather than merely return 200.
+          return requestTaskListPage(
+            authManager,
+            `/projects/${projectId}/tasks`,
+            pageApiParams,
+            filterString,
+            {},
+          );
         };
 
         tasks = await fetchAllPages(requestPage, {
@@ -105,6 +112,11 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
         // migration is preserved rather than silently redirected to a
         // different, working endpoint, per this item's byte-compatible
         // refactor-not-redesign scope.
+        //
+        // Stays on v1 unconditionally: `/tasks/all` has no v2 route at all
+        // (v2 registers `/tasks`, `/projects/{project}/tasks` and the
+        // per-view listing, and nothing else), so there is nothing to route
+        // to.
         const query = buildTasksListQuery(apiParams, filterString, {});
         const path = `/tasks/all${query ? `?${query}` : ''}`;
         const result = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
