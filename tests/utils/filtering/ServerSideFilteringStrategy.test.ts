@@ -161,6 +161,62 @@ describe('ServerSideFilteringStrategy', () => {
       expect(result.metadata.filteringNote).toBe('Server-side filtering used (modern Vikunja)');
     });
 
+    // #184 P3 step 7. Every other listing path forwards `expand`; this one
+    // cannot, because `GET /tasks/all` answers 400 code 2004 on 2.4.0,
+    // 2.5.0 and 2.6.0 with and without query params (probed 2026-09-05).
+    // Refusing beats building a query that promises an expansion the branch
+    // could never deliver.
+    it('rejects expand on the /tasks/all branch instead of dropping it', async () => {
+      const params: FilteringParams = {
+        args: { allProjects: true, expand: ['comments'] },
+        filterExpression: null,
+        filterString: 'done = false',
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
+      };
+
+      await expect(strategy.execute(params)).rejects.toMatchObject({
+        code: ErrorCode.VALIDATION_ERROR,
+        message: expect.stringContaining('GET /tasks/all'),
+      });
+      expect(vikunjaRestRequest).not.toHaveBeenCalled();
+    });
+
+    it('does not reject an empty expand array on the /tasks/all branch', async () => {
+      const params: FilteringParams = {
+        args: { allProjects: true, expand: [] },
+        filterExpression: null,
+        filterString: 'done = false',
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
+      };
+
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([mockTask]);
+
+      await expect(strategy.execute(params)).resolves.toMatchObject({ tasks: [mockTask] });
+    });
+
+    it('forwards expand on a single-project filtered listing', async () => {
+      const params: FilteringParams = {
+        args: { projectId: 42, allProjects: false, expand: ['buckets', 'subtasks'] },
+        filterExpression: null,
+        filterString: 'done = false',
+        params: { page: 1, per_page: 10 },
+        authManager: mockAuthManager,
+      };
+
+      (vikunjaRestRequest as jest.Mock).mockResolvedValue([mockTask]);
+
+      await strategy.execute(params);
+
+      const path = String((vikunjaRestRequest as jest.Mock).mock.calls[0]?.[2]);
+      expect(path.startsWith('/projects/42/tasks?')).toBe(true);
+      expect(new URLSearchParams(path.split('?')[1]).getAll('expand')).toEqual([
+        'buckets',
+        'subtasks',
+      ]);
+    });
+
     it('should use GET /projects/{id}/tasks for specific project filtering', async () => {
       const projectId = 42;
       const params: FilteringParams = {

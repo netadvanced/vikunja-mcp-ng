@@ -8,6 +8,26 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+### Fixed: `expand` is honoured on a single-project listing instead of dropped (#184, 0.8.0 P3 step 7)
+
+- `vikunja_tasks list` used to accept `expand` on a single-project listing, report it as ignored,
+  and send a request without it. The premise was that `GET /projects/{id}/tasks` did not support
+  the parameter. It does, on 2.4.0, 2.5.0 and 2.6.0 alike (re-probed live 2026-09-05), and it
+  populates the expanded fields. `expand` is now forwarded there, on filtered and unfiltered
+  listings, and on the per-project requests of the cross-project aggregation fallback where it was
+  also being dropped.
+- `orderBy`, `filterTimezone` and `filterIncludeNulls` are unchanged: they stay cross-project-only
+  and are still reported as ignored on a single-project listing.
+- A scope-refused `expand` (Vikunja 2.6.0 checks `comments`/`reactions` against a `tk_*` token's
+  scopes) now fails the per-project aggregation outright instead of skipping every project in turn
+  and reporting "N project(s) could not be read", which buried the one thing the caller could act
+  on.
+- The unreachable `GET /tasks/all` branch of `ServerSideFilteringStrategy` rejects `expand` with a
+  clear error rather than silently building a query without it. That endpoint does not exist on any
+  supported version: it answers `400 code 2004` with and without query params.
+- This is v1 work. `expand` behaves identically on v1 and v2 across the whole support window, so
+  nothing here routes to v2.
+
 ### Changed: `vikunja_tasks update` runs on v2 `PATCH` from Vikunja 2.5.0 (#184, 0.8.0 P3 step 4)
 
 The milestone's payoff, and the first operation to actually route through v2.

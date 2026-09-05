@@ -259,9 +259,13 @@ describe('filtered listings never report a wrong or partial answer as success', 
   });
 
   // Regression for issue #290 LOW-3: orderBy/filterTimezone/
-  // filterIncludeNulls/expand are GET /tasks query params only honored for
+  // filterIncludeNulls are GET /tasks query params only honored for
   // cross-project listing. Supplying one on a single-project listing used
   // to be silently accepted and silently ignored, with no signal at all.
+  //
+  // `expand` was in that group until #184 P3 step 7 and is not any more: it
+  // is honored on a single-project listing too, so it is no longer reported
+  // as ignored. See tests/tools/tasks-expand.test.ts.
   describe('single-project listing warns about cross-project-only params (issue #290 LOW-3)', () => {
     it('warns in the response when orderBy is supplied on a single-project listing', async () => {
       mockFetch.mockImplementation(async (url: string) => {
@@ -297,7 +301,12 @@ describe('filtered listings never report a wrong or partial answer as success', 
       });
       const text = result.content[0]?.text ?? '';
 
-      expect(text).toContain('orderBy, filterTimezone, filterIncludeNulls, expand');
+      expect(text).toContain('orderBy, filterTimezone, filterIncludeNulls');
+      // `expand` was supplied too and is NOT in the list: it is honored on
+      // this listing now, and the request carries it.
+      expect(text).not.toContain('filterIncludeNulls, expand');
+      const sent = new URL(String(mockFetch.mock.calls[0]?.[0]));
+      expect(sent.searchParams.getAll('expand')).toEqual(['comments']);
     });
 
     it('does not warn when the same params are supplied on a cross-project (allProjects) listing', async () => {

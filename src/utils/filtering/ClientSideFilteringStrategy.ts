@@ -7,13 +7,7 @@
  */
 
 import type { TaskFilteringStrategy } from './TaskFilteringStrategy';
-import type {
-  FilteringArgs,
-  FilteringParams,
-  FilteringResult,
-  TaskListApiParams,
-  VikunjaTask,
-} from './types';
+import type { FilteringParams, FilteringResult, TaskListApiParams, VikunjaTask } from './types';
 import type { AuthManager } from '../../auth/AuthManager';
 import { vikunjaRestRequest } from '../vikunja-rest';
 import { MCPError, ErrorCode } from '../../types';
@@ -21,7 +15,7 @@ import { validateId } from '../../tools/tasks/validation';
 import { applyFilter } from '../../tools/tasks/filtering';
 import { getMaxTasksLimit } from '../memory';
 import { logger } from '../logger';
-import { requestTaskListPage } from '../vikunja-task-reads';
+import { requestTaskListPage, type TaskListQueryExtras } from '../vikunja-task-reads';
 
 /** `models.Project` per the OpenAPI spec — only the fields this module reads. */
 interface VikunjaProjectSummary {
@@ -229,14 +223,23 @@ async function fetchProjectTasks(
     coordinateSingleRequestBudget?: boolean;
   },
   /**
-   * `orderBy`/`filterTimezone`/`filterIncludeNulls` from the original
-   * `FilteringArgs`, threaded through ONLY when this is the cross-project
-   * fallback (`loadTasksAcrossProjects`) — see that function's doc comment
-   * (issue #290 MED-7). The plain single-project call site below never
-   * passes this, matching `FilteringArgs`'s documented REST-cross-project-
-   * only scope for these fields.
+   * The task-list-only query params from the original `FilteringArgs`.
+   *
+   * `orderBy`/`filterTimezone`/`filterIncludeNulls` are threaded through
+   * ONLY when this is the cross-project fallback
+   * (`loadTasksAcrossProjects`) — see that function's doc comment (issue
+   * #290 MED-7). The single-project call site does not pass them, matching
+   * `FilteringArgs`'s documented REST-cross-project-only scope.
+   *
+   * `expand` is different, and is passed by BOTH call sites (#184 P3 step
+   * 7). It was lumped in with the other three on the assumption that
+   * `GET /projects/{id}/tasks` did not accept it; live probing of 2.4.0,
+   * 2.5.0 and 2.6.0 on 2026-09-05 showed it does, on every one of them, and
+   * populates the expanded fields. Sending it here is what makes the
+   * parameter mean something on a single-project listing instead of being
+   * parsed and discarded.
    */
-  extras: Pick<FilteringArgs, 'orderBy' | 'filterTimezone' | 'filterIncludeNulls'> = {},
+  extras: TaskListQueryExtras = {},
 ): Promise<VikunjaTask[]> {
   const { autoPaginate, budget, coordinateSingleRequestBudget = false } = options;
 
@@ -467,17 +470,23 @@ async function loadTasksAcrossProjects(
   params: TaskListApiParams,
   options: { autoPaginate: boolean; budget: TaskLoadBudget },
   /**
-   * `orderBy`/`filterTimezone`/`filterIncludeNulls` from the original
-   * `FilteringArgs`, threaded through to every per-project GET. This
-   * function is ONLY ever reached as the cross-project listing path — the
-   * plain aggregate branch of `execute()` below, or
+   * `orderBy`/`filterTimezone`/`filterIncludeNulls`/`expand` from the
+   * original `FilteringArgs`, threaded through to every per-project GET.
+   * This function is ONLY ever reached as the cross-project listing path —
+   * the plain aggregate branch of `execute()` below, or
    * `RestCrossProjectFilteringStrategy`'s fallback when its direct
    * `GET /tasks` call fails — so these REST-cross-project-only params
    * (see `FilteringArgs`) are always in scope here, unlike the
    * single-project branch of `execute()` (issue #290 MED-7: these used to
    * be dropped on ANY fallback cause, not just the tracked #237 chain).
+   *
+   * `expand` joined them in #184 P3 step 7. It matters most here: when the
+   * primary `GET /tasks` fails and this fallback runs, an aggregate built
+   * without `expand` is a complete, successful-looking answer that is
+   * missing exactly the data the caller asked to expand, with nothing in
+   * the response saying so.
    */
-  extras: Pick<FilteringArgs, 'orderBy' | 'filterTimezone' | 'filterIncludeNulls'> = {},
+  extras: TaskListQueryExtras = {},
 ): Promise<VikunjaTask[]> {
   const safeProjects = await loadAllProjects(authManager, options.budget);
   const skipped: number[] = [];
@@ -514,6 +523,17 @@ async function loadTasksAcrossProjects(
           extras,
         );
       } catch (error) {
+        // An `expand` value the API token has no scope for is NOT a project
+        // that happens to be unreadable: it will be refused identically for
+        // every project, so skipping them all turns one actionable error
+        // into "N project(s) could not be read", with the actual cause and
+        // its fix buried. Same reasoning as
+        // `RestCrossProjectFilteringStrategy`'s refusal to fall back at all
+        // for this case (issue #254, item A1) — reaching the fallback does
+        // not make the refusal any less worth surfacing.
+        if (error instanceof MCPError && error.details?.insufficientScope === true) {
+          throw error;
+        }
         logger.warn('Skipping a project that failed during all-projects task aggregation', {
           projectId,
           error: error instanceof Error ? error.message : String(error),
@@ -577,17 +597,32 @@ export class ClientSideFilteringStrategy implements TaskFilteringStrategy {
     if (args.projectId !== undefined && !args.allProjects) {
       // Validate project ID
       validateId(args.projectId, 'projectId');
-      // Get tasks for specific project without filter
-      tasks = await fetchProjectTasks(authManager, args.projectId, apiParams, {
-        autoPaginate,
-        budget,
-      });
+      // Get tasks for specific project without filter.
+      //
+      // `expand` IS forwarded here (#184 P3 step 7):
+      // `GET /projects/{id}/tasks` accepts it on every supported server, so
+      // there is no reason for the single-project path to be the one that
+      // drops it. `orderBy`/`filterTimezone`/`filterIncludeNulls` stay out,
+      // matching `FilteringArgs`'s documented scope for those three — the
+      // tool still reports them as ignored.
+      tasks = await fetchProjectTasks(
+        authManager,
+        args.projectId,
+        apiParams,
+        { autoPaginate, budget },
+        args.expand !== undefined && args.expand.length > 0 ? { expand: args.expand } : {},
+      );
     } else {
-      // Aggregate tasks across all projects (GET /tasks/all is unreliable).
+      // Aggregate tasks across all projects. `GET /tasks/all` is not an
+      // option and never was: it answers `400 {"code":2004,"message":
+      // "Invalid model provided: Bad Request"}` on 2.4.0, 2.5.0 and 2.6.0
+      // alike, with or without any query params (re-probed 2026-09-05).
+      //
       // Thread orderBy/filterTimezone/filterIncludeNulls through this
       // cross-project path (issue #290 MED-7) — they stay unsupported on
       // the single-project branch above, matching FilteringArgs's
-      // documented REST-cross-project-only scope for these fields.
+      // documented REST-cross-project-only scope for these fields. `expand`
+      // goes through on both branches now (#184 P3 step 7).
       tasks = await loadTasksAcrossProjects(
         authManager,
         apiParams,
@@ -598,6 +633,7 @@ export class ClientSideFilteringStrategy implements TaskFilteringStrategy {
           ...(args.filterIncludeNulls !== undefined && {
             filterIncludeNulls: args.filterIncludeNulls,
           }),
+          ...(args.expand !== undefined && args.expand.length > 0 && { expand: args.expand }),
         },
       );
     }

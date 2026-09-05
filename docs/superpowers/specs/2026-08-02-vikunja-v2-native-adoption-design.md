@@ -74,9 +74,18 @@ on them:
   `time_entries_count` and `is_unread` are accepted and populated by v1 too, verified on 2.4.0,
   2.5.0 and 2.6.0. So `expand` yields **no** v2 advantage whatsoever. Two live details the
   implementation needs: v1 validates the value (`412` for an unknown one, versus v2's `422`), and v1
-  accepts `expand` on `/tasks`, `/tasks/{id}` and `/projects/{id}/tasks` but **rejects it on
-  `/tasks/all` with `400 code 2004`**, which is the endpoint this codebase reaches for by default.
-  Using `expand` on the v1 path therefore also means moving off `/tasks/all`.
+  accepts `expand` on `/tasks`, `/tasks/{id}` and `/projects/{id}/tasks`.
+
+  **Corrected while implementing step 7 (2026-09-05).** The line above used to add that v1 "rejects
+  `expand` on `/tasks/all` with `400 code 2004`, which is the endpoint this codebase reaches for by
+  default", and that supporting `expand` therefore meant moving off it. Both halves were wrong.
+  `/tasks/all` answers `400 code 2004` **with and without** `expand`, so the 400 is the endpoint not
+  the parameter; and this codebase does not reach for it by default. `FilteringContext` routes
+  cross-project listings to `GET /tasks` and single-project ones to `GET /projects/{id}/tasks`; the
+  only remaining `/tasks/all` call site is the unreachable cross-project branch of
+  `ServerSideFilteringStrategy`. The gap was narrower and entirely client-side: `expand` was
+  forwarded on `GET /tasks` and dropped into `ignoredParams` on `GET /projects/{id}/tasks`, which
+  accepts it perfectly well. See docs/API_NOTES.md, "Task Listing Endpoints and `expand`".
 - **Single-entity reads are not an N+1 win.** v1's `models.Task` already embeds `assignees`,
   `labels`, `attachments`, `related_tasks`, `reminders`. Only `max_permission` is genuinely new.
 
@@ -271,8 +280,13 @@ Ordered so that each step's risk is retired before anything depends on it.
 6. **Remaining PATCH routes**: projects, views, labels, filters, comments, teams.
 7. **`expand`** — independent of v2 and **v1-only work in practice**, since v1 supports the entire
    value set including the three the draft called v2-only. It fixes a gap we have had all along;
-   it is not a v2 adoption item. The real work is moving off `/tasks/all`, which rejects `expand`
-   outright, onto `/tasks` or `/projects/{id}/tasks`, which accept it.
+   it is not a v2 adoption item. **Done, 2026-09-05.** The work was not moving off `/tasks/all`
+   (see the correction above: nothing routes there): it was forwarding `expand` on the
+   `GET /projects/{id}/tasks` paths, which accept it, instead of pushing it into `ignoredParams`.
+   Single-project listings, filtered single-project listings, and the per-project aggregation
+   fallback all carry it now; the unreachable `/tasks/all` branch rejects it explicitly rather than
+   dropping it. The tool surface keeps its four-value enum; the other three v1 values are recorded
+   in docs/API_NOTES.md and left for their own item, since two of them populate nothing.
 
 Steps 3–6 each: v2 strategy + v1 strategy + both tested + battle-harness call-count delta recorded.
 

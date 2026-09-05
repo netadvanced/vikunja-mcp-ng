@@ -375,6 +375,57 @@ Project sharing allows creating public or private links to share projects with e
    `targetUrl`/`secret`.) See
    [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #14.
 
+### Task Listing Endpoints and `expand`
+
+Re-probed live on 2026-09-05 against the running 2.4.0, 2.5.0 and 2.6.0
+stacks, all three answering identically unless a row says otherwise.
+
+| v1 endpoint | `expand` |
+|---|---|
+| `GET /tasks` | accepted, populated |
+| `GET /projects/{id}/tasks` | accepted, populated |
+| `GET /tasks/{id}` | accepted (not exposed by this server's `get`) |
+| `GET /tasks/all` | irrelevant: see below |
+
+`GET /tasks/all` does not exist. It answers `400 {"code":2004,"message":
+"Invalid model provided: Bad Request"}` **with and without** query params, so
+the 400 is the endpoint, not the parameter. Nothing in this server routes a
+real listing there: `FilteringContext` sends cross-project listings to
+`GET /tasks` and single-project ones to `GET /projects/{id}/tasks`. The one
+call site that still names it is the unreachable cross-project branch of
+`ServerSideFilteringStrategy`, preserved from the pre-migration call-site
+port, and it now rejects `expand` explicitly rather than building a query
+that could never honour it.
+
+The accepted value set is the same on every version and on every endpoint
+above: `subtasks`, `buckets`, `reactions`, `comments`, `comment_count`,
+`time_entries_count`, `is_unread`. An unrecognised value is a **412**, not a
+400 or a 422:
+
+```
+412 {"code":2002,"message":"Expand must be one of the following values:
+subtasks, buckets, reactions, comments, comment_count, time_entries_count,
+is_unread","invalid_fields":["expand"]}
+```
+
+Two things worth knowing before extending this:
+
+- **This is not a v2 capability.** The v2 adoption design (#184) attributed
+  `comment_count`, `time_entries_count` and `is_unread` to v2. v1 accepts all
+  three on all three supported versions, and each behaves identically on both
+  API versions: `comment_count` returns the real count, the other two emit no
+  field at all. `expand` is therefore not a reason to route anything to v2.
+- **This server's tool surface exposes only four of the seven** (`subtasks`,
+  `buckets`, `reactions`, `comments`). The other three are deliberately left
+  off: two of them populate nothing, so advertising them would be a new
+  silent no-op, and `comment_count` is a surface addition for its own item
+  rather than for #184 P3 step 7.
+
+From 2.6.0, `expand=comments` and `expand=reactions` are additionally checked
+against a `tk_*` token's scopes and refused with a 401 that is byte-identical
+to a bad-token 401 — see [VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) §22
+for how that is diagnosed and why no listing path silently degrades around it.
+
 ## Operation Patterns
 
 ### Assignee Management
