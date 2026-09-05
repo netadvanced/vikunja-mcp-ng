@@ -5,9 +5,9 @@
 > `?format=markdown`, P3 step 4 routed `vikunja_tasks update` through v2 `PATCH` on servers from
 > 2.5.0, and P3 step 6 is routing the update-shaped writes of the remaining entities: the four
 > project writes (`update`, `archive`, `unarchive`, `move`), the two project-view writes
-> (`update-view`, `set-done-bucket`), `vikunja_labels update`, `vikunja_filters update` and
-> `vikunja_task_comments update`, each on every supported version (no floor). Every other row
-> still describes the P3 target rather than current behaviour: the v2
+> (`update-view`, `set-done-bucket`), `vikunja_labels update`, `vikunja_filters update`,
+> `vikunja_task_comments update` and `vikunja_teams update`, each on every supported version (no
+> floor). Every other row still describes the P3 target rather than current behaviour: the v2
 > transport, error adapter, routing decision and kill switch exist (0.7.0 P1+P2), and the remaining
 > functions are still wired only to `vikunja_auth`'s reporting. Rows flip as P3 lands, per the
 > maintenance rule at the bottom. The **Planned path** cell keeps its wording when a row ships, so
@@ -237,7 +237,7 @@ full v2 equivalents.
 | `vikunja_filters delete` | `GET /filters/{id}`; `DELETE` | same | v1 (later) | |
 | `vikunja_filters build` | (local only) | — | **local** | Pure `FilterBuilder` |
 | `vikunja_filters validate` | (local only) | — | **local** | Pure parse/validate |
-| `vikunja_teams update` | `POST /teams/{id}` | `PATCH /teams/{id}` | **v2 →v1** | |
+| `vikunja_teams update` | `GET /teams/{id}`; `POST /teams/{id}` | `PATCH /teams/{id}` | **v2 →v1** | **SHIPPED.** Two calls become one, and the reason the first one existed disappears. v1's handler binds the body into an empty struct and writes `is_public` with xorm's `UseBool` ([VIKUNJA_API_ISSUES.md §3a](VIKUNJA_API_ISSUES.md)), so an omitted boolean is written as an explicit `false` and a rename silently un-publishes a public team — hence the read-then-merge. v2's `PATCH` has none of that: probed live on 2.4.0, 2.5.0 and 2.6.0, a name-only patch returns 200 and leaves `is_public` and the description untouched, and a description-only patch is accepted rather than rejected by the required-name validator. **No `minVersion` floor**, deliberately: nothing about this route is broken on the floor, unlike task update. A no-op patch answers 304 and falls back to a v1 read. `max_permission` is dropped at the boundary. See `src/tools/teams/update/` |
 | `vikunja_teams create` | `PUT /teams` | `POST /teams` | v1 (later) | |
 | `vikunja_teams get` | `GET /teams/{id}` | same | v1 (later) | |
 | `vikunja_teams list` | `GET /teams` | same | v1 (later) | |
