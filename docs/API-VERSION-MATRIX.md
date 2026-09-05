@@ -3,9 +3,11 @@
 > **Status: P3 in progress.** Rows whose **Notes** begin with **SHIPPED** route through v2 today:
 > P3 step 3 routed the task read paths (`vikunja_tasks get`, `vikunja_tasks list`) through v2 for
 > `?format=markdown`, P3 step 4 routed `vikunja_tasks update` through v2 `PATCH` on servers from
-> 2.5.0, and P3 step 6 routed the four project update-shaped writes (`update`, `archive`,
-> `unarchive`, `move`) through v2 `PATCH` on every supported version. Every other row still
-> describes the P3 target rather than current behaviour: the v2
+> 2.5.0, and P3 step 6 is routing the update-shaped writes of the remaining entities: the four
+> project writes (`update`, `archive`, `unarchive`, `move`), the two project-view writes
+> (`update-view`, `set-done-bucket`), `vikunja_labels update`, `vikunja_filters update` and
+> `vikunja_task_comments update`, each on every supported version (no floor). Every other row
+> still describes the P3 target rather than current behaviour: the v2
 > transport, error adapter, routing decision and kill switch exist (0.7.0 P1+P2), and the remaining
 > functions are still wired only to `vikunja_auth`'s reporting. Rows flip as P3 lands, per the
 > maintenance rule at the bottom. The **Planned path** cell keeps its wording when a row ships, so
@@ -156,7 +158,7 @@ full v2 equivalents.
 | `vikunja_task_comments comment` | `PUT /tasks/{id}/comments`; `GET` | `POST`; `GET` | v1 (later) | |
 | `vikunja_task_comments list` | `GET /tasks/{id}/comments` | same | v1 (later) | |
 | `vikunja_task_comments get` | `GET /tasks/{id}/comments/{commentID}` | same | v1 (later) | |
-| `vikunja_task_comments update` | `POST /tasks/{id}/comments/{commentID}` | `PATCH /tasks/{task}/comments/{commentid}` | **v2 →v1** | True partial update |
+| `vikunja_task_comments update` | `POST /tasks/{id}/comments/{commentID}` | `PATCH /tasks/{task}/comments/{commentid}` | **v2 →v1** | **SHIPPED.** True partial update. **No `minVersion` floor**, unlike `vikunja_tasks update`: the route was probed on 2.4.0, 2.5.0 and 2.6.0 on 2026-09-06 and applies the patch, preserves `author`/`created`, and answers 404/422 correctly on all three, so the floor release gets v2 too. Still one request on both paths — there was never a fetch-merge here to retire, since v1's `POST` already replaces only `comment` — so this is a dispatcher, not a strategy pair. A no-op patch answers an empty **304**, which v1 answers 200; that case re-reads over v1 so the caller still gets a comment back. The update response stays HTML, and comment READS are unchanged (still v1) — see the asymmetry note at the top. See `src/tools/tasks/comments/CommentOperationsService.ts` |
 | `vikunja_task_comments delete` | `DELETE /tasks/{id}/comments/{commentID}` | same | v1 (later) | |
 | `vikunja_task_relations relate` | `PUT /tasks/{id}/relations`; `GET` | `POST`; `GET` | v1 (later) | |
 | `vikunja_task_relations unrelate` | `DELETE .../relations/{kind}/{otherID}`; `GET` | same | v1 (later) | |

@@ -483,6 +483,24 @@ describe('retry utility', () => {
       expect(isClientErrorExcludedFromBreaker(null)).toBe(false);
     });
 
+    // #184 P3 step 6. Vikunja v2 answers an empty 304 when a merge patch
+    // would change nothing (verified live on 2.4.0, 2.5.0 and 2.6.0), and
+    // `Response.ok` is false for it, so the v2 transport surfaces a correct
+    // server answer as an error. Counting it would let a caller that
+    // re-sends a comment's current text three times in five calls open a
+    // breaker every other caller of that endpoint group shares.
+    it('excludes 304 — a no-op merge patch is a correct answer, not a failure', () => {
+      expect(isClientErrorExcludedFromBreaker(withStatus(304))).toBe(true);
+      expect(
+        isClientErrorExcludedFromBreaker(Object.assign(new Error('x'), { statusCode: 304 })),
+      ).toBe(true);
+    });
+
+    it('does NOT exclude other 3xx — a redirect loop is still worth noticing', () => {
+      expect(isClientErrorExcludedFromBreaker(withStatus(301))).toBe(false);
+      expect(isClientErrorExcludedFromBreaker(withStatus(302))).toBe(false);
+    });
+
     it('reads status from `.statusCode` and `.response.status` too', () => {
       expect(
         isClientErrorExcludedFromBreaker(Object.assign(new Error('x'), { statusCode: 422 })),
