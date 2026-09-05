@@ -363,6 +363,33 @@ Project sharing allows creating public or private links to share projects with e
    **when the vendored OpenAPI spec and the Go handler disagree, the handler
    wins**. Verify against the handler source, not the spec text.
 
+### Label Update
+
+1. **The v1 Route in the Spec Does Not Exist**: `docs/vikunja-openapi.json`
+   declares `PUT /labels/{id}` for label update, and `vikunja_labels update`
+   sent exactly that until #184 P3 step 6. Every supported server answers
+   `405 Method Not Allowed` with `Allow: OPTIONS, DELETE, GET, POST` (probed
+   live on 2.4.0, 2.5.0 and 2.6.0 on 2026-09-05), so the subcommand failed on
+   every call. The route the server routes is `POST /labels/{id}`. Another
+   instance of the rule the team-member note above states: when the vendored
+   spec and the server disagree, the server wins.
+
+2. **That `POST` Is a Full Model Replace**: sending only `{"hex_color":
+   "ff0000"}` returned a label whose `title` and `description` were both `""`.
+   The comment that used to sit atop `src/tools/labels.ts` claimed the
+   opposite — that the label service applies only the fields present on the
+   incoming struct — and it was wrong. The v1 path therefore reads the label
+   and sends the merged model back, the same fetch-merge-POST shape projects,
+   views and teams use.
+
+3. **v2 `PATCH /labels/{id}` Is a True Partial Update, On Every Supported
+   Version**: it applied the change and preserved every unmentioned field on
+   2.4.0, 2.5.0 and 2.6.0, so label update carries no `minVersion` floor and a
+   v2-capable session sends one call instead of two. A patch that would change
+   nothing answers `304` with an empty body, which the transport surfaces as an
+   error; the v2 strategy reads the label in that one case. See
+   `src/utils/label-update.ts`.
+
 ### User Settings
 
 1. **`POST /user/settings/general` Is a Full Replace, Forced**: the handler

@@ -50,6 +50,8 @@ differently.
 | 22 | 2.6.0 refuses an out-of-scope `expand` with a 401 indistinguishable from a bad token | ⚠️ Open upstream, inference-based guidance shipped |
 | 23 | `models.Project.max_permission` returns `null` while the spec declares it a non-nullable integer | ⚠️ Open upstream (spec bug), no client impact |
 | 24 | `DELETE /projects/{projectID}/users/{userID}` takes a USERNAME, not the documented integer id | ⚠️ Open upstream (spec bug), fixture uses the username |
+| 25 | v2 `PATCH /tasks/{id}` 422s for any subscribed task | ✅ Fixed upstream on 2.5.0; 2.4.0 routes to v1 |
+| 26 | `PUT /labels/{id}` is declared in the v1 spec and answers 405 on every version | ⚠️ Open upstream (spec bug), correct verb shipped |
 
 ## 1. SQL-Like Filter Syntax Not Supported
 
@@ -1098,6 +1100,42 @@ affects.
 - `?format=markdown` is honoured on `GET` but **ignored on `PATCH`**: the parameter is declared on
   `GET`/`POST`/`PUT` only, and a live `PATCH ...?format=markdown` on 2.6.0 returned HTML. A read and
   an update of the same task therefore disagree on the description's format.
+
+## 26. `PUT /api/v1/labels/{id}` Is Declared in the Spec and Answers 405
+
+**Status:** ⚠️ Open upstream (spec bug). Reproduces on **2.4.0, 2.5.0 and 2.6.0**, probed live on
+2026-09-05 while implementing issue #184 P3 step 6.
+
+`docs/vikunja-openapi.json` declares `put` on `/labels/{id}` as the label update operation. No
+supported server routes it:
+
+```
+PUT /api/v1/labels/42     {"title":"Renamed"}
+
+→ 405 Method Not Allowed
+Allow: OPTIONS, DELETE, GET, POST
+{"message":"Method Not Allowed"}
+```
+
+The verb the server routes is `POST /labels/{id}`, matching the convention every other v1 update
+endpoint follows (v1: `PUT` creates, `POST` updates). The vendored spec is wrong, not the server.
+
+**Impact on this client:** `vikunja_labels update` sent the documented `PUT` and therefore failed on
+every call, on every supported version, until it was corrected in #184 P3 step 6. The unit tests did
+not catch it because they mock `fetch` and assert the request the implementation makes, so both
+sides agreed on a verb that does not exist. That is the general lesson worth carrying: a
+spec-derived mock cannot falsify a spec-derived route. Only a live probe can.
+
+**A second, independent finding on the correct route:** `POST /labels/{id}` is a **full model
+replace**. Sending only `{"hex_color":"ff0000"}` returned `{"title":"","description":"", ...}` — the
+unmentioned fields were blanked, not preserved. So the v1 path reads the label and sends the merged
+model, the same fetch-merge-`POST` shape items #13, #15 and #16 document for user settings, project
+views and projects.
+
+**v2 has neither problem.** `PATCH /api/v2/labels/{id}` exists on 2.4.0, 2.5.0 and 2.6.0, is a true
+partial update, and preserves every unmentioned field. Label update therefore carries no
+per-operation `minVersion`, unlike task update (#25). A no-op patch answers `304` with an empty
+body, which is correct HTTP and simply has to be handled.
 
 ## Recommendations for Vikunja Maintainers
 

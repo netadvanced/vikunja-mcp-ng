@@ -53,6 +53,28 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
   switch (`forceV1Api`) still forces v1 on every version, and an undetected server version still
   selects v1.
 
+### Fixed: `vikunja_labels update` works again, and runs on v2 `PATCH` (#184, 0.8.0 P3 step 6)
+
+- **`vikunja_labels update` was broken on every supported version.** It sent
+  `PUT /api/v1/labels/{id}`, the verb `docs/vikunja-openapi.json` declares, and every server answers
+  `405 Method Not Allowed` to it (`Allow: OPTIONS, DELETE, GET, POST`, probed live on 2.4.0, 2.5.0
+  and 2.6.0 on 2026-09-05). The unit tests did not catch it because a spec-derived mock and a
+  spec-derived route agreed with each other. Recorded as `VIKUNJA_API_ISSUES.md` #26.
+- **The v1 route that does exist is a full model replace.** `POST /labels/{id}` with only
+  `hex_color` came back with `title` and `description` blanked, contradicting the comment in
+  `src/tools/labels.ts` that claimed the handler applied only the fields present. The v1 path now
+  reads the label and sends the merged model back, the same fetch-merge-`POST` shape projects, views
+  and teams already use.
+- **v2 `PATCH /labels/{id}` replaces both calls with one** on a v2-capable session. It is a true
+  partial update on 2.4.0, 2.5.0 and 2.6.0 alike, so this operation carries **no `minVersion`
+  floor**, unlike task update. A patch the server considers a no-op answers `304` with an empty
+  body; that one case reads the label so the caller still gets one back.
+- A strategy pair was warranted here after all, for a reason unrelated to the URL prefix: the call
+  shapes genuinely differ, two calls against one. The v1 kill switch (`VIKUNJA_MCP_FORCE_V1_API`),
+  a server with no v2 API, and a session that never ran capability detection all select v1, and all
+  three are covered. New code in `src/utils/label-update.ts`; no tool-surface or response-shape
+  change.
+
 ### Fixed: `expand` is honoured on a single-project listing instead of dropped (#184, 0.8.0 P3 step 7)
 
 - `vikunja_tasks list` used to accept `expand` on a single-project listing, report it as ignored,
