@@ -155,6 +155,27 @@ Two constraints on that work:
 This lands with probe hardening in step 1, since both are about the routing decision being
 trustworthy before anything routes on it.
 
+### Decision: markdown on reads only (owner call, 2026-09-05)
+
+`?format=markdown` is honoured on `GET` and ignored on `PATCH`, so a read and an update of the same
+task would disagree on the description's format.
+
+**Decision: request markdown on reads, and leave update responses exactly as they are today.**
+
+Rejected alternatives, and why:
+
+- *Re-read after every update to get markdown.* Costs back the call `PATCH` was introduced to save,
+  which is the milestone's whole payoff. Paying a round trip to make a response cosmetically
+  consistent is a bad trade.
+- *Hold markdown back until both sides can agree.* Forfeits the single largest caller-visible
+  quality win in the milestone, and the read path is precisely where an LLM consumes descriptions.
+
+**The cost is real and must be documented, not hidden:** the same field comes back in two formats
+depending on how the caller obtained it. This is a deliberate asymmetry, not an oversight.
+
+**Revisit if** Vikunja adds `format` to `PATCH`, at which point updates should adopt markdown and
+the asymmetry disappears. Until then, do not add a re-read to paper over it.
+
 ## Architecture
 
 ### Strategy + Context per operation
@@ -232,9 +253,7 @@ Ordered so that each step's risk is retired before anything depends on it.
    caller-visible quality win. **Scope reduced 2026-09-05:** `GET /projects/{id}/tasks` is dropped
    from this step's rationale, since v1 already serves it and no discovery call is saved. Routing
    project-task reads to v2 is still worth doing for `format=markdown`, but that is the whole
-   justification now, not the endpoint itself. Note the read/write asymmetry: `PATCH` ignores
-   `format`, so either the update path re-reads to get markdown, or the canonical shape tolerates
-   both and callers are told which they have. Decide that explicitly here rather than in step 4.
+   justification now, not the endpoint itself. The read/write asymmetry is **decided**, see below.
 4. **Task update** — the milestone's payoff: `PATCH` + inline assignees, selected only on servers
    >= 2.5.0 and falling to the v1 strategy on 2.4.0. Retires the fetch-merge-POST race on every
    version where v2 can be trusted to do it. No `subscription: null`, no bug-pinning test. Depends
