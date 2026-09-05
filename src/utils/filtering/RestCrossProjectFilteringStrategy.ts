@@ -125,14 +125,18 @@ export class RestCrossProjectFilteringStrategy implements TaskFilteringStrategy 
       return { tasks: safeTasks, metadata };
     } catch (error) {
       // An `expand` value the API token has no scope for (Vikunja >= 2.6.0)
-      // must NOT fall back (issue #254, item A1). The fallback rebuilds the
-      // query from `{}` and drops `expand` entirely, so the caller would get
-      // a perfectly successful task list that is quietly missing the very
-      // data they asked to expand — verified live against 2.6.0: a narrow
-      // `tk_*` token requesting expand=comments came back 200 with no
-      // `comments` key on any task. Degrading silently is worse than
-      // failing here, because nothing downstream can tell the difference
-      // between "expanded and empty" and "never expanded".
+      // must NOT fall back (issue #254, item A1). Falling back would cost a
+      // full per-project aggregation and end in the same refusal, since the
+      // fallback now forwards `expand` too (#184 P3 step 7) — so failing
+      // here is the same answer, immediately, with the scope diagnosis
+      // intact.
+      //
+      // Before that step the fallback dropped `expand` entirely, which was
+      // worse still: the caller got a perfectly successful task list quietly
+      // missing the very data they asked to expand. Verified live against
+      // 2.6.0 at the time: a narrow `tk_*` token requesting expand=comments
+      // came back 200 with no `comments` key on any task. Nothing downstream
+      // could tell "expanded and empty" from "never expanded".
       if (error instanceof MCPError && error.details?.insufficientScope === true) {
         logger.warn('Direct REST GET /tasks refused an expand value for lack of token scope', {
           filter: filterString,

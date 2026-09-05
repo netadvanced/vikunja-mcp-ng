@@ -931,9 +931,16 @@ in the error that it is the LIKELY cause, with the "token really is expired"
 branch named second and a one-line experiment that separates them — the same
 request without `expand`. The inference also sets `details.insufficientScope`,
 which keeps the failure out of the shared circuit breaker and stops the
-cross-project listing strategy from silently falling back (the fallback drops
-`expand` entirely, so falling back turned the refusal into a successful
-listing quietly missing the expanded data).
+cross-project listing strategy from falling back, and stops the per-project
+aggregation from skipping every project in turn.
+
+Both of those refusals originally existed because the fallback dropped
+`expand` entirely, which turned the refusal into a successful listing quietly
+missing the expanded data. Since #184 P3 step 7 the fallback forwards `expand`
+like every other listing path, so the fallback would now hit the same refusal
+per project — one project at a time, reported as "N project(s) could not be
+read" with the scope diagnosis buried. Failing fast is still the right answer,
+for the second reason rather than the first.
 
 ## 23. `Project.max_permission` Returns `null` Where the Spec Says Integer
 

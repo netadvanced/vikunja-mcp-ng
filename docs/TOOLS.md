@@ -117,9 +117,20 @@ never a clean `Found 0 tasks`.
     - Cross-project listing (no `projectId`, or `allProjects: true`) calls the
       documented `GET /tasks` endpoint directly (one call), falling back to
       per-project aggregation only if that call fails
-    - `orderBy` (`'asc' | 'desc'`), `filterTimezone`, `filterIncludeNulls`,
-      and `expand` (`'subtasks' | 'buckets' | 'reactions' | 'comments'`, can
-      be repeated) are forwarded to `GET /tasks` for cross-project listing
+    - `orderBy` (`'asc' | 'desc'`), `filterTimezone` and `filterIncludeNulls`
+      are forwarded to `GET /tasks` for cross-project listing only. On a
+      single-project listing they are ignored, and the response says so
+    - `expand` (`'subtasks' | 'buckets' | 'reactions' | 'comments'`, can be
+      repeated) is forwarded on **both** listing shapes: to `GET /tasks` for
+      a cross-project listing, to `GET /projects/{id}/tasks` for a
+      single-project one, and to the per-project requests of the
+      cross-project aggregation fallback. It used to be accepted and then
+      dropped on a single-project listing; that was a client-side gap, not
+      an API one. With a `tk_*` API token, `expand=comments` and
+      `expand=reactions` also need the `tasks_comments` / `reactions` token
+      scopes from Vikunja 2.6.0 on — without them the listing fails with a
+      401 rather than returning unexpanded tasks as a success (see
+      [VIKUNJA_API_ISSUES.md §22](VIKUNJA_API_ISSUES.md))
     - **A cross-project listing is paginated through, not sampled.** Vikunja
       clamps `per_page` to its `max_items_per_page` (default 50) on *both*
       `GET /projects/{id}/tasks` and `GET /projects`, so the client-side
