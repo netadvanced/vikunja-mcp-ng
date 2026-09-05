@@ -25,6 +25,7 @@ export {
   resolveTemplatesPersistPath,
   loadTemplatesFile,
   writeTemplatesFileAtomic,
+  persistIdentityTemplateRecords,
 } from './templateFileStore';
 export type { PersistedTemplateRecord } from './templateFileStore';
 
@@ -164,4 +165,3 @@ export function migrateMemoryToPersistent(): {
     errors: [],
   };
 }
-

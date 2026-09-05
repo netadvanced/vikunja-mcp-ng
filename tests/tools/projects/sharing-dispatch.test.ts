@@ -30,7 +30,9 @@ function mockResponse(opts: {
   } as unknown as Response;
 }
 
-type ToolHandler = (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }> }>;
+type ToolHandler = (
+  args: Record<string, unknown>,
+) => Promise<{ content: Array<{ type: string; text: string }> }>;
 
 describe('vikunja_projects dispatch — direct user/team sharing', () => {
   let authManager: AuthManager;
@@ -45,7 +47,9 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
 
     const mockServer = { tool: jest.fn() } as unknown as { tool: jest.Mock };
     registerProjectsTool(mockServer as never, authManager);
-    toolHandler = mockServer.tool.mock.calls[0][mockServer.tool.mock.calls[0].length - 1] as ToolHandler;
+    toolHandler = mockServer.tool.mock.calls[0][
+      mockServer.tool.mock.calls[0].length - 1
+    ] as ToolHandler;
   });
 
   async function callTool(subcommand: string, args: Record<string, unknown> = {}) {
@@ -54,32 +58,138 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
 
   describe('required-argument validation', () => {
     const cases: Array<{ subcommand: string; args: Record<string, unknown>; message: string }> = [
-      { subcommand: 'list-project-users', args: {}, message: 'Project ID is required for list-project-users operation' },
-      { subcommand: 'search-project-users', args: {}, message: 'Project ID is required for search-project-users operation' },
-      { subcommand: 'add-project-user', args: {}, message: 'Project ID is required for add-project-user operation' },
-      { subcommand: 'add-project-user', args: { projectId: 1 }, message: 'username is required for add-project-user operation' },
-      { subcommand: 'add-project-user', args: { projectId: 1, username: 'alice' }, message: 'Share right is required for add-project-user operation' },
-      { subcommand: 'update-project-user-permission', args: {}, message: 'Project ID is required for update-project-user-permission operation' },
-      { subcommand: 'update-project-user-permission', args: { projectId: 1 }, message: 'userId is required for update-project-user-permission operation' },
-      { subcommand: 'update-project-user-permission', args: { projectId: 1, userId: 2 }, message: 'Share right is required for update-project-user-permission operation' },
-      { subcommand: 'remove-project-user', args: {}, message: 'Project ID is required for remove-project-user operation' },
-      { subcommand: 'remove-project-user', args: { projectId: 1 }, message: 'userId is required for remove-project-user operation' },
-      { subcommand: 'list-project-teams', args: {}, message: 'Project ID is required for list-project-teams operation' },
-      { subcommand: 'add-project-team', args: {}, message: 'Project ID is required for add-project-team operation' },
-      { subcommand: 'add-project-team', args: { projectId: 1 }, message: 'teamId is required for add-project-team operation' },
-      { subcommand: 'add-project-team', args: { projectId: 1, teamId: 2 }, message: 'Share right is required for add-project-team operation' },
-      { subcommand: 'update-project-team-permission', args: {}, message: 'Project ID is required for update-project-team-permission operation' },
-      { subcommand: 'update-project-team-permission', args: { projectId: 1 }, message: 'teamId is required for update-project-team-permission operation' },
-      { subcommand: 'update-project-team-permission', args: { projectId: 1, teamId: 2 }, message: 'Share right is required for update-project-team-permission operation' },
-      { subcommand: 'remove-project-team', args: {}, message: 'Project ID is required for remove-project-team operation' },
-      { subcommand: 'remove-project-team', args: { projectId: 1 }, message: 'teamId is required for remove-project-team operation' },
-      { subcommand: 'share-with-user', args: {}, message: 'Project ID is required for share-with-user operation' },
-      { subcommand: 'share-with-user', args: { projectId: 1 }, message: 'username is required for share-with-user operation' },
-      { subcommand: 'share-with-user', args: { projectId: 1, username: 'alice' }, message: 'Share right is required for share-with-user operation' },
-      { subcommand: 'share-with-team', args: {}, message: 'Project ID is required for share-with-team operation' },
-      { subcommand: 'share-with-team', args: { projectId: 1 }, message: 'teamName is required for share-with-team operation' },
-      { subcommand: 'share-with-team', args: { projectId: 1, teamName: 'Eng' }, message: 'Share right is required for share-with-team operation' },
-      { subcommand: 'list-members', args: {}, message: 'Project ID is required for list-members operation' },
+      {
+        subcommand: 'list-project-users',
+        args: {},
+        message: 'Project ID is required for list-project-users operation',
+      },
+      {
+        subcommand: 'search-project-users',
+        args: {},
+        message: 'Project ID is required for search-project-users operation',
+      },
+      {
+        subcommand: 'add-project-user',
+        args: {},
+        message: 'Project ID is required for add-project-user operation',
+      },
+      {
+        subcommand: 'add-project-user',
+        args: { projectId: 1 },
+        message: 'username is required for add-project-user operation',
+      },
+      {
+        subcommand: 'add-project-user',
+        args: { projectId: 1, username: 'alice' },
+        // Comes from the shared `resolvePermission()` helper now, not a
+        // dispatch-level falsy check (that would reject `right: 0`).
+        message: 'Share right is required',
+      },
+      {
+        subcommand: 'update-project-user-permission',
+        args: {},
+        message: 'Project ID is required for update-project-user-permission operation',
+      },
+      {
+        subcommand: 'update-project-user-permission',
+        args: { projectId: 1 },
+        message: 'userId is required for update-project-user-permission operation',
+      },
+      {
+        subcommand: 'update-project-user-permission',
+        args: { projectId: 1, userId: 2 },
+        message: 'Share right is required',
+      },
+      {
+        subcommand: 'remove-project-user',
+        args: {},
+        message: 'Project ID is required for remove-project-user operation',
+      },
+      {
+        subcommand: 'remove-project-user',
+        args: { projectId: 1 },
+        message: 'userId is required for remove-project-user operation',
+      },
+      {
+        subcommand: 'list-project-teams',
+        args: {},
+        message: 'Project ID is required for list-project-teams operation',
+      },
+      {
+        subcommand: 'add-project-team',
+        args: {},
+        message: 'Project ID is required for add-project-team operation',
+      },
+      {
+        subcommand: 'add-project-team',
+        args: { projectId: 1 },
+        message: 'teamId is required for add-project-team operation',
+      },
+      {
+        subcommand: 'add-project-team',
+        args: { projectId: 1, teamId: 2 },
+        message: 'Share right is required',
+      },
+      {
+        subcommand: 'update-project-team-permission',
+        args: {},
+        message: 'Project ID is required for update-project-team-permission operation',
+      },
+      {
+        subcommand: 'update-project-team-permission',
+        args: { projectId: 1 },
+        message: 'teamId is required for update-project-team-permission operation',
+      },
+      {
+        subcommand: 'update-project-team-permission',
+        args: { projectId: 1, teamId: 2 },
+        message: 'Share right is required',
+      },
+      {
+        subcommand: 'remove-project-team',
+        args: {},
+        message: 'Project ID is required for remove-project-team operation',
+      },
+      {
+        subcommand: 'remove-project-team',
+        args: { projectId: 1 },
+        message: 'teamId is required for remove-project-team operation',
+      },
+      {
+        subcommand: 'share-with-user',
+        args: {},
+        message: 'Project ID is required for share-with-user operation',
+      },
+      {
+        subcommand: 'share-with-user',
+        args: { projectId: 1 },
+        message: 'username is required for share-with-user operation',
+      },
+      {
+        subcommand: 'share-with-user',
+        args: { projectId: 1, username: 'alice' },
+        message: 'Share right is required',
+      },
+      {
+        subcommand: 'share-with-team',
+        args: {},
+        message: 'Project ID is required for share-with-team operation',
+      },
+      {
+        subcommand: 'share-with-team',
+        args: { projectId: 1 },
+        message: 'teamName is required for share-with-team operation',
+      },
+      {
+        subcommand: 'share-with-team',
+        args: { projectId: 1, teamName: 'Eng' },
+        message: 'Share right is required',
+      },
+      {
+        subcommand: 'list-members',
+        args: {},
+        message: 'Project ID is required for list-members operation',
+      },
     ];
 
     it.each(cases)('$subcommand -> "$message"', async ({ subcommand, args, message }) => {
@@ -99,14 +209,20 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
     it('search-project-users', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ text: '[]' }));
       await callTool('search-project-users', { projectId: 1, search: 'ali' });
-      expect(mockFetch.mock.calls[0][0]).toBe('https://vikunja.test/api/v1/projects/1/projectusers?s=ali');
+      expect(mockFetch.mock.calls[0][0]).toBe(
+        'https://vikunja.test/api/v1/projects/1/projectusers?s=ali',
+      );
     });
 
     it('add-project-user', async () => {
       mockFetch.mockResolvedValueOnce(
         mockResponse({ text: JSON.stringify({ username: 'alice', permission: 0 }) }),
       );
-      const result = await callTool('add-project-user', { projectId: 1, username: 'alice', right: 'read' });
+      const result = await callTool('add-project-user', {
+        projectId: 1,
+        username: 'alice',
+        right: 'read',
+      });
       const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
       expect(url).toBe('https://vikunja.test/api/v1/projects/1/users');
       expect(JSON.parse(init.body as string)).toEqual({ username: 'alice', permission: 0 });
@@ -117,6 +233,17 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ permission: 2 }) }));
       await callTool('update-project-user-permission', { projectId: 1, userId: 5, right: 'admin' });
       expect(mockFetch.mock.calls[0][0]).toBe('https://vikunja.test/api/v1/projects/1/users/5');
+    });
+
+    // Regression: `right: 0` (read-only) is a valid, falsy value. The
+    // dispatch layer must not reject it with "Share right is required" —
+    // `resolvePermission()` inside the handler is the single source of
+    // truth for whether `right` was actually omitted.
+    it('update-project-user-permission accepts a downgrade to right: 0 (read-only)', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ permission: 0 }) }));
+      await callTool('update-project-user-permission', { projectId: 1, userId: 5, right: 0 });
+      const init = mockFetch.mock.calls[0][1] as RequestInit;
+      expect(JSON.parse(init.body as string)).toEqual({ permission: 0 });
     });
 
     it('remove-project-user', async () => {
@@ -138,7 +265,11 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
       mockFetch.mockResolvedValueOnce(
         mockResponse({ text: JSON.stringify({ team_id: 3, permission: 1 }) }),
       );
-      const result = await callTool('add-project-team', { projectId: 1, teamId: 3, right: 'write' });
+      const result = await callTool('add-project-team', {
+        projectId: 1,
+        teamId: 3,
+        right: 'write',
+      });
       const init = mockFetch.mock.calls[0][1] as RequestInit;
       expect(JSON.parse(init.body as string)).toEqual({ team_id: 3, permission: 1 });
       expect(result.content[0].text).toContain('Granted team 3');
@@ -158,20 +289,53 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
 
     it('share-with-user (composite)', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice' }]) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }),
+        )
         .mockResolvedValueOnce(
           mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice', permission: 1 }]) }),
         );
 
-      const result = await callTool('share-with-user', { projectId: 1, username: 'alice', right: 'write' });
+      const result = await callTool('share-with-user', {
+        projectId: 1,
+        username: 'alice',
+        right: 'write',
+      });
       expect(result.content[0].text).toContain('Shared project 1 with user "alice"');
+    });
+
+    it('share-with-user accepts a downgrade to right: 0 (read-only)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'alice', permission: 0 }) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice', permission: 0 }]) }),
+        );
+
+      const result = await callTool('share-with-user', {
+        projectId: 1,
+        username: 'alice',
+        right: 0,
+      });
+      expect(result.content[0].text).toContain('Shared project 1 with user "alice"');
+      expect(result.content[0].text).toContain('permission 0');
     });
 
     it('share-with-team (composite)', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering' }]) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ team_id: 7, permission: 1 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ team_id: 7, permission: 1 }) }),
+        )
         .mockResolvedValueOnce(
           mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering', permission: 1 }]) }),
         );
@@ -188,13 +352,17 @@ describe('vikunja_projects dispatch — direct user/team sharing', () => {
       mockFetch.mockImplementation((url: string) => {
         if (url.endsWith('/projects/1/users')) return Promise.resolve(mockResponse({ text: '[]' }));
         if (url.endsWith('/projects/1/teams')) return Promise.resolve(mockResponse({ text: '[]' }));
-        if (url.includes('/projects/1/shares')) return Promise.resolve(mockResponse({ text: '[]' }));
-        if (url.endsWith('/projects/1')) return Promise.resolve(mockResponse({ text: JSON.stringify({ id: 1 }) }));
+        if (url.includes('/projects/1/shares'))
+          return Promise.resolve(mockResponse({ text: '[]' }));
+        if (url.endsWith('/projects/1'))
+          return Promise.resolve(mockResponse({ text: JSON.stringify({ id: 1 }) }));
         throw new Error(`Unexpected fetch call to ${url}`);
       });
 
       const result = await callTool('list-members', { projectId: 1 });
-      expect(result.content[0].text).toContain('Project 1 has 0 direct user(s), 0 direct team(s), and 0 link share(s)');
+      expect(result.content[0].text).toContain(
+        'Project 1 has 0 direct user(s), 0 direct team(s), and 0 link share(s)',
+      );
     });
   });
 });

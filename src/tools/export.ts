@@ -12,6 +12,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
+import { getAuthManagerFromContext, hasRequestContext } from '../client';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { logger } from '../utils/logger';
@@ -150,7 +151,8 @@ async function exportProjectRecursive(
     // Fetch the full catalog once per export (not once per recursion level
     // — see this function's doc comment) and thread it through recursive
     // calls.
-    const projects = allProjects ?? (await vikunjaRestRequest<VikunjaProject[]>(authManager, 'GET', '/projects'));
+    const projects =
+      allProjects ?? (await vikunjaRestRequest<VikunjaProject[]>(authManager, 'GET', '/projects'));
     const childProjects = projects.filter(
       (p: VikunjaProject) => p.parent_project_id === project.id,
     );
@@ -177,7 +179,41 @@ async function exportProjectRecursive(
 
 // Schema definitions
 
-export function registerExportTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerExportTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
+  /**
+   * Resolves the `AuthManager` that actually holds the CALLING identity's
+   * credential for the three `/user/export/*` tools, and asserts it carries a
+   * token.
+   *
+   * Closure-gate precedence fix (#282's pattern, extended to this trio by
+   * #329): these handlers used to check `authManager.getSession().apiToken`
+   * against the closure/process-global manager captured at registration time.
+   * In `oidc-http` mode that manager is never `.connect()`-ed — per-caller
+   * credentials live behind the vault, reachable only through the ALS request
+   * context — and `AuthManager.getSession()` throws `AUTH_REQUIRED` outright
+   * when unconnected, so all three tools failed for every caller regardless of
+   * how legitimately authenticated they were.
+   *
+   * `stdio` mode is unaffected: `hasRequestContext()` is always `false` there,
+   * so the closure manager is used and its `getSession()` behaves byte-for-byte
+   * as before (including its own `AUTH_REQUIRED` throw when not connected).
+   */
+  async function resolveUserExportAuthManager(): Promise<AuthManager> {
+    const effectiveAuthManager = hasRequestContext()
+      ? await getAuthManagerFromContext()
+      : authManager;
+
+    if (!effectiveAuthManager.getSession().apiToken) {
+      throw new MCPError(ErrorCode.AUTH_REQUIRED, 'No authentication token available');
+    }
+
+    return effectiveAuthManager;
+  }
+
   // Export project data
   server.tool(
     'vikunja_export_project',
@@ -191,15 +227,21 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
     },
     getToolAnnotations('vikunja_export_project'),
     async (args) => {
-      if (!authManager.isAuthenticated()) {
+      // Closure-gate precedence fix: defer to the per-request context when
+      // bound (see hasRequestContext's doc comment, src/client.ts).
+      let effectiveAuthManager = authManager;
+      if (hasRequestContext()) {
+        effectiveAuthManager = await getAuthManagerFromContext();
+      } else if (!authManager.isAuthenticated()) {
         throw new MCPError(
           ErrorCode.AUTH_REQUIRED,
           'Authentication required. Please use vikunja_auth.connect first.',
         );
       }
 
-      // Export operations require JWT authentication
-      if (authManager.getAuthType() !== 'jwt') {
+      // Export operations require JWT authentication — of the CALLING
+      // identity (#282), not of the process-global closure manager.
+      if (effectiveAuthManager.getAuthType() !== 'jwt') {
         throw new MCPError(
           ErrorCode.PERMISSION_DENIED,
           'Export operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',
@@ -215,9 +257,11 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
 
         validateSharedId(projectId, 'projectId');
 
-        // Export the project data
+        // Export the project data. The per-request manager is what carries
+        // the calling identity's credential in oidc-http mode (#329); in
+        // stdio it *is* the closure manager, so this is a no-op there.
         const exportData = await exportProjectRecursive(
-          authManager,
+          effectiveAuthManager,
           projectId,
           includeChildren,
         );
@@ -274,16 +318,14 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
       try {
         const { password } = args;
 
-        if (!authManager.getSession().apiToken) {
-          throw new MCPError(ErrorCode.AUTH_REQUIRED, 'No authentication token available');
-        }
+        const effectiveAuthManager = await resolveUserExportAuthManager();
 
         // No subcommand field on this single-purpose tool — 'request' is
         // its fixed classification-table key.
         assertWriteAllowed('vikunja_request_user_export', 'request');
 
         const result = await vikunjaRestRequest<VikunjaMessageResponse>(
-          authManager,
+          effectiveAuthManager,
           'POST',
           '/user/export/request',
           { password },
@@ -333,9 +375,7 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
       try {
         const { password } = args;
 
-        if (!authManager.getSession().apiToken) {
-          throw new MCPError(ErrorCode.AUTH_REQUIRED, 'No authentication token available');
-        }
+        const effectiveAuthManager = await resolveUserExportAuthManager();
 
         // No subcommand field on this single-purpose tool — 'download' is
         // its fixed classification-table key (confirmation-only, no new
@@ -344,7 +384,7 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
         assertWriteAllowed('vikunja_download_user_export', 'download');
 
         const result = await vikunjaRestRequest<VikunjaMessageResponse>(
-          authManager,
+          effectiveAuthManager,
           'POST',
           '/user/export/download',
           { password },
@@ -393,16 +433,14 @@ export function registerExportTool(server: McpServer, authManager: AuthManager, 
     getToolAnnotations('vikunja_user_export_status'),
     async () => {
       try {
-        if (!authManager.getSession().apiToken) {
-          throw new MCPError(ErrorCode.AUTH_REQUIRED, 'No authentication token available');
-        }
+        const effectiveAuthManager = await resolveUserExportAuthManager();
 
         // No subcommand field on this single-purpose tool — 'status' is
         // its fixed classification-table key (GET-only, always 'read').
         assertWriteAllowed('vikunja_user_export_status', 'status');
 
         const status = await vikunjaRestRequest<VikunjaUserExportStatus>(
-          authManager,
+          effectiveAuthManager,
           'GET',
           '/user/export',
         );

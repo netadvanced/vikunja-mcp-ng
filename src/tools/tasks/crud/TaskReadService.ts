@@ -3,7 +3,13 @@
  * Handles task retrieval operations with comprehensive error handling
  */
 
-import { MCPError, ErrorCode, transformApiError, handleFetchError, handleStatusCodeError } from '../../../index';
+import {
+  MCPError,
+  ErrorCode,
+  transformApiError,
+  handleFetchError,
+  handleStatusCodeError,
+} from '../../../index';
 import type { AuthManager } from '../../../auth/AuthManager';
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import { validateId } from '../validation';
@@ -37,7 +43,7 @@ export async function getTask(
     const response = createTaskResponse(
       'get-task',
       `Retrieved task "${task.title}"`,
-      { task } as unknown as Parameters<typeof createTaskResponse>[2],
+      { task },
       {
         timestamp: new Date().toISOString(),
         taskId: args.id,
@@ -46,7 +52,7 @@ export async function getTask(
       undefined, // useOptimizedFormat (ignored)
       undefined, // useAorp (ignored)
       undefined, // aorpConfig (using auto-generated)
-      args.sessionId
+      args.sessionId,
     );
 
     return {
@@ -72,11 +78,12 @@ export async function getTask(
     }
 
     // Handle fetch/connection errors with helpful guidance
-    if (error instanceof Error && (
-      error.message.includes('fetch failed') ||
-      error.message.includes('ECONNREFUSED') ||
-      error.message.includes('ENOTFOUND')
-    )) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('fetch failed') ||
+        error.message.includes('ECONNREFUSED') ||
+        error.message.includes('ENOTFOUND'))
+    ) {
       throw handleFetchError(error, 'get task');
     }
 

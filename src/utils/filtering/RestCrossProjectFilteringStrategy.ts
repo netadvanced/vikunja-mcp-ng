@@ -23,14 +23,30 @@
  *
  * Single-project listing is untouched by this strategy: it is only selected
  * by `FilteringContext` when the listing is cross-project.
+ *
+ * PAGINATION (issue #268 / audit CRIT-7). This used to issue exactly one
+ * request; see `./pagination`'s doc comment for why the single silent
+ * request was a bug and how the multi-page walk terminates.
  */
 
 import type { TaskFilteringStrategy } from './TaskFilteringStrategy';
-import type { FilteringArgs, FilteringParams, FilteringResult, TaskListApiParams, VikunjaTask } from './types';
+import type {
+  FilteringArgs,
+  FilteringParams,
+  FilteringResult,
+  TaskListApiParams,
+  VikunjaTask,
+} from './types';
 import { ClientSideFilteringStrategy } from './ClientSideFilteringStrategy';
 import { vikunjaRestRequest } from '../vikunja-rest';
 import { MCPError, ErrorCode } from '../../types';
 import { logger } from '../logger';
+import {
+  createBudget,
+  DEFAULT_SERVER_PAGE_CAP,
+  fetchAllPages,
+  readServerPageCap,
+} from './pagination';
 
 /**
  * Builds the `GET /tasks` query string from the shared API params plus the
@@ -78,34 +94,80 @@ export class RestCrossProjectFilteringStrategy implements TaskFilteringStrategy 
       );
     }
 
-    const query = buildTasksListQuery(apiParams, filterString, args);
-    const path = `/tasks${query ? `?${query}` : ''}`;
+    // Paginate only when the caller expressed no pagination intent of their
+    // own — `FilterExecutor.prepareQueryParameters` synthesises
+    // `per_page: 1000, page: 1` when neither `page` nor `perPage` was
+    // supplied, which is precisely the "give me everything" case Vikunja's
+    // `maxitemsperpage` clamp silently truncated (issue #268 / CRIT-7).
+    const autoPaginate = args.perPage === undefined && args.page === undefined;
+    const firstPage = Math.max(1, apiParams.page ?? 1);
+    const cap = readServerPageCap(authManager) ?? DEFAULT_SERVER_PAGE_CAP;
+    const budget = createBudget();
+
+    const requestPage = async (page: number): Promise<VikunjaTask[]> => {
+      const pageApiParams = page === firstPage ? apiParams : { ...apiParams, page };
+      const query = buildTasksListQuery(pageApiParams, filterString, args);
+      const path = `/tasks${query ? `?${query}` : ''}`;
+      const tasks = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
+      return Array.isArray(tasks) ? tasks : [];
+    };
 
     try {
       logger.info('Attempting cross-project task listing via direct REST GET /tasks', {
         filter: filterString,
-        path,
+        autoPaginate,
       });
 
-      const tasks = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
-      const safeTasks = Array.isArray(tasks) ? tasks : [];
+      const safeTasks = await fetchAllPages(requestPage, {
+        autoPaginate,
+        firstPage,
+        budget,
+        cap,
+        resourceLabel: 'GET /tasks',
+      });
 
       logger.info('Direct REST GET /tasks succeeded for cross-project listing', {
         taskCount: safeTasks.length,
       });
 
-      return {
-        tasks: safeTasks,
-        metadata: {
-          serverSideFilteringUsed: Boolean(filterString),
-          serverSideFilteringAttempted: true,
-          clientSideFiltering: false,
-          filteringNote: filterString
-            ? 'Server-side filtering used via direct REST GET /tasks'
-            : 'Cross-project listing via direct REST GET /tasks (single call, no per-project aggregation)',
-        },
+      const metadata: FilteringResult['metadata'] = {
+        serverSideFilteringUsed: Boolean(filterString),
+        serverSideFilteringAttempted: true,
+        clientSideFiltering: false,
+        filteringNote: filterString
+          ? 'Server-side filtering used via direct REST GET /tasks'
+          : 'Cross-project listing via direct REST GET /tasks (single call, no per-project aggregation)',
       };
+
+      if (budget.truncated || budget.warnings.length > 0) {
+        metadata.resultComplete = false;
+        metadata.warnings = budget.warnings;
+        metadata.filteringNote = `${metadata.filteringNote} — INCOMPLETE: ${budget.warnings.join(' ')}`;
+        logger.warn('Direct REST GET /tasks pagination returned an incomplete result', {
+          warnings: budget.warnings,
+          filter: filterString,
+        });
+      }
+
+      return { tasks: safeTasks, metadata };
     } catch (error) {
+      // An `expand` value the API token has no scope for (Vikunja >= 2.6.0)
+      // must NOT fall back (issue #254, item A1). The fallback rebuilds the
+      // query from `{}` and drops `expand` entirely, so the caller would get
+      // a perfectly successful task list that is quietly missing the very
+      // data they asked to expand — verified live against 2.6.0: a narrow
+      // `tk_*` token requesting expand=comments came back 200 with no
+      // `comments` key on any task. Degrading silently is worse than
+      // failing here, because nothing downstream can tell the difference
+      // between "expanded and empty" and "never expanded".
+      if (error instanceof MCPError && error.details?.insufficientScope === true) {
+        logger.warn('Direct REST GET /tasks refused an expand value for lack of token scope', {
+          filter: filterString,
+          expand: args.expand,
+        });
+        throw error;
+      }
+
       logger.warn(
         'Direct REST GET /tasks failed for cross-project listing, falling back to per-project aggregation',
         {
@@ -116,13 +178,24 @@ export class RestCrossProjectFilteringStrategy implements TaskFilteringStrategy 
 
       const fallbackResult = await new ClientSideFilteringStrategy().execute(params);
 
+      // Carry the server's own reason forward instead of a generic "failed":
+      // the reported bugs were both diagnosable ONLY from that message
+      // (`4019 ... value '2026-08-16 00:00:00' for field 'created' is
+      // invalid`, `4019 ... value 'HU' for field 'labels' is invalid`), and
+      // swallowing it is what made a broken filter look like an empty one.
+      const reason = error instanceof Error ? error.message : String(error);
+      const baseNote = `Direct REST GET /tasks failed (${reason}); used per-project aggregation fallback`;
+      const fallbackWarnings = fallbackResult.metadata.warnings ?? [];
+
       return {
         ...fallbackResult,
         metadata: {
           ...fallbackResult.metadata,
           serverSideFilteringAttempted: true,
           filteringNote:
-            'Direct REST GET /tasks failed; used per-project aggregation fallback',
+            fallbackWarnings.length > 0
+              ? `${baseNote} — INCOMPLETE: ${fallbackWarnings.join(' ')}`
+              : baseNote,
         },
       };
     }

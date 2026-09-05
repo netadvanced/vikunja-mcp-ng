@@ -6,7 +6,12 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ConfigurationManager, Environment, ConfigurationError, isModuleEnabled } from '../../src/config';
+import {
+  ConfigurationManager,
+  Environment,
+  ConfigurationError,
+  isModuleEnabled,
+} from '../../src/config';
 
 describe('ConfigurationManager', () => {
   let originalEnv: NodeJS.ProcessEnv;
@@ -42,6 +47,23 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_MODULE_CALDAV_TOKENS;
     delete process.env.VIKUNJA_MCP_READ_ONLY;
     delete process.env.VIKUNJA_MCP_TEMPLATES_FILE;
+    delete process.env.VIKUNJA_MCP_TRANSPORT;
+    delete process.env.VIKUNJA_MCP_HTTP_HOST;
+    delete process.env.VIKUNJA_MCP_HTTP_PORT;
+    delete process.env.VIKUNJA_MCP_HTTP_PATH;
+    delete process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS;
+    delete process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL;
+    delete process.env.VIKUNJA_MCP_OIDC_ISSUER;
+    delete process.env.VIKUNJA_MCP_OIDC_AUDIENCE;
+    delete process.env.VIKUNJA_MCP_OIDC_JWKS_URI;
+    delete process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS;
+    delete process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC;
+    delete process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE;
+    delete process.env.VIKUNJA_MCP_ENROLL_ENABLED;
+    delete process.env.VIKUNJA_MCP_ENROLL_PROVIDER;
+    delete process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL;
+    delete process.env.VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS;
+    delete process.env.VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC;
 
     // Reset singleton
     ConfigurationManager.reset();
@@ -60,21 +82,21 @@ describe('ConfigurationManager', () => {
   describe('Environment Detection', () => {
     it('should detect test environment from JEST_WORKER_ID', async () => {
       process.env.JEST_WORKER_ID = '1';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
       expect(config.environment).toBe(Environment.TEST);
     });
 
     it('should detect test environment from NODE_ENV', async () => {
       process.env.NODE_ENV = 'test';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
       expect(config.environment).toBe(Environment.TEST);
     });
 
     it('should detect production environment from NODE_ENV', async () => {
       process.env.NODE_ENV = 'production';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
       expect(config.environment).toBe(Environment.PRODUCTION);
     });
@@ -86,9 +108,9 @@ describe('ConfigurationManager', () => {
 
     it('should allow environment override via options', async () => {
       const manager = ConfigurationManager.getInstance({
-        environment: Environment.PRODUCTION
+        environment: Environment.PRODUCTION,
       });
-      
+
       const config = await manager.getConfiguration();
       expect(config.environment).toBe(Environment.PRODUCTION);
     });
@@ -99,9 +121,9 @@ describe('ConfigurationManager', () => {
       process.env.VIKUNJA_URL = 'https://tasks.example.com';
       process.env.VIKUNJA_API_TOKEN = 'tk_test123';
       process.env.MCP_MODE = 'server';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
-      
+
       expect(config.auth.vikunjaUrl).toBe('https://tasks.example.com');
       expect(config.auth.vikunjaToken).toBe('tk_test123');
       expect(config.auth.mcpMode).toBe('server');
@@ -110,9 +132,9 @@ describe('ConfigurationManager', () => {
     it('should load logging configuration from environment variables', async () => {
       process.env.LOG_LEVEL = 'warn';
       process.env.DEBUG = 'true';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
-      
+
       expect(config.logging.level).toBe('warn');
       expect(config.logging.debug).toBe(true);
     });
@@ -122,9 +144,9 @@ describe('ConfigurationManager', () => {
       process.env.RATE_LIMIT_PER_MINUTE = '100';
       process.env.EXPENSIVE_TOOL_TIMEOUT = '180000';
       process.env.BULK_MAX_REQUEST_SIZE = '10485760';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
-      
+
       expect(config.rateLimiting.enabled).toBe(false);
       expect(config.rateLimiting.default.requestsPerMinute).toBe(100);
       expect(config.rateLimiting.expensive.executionTimeout).toBe(180000);
@@ -133,9 +155,9 @@ describe('ConfigurationManager', () => {
 
     it('should load feature flags from environment variables', async () => {
       process.env.VIKUNJA_ENABLE_SERVER_SIDE_FILTERING = 'true';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
-      
+
       expect(config.featureFlags.enableServerSideFiltering).toBe(true);
     });
   });
@@ -143,9 +165,9 @@ describe('ConfigurationManager', () => {
   describe('Environment Profiles', () => {
     it('should apply development environment profile', async () => {
       process.env.NODE_ENV = 'development';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
-      
+
       expect(config.logging.level).toBe('debug');
       expect(config.logging.debug).toBe(true);
       expect(config.rateLimiting.enabled).toBe(false);
@@ -155,9 +177,9 @@ describe('ConfigurationManager', () => {
 
     it('should apply test environment profile', async () => {
       process.env.NODE_ENV = 'test';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
-      
+
       expect(config.logging.level).toBe('error');
       expect(config.logging.debug).toBe(false);
       expect(config.rateLimiting.enabled).toBe(false);
@@ -166,9 +188,9 @@ describe('ConfigurationManager', () => {
 
     it('should apply production environment profile', async () => {
       process.env.NODE_ENV = 'production';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
-      
+
       expect(config.logging.level).toBe('info');
       expect(config.logging.debug).toBe(false);
       expect(config.rateLimiting.enabled).toBe(true);
@@ -199,25 +221,25 @@ describe('ConfigurationManager', () => {
     it('should allow environment variables to override profile defaults', async () => {
       process.env.NODE_ENV = 'development'; // Profile sets debug = true
       process.env.DEBUG = 'false'; // Environment variable overrides
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
-      
+
       expect(config.logging.debug).toBe(false);
     });
 
     it('should allow additional sources to override environment variables', async () => {
       process.env.LOG_LEVEL = 'error';
-      
+
       const manager = ConfigurationManager.getInstance({
         sources: {
           logging: {
-            level: 'debug'
-          }
-        }
+            level: 'debug',
+          },
+        },
       });
-      
+
       const config = await manager.getConfiguration();
-      
+
       expect(config.logging.level).toBe('debug');
     });
   });
@@ -226,9 +248,9 @@ describe('ConfigurationManager', () => {
     it('should parse boolean values correctly', async () => {
       process.env.DEBUG = 'true';
       process.env.RATE_LIMIT_ENABLED = 'false';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
-      
+
       expect(config.logging.debug).toBe(true);
       expect(config.rateLimiting.enabled).toBe(false);
     });
@@ -236,9 +258,9 @@ describe('ConfigurationManager', () => {
     it('should parse integer values correctly', async () => {
       process.env.RATE_LIMIT_PER_MINUTE = '42';
       process.env.MAX_REQUEST_SIZE = '2097152';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
-      
+
       expect(config.rateLimiting.default.requestsPerMinute).toBe(42);
       expect(config.rateLimiting.default.maxRequestSize).toBe(2097152);
     });
@@ -246,13 +268,13 @@ describe('ConfigurationManager', () => {
     it('should parse float values correctly', async () => {
       // Although current schema doesn't use floats, test the parsing capability
       process.env.TEST_FLOAT = '3.14';
-      
+
       const manager = ConfigurationManager.getInstance({
         sources: {
-          testFloat: 3.14
-        }
+          testFloat: 3.14,
+        },
       });
-      
+
       // This tests the parseEnvironmentValue method indirectly
       const config = await manager.getConfiguration();
       expect(typeof config).toBe('object');
@@ -261,9 +283,9 @@ describe('ConfigurationManager', () => {
     it('should preserve string values when not numeric or boolean', async () => {
       process.env.VIKUNJA_URL = 'https://tasks.example.com';
       process.env.LOG_LEVEL = 'warn';
-      
+
       const config = await ConfigurationManager.getInstance().getConfiguration();
-      
+
       expect(config.auth.vikunjaUrl).toBe('https://tasks.example.com');
       expect(config.logging.level).toBe('warn');
     });
@@ -274,11 +296,11 @@ describe('ConfigurationManager', () => {
       const manager = ConfigurationManager.getInstance({
         sources: {
           auth: {
-            vikunjaUrl: 'not-a-url'
-          }
-        }
+            vikunjaUrl: 'not-a-url',
+          },
+        },
       });
-      
+
       await expect(manager.getConfiguration()).rejects.toThrow(ConfigurationError);
     });
 
@@ -287,21 +309,21 @@ describe('ConfigurationManager', () => {
         sources: {
           rateLimiting: {
             default: {
-              requestsPerMinute: -1
-            }
-          }
-        }
+              requestsPerMinute: -1,
+            },
+          },
+        },
       });
-      
+
       await expect(manager.getConfiguration()).rejects.toThrow(ConfigurationError);
     });
 
     it('should reject invalid log levels', async () => {
       process.env.LOG_LEVEL = 'invalid';
-      
-      await expect(
-        ConfigurationManager.getInstance().getConfiguration()
-      ).rejects.toThrow(ConfigurationError);
+
+      await expect(ConfigurationManager.getInstance().getConfiguration()).rejects.toThrow(
+        ConfigurationError,
+      );
     });
 
     it('should provide detailed validation errors', async () => {
@@ -309,12 +331,12 @@ describe('ConfigurationManager', () => {
         sources: {
           rateLimiting: {
             default: {
-              requestsPerMinute: 'not-a-number'
-            }
-          }
-        }
+              requestsPerMinute: 'not-a-number',
+            },
+          },
+        },
       });
-      
+
       try {
         await manager.getConfiguration();
         fail('Expected ConfigurationError to be thrown');
@@ -336,40 +358,41 @@ describe('ConfigurationManager', () => {
 
     it('should return auth configuration section', async () => {
       const authConfig = await ConfigurationManager.getInstance().getAuthConfig();
-      
+
       expect(authConfig.vikunjaUrl).toBe('https://tasks.example.com');
       expect(authConfig.vikunjaToken).toBeUndefined();
     });
 
     it('should return logging configuration section', async () => {
       const loggingConfig = await ConfigurationManager.getInstance().getLoggingConfig();
-      
+
       expect(loggingConfig.level).toBe('warn');
     });
 
     it('should return rate limiting configuration section', async () => {
       const rateLimitConfig = await ConfigurationManager.getInstance().getRateLimitConfig();
-      
+
       expect(rateLimitConfig.default.requestsPerMinute).toBe(30);
     });
 
     it('should return feature flags configuration section', async () => {
       const featureFlagsConfig = await ConfigurationManager.getInstance().getFeatureFlagsConfig();
-      
+
       expect(featureFlagsConfig.enableServerSideFiltering).toBe(true);
     });
 
     it('should check if feature is enabled', async () => {
-      const isEnabled = await ConfigurationManager.getInstance()
-        .isFeatureEnabled('enableServerSideFiltering');
-      
+      const isEnabled = await ConfigurationManager.getInstance().isFeatureEnabled(
+        'enableServerSideFiltering',
+      );
+
       expect(isEnabled).toBe(true);
     });
 
     it('should return false for disabled features', async () => {
-      const isEnabled = await ConfigurationManager.getInstance()
-        .isFeatureEnabled('enableAdvancedMetrics');
-      
+      const isEnabled =
+        await ConfigurationManager.getInstance().isFeatureEnabled('enableAdvancedMetrics');
+
       expect(isEnabled).toBe(false);
     });
   });
@@ -378,16 +401,16 @@ describe('ConfigurationManager', () => {
     it('should return the same instance', () => {
       const instance1 = ConfigurationManager.getInstance();
       const instance2 = ConfigurationManager.getInstance();
-      
+
       expect(instance1).toBe(instance2);
     });
 
     it('should cache configuration after first load', async () => {
       const manager = ConfigurationManager.getInstance();
-      
+
       const config1 = await manager.getConfiguration();
       const config2 = await manager.getConfiguration();
-      
+
       expect(config1).toBe(config2); // Same object reference
     });
 
@@ -395,7 +418,7 @@ describe('ConfigurationManager', () => {
       const instance1 = ConfigurationManager.getInstance();
       ConfigurationManager.reset();
       const instance2 = ConfigurationManager.getInstance();
-      
+
       expect(instance1).not.toBe(instance2);
     });
   });
@@ -406,12 +429,12 @@ describe('ConfigurationManager', () => {
         sources: {
           rateLimiting: {
             default: {
-              requestsPerMinute: -1 // Invalid negative value
-            }
-          }
-        }
+              requestsPerMinute: -1, // Invalid negative value
+            },
+          },
+        },
       });
-      
+
       try {
         await manager.getConfiguration();
         fail('Expected error to be thrown');
@@ -427,16 +450,16 @@ describe('ConfigurationManager', () => {
       const manager = ConfigurationManager.getInstance({
         sources: {
           // Create a circular reference which could cause parsing issues
-          circular: null as any
-        }
+          circular: null as any,
+        },
       });
-      
+
       // Set up circular reference after creation
       const sources = manager['loadOptions'].sources as any;
       if (sources) {
         sources.circular = sources;
       }
-      
+
       try {
         await manager.getConfiguration();
         // If configuration loads successfully, that's also acceptable
@@ -493,7 +516,7 @@ describe('ConfigurationManager', () => {
       const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
       fs.writeFileSync(
         configPath,
-        JSON.stringify({ modules: { projects: false, teams: { enabled: false } } })
+        JSON.stringify({ modules: { projects: false, teams: { enabled: false } } }),
       );
       process.env.VIKUNJA_MCP_CONFIG = configPath;
 
@@ -571,9 +594,9 @@ describe('ConfigurationManager', () => {
       fs.writeFileSync(configPath, JSON.stringify({ modules: { tasks: 'yes-please' } }));
       process.env.VIKUNJA_MCP_CONFIG = configPath;
 
-      await expect(
-        ConfigurationManager.getInstance().getConfiguration()
-      ).rejects.toThrow(ConfigurationError);
+      await expect(ConfigurationManager.getInstance().getConfiguration()).rejects.toThrow(
+        ConfigurationError,
+      );
     });
   });
 
@@ -623,7 +646,10 @@ describe('ConfigurationManager', () => {
 
     it('reads the persist path from the config file', async () => {
       const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
-      fs.writeFileSync(configPath, JSON.stringify({ templates: { persistPath: '/data/templates.json' } }));
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ templates: { persistPath: '/data/templates.json' } }),
+      );
       process.env.VIKUNJA_MCP_CONFIG = configPath;
 
       const config = await ConfigurationManager.getInstance().getConfiguration();
@@ -639,7 +665,10 @@ describe('ConfigurationManager', () => {
 
     it('lets VIKUNJA_MCP_TEMPLATES_FILE win over the config file value', async () => {
       const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
-      fs.writeFileSync(configPath, JSON.stringify({ templates: { persistPath: '/config/templates.json' } }));
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ templates: { persistPath: '/config/templates.json' } }),
+      );
       process.env.VIKUNJA_MCP_CONFIG = configPath;
       process.env.VIKUNJA_MCP_TEMPLATES_FILE = '/env/templates.json';
 
@@ -652,6 +681,283 @@ describe('ConfigurationManager', () => {
 
       const templatesConfig = await ConfigurationManager.getInstance().getTemplatesConfig();
       expect(templatesConfig.persistPath).toBe('/env/templates.json');
+    });
+  });
+
+  describe('Transport Configuration', () => {
+    it('defaults to stdio transport with default http settings', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('stdio');
+      expect(config.http).toEqual({ host: '127.0.0.1', port: 8765, path: '/mcp' });
+    });
+
+    it('is settable to http via VIKUNJA_MCP_TRANSPORT', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('http');
+    });
+
+    it('is settable to http via the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ transport: 'http' }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('http');
+    });
+
+    it('lets VIKUNJA_MCP_TRANSPORT win over the config file value (env always wins)', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ transport: 'http' }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+      process.env.VIKUNJA_MCP_TRANSPORT = 'stdio';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('stdio');
+    });
+
+    it('rejects an invalid transport value (fail loud, never silently downgrade)', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'websocket';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('reads host/port/path/allowedHosts from env vars', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_HOST = '0.0.0.0';
+      process.env.VIKUNJA_MCP_HTTP_PORT = '9000';
+      process.env.VIKUNJA_MCP_HTTP_PATH = '/api/mcp';
+      process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS = 'example.com:9000, other.example.com:9000';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http).toEqual({
+        host: '0.0.0.0',
+        port: 9000,
+        path: '/api/mcp',
+        allowedHosts: ['example.com:9000', 'other.example.com:9000'],
+      });
+    });
+
+    it('reads http settings from the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ transport: 'http', http: { host: '0.0.0.0', port: 9001 } }),
+      );
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.host).toBe('0.0.0.0');
+      expect(config.http.port).toBe(9001);
+    });
+
+    it('reads the canonical public URL from VIKUNJA_MCP_HTTP_PUBLIC_URL', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'https://mcp-vikunja.example.ch/mcp';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.publicUrl).toBe('https://mcp-vikunja.example.ch/mcp');
+    });
+
+    it('leaves publicUrl unset by default (derive-from-Host fallback)', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.publicUrl).toBeUndefined();
+    });
+
+    it('reads publicUrl from the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ http: { publicUrl: 'https://mcp.example.org/mcp' } }),
+      );
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.publicUrl).toBe('https://mcp.example.org/mcp');
+    });
+
+    it('rejects a publicUrl that is not a valid URL', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('rejects a non-numeric port', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PORT = 'not-a-number';
+
+      // A non-numeric string fails the env-value numeric parse regex, so it
+      // is passed through as a string and fails HttpConfigSchema's z.number().
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('rejects an out-of-range port', async () => {
+      process.env.VIKUNJA_MCP_HTTP_PORT = '99999';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('exposes the http config section via getHttpConfig', async () => {
+      process.env.VIKUNJA_MCP_HTTP_HOST = '0.0.0.0';
+
+      const httpConfig = await ConfigurationManager.getInstance().getHttpConfig();
+      expect(httpConfig.host).toBe('0.0.0.0');
+    });
+
+    it('exposes the transport mode synchronously via getTransportMode', () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+
+      expect(ConfigurationManager.getInstance().getTransportMode()).toBe('http');
+    });
+  });
+
+  describe('OIDC Configuration (resource-server, http mode)', () => {
+    it('leaves oidc undefined when no OIDC env vars are set', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc).toBeUndefined();
+    });
+
+    it('reads issuer/audience/jwksUri from env vars (single audience stays a string)', async () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI =
+        'https://idp.example.test/realms/h1/protocol/openid-connect/certs';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc).toEqual({
+        issuer: 'https://idp.example.test/realms/h1',
+        audience: 'vikunja-mcp-ng',
+        jwksUri: 'https://idp.example.test/realms/h1/protocol/openid-connect/certs',
+      });
+    });
+
+    it('splits a comma-separated audience into an array and parses optional tuning', async () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'aud-1, aud-2';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS = 'RS256, ES256';
+      process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC = '30';
+      process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE = 'vikunja';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc).toEqual({
+        issuer: 'https://idp.example.test/realms/h1',
+        audience: ['aud-1', 'aud-2'],
+        jwksUri: 'https://idp.example.test/certs',
+        allowedAlgs: ['RS256', 'ES256'],
+        clockSkewSec: 30,
+        requiredScope: 'vikunja',
+      });
+    });
+
+    it('fails loud on an incomplete OIDC block (issuer without audience/jwksUri)', () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('rejects a non-URL jwksUri', () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+  });
+
+  describe('SSO Enrollment Configuration (oidc-http mode, issue #220)', () => {
+    it('defaults to disabled with the documented tuning defaults', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.enroll).toEqual({
+        enabled: false,
+        tokenExpiryDays: 365,
+        ticketTtlSec: 600,
+      });
+    });
+
+    /** The oidc-http env an enabled enrollment block additionally requires (finding #7). */
+    function setOidcHttpEnv(): void {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'https://mcp.example.test/mcp';
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+    }
+
+    it('reads the full enrollment block from env vars', async () => {
+      setOidcHttpEnv();
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      process.env.VIKUNJA_MCP_ENROLL_PROVIDER = 'keycloak';
+      process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL = 'http://localhost:8240/api/v1';
+      process.env.VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS = '30';
+      process.env.VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC = '120';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.enroll).toEqual({
+        enabled: true,
+        provider: 'keycloak',
+        vikunjaUrl: 'http://localhost:8240/api/v1',
+        tokenExpiryDays: 30,
+        ticketTtlSec: 120,
+      });
+    });
+
+    it('rejects a non-URL enrollment vikunjaUrl', () => {
+      setOidcHttpEnv();
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('fails loud when enrollment is enabled under stdio transport (finding #7 — no silent no-op)', () => {
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        /enroll.*(http|stdio)|transport/i,
+      );
+    });
+
+    it('fails loud when enrollment is enabled in http mode without an oidc block', () => {
+      setOidcHttpEnv();
+      delete process.env.VIKUNJA_MCP_OIDC_ISSUER;
+      delete process.env.VIKUNJA_MCP_OIDC_AUDIENCE;
+      delete process.env.VIKUNJA_MCP_OIDC_JWKS_URI;
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('fails loud when enrollment is enabled without http.publicUrl (finding #2)', () => {
+      setOidcHttpEnv();
+      delete process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL;
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('rejects non-positive tokenExpiryDays', () => {
+      process.env.VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS = '0';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
     });
   });
 
@@ -714,10 +1020,7 @@ describe('ConfigurationManager', () => {
 
     it('should support the object form for the backgrounds module toggle', async () => {
       const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
-      fs.writeFileSync(
-        configPath,
-        JSON.stringify({ modules: { backgrounds: { enabled: true } } })
-      );
+      fs.writeFileSync(configPath, JSON.stringify({ modules: { backgrounds: { enabled: true } } }));
       process.env.VIKUNJA_MCP_CONFIG = configPath;
 
       const config = await ConfigurationManager.getInstance().getConfiguration();
@@ -743,9 +1046,9 @@ describe('ConfigurationManager', () => {
       process.env.VIKUNJA_API_TOKEN = 'tk_plain';
       process.env.VIKUNJA_API_TOKEN_FILE = tokenPath;
 
-      await expect(
-        ConfigurationManager.getInstance().getConfiguration()
-      ).rejects.toThrow(ConfigurationError);
+      await expect(ConfigurationManager.getInstance().getConfiguration()).rejects.toThrow(
+        ConfigurationError,
+      );
     });
   });
 

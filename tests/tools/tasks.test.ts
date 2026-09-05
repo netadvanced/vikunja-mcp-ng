@@ -9,7 +9,7 @@ import {
   registerTaskCommentsTool,
   registerTaskRemindersTool,
   registerTaskLabelsTool,
-  registerTaskRelationsTool
+  registerTaskRelationsTool,
 } from '../../src/tools/index';
 import { MCPError, ErrorCode } from '../../src/types';
 import { ConfigurationManager } from '../../src/config';
@@ -23,7 +23,14 @@ type User = components['schemas']['user.User'];
 import { getClientFromContext, getAuthManagerFromContext } from '../../src/client';
 
 // Import AORP test helpers
-import { extractTasksData, extractTaskData, expectAorpSuccess, expectAorpError, getAorpData, getAorpMetadata } from '../utils/aorp-test-helpers';
+import {
+  extractTasksData,
+  extractTaskData,
+  expectAorpSuccess,
+  expectAorpError,
+  getAorpData,
+  getAorpMetadata,
+} from '../utils/aorp-test-helpers';
 import { parseMarkdown } from '../utils/markdown';
 import { withRetry, circuitBreakerRegistry } from '../../src/utils/retry';
 
@@ -36,6 +43,7 @@ jest.mock('../../src/client', () => ({
   getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 jest.mock('../../src/auth/AuthManager');
 
@@ -53,7 +61,12 @@ const mockFetch = jest.fn();
 globalThis.fetch = mockFetch as unknown as typeof fetch;
 
 /** Minimal Response-like object for the REST helper. */
-function mockRestResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+function mockRestResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
   return {
     ok,
@@ -116,7 +129,9 @@ describe('Tasks Tool', () => {
       // asserts on.
       const assigneesMatch = /^\/tasks\/(\d+)\/assignees$/.exec(pathname);
       if (method === 'PUT' && assigneesMatch?.[1] !== undefined) {
-        return jsonResponse(await mockClient.tasks.assignUserToTask(Number(assigneesMatch[1]), body?.user_id));
+        return jsonResponse(
+          await mockClient.tasks.assignUserToTask(Number(assigneesMatch[1]), body?.user_id),
+        );
       }
       // Assignee restore-to-snapshot (SIMPLIFY item): ONE POST
       // .../assignees/bulk call per task (models.BulkAssignees, REPLACE
@@ -124,13 +139,19 @@ describe('Tasks Tool', () => {
       const assigneesBulkMatch = /^\/tasks\/(\d+)\/assignees\/bulk$/.exec(pathname);
       if (method === 'POST' && assigneesBulkMatch?.[1] !== undefined) {
         return jsonResponse(
-          await mockClient.tasks.bulkAssignUsersToTask(Number(assigneesBulkMatch[1]), body?.assignees),
+          await mockClient.tasks.bulkAssignUsersToTask(
+            Number(assigneesBulkMatch[1]),
+            body?.assignees,
+          ),
         );
       }
       const assigneeDeleteMatch = /^\/tasks\/(\d+)\/assignees\/(\d+)$/.exec(pathname);
       if (method === 'DELETE' && assigneeDeleteMatch?.[1] !== undefined) {
         return jsonResponse(
-          await mockClient.tasks.removeUserFromTask(Number(assigneeDeleteMatch[1]), Number(assigneeDeleteMatch[2])),
+          await mockClient.tasks.removeUserFromTask(
+            Number(assigneeDeleteMatch[1]),
+            Number(assigneeDeleteMatch[2]),
+          ),
         );
       }
       const taskIdMatch = /^\/tasks\/(\d+)$/.exec(pathname);
@@ -312,7 +333,9 @@ describe('Tasks Tool', () => {
       const projectTasksMatch = /^\/projects\/(-?\d+)\/tasks$/.exec(pathname);
       if (projectTasksMatch?.[1] !== undefined) {
         if (method === 'PUT') {
-          return jsonResponse(await mockClient.tasks.createTask(Number(projectTasksMatch[1]), body));
+          return jsonResponse(
+            await mockClient.tasks.createTask(Number(projectTasksMatch[1]), body),
+          );
         }
         return jsonResponse(
           await mockClient.tasks.getProjectTasks(Number(projectTasksMatch[1]), parseParams()),
@@ -329,30 +352,40 @@ describe('Tasks Tool', () => {
       // prefix, same as a real network failure).
       const labelBulkMatch = /^\/tasks\/(\d+)\/labels\/bulk$/.exec(pathname);
       if (labelBulkMatch?.[1] !== undefined && method === 'POST') {
-        return jsonResponse(await mockClient.tasks.updateTaskLabels(Number(labelBulkMatch[1]), body));
+        return jsonResponse(
+          await mockClient.tasks.updateTaskLabels(Number(labelBulkMatch[1]), body),
+        );
       }
       const labelsMatch = /^\/tasks\/(\d+)\/labels$/.exec(pathname);
       if (labelsMatch?.[1] !== undefined) {
         const taskId = Number(labelsMatch[1]);
-        if (method === 'PUT') return jsonResponse(await mockClient.tasks.addLabelToTask(taskId, body));
+        if (method === 'PUT')
+          return jsonResponse(await mockClient.tasks.addLabelToTask(taskId, body));
         if (method === 'GET') return jsonResponse([]);
       }
       const labelDeleteMatch = /^\/tasks\/(\d+)\/labels\/(\d+)$/.exec(pathname);
       if (labelDeleteMatch?.[1] !== undefined && method === 'DELETE') {
         return jsonResponse(
-          await mockClient.tasks.removeLabelFromTask(Number(labelDeleteMatch[1]), Number(labelDeleteMatch[2])),
+          await mockClient.tasks.removeLabelFromTask(
+            Number(labelDeleteMatch[1]),
+            Number(labelDeleteMatch[2]),
+          ),
         );
       }
       const assigneesMatch = /^\/tasks\/(\d+)\/assignees$/.exec(pathname);
       if (assigneesMatch?.[1] !== undefined) {
         const taskId = Number(assigneesMatch[1]);
-        if (method === 'PUT') return jsonResponse(await mockClient.tasks.assignUserToTask(taskId, body?.user_id));
+        if (method === 'PUT')
+          return jsonResponse(await mockClient.tasks.assignUserToTask(taskId, body?.user_id));
         if (method === 'GET') return jsonResponse([]);
       }
       const assigneeDeleteMatch = /^\/tasks\/(\d+)\/assignees\/(\d+)$/.exec(pathname);
       if (assigneeDeleteMatch?.[1] !== undefined && method === 'DELETE') {
         return jsonResponse(
-          await mockClient.tasks.removeUserFromTask(Number(assigneeDeleteMatch[1]), Number(assigneeDeleteMatch[2])),
+          await mockClient.tasks.removeUserFromTask(
+            Number(assigneeDeleteMatch[1]),
+            Number(assigneeDeleteMatch[2]),
+          ),
         );
       }
 
@@ -374,7 +407,7 @@ describe('Tasks Tool', () => {
       apiUrl: 'https://api.vikunja.test',
       apiToken: 'test-token',
       authType: 'api-token' as const,
-      userId: 'test-user-123'
+      userId: 'test-user-123',
     });
     mockAuthManager.getAuthType.mockReturnValue('api-token');
 
@@ -394,7 +427,9 @@ describe('Tasks Tool', () => {
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     // Register the comprehensive tasks tool
@@ -436,7 +471,7 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-            const aorpStatus = parsed.getAorpStatus();
+      const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('list-tasks');
       expect(markdown).toContain('**count:**');
@@ -482,7 +517,7 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-            const aorpStatus = parsed.getAorpStatus();
+      const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('list-tasks');
       expect(markdown).toContain('**count:**');
@@ -517,7 +552,7 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-            const aorpStatus = parsed.getAorpStatus();
+      const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('list-tasks');
       expect(markdown).toContain('**count:**');
@@ -563,11 +598,11 @@ describe('Tasks Tool', () => {
 
       await expect(callTool('list')).rejects.toThrow(
         'Authentication required to access task management features. Please connect first:\n' +
-        'vikunja_auth.connect({\n' +
-        '  apiUrl: \'https://your-vikunja.com/api/v1\',\n' +
-        '  apiToken: \'your-api-token\'\n' +
-        '})\n\n' +
-        'Get your API token from Vikunja Settings > API Access.'
+          'vikunja_auth.connect({\n' +
+          "  apiUrl: 'https://your-vikunja.com/api/v1',\n" +
+          "  apiToken: 'your-api-token'\n" +
+          '})\n\n' +
+          'Get your API token from Vikunja Settings > API Access.',
       );
     });
 
@@ -580,7 +615,9 @@ describe('Tasks Tool', () => {
       // listTasks) rather than a bare "Failed to list tasks" wrapper.
       mockClient.projects.getProjects.mockRejectedValue(new Error('API Error'));
 
-      await expect(callTool('list')).rejects.toThrow('Vikunja REST request failed (GET /projects?per_page=1000): API Error');
+      await expect(callTool('list')).rejects.toThrow(
+        'Vikunja REST request failed (GET /projects?per_page=1000): API Error',
+      );
     });
 
     it('should handle non-Error API errors', async () => {
@@ -620,8 +657,9 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-            const aorpStatus = parsed.getAorpStatus();
-      expect(aorpStatus.type).toBe('success');    });
+      const aorpStatus = parsed.getAorpStatus();
+      expect(aorpStatus.type).toBe('success');
+    });
 
     it('should create a task with all optional fields', async () => {
       const fullTask = {
@@ -640,8 +678,11 @@ describe('Tasks Tool', () => {
         reminderDates: ['2024-12-25T00:00:00Z'],
         hexColor: '#FF0000',
         relatedTasks: { related: [2, 3] },
-        bucketId: 1,
-        position: 100,
+        // bucketId and position used to be listed here as inert extras — the
+        // create path silently dropped both. They are now honoured (bucketId,
+        // via a post-create bucket move) and rejected (position, which is
+        // per-view state written by set-position) respectively, and both have
+        // dedicated coverage in tests/tools/tasks/create-field-gaps.test.ts.
       };
 
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 1 });
@@ -781,9 +822,7 @@ describe('Tasks Tool', () => {
 
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 1 });
       mockClient.tasks.addLabelToTask.mockResolvedValue(undefined);
-      mockClient.tasks.assignUserToTask.mockRejectedValue(
-        new Error('Assignee assignment failed'),
-      );
+      mockClient.tasks.assignUserToTask.mockRejectedValue(new Error('Assignee assignment failed'));
       mockClient.tasks.deleteTask.mockRejectedValue(new Error('Delete failed'));
 
       // The assignee add now flows through vikunjaRestRequest, so its failure
@@ -829,7 +868,8 @@ describe('Tasks Tool', () => {
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
-      expect(aorpStatus.type).toBe('success');    });
+      expect(aorpStatus.type).toBe('success');
+    });
 
     it('should handle non-Error failures during label assignment', async () => {
       mockClient.tasks.createTask.mockResolvedValue({ ...mockTask, id: 1 });
@@ -989,8 +1029,9 @@ describe('Tasks Tool', () => {
         done: false,
       });
 
-      expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(1, 
-        expect.objectContaining({ done: false })
+      expect(mockClient.tasks.updateTask).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ done: false }),
       );
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -1034,7 +1075,7 @@ describe('Tasks Tool', () => {
         description: 'Updated Description',
         dueDate: '2025-01-01T00:00:00Z',
         priority: 3,
-        percentDone: 0.5,
+        percentDone: 50,
         done: true,
       };
       mockClient.tasks.getTask.mockResolvedValueOnce(mockTask).mockResolvedValueOnce(updatedTask);
@@ -1046,7 +1087,8 @@ describe('Tasks Tool', () => {
         description: 'Updated Description',
         dueDate: '2025-01-01T00:00:00Z',
         priority: 3,
-        percentDone: 0.5,
+        // Whole percentage on the tool surface...
+        percentDone: 50,
         done: true,
       });
 
@@ -1056,6 +1098,7 @@ describe('Tasks Tool', () => {
         description: 'Updated Description',
         due_date: '2025-01-01T00:00:00Z',
         priority: 3,
+        // ...and Vikunja's 0-1 fraction on the wire.
         percent_done: 0.5,
         done: true,
       });
@@ -1063,7 +1106,8 @@ describe('Tasks Tool', () => {
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
-      expect(aorpStatus.type).toBe('success');    });
+      expect(aorpStatus.type).toBe('success');
+    });
 
     it('should handle assignee updates with diff logic', async () => {
       const taskWithAssignees = {
@@ -1275,14 +1319,17 @@ describe('Tasks Tool', () => {
       const taskWithAssignees = {
         ...mockTask,
         id: 1,
-        assignees: [{ id: 1, username: 'user1' }, { id: 2, username: 'user2' }],
+        assignees: [
+          { id: 1, username: 'user1' },
+          { id: 2, username: 'user2' },
+        ],
       };
 
       mockClient.tasks.getTask
         .mockResolvedValueOnce(taskWithAssignees) // For initial fetch
         .mockResolvedValueOnce(taskWithAssignees); // For assignee diff calculation
       mockClient.tasks.updateTask.mockResolvedValue(taskWithAssignees);
-      
+
       // Mock removeUserFromTask to fail
       mockClient.tasks.removeUserFromTask.mockRejectedValue(new Error('Failed to remove user'));
 
@@ -1344,7 +1391,9 @@ describe('Tasks Tool', () => {
           id: 1,
           title: 'Test',
         }),
-      ).rejects.toThrow('Failed to update task: Vikunja REST request failed (POST /tasks/1): Update failed');
+      ).rejects.toThrow(
+        'Failed to update task: Vikunja REST request failed (POST /tasks/1): Update failed',
+      );
     });
 
     it('should update recurring task settings', async () => {
@@ -1416,7 +1465,8 @@ describe('Tasks Tool', () => {
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('delete-task');
-      expect(markdown).toContain('Task "Test Task" deleted successfully');    });
+      expect(markdown).toContain('Task "Test Task" deleted successfully');
+    });
 
     it('should handle deletion errors', async () => {
       mockClient.tasks.deleteTask.mockRejectedValue(new Error('Cannot delete task'));
@@ -1442,7 +1492,8 @@ describe('Tasks Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
-      expect(markdown).toContain('delete-task');    });
+      expect(markdown).toContain('delete-task');
+    });
 
     it('should handle non-Error API errors in delete', async () => {
       mockClient.tasks.deleteTask.mockRejectedValue(500);
@@ -1845,9 +1896,7 @@ describe('Tasks Tool', () => {
         callTool('list-assignees', {
           id: 1,
         }),
-      ).rejects.toThrow(
-        'Vikunja REST request failed (GET /tasks/1/assignees): Network failure',
-      );
+      ).rejects.toThrow('Vikunja REST request failed (GET /tasks/1/assignees): Network failure');
     });
 
     it('returns id/username/name/email per assignee and nothing else', async () => {
@@ -2014,7 +2063,9 @@ describe('Tasks Tool', () => {
       // The tool's session guard is getAuthManagerFromContext() now (the old
       // getClientFromContext is gone from the handler path), so a session
       // failure surfaces through it.
-      (getAuthManagerFromContext as jest.Mock).mockRejectedValue(new Error('Failed to initialize client'));
+      (getAuthManagerFromContext as jest.Mock).mockRejectedValue(
+        new Error('Failed to initialize client'),
+      );
 
       await expect(callTool('list')).rejects.toThrow('Failed to initialize client');
     });
@@ -2142,7 +2193,12 @@ describe('Tasks Tool', () => {
           // fields/values payload never mentions them.
           return jsonResponse({
             ...body,
-            tasks: (body.task_ids as number[]).map((id) => ({ ...mockTask, id, done: true, assignees: null })),
+            tasks: (body.task_ids as number[]).map((id) => ({
+              ...mockTask,
+              id,
+              done: true,
+              assignees: null,
+            })),
           });
         }
         return await baseRouter(url, init);
@@ -2315,7 +2371,7 @@ describe('Tasks Tool', () => {
           value: 'test',
         }),
       ).rejects.toThrow(
-        'Invalid field: invalid_field. Allowed fields: done, priority, due_date, start_date, end_date, project_id, assignees, labels',
+        'Invalid field: invalid_field. Allowed fields: done, priority, percent_done, due_date, start_date, end_date, project_id, assignees, labels',
       );
     });
 
@@ -2776,9 +2832,7 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain(
-        'Bulk delete partially completed. Successfully deleted 2 tasks',
-      );
+      expect(markdown).toContain('Bulk delete partially completed. Successfully deleted 2 tasks');
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledTimes(3);
     });
@@ -2918,15 +2972,21 @@ describe('Tasks Tool', () => {
       // circuit breaker. Creates must therefore run one at a time.
       let inFlight = 0;
       let peakInFlight = 0;
-      mockClient.tasks.createTask.mockImplementation(async (projectId: number, task: Record<string, unknown>) => {
-        inFlight += 1;
-        peakInFlight = Math.max(peakInFlight, inFlight);
-        // Yield twice so overlapping calls would be observable
-        await new Promise((resolve) => setImmediate(resolve));
-        await new Promise((resolve) => setImmediate(resolve));
-        inFlight -= 1;
-        return { ...task, id: mockClient.tasks.createTask.mock.calls.length, project_id: projectId };
-      });
+      mockClient.tasks.createTask.mockImplementation(
+        async (projectId: number, task: Record<string, unknown>) => {
+          inFlight += 1;
+          peakInFlight = Math.max(peakInFlight, inFlight);
+          // Yield twice so overlapping calls would be observable
+          await new Promise((resolve) => setImmediate(resolve));
+          await new Promise((resolve) => setImmediate(resolve));
+          inFlight -= 1;
+          return {
+            ...task,
+            id: mockClient.tasks.createTask.mock.calls.length,
+            project_id: projectId,
+          };
+        },
+      );
       mockClient.tasks.getTask.mockImplementation(async (id: number) =>
         Promise.resolve({ ...mockTask, id }),
       );
@@ -3289,7 +3349,9 @@ describe('Tasks Tool', () => {
     it('should handle non-Error exceptions in main handler', async () => {
       // The session guard (getAuthManagerFromContext) rejecting with a non-Error
       // value exercises the handler's String(error) fallback branch.
-      (getAuthManagerFromContext as jest.Mock).mockRejectedValue('String error from client initialization');
+      (getAuthManagerFromContext as jest.Mock).mockRejectedValue(
+        'String error from client initialization',
+      );
 
       await expect(callTool('list')).rejects.toThrow(
         'Task operation error: String error from client initialization',
@@ -3362,9 +3424,7 @@ describe('Tasks Tool', () => {
       ConfigurationManager.getInstance({ sources: { readOnly: true } });
 
       (getAuthManagerFromContext as jest.Mock).mockResolvedValue(mockAuthManager);
-      mockFetch.mockResolvedValueOnce(
-        jsonResponse([{ id: 1, comment: 'existing', task_id: 1 }]),
-      );
+      mockFetch.mockResolvedValueOnce(jsonResponse([{ id: 1, comment: 'existing', task_id: 1 }]));
 
       await expect(callTool('comment', { id: 1 })).resolves.toBeDefined();
     });
@@ -3391,9 +3451,7 @@ describe('Tasks Tool', () => {
       } catch (error) {
         caught = error;
       }
-      expect(caught instanceof MCPError && caught.message.includes('read-only mode')).toBe(
-        false,
-      );
+      expect(caught instanceof MCPError && caught.message.includes('read-only mode')).toBe(false);
     });
   });
 

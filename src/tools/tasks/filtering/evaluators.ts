@@ -4,6 +4,7 @@
 
 import type { components } from '../../../types/generated/vikunja-openapi';
 import type { FilterCondition, FilterGroup, FilterExpression } from '../../../types/filters';
+import { percentDoneToFraction } from '../../../utils/percent-done';
 
 /** `models.Task` per the OpenAPI spec — the task shape filters evaluate against. */
 type Task = components['schemas']['models.Task'];
@@ -21,15 +22,27 @@ export function evaluateCondition(task: Task, condition: FilterCondition): boole
     case 'priority':
       return evaluateComparison(task.priority || 0, operator, Number(value));
 
+    // The DSL carries percentDone as a whole percentage 0-100; the task's own
+    // percent_done is Vikunja's 0-1 fraction. Compare in WIRE space (scale the
+    // threshold down) rather than percent space (scale the task up): dividing
+    // an integer by 100 lands on exactly the double the API stored, whereas
+    // multiplying the stored fraction back up reintroduces float artifacts
+    // (0.07 * 100 === 7.000000000000001), which would make `percentDone = 7`
+    // miss a task that is exactly 7% done. See src/utils/percent-done.ts.
     case 'percentDone':
-      return evaluateComparison(task.percent_done || 0, operator, Number(value));
+      return evaluateComparison(
+        task.percent_done || 0,
+        operator,
+        percentDoneToFraction(Number(value)),
+      );
 
-    case 'dueDate':
-      if (!task.due_date) {
-        // Null due dates are only matched by != operator
-        return operator === '!=';
-      }
-      return evaluateDateComparison(task.due_date, operator, String(value));
+    case 'dueDate': {
+      // Vikunja returns '0001-01-01T00:00:00Z' for unset dates instead of null.
+      const dd = task.due_date;
+      const isUnset = !dd || dd.startsWith('0001-');
+      if (isUnset) return operator === '!=';
+      return evaluateDateComparison(dd, operator, String(value));
+    }
 
     case 'startDate': {
       // Vikunja returns '0001-01-01T00:00:00Z' for unset dates instead of null.
@@ -77,12 +90,19 @@ export function evaluateCondition(task: Task, condition: FilterCondition): boole
         Array.isArray(value) ? value.map((v) => Number(v)) : [Number(value)],
       );
 
+    // Label conditions are normally rewritten to numeric label ids upstream
+    // (see resolveLabelTitlesInExpression in FilterValidator) because that is
+    // the ONLY spelling Vikunja's server-side `labels` filter accepts. The
+    // client-side evaluator additionally matches TITLES, so a label filter is
+    // still evaluated correctly on the fallback path even when the id
+    // rewrite did not happen (no authManager threaded through, a pure
+    // in-memory `applyFilter` call, a saved filter replayed offline).
+    //
+    // Before this, the evaluator did `Number(value)` unconditionally: a title
+    // became NaN, NaN matched no id, and `labels in 'HU'` returned zero tasks
+    // while reporting a clean success (issue #227).
     case 'labels':
-      return evaluateArrayComparison(
-        task.labels?.map((l) => l.id).filter((id): id is number => id !== undefined) || [],
-        operator,
-        Array.isArray(value) ? value.map((v) => Number(v)) : [Number(value)],
-      );
+      return evaluateLabelComparison(task.labels, operator, Array.isArray(value) ? value : [value]);
 
     default:
       return false;
@@ -114,7 +134,11 @@ export function evaluateComparison(actual: unknown, operator: string, expected: 
 /**
  * Evaluates date comparisons (supports relative dates like "now+7d")
  */
-export function evaluateDateComparison(actual: string, operator: string, expected: string): boolean {
+export function evaluateDateComparison(
+  actual: string,
+  operator: string,
+  expected: string,
+): boolean {
   const actualDate = new Date(actual);
   const expectedDate = parseRelativeDate(expected);
 
@@ -193,7 +217,11 @@ export function parseRelativeDate(dateStr: string): Date | null {
 /**
  * Evaluates string comparisons
  */
-export function evaluateStringComparison(actual: string, operator: string, expected: string): boolean {
+export function evaluateStringComparison(
+  actual: string,
+  operator: string,
+  expected: string,
+): boolean {
   switch (operator) {
     case '=':
       return actual === expected;
@@ -210,7 +238,11 @@ export function evaluateStringComparison(actual: string, operator: string, expec
 /**
  * Evaluates array comparisons (for assignees and labels)
  */
-export function evaluateArrayComparison(actual: number[], operator: string, expected: number[]): boolean {
+export function evaluateArrayComparison(
+  actual: number[],
+  operator: string,
+  expected: number[],
+): boolean {
   switch (operator) {
     case 'in':
       // Check if any expected value is in the actual array
@@ -221,6 +253,41 @@ export function evaluateArrayComparison(actual: number[], operator: string, expe
     default:
       return false;
   }
+}
+
+/**
+ * Evaluates a `labels` condition against a task's labels, accepting either
+ * numeric label ids or label titles (case-insensitive) on the filter side.
+ * See the `labels` case in {@link evaluateCondition} for why both spellings
+ * have to work here.
+ */
+export function evaluateLabelComparison(
+  taskLabels: Task['labels'],
+  operator: string,
+  expected: Array<string | number | boolean>,
+): boolean {
+  if (operator !== 'in' && operator !== 'not in') return false;
+
+  const labels = taskLabels ?? [];
+  const actualIds = new Set(
+    labels.map((l) => l.id).filter((id): id is number => typeof id === 'number'),
+  );
+  const actualTitles = new Set(
+    labels
+      .map((l) => l.title)
+      .filter((title): title is string => typeof title === 'string')
+      .map((title) => title.toLowerCase()),
+  );
+
+  const matchesAny = expected.some((raw) => {
+    const asString = String(raw).trim();
+    if (asString === '') return false;
+    const asNumber = Number(asString);
+    if (Number.isFinite(asNumber) && actualIds.has(asNumber)) return true;
+    return actualTitles.has(asString.toLowerCase());
+  });
+
+  return operator === 'in' ? matchesAny : !matchesAny;
 }
 
 /**

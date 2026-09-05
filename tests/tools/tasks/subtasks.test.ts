@@ -18,7 +18,12 @@ import { circuitBreakerRegistry } from '../../../src/utils/retry';
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
-function mockResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
   return {
     ok,
@@ -69,7 +74,13 @@ describe('subtask composites', () => {
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) }));
 
       const result = await createSubtask(
-        { parentTaskId: 1, title: 'Child', description: 'desc', dueDate: '2024-05-24T10:00:00Z', priority: 3 },
+        {
+          parentTaskId: 1,
+          title: 'Child',
+          description: 'desc',
+          dueDate: '2024-05-24T10:00:00Z',
+          priority: 3,
+        },
         authManager,
       );
 
@@ -107,17 +118,131 @@ describe('subtask composites', () => {
       expect(result.content[0].text).toContain('parent task 1');
     });
 
-    it('attaches labels and assignees via the additive per-item endpoints before relating', async () => {
+    describe('date normalization', () => {
+      it('coerces a date-only dueDate to RFC3339 before sending the create-task request', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          ) // create-relation
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify
+
+        await createSubtask(
+          { parentTaskId: 1, title: 'Child', dueDate: '2026-09-01' },
+          authManager,
+        );
+
+        const calls = mockFetch.mock.calls as [string, RequestInit?][];
+        expect(JSON.parse(calls[1][1]?.body as string)).toEqual({
+          title: 'Child',
+          project_id: 5,
+          due_date: '2026-09-01T00:00:00Z',
+        });
+      });
+
+      it('coerces date-only startDate and endDate to RFC3339 before sending the create-task request', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          ) // create-relation
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify
+
+        await createSubtask(
+          {
+            parentTaskId: 1,
+            title: 'Child',
+            startDate: '2026-09-01',
+            endDate: '2026-09-05',
+          },
+          authManager,
+        );
+
+        const calls = mockFetch.mock.calls as [string, RequestInit?][];
+        expect(JSON.parse(calls[1][1]?.body as string)).toEqual({
+          title: 'Child',
+          project_id: 5,
+          start_date: '2026-09-01T00:00:00Z',
+          end_date: '2026-09-05T00:00:00Z',
+        });
+      });
+
+      it('leaves a full RFC3339 dueDate timestamp unchanged', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          ) // create-relation
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify
+
+        await createSubtask(
+          { parentTaskId: 1, title: 'Child', dueDate: '2026-09-01T15:30:00Z' },
+          authManager,
+        );
+
+        const calls = mockFetch.mock.calls as [string, RequestInit?][];
+        expect(JSON.parse(calls[1][1]?.body as string)).toEqual({
+          title: 'Child',
+          project_id: 5,
+          due_date: '2026-09-01T15:30:00Z',
+        });
+      });
+
+      it('does not add due_date/start_date/end_date fields when not provided', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          ) // create-relation
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify
+
+        await createSubtask({ parentTaskId: 1, title: 'Child' }, authManager);
+
+        const calls = mockFetch.mock.calls as [string, RequestInit?][];
+        const body = JSON.parse(calls[1][1]?.body as string);
+        expect(body).not.toHaveProperty('due_date');
+        expect(body).not.toHaveProperty('start_date');
+        expect(body).not.toHaveProperty('end_date');
+      });
+    });
+
+    it('attaches labels and assignees via the additive per-item endpoints before relating, verifying each with a read-back', async () => {
+      const createdChildWithLabels = {
+        ...createdChild,
+        labels: [{ id: 7 }, { id: 8 }],
+      };
+      const createdChildWithLabelsAndAssignees = {
+        ...createdChildWithLabels,
+        assignees: [{ id: 3 }],
+      };
       mockFetch
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-labels: label 7
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-labels: label 8
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChildWithLabels) })) // verify-labels: GET /tasks/42
         .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-assignees: user 3
         .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }) }),
+          mockResponse({ text: JSON.stringify(createdChildWithLabelsAndAssignees) }),
+        ) // verify-assignees: GET /tasks/42
+        .mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+          }),
         ) // create-relation
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) })); // verify-relation
 
       await createSubtask(
         { parentTaskId: 1, title: 'Child', labels: [7, 8], assignees: [3] },
@@ -129,8 +254,40 @@ describe('subtask composites', () => {
       expect(JSON.parse(calls[2][1]?.body as string)).toEqual({ label_id: 7 });
       expect(calls[3][0]).toBe('https://vikunja.test/api/v1/tasks/42/labels');
       expect(JSON.parse(calls[3][1]?.body as string)).toEqual({ label_id: 8 });
-      expect(calls[4][0]).toBe('https://vikunja.test/api/v1/tasks/42/assignees');
-      expect(JSON.parse(calls[4][1]?.body as string)).toEqual({ user_id: 3 });
+      expect(calls[4][0]).toBe('https://vikunja.test/api/v1/tasks/42');
+      expect(calls[4][1]?.method ?? 'GET').toBe('GET');
+      expect(calls[5][0]).toBe('https://vikunja.test/api/v1/tasks/42/assignees');
+      expect(JSON.parse(calls[5][1]?.body as string)).toEqual({ user_id: 3 });
+      expect(calls[6][0]).toBe('https://vikunja.test/api/v1/tasks/42');
+      expect(calls[6][1]?.method ?? 'GET').toBe('GET');
+    });
+
+    it('fails when a label attach PUT reports success but the label does not actually persist (LOW-22)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+        .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-labels: label 7 (PUT reports 200)
+        // verify-labels: re-read shows the label never actually landed
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ ...createdChild, labels: [] }) }));
+
+      await expect(
+        createSubtask({ parentTaskId: 1, title: 'Child', labels: [7] }, authManager),
+      ).rejects.toThrow(/label\(s\) \[7\] did not appear/);
+    });
+
+    it('fails when an assignee attach PUT reports success but the assignee does not actually persist (LOW-22)', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
+        .mockResolvedValueOnce(mockResponse({ text: '{}' })) // apply-assignees: user 3 (PUT reports 200)
+        // verify-assignees: re-read shows the assignee never actually landed
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ ...createdChild, assignees: [] }) }),
+        );
+
+      await expect(
+        createSubtask({ parentTaskId: 1, title: 'Child', assignees: [3] }, authManager),
+      ).rejects.toThrow(/assignee\(s\) \[3\] did not appear/);
     });
 
     it('places the new subtask into a Kanban bucket via the existing set-bucket path', async () => {
@@ -138,7 +295,9 @@ describe('subtask composites', () => {
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
         .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }) }),
+          mockResponse({
+            text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+          }),
         ) // create-relation
         // set-bucket internals: resolveKanbanViewId -> GET /projects/5/views
         .mockResolvedValueOnce(
@@ -165,13 +324,15 @@ describe('subtask composites', () => {
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
         .mockResolvedValueOnce(mockResponse({ ok: false, status: 400, statusText: 'Bad Request' })); // create-relation fails
 
-      await expect(
-        createSubtask({ parentTaskId: 1, title: 'Child' }, authManager),
-      ).rejects.toThrow(MCPError);
+      await expect(createSubtask({ parentTaskId: 1, title: 'Child' }, authManager)).rejects.toThrow(
+        MCPError,
+      );
 
       // best-effort: exactly 3 calls made (resolve, create, failed relate) — no DELETE compensation call.
       expect(mockFetch).toHaveBeenCalledTimes(3);
-      expect(mockFetch.mock.calls.some((call) => (call[1] as RequestInit)?.method === 'DELETE')).toBe(false);
+      expect(
+        mockFetch.mock.calls.some((call) => (call[1] as RequestInit)?.method === 'DELETE'),
+      ).toBe(false);
     });
 
     it('atomic:true deletes the created task when the relate step fails', async () => {
@@ -196,7 +357,9 @@ describe('subtask composites', () => {
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) })) // resolve-parent
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) })) // create-task
         .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }) }),
+          mockResponse({
+            text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+          }),
         ) // create-relation succeeds
         // verify-relation: parent re-read shows no subtask relation (simulated mid-flight drift)
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) }))
@@ -237,12 +400,52 @@ describe('subtask composites', () => {
     });
 
     it('surfaces a friendly NOT_FOUND when the parent task does not exist', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ ok: false, status: 404, statusText: 'Not Found' }));
-
-      await expect(createSubtask({ parentTaskId: 999, title: 'Child' }, authManager)).rejects.toThrow(
-        MCPError,
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 404, statusText: 'Not Found' }),
       );
+
+      await expect(
+        createSubtask({ parentTaskId: 999, title: 'Child' }, authManager),
+      ).rejects.toThrow(MCPError);
       expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    // Issue #226: false positives on ordinary free-text descriptions, matching the parity
+    // fix applied to createTask/updateTask (tests/tools/tasks-crud-validation.test.ts).
+    describe('description dangerous-content check (#226)', () => {
+      const acceptedStrings = [
+        "2. Quelle nominale retenir (13,75 V = 13 j d'autonomie, 12 V = 44 j) ?",
+        'a = 13 j autonomie, b = 44 j',
+        '(13,75 V = 13 j d\'autonomie, 12 V = 44 j)',
+      ];
+
+      it.each(acceptedStrings)('accepts description %p', async (description) => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(parentTask) }))
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(createdChild) }))
+          .mockResolvedValueOnce(
+            mockResponse({
+              text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({ text: JSON.stringify(parentTaskWithChild(42)) }),
+          );
+
+        await expect(
+          createSubtask({ parentTaskId: 1, title: 'Child', description }, authManager),
+        ).resolves.toBeDefined();
+      });
+
+      it('rejects real dangerous content and names the field/rule', async () => {
+        await expect(
+          createSubtask(
+            { parentTaskId: 1, title: 'Child', description: '<script>alert(1)</script>' },
+            authManager,
+          ),
+        ).rejects.toThrow('description: String contains potentially dangerous content');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -259,7 +462,12 @@ describe('subtask composites', () => {
             title: 'Parent',
             related_tasks: {
               subtask: [
-                { id: 42, title: 'Child A', done: false, assignees: [{ id: 3, username: 'alice' }] },
+                {
+                  id: 42,
+                  title: 'Child A',
+                  done: false,
+                  assignees: [{ id: 3, username: 'alice' }],
+                },
                 { id: 43, title: 'Child B', done: true, assignees: [] },
               ],
               blocking: [{ id: 99, title: 'Unrelated' }],
@@ -288,7 +496,9 @@ describe('subtask composites', () => {
     });
 
     it('handles a task with no related_tasks field at all', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, title: 'Parent' }) }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ id: 1, title: 'Parent' }) }),
+      );
 
       const result = await listSubtasks({ id: 1 }, authManager);
       expect(result.content[0].text).toContain('Found 0 subtasks for task 1');
@@ -305,7 +515,9 @@ describe('subtask composites', () => {
     });
 
     it('surfaces a friendly NOT_FOUND when the task does not exist', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ ok: false, status: 404, statusText: 'Not Found' }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ ok: false, status: 404, statusText: 'Not Found' }),
+      );
 
       await expect(listSubtasks({ id: 999 }, authManager)).rejects.toThrow(MCPError);
       expect(mockFetch).toHaveBeenCalledTimes(1);

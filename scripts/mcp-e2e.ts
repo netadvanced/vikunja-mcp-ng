@@ -61,10 +61,24 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { resolveTarget, DEFAULT_TARGET } from './lib/e2e-target';
+import {
+  EXPAND_SCOPE_CHECK_VERSION,
+  EXPAND_VALUES_NEEDING_OMITTED_SCOPE,
+  EXPAND_VALUES_WITHIN_NARROW_SCOPE,
+  NARROW_TOKEN_OMITTED_GROUPS,
+  OTHER_USERNAME,
+  loginFor,
+  mintScopedToken,
+  revokeProjectUser,
+  serverAtLeast,
+  shareProjectWithUser,
+} from './lib/e2e-fixtures';
 
 // ============================================================================
 // Configuration
@@ -75,22 +89,55 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DIST_ENTRY = path.join(REPO_ROOT, 'dist', 'index.js');
 
+// Read once at startup for the handshake-version regression guard below (issue #186).
+const PACKAGE_VERSION = (
+  JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf-8')) as { version: string }
+).version;
+
+// Which persistent stack to run against (issue #205). `VIKUNJA_E2E_TARGET`
+// names a `<version>-<db>` target; the resolver owns the port mapping so no
+// port is ever hardcoded here.
+const TARGET = resolveTarget(process.env.VIKUNJA_E2E_TARGET || DEFAULT_TARGET);
+
+/**
+ * Credentials written by docker/e2e/bootstrap.sh for this target. Stable for
+ * the life of the stack — only `npm run e2e:reset` rotates them.
+ */
+function readTargetEnv(): Record<string, string> {
+  const file = path.join(REPO_ROOT, TARGET.envFile);
+  if (!existsSync(file)) return {};
+  return Object.fromEntries(
+    readFileSync(file, 'utf-8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'))
+      .map((line) => {
+        const idx = line.indexOf('=');
+        return [line.slice(0, idx), line.slice(idx + 1)] as const;
+      }),
+  );
+}
+
+const TARGET_ENV = readTargetEnv();
+
 // Deliberately NOT `process.env.VIKUNJA_URL` — see the safety note in the
 // file header. `MCP_E2E_VIKUNJA_URL` is a distinct name a developer would
 // never have already exported for pointing a real MCP client at production.
-const VIKUNJA_URL = process.env.MCP_E2E_VIKUNJA_URL || 'http://localhost:33456/api/v1';
+const VIKUNJA_URL = process.env.MCP_E2E_VIKUNJA_URL || TARGET_ENV.VIKUNJA_URL || TARGET.apiUrl;
 
 // Cached once at startup by `detectServerVersion()` (called early in `main`)
-// so `driftTolerated`-gated checks (currently just the assignees-500 case,
-// see `testAssignees` below) can condition their tolerance on the actual
-// server under test rather than assuming a fixed version. `null` means
-// "not yet detected" -- checked-for at the one call site that needs it.
+// and reported in the run header, so a verdict file always records which
+// server the checks actually ran against. It used to gate the assignees-500
+// drift tolerance too; that tolerance was removed on 2026-08-31 when the
+// minimum supported Vikunja rose to 2.4.0 (the version the upstream fix
+// shipped in), leaving this script with ZERO version-gated tolerances.
+// `null` means "not detected" -- purely cosmetic now.
 let detectedServerVersion: string | null = null;
 
 /**
- * Fetches GET /info and normalizes its `version` field ("v2.3.0" -> "2.3.0")
- * for version-gating drift tolerances. Never throws: if this fails for any
- * reason, callers get `null` and treat that conservatively (see call site).
+ * Fetches GET /info and normalizes its `version` field ("v2.4.0" -> "2.4.0")
+ * so the run header and verdict file name the server actually under test.
+ * Never throws: if this fails for any reason, callers get `null`.
  */
 async function detectServerVersion(): Promise<string | null> {
   try {
@@ -102,23 +149,6 @@ async function detectServerVersion(): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-/**
- * Bare-bones `X.Y.Z` semver "is `version` strictly less than `target`"
- * comparison -- sufficient for the plain release tags this project pins to
- * (no pre-release/build-metadata suffixes to handle here; `/info` reports
- * clean tags like `v2.3.0`/`v2.4.0` for actual tagged releases).
- */
-function versionLessThan(version: string, target: string): boolean {
-  const a = version.split('.').map((n) => parseInt(n, 10));
-  const b = target.split('.').map((n) => parseInt(n, 10));
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    const av = a[i] ?? 0;
-    const bv = b[i] ?? 0;
-    if (av !== bv) return av < bv;
-  }
-  return false;
 }
 
 /** Aborts the process if `url` is not localhost/127.0.0.1 — see file header. */
@@ -146,7 +176,30 @@ function assertLocalUrl(url: string): void {
 const TEST_USERNAME = 'e2e-test';
 const TEST_PASSWORD = 'VikunjaMcpE2E-2026!';
 const TOKEN_TITLE = 'vikunja-mcp-e2e-harness';
-const NAME_PREFIX = 'mcp-e2e-';
+
+/**
+ * The user whose identity-scoped state tests are allowed to mutate — API
+ * tokens, user settings, avatar provider (issue #205). `e2e-test` is the
+ * shared identity every harness authenticates as and every stored token
+ * belongs to, so changing ITS settings is visible to any concurrent run.
+ * Provisioned by docker/e2e/bootstrap.sh alongside `e2e-test`.
+ */
+const MUTABLE_USERNAME = 'e2e-mutable';
+
+/**
+ * Per-RUN fixture prefix (issue #205). This used to be the fixed string
+ * `mcp-e2e-`, which every run also swept before and after itself — so two
+ * concurrent runs on one stack deleted each other's fixtures mid-test. The
+ * run id keeps each run's data disjoint AND keeps the sweep scoped to it.
+ * Strays from crashed runs are collected by `--sweep-all`, which is now a
+ * deliberate housekeeping flag rather than something every run does.
+ */
+const RUN_ID = process.env.MCP_E2E_RUN_ID || `${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
+const NAME_PREFIX = `mcp-e2e-${RUN_ID}-`;
+
+/** Root prefix shared by every run — only swept when `--sweep-all` is passed. */
+const ROOT_PREFIX = 'mcp-e2e-';
+const SWEEP_ALL = process.argv.includes('--sweep-all');
 
 // ============================================================================
 // Result tracking (mirrors scripts/test-mcp.ts's simple reporter)
@@ -160,17 +213,20 @@ interface StepResult {
   skipped?: boolean;
   /**
    * Set when a check hit a *known, tracked* server-side regression on the
-   * version under test (currently: GET /tasks/{id}/assignees 500ing on
-   * Vikunja versions below 2.4.0, see `driftTolerated` below) rather than a
-   * real tool bug. Tolerated checks are excluded from the failure count /
-   * exit code but still surfaced distinctly (not silently dropped) in both
-   * this script's own [Summary] output and the version-matrix verdict file
-   * (scripts/test-matrix.ts) so nobody mistakes "tolerated" for "fixed".
-   * This tolerance is now version-gated (only applies when the detected
-   * server is < 2.4.0, see `testAssignees`) rather than global -- fixed
-   * upstream (go-vikunja/vikunja PR #2791) and confirmed shipped in the
-   * 2.4.0 tag, so a 2.4.0+ server hitting this signature is a real,
-   * hard-failing regression, not a tolerated one.
+   * version under test, rather than a real tool bug. Tolerated checks are
+   * excluded from the failure count / exit code but still surfaced
+   * distinctly (not silently dropped) in both this script's own [Summary]
+   * output and the version-matrix verdict file (scripts/test-matrix.ts) so
+   * nobody mistakes "tolerated" for "fixed".
+   *
+   * **There are currently no `driftTolerated` call sites.** The last one --
+   * GET /tasks/{id}/assignees 500ing below Vikunja 2.4.0
+   * (go-vikunja/vikunja PR #2791) -- was removed on 2026-08-31 when the
+   * minimum supported Vikunja rose to 2.4.0, the release that fix shipped
+   * in: a server below the floor is unsupported, so tolerating its bug is
+   * no longer meaningful. The mechanism is kept because the next such
+   * regression will need it; `docs/RELEASING.md`'s pre-tag checklist asks
+   * the operator to re-read the tolerances actually present here.
    */
   serverDrift?: boolean;
   error?: string;
@@ -228,15 +284,15 @@ function driftTolerated(name: string, summary: string, detail: string): void {
 // Credentials: replicate docker/e2e/bootstrap.sh's login + token-mint flow
 // ============================================================================
 
-async function login(): Promise<string> {
+async function login(username: string = TEST_USERNAME): Promise<string> {
   const res = await fetch(`${VIKUNJA_URL}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: TEST_USERNAME, password: TEST_PASSWORD }),
+    body: JSON.stringify({ username, password: TEST_PASSWORD }),
   });
   if (!res.ok) {
     throw new Error(
-      `POST /login failed: ${res.status} ${await res.text()} -- is the e2e stack up? Run 'npm run e2e:up'.`,
+      `POST /login as '${username}' failed: ${res.status} ${await res.text()} -- is the e2e stack up? Run 'npm run e2e:up'.`,
     );
   }
   const body = (await res.json()) as { token: string };
@@ -283,6 +339,14 @@ async function getApiToken(): Promise<string> {
   if (process.env.MCP_E2E_VIKUNJA_API_TOKEN) {
     log('Using MCP_E2E_VIKUNJA_API_TOKEN from the environment.');
     return process.env.MCP_E2E_VIKUNJA_API_TOKEN;
+  }
+  // Prefer the target's stable token (issue #205). Minting a fresh one per
+  // run still works as a fallback, but it accumulates tokens on the shared
+  // `e2e-test` user and pointlessly diverges from what every other harness
+  // is authenticating with.
+  if (TARGET_ENV.VIKUNJA_API_TOKEN) {
+    log(`Using the stable token for target ${TARGET.id} (${TARGET.envFile}).`);
+    return TARGET_ENV.VIKUNJA_API_TOKEN;
   }
   log(`Logging in as '${TEST_USERNAME}'...`);
   const jwt = await login();
@@ -360,7 +424,12 @@ function extractBucketTitlesInOrder(text: string): string[] {
 // ============================================================================
 
 async function cleanupByPrefix(h: McpHarness): Promise<void> {
-  log('\n[Cleanup-by-prefix]');
+  // Scoped to THIS run's prefix unless `--sweep-all` was passed (issue
+  // #205): a run must never delete a concurrent run's fixtures. The root
+  // prefix still exists so someone can deliberately collect strays left by
+  // crashed runs -- that is housekeeping, not per-run behaviour.
+  const prefix = SWEEP_ALL ? ROOT_PREFIX : NAME_PREFIX;
+  log(`\n[Cleanup-by-prefix: ${prefix}${SWEEP_ALL ? ' (--sweep-all: ALL runs)' : ' (this run only)'}]`);
 
   // Saved filters first (they appear as pseudo-projects; deleting the
   // filter also removes the pseudo-project entry).
@@ -369,7 +438,7 @@ async function cleanupByPrefix(h: McpHarness): Promise<void> {
     const idTitlePairs = [...listRes.text.matchAll(/"id":\s*(-?\d+)[^}]*?"title":\s*"([^"]*)"/g)];
     for (const m of idTitlePairs) {
       const [, idStr, title] = m;
-      if (title && title.startsWith(NAME_PREFIX) && idStr) {
+      if (title && title.startsWith(prefix) && idStr) {
         const id = Number(idStr);
         await h.call('vikunja_filters', { action: 'delete', parameters: { id } });
         log(`  deleted stale saved filter "${title}" (id ${id})`);
@@ -385,7 +454,7 @@ async function cleanupByPrefix(h: McpHarness): Promise<void> {
     const projectMatches = [...listRes.text.matchAll(/\*\*([^*]+)\*\* \(ID: (\d+)\)/g)];
     for (const m of projectMatches) {
       const [, title, idStr] = m;
-      if (title && title.startsWith(NAME_PREFIX) && idStr) {
+      if (title && title.startsWith(prefix) && idStr) {
         const projectId = Number(idStr);
         await deleteProjectAndTasks(h, projectId, title);
       }
@@ -400,7 +469,7 @@ async function cleanupByPrefix(h: McpHarness): Promise<void> {
     const labelMatches = [...listRes.text.matchAll(/\*\*([^*]+)\*\* \(ID: (\d+)\)/g)];
     for (const m of labelMatches) {
       const [, title, idStr] = m;
-      if (title && title.startsWith(NAME_PREFIX) && idStr) {
+      if (title && title.startsWith(prefix) && idStr) {
         await h.call('vikunja_labels', { subcommand: 'delete', id: Number(idStr) });
         log(`  deleted stale label "${title}" (id ${idStr})`);
       }
@@ -503,6 +572,37 @@ const EXPECTED_TOOLS_ABSENT = [
   'vikunja_user_deletion',
 ];
 
+/**
+ * Regression guard for netadvanced/vikunja-mcp-ng#186: the `initialize` handshake's
+ * serverInfo.version must equal package.json's version. A hardcoded literal in
+ * src/index.ts (`version: '0.3.0'`) silently drifted through 0.4.0, 0.5.x, 0.6.0, and
+ * 0.6.1 without ever failing a unit test, because unit tests mock the version rather
+ * than perform a real handshake. This is the live, no-mocks check that would have
+ * caught it: it reads serverInfo straight off the real MCP `Client` returned by the
+ * SDK's own handshake, against the built `dist/index.js` spawned as a real child
+ * process (see `main`), not against src/index.ts's source.
+ */
+function testHandshakeVersion(client: Client): void {
+  log('\n[Handshake version (netadvanced/vikunja-mcp-ng#186 regression guard)]');
+  const serverInfo = client.getServerVersion();
+  const actualVersion = serverInfo?.version;
+  const matches = actualVersion === PACKAGE_VERSION;
+  assertStep(
+    'initialize handshake reports the installed package.json version',
+    matches,
+    `expected version "${PACKAGE_VERSION}", got serverInfo=${JSON.stringify(serverInfo)}`,
+  );
+  if (!matches) {
+    record(
+      'tool-bug',
+      `MCP handshake advertises version "${String(actualVersion)}" instead of package.json's "${PACKAGE_VERSION}"`,
+      'The initialize handshake\'s serverInfo.version must be derived from package.json ' +
+        '(src/utils/version.ts resolvePackageVersion) — see netadvanced/vikunja-mcp-ng#186. ' +
+        `Full serverInfo: ${JSON.stringify(serverInfo)}`,
+    );
+  }
+}
+
 async function testToolList(h: McpHarness): Promise<void> {
   log('\n[Tool list]');
   const tools = await h.listToolNames();
@@ -548,9 +648,11 @@ async function testAuth(h: McpHarness): Promise<void> {
     // runs the session capability/version detector (GET /info already
     // above, plus a one-time GET /api/v2/openapi.json probe) and must
     // surface both fields. `hasV2Api` is version-dependent — the v2 API is
-    // present on Vikunja 2.4.0+ but ABSENT on the 2.3.0 v1-floor — so we
-    // probe the live endpoint here for ground truth and assert the detector
-    // agrees, rather than hard-coding `true` (which false-failed on 2.3.0).
+    // present on Vikunja 2.4.0+ and was absent on 2.3.0 — so we probe the
+    // live endpoint here for ground truth and assert the detector agrees,
+    // rather than hard-coding `true` (which false-failed on 2.3.0 back when
+    // that was the floor, and would false-fail again on any future server
+    // that stops serving v2).
     assertStep(
       'auth info surfaces hasV2Api',
       /hasV2Api/.test(info.text),
@@ -1477,37 +1579,14 @@ async function testAssignees(h: McpHarness, ctx: FlowContext): Promise<void> {
   assertOk('assign self to task', assign);
 
   const list = await h.call('vikunja_task_assignees', { operation: 'list-assignees', id: ctx.taskId });
-  // Known, tracked server-side regression: GET /tasks/{id}/assignees 500s
-  // unconditionally on Vikunja versions below 2.4.0 (fixed upstream on
-  // go-vikunja/vikunja's main via PR #2791; confirmed shipped in the 2.4.0
-  // tagged release during the 2.4.0 alignment work -- both DB backends
-  // passed this exact check with a genuine, non-tolerated 200 there).
-  // Confirmed independently via raw REST (bypassing this tool entirely)
-  // against a fresh task with zero assignees on the same local stack — same
-  // 500 pre-2.4.0. The MCP tool's request (GET /tasks/{taskID}/assignees,
-  // no body) matches the OpenAPI spec exactly; this was a real server-side
-  // bug on affected versions, not something the tool can work around by
-  // sending a different request. The tolerance below is version-gated
-  // (only kicks in when the detected server is < 2.4.0, our documented
-  // v1-floor minimum is 2.3.0) -- it still runs every time, on every
-  // version, and only this exact signature on a pre-2.4.0 server is
-  // tolerated. On 2.4.0+ this same 500 is a hard failure: the fix is
-  // confirmed shipped there, so a regression would be new and real.
-  const preFixServer = detectedServerVersion !== null && versionLessThan(detectedServerVersion, '2.4.0');
-  if (preFixServer && list.isError && /HTTP 500/.test(list.text) && /assignees/.test(list.text)) {
-    driftTolerated(
-      'list task assignees',
-      'GET /tasks/{id}/assignees returns HTTP 500 on this Vikunja version, independent of caller',
-      `vikunja_task_assignees {operation:"list-assignees", id:${ctx.taskId}} failed with: ` +
-        `${list.text.slice(0, 300)}. Reproduced with a raw, tool-independent curl GET against ` +
-        'a fresh task with zero assignees on the same local stack — same 500. Tracked upstream ' +
-        'as go-vikunja/vikunja PR #2791, confirmed fixed and shipped in the 2.4.0 tagged release ' +
-        `(detected server version: ${detectedServerVersion}, our v1-floor minimum is 2.3.0). ` +
-        'This tolerance only applies below 2.4.0 -- see docs/LOCAL-TESTING.md\'s "Version pinning ' +
-        'and refresh" section; if this 500s on 2.4.0+, remove this tolerance and let it fail for real.',
-    );
-    return;
-  }
+  // Historical note, kept because a 500 here has a known cause: GET
+  // /tasks/{id}/assignees 500s unconditionally on Vikunja versions below
+  // 2.4.0 (go-vikunja/vikunja PR #2791), and this check used to tolerate
+  // that behind a `detectedServerVersion < 2.4.0` gate. The minimum
+  // supported Vikunja is now 2.4.0 -- the release the fix shipped in -- so
+  // that gate could never fire on a supported server and was removed on
+  // 2026-08-31. A 500 here is now a plain hard failure, which is the
+  // correct signal on any server we claim to support.
   if (assertOk('list task assignees', list)) {
     assertStep(
       'assignee list includes self',
@@ -1850,6 +1929,101 @@ async function testSetupKanban(h: McpHarness): Promise<void> {
   // shared FlowContext.projectId chain, so it cleans itself up here rather
   // than relying on finalCleanup.
   await deleteProjectAndTasks(h, projectId, title);
+
+  // --- SEPARATE call: the columns-less path (issue #185) — `columns` is
+  // now optional; a project+tasks-only call must create the project and
+  // its tasks in one call WITHOUT touching any Kanban view or bucket at
+  // all (verified server-side below via list-buckets returning zero).
+  const noColumnsTitle = `${NAME_PREFIX}kanban-composite-no-columns`;
+  const noColumnsCall = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    title: noColumnsTitle,
+    tasks: [
+      { title: `${NAME_PREFIX}nc-task-1`, priority: 2 },
+      { title: `${NAME_PREFIX}nc-task-2` },
+    ],
+  });
+  if (assertOk('setup-kanban (columns-less: project+tasks only)', noColumnsCall)) {
+    assertStep(
+      'setup-kanban columns-less reports tasks created with no "columns ready" segment fabricated',
+      noColumnsCall.text.includes('2/2 tasks created') && !noColumnsCall.text.includes('columns ready'),
+      noColumnsCall.text.slice(0, 500),
+    );
+  }
+
+  const noColumnsProjectId = extractId(noColumnsCall.text);
+  if (!noColumnsProjectId) {
+    fail('setup-kanban (columns-less) response contains a project id', noColumnsCall.text.slice(0, 300));
+  } else {
+    // Verify server-side that this path created/renamed/touched NO bucket.
+    // NOT by asserting zero buckets: Vikunja auto-provisions a default
+    // Kanban view AND a set of default buckets ("To-Do"/"Doing"/"Done" on
+    // 2.4.0) for every new project, server-side, with no involvement from
+    // us — verified by direct REST probe against a plain `PUT /projects`.
+    // The honest, version-independent check is therefore a CONTROL project
+    // created via plain `create`: a columns-less setup-kanban must leave
+    // exactly the same bucket set the server would have made on its own.
+    const controlTitle = `${NAME_PREFIX}kanban-columns-less-control`;
+    const controlCall = await h.call('vikunja_projects', {
+      subcommand: 'create',
+      title: controlTitle,
+    });
+    const controlProjectId = assertOk('create control project (columns-less baseline)', controlCall)
+      ? extractId(controlCall.text)
+      : null;
+
+    const bucketTitles = (text: string): string[] =>
+      [...text.matchAll(/"title":\s*"([^"]*)"/g)].map((m) => m[1] ?? '').sort();
+
+    const noColumnsBuckets = await h.call('vikunja_projects', {
+      subcommand: 'list-buckets',
+      id: noColumnsProjectId,
+    });
+    const controlBuckets = controlProjectId
+      ? await h.call('vikunja_projects', { subcommand: 'list-buckets', id: controlProjectId })
+      : null;
+
+    if (
+      assertOk('list-buckets after columns-less setup-kanban', noColumnsBuckets) &&
+      controlBuckets &&
+      assertOk('list-buckets on the control project', controlBuckets)
+    ) {
+      const actual = bucketTitles(noColumnsBuckets.text);
+      const expected = bucketTitles(controlBuckets.text);
+      assertStep(
+        'setup-kanban columns-less path leaves the server default buckets untouched',
+        actual.length === expected.length && actual.every((t, i) => t === expected[i]),
+        `columns-less buckets ${JSON.stringify(actual)} differ from a plain create's ${JSON.stringify(expected)}`,
+      );
+    }
+
+    if (controlProjectId) await deleteProjectAndTasks(h, controlProjectId, controlTitle);
+    await deleteProjectAndTasks(h, noColumnsProjectId, noColumnsTitle);
+  }
+
+  // A task naming a `column` with no `columns` array at all must be
+  // rejected up front — same fail-fast contract as the unknown-column case
+  // above, and nothing (no project) should be created by the rejected call.
+  const missingColumnsTitle = `${NAME_PREFIX}kanban-composite-should-not-exist`;
+  const columnWithoutColumnsCall = await h.call('vikunja_projects', {
+    subcommand: 'setup-kanban',
+    title: missingColumnsTitle,
+    tasks: [{ title: `${NAME_PREFIX}should-not-exist-task`, column: 'To Do' }],
+  });
+  assertStep(
+    'setup-kanban rejects a task column when columns is omitted entirely (isError, VALIDATION_ERROR-shaped)',
+    columnWithoutColumnsCall.isError && columnWithoutColumnsCall.text.includes('no columns were'),
+    columnWithoutColumnsCall.text.slice(0, 500),
+  );
+
+  const listAfterRejection = await h.call('vikunja_projects', { subcommand: 'list' });
+  if (assertOk('list projects after rejected columns-less setup-kanban call', listAfterRejection)) {
+    assertStep(
+      'setup-kanban column-without-columns rejection created no project',
+      !listAfterRejection.text.includes(missingColumnsTitle),
+      listAfterRejection.text.slice(0, 500),
+    );
+  }
 }
 
 async function testNotifications(h: McpHarness): Promise<void> {
@@ -1874,19 +2048,17 @@ async function testNotifications(h: McpHarness): Promise<void> {
  * failure, not a skip.
  */
 async function testAvatarSettings(h: McpHarness): Promise<void> {
-  log('\n[Avatar settings (soft-skip: vikunja_users is JWT-only)]');
+  log('\n[Avatar settings gating (API-token session)]');
+  // `vikunja_users` is JWT-only, so under API-token auth the only honest
+  // check here is that it is correctly gated OFF. The subcommands themselves
+  // are exercised for real in the JWT lane (`runJwtLane`, issue #198) —
+  // this used to be a permanent `skip()`, which reported a coverage hole as
+  // if it were an untestable one.
   const result = await h.call('vikunja_users', { subcommand: 'get-avatar' });
-  if (!result.isError) {
-    fail(
-      'avatar settings gating',
-      'vikunja_users.get-avatar unexpectedly succeeded under API-token auth — JWT-only gating regression? ' +
-        result.text.slice(0, 200),
-    );
-    return;
-  }
-  skip(
-    'avatar settings (get-avatar/set-avatar/upload-avatar)',
-    "vikunja_users is JWT-only; this harness runs under API-token auth so it can't exercise these subcommands",
+  assertStep(
+    'avatar settings correctly gated off under API-token auth (exercised for real in the JWT lane)',
+    result.isError,
+    `vikunja_users.get-avatar unexpectedly succeeded under API-token auth — JWT-only gating regression? ${result.text.slice(0, 200)}`,
   );
 }
 
@@ -1932,30 +2104,33 @@ function isAuthRejection(text: string): boolean {
 async function testUserWebhooks(h: McpHarness): Promise<void> {
   log('\n[User-scoped webhooks (scope: user)]');
 
+  // `GET /user/settings/webhooks*` is JWTKeyAuth-only per the OpenAPI spec,
+  // so a 401 under a tk_* token is the server behaving exactly as documented
+  // — NOT a tolerated server regression, which is how this used to be
+  // recorded (`driftTolerated`). Either outcome is a legitimate pass here;
+  // what must never happen is a non-auth error. The JWT lane (`runJwtLane`,
+  // issue #198) exercises these same calls under JWT, where they must
+  // genuinely succeed.
   const listEvents = await h.call('vikunja_webhooks', { subcommand: 'list-events', scope: 'user' });
   if (!listEvents.isError) {
     assertOk('user-scope list-events', listEvents);
-  } else if (isAuthRejection(listEvents.text)) {
-    driftTolerated(
-      'user-scope list-events',
-      'rejected under tk_* API-token auth (spec: JWTKeyAuth-only, expected)',
+  } else {
+    assertStep(
+      'user-scope list-events rejected as spec-documented under tk_* auth (JWTKeyAuth-only)',
+      isAuthRejection(listEvents.text),
       listEvents.text.slice(0, 300),
     );
-  } else {
-    fail('user-scope list-events', listEvents.text.slice(0, 300));
   }
 
   const list = await h.call('vikunja_webhooks', { subcommand: 'list', scope: 'user' });
   if (!list.isError) {
     assertOk('user-scope list', list);
-  } else if (isAuthRejection(list.text)) {
-    driftTolerated(
-      'user-scope list',
-      'rejected under tk_* API-token auth (spec: JWTKeyAuth-only, expected)',
+  } else {
+    assertStep(
+      'user-scope list rejected as spec-documented under tk_* auth (JWTKeyAuth-only)',
+      isAuthRejection(list.text),
       list.text.slice(0, 300),
     );
-  } else {
-    fail('user-scope list', list.text.slice(0, 300));
   }
 
   // These are pure Zod/argument-consistency checks (no server round-trip),
@@ -1977,6 +2152,373 @@ async function testUserWebhooks(h: McpHarness): Promise<void> {
     missingProjectIdOnProjectScope.isError,
     missingProjectIdOnProjectScope.text.slice(0, 300),
   );
+}
+
+// ============================================================================
+// Vikunja 2.6.0 permission tightening (issue #254, items A3-A7)
+//
+// Every check here asserts a DIFFERENT expected outcome per server version,
+// because each of these is a tightening: below 2.6.0 the server accepts the
+// call and silently does something useless or leaks something it shouldn't;
+// from 2.6.0 it refuses. Asserting only the new behaviour would fail the
+// floor lane; asserting only the old one would let a real regression through.
+// `serverAtLeast` (scripts/lib/e2e-fixtures.ts) is the gate.
+//
+// The old-version expectations are not "tolerated drift" — they are the
+// documented behaviour of a version this project still supports, so they are
+// ordinary passes.
+// ============================================================================
+
+/** Minimal authenticated REST helper for the cases the tool surface can't reach. */
+async function rest(
+  jwt: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; text: string; json: unknown }> {
+  const res = await fetch(`${VIKUNJA_URL}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const text = await res.text();
+  let json: unknown = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    /* non-JSON body: `text` is the whole story */
+  }
+  return { status: res.status, text, json };
+}
+
+async function test260Tightening(h: McpHarness, jwt: string): Promise<void> {
+  const tightened = serverAtLeast(detectedServerVersion, '2.6.0');
+  log(
+    `\n[Vikunja 2.6.0 permission tightening — server ${detectedServerVersion ?? 'unknown'}, ` +
+      `expecting the ${tightened ? 'TIGHTENED (>=2.6.0)' : 'PRE-2.6.0'} behaviour]`,
+  );
+
+  // --- A3. set-position against a view belonging to ANOTHER project.
+  const pA = await h.call('vikunja_projects', { subcommand: 'create', title: `${NAME_PREFIX}a3-own` });
+  const pB = await h.call('vikunja_projects', { subcommand: 'create', title: `${NAME_PREFIX}a3-foreign` });
+  const projA = extractId(pA.text);
+  const projB = extractId(pB.text);
+  if (projA === undefined || projB === undefined) {
+    fail('A3 fixture: two projects created', `${pA.text.slice(0, 200)} | ${pB.text.slice(0, 200)}`);
+  } else {
+    const taskRes = await h.call('vikunja_tasks', {
+      subcommand: 'create',
+      projectId: projA,
+      title: `${NAME_PREFIX}a3-task`,
+    });
+    const taskId = extractId(taskRes.text);
+    const viewsB = await rest(jwt, 'GET', `/projects/${projB}/views`);
+    const foreignViewId = Array.isArray(viewsB.json)
+      ? (viewsB.json[0] as { id?: number } | undefined)?.id
+      : undefined;
+
+    if (taskId === undefined || foreignViewId === undefined) {
+      fail('A3 fixture: task and a foreign view id', `task=${String(taskId)} view=${String(foreignViewId)}`);
+    } else {
+      const res = await h.call('vikunja_tasks', {
+        subcommand: 'set-position',
+        id: taskId,
+        position: 100,
+        projectViewId: foreignViewId,
+      });
+      // Deliberately NOT version-gated. 2.6.0 answers 403 and 2.4.0 answers
+      // 200-and-does-nothing-useful, so this client refuses on every
+      // version (issue #254 A3, `assertViewBelongsToProject`): below 2.6.0
+      // the refusal is ours, above it the server would have refused anyway.
+      assertStep(
+        'set-position with a view from another project is refused (every version)',
+        res.isError,
+        `isError=${String(res.isError)} ${res.text.slice(0, 240)}`,
+      );
+      assertStep(
+        'the set-position refusal names the offending view and the task\'s project',
+        /does not belong to project/.test(res.text),
+        res.text.slice(0, 240),
+      );
+    }
+
+    // --- A5. Bucket and webhook writes on an ARCHIVED project.
+    const kanban = await rest(jwt, 'GET', `/projects/${projB}/views`);
+    const kanbanView = Array.isArray(kanban.json)
+      ? (kanban.json as Array<{ id: number; view_kind?: string }>).find((v) => v.view_kind === 'kanban')
+      : undefined;
+    await rest(jwt, 'POST', `/projects/${projB}`, { title: `${NAME_PREFIX}a3-foreign`, is_archived: true });
+
+    if (kanbanView) {
+      const bucket = await rest(jwt, 'PUT', `/projects/${projB}/views/${kanbanView.id}/buckets`, {
+        title: `${NAME_PREFIX}a5-bucket`,
+      });
+      assertStep(
+        `bucket create on an archived project ${tightened ? 'returns 412/3008' : 'is accepted'}`,
+        tightened ? bucket.status === 412 && /3008/.test(bucket.text) : bucket.status < 400,
+        `status=${bucket.status} ${bucket.text.slice(0, 200)}`,
+      );
+    } else {
+      skip('bucket create on an archived project', 'no kanban view on the fixture project');
+    }
+
+    const hook = await rest(jwt, 'PUT', `/projects/${projB}/webhooks`, {
+      target_url: 'http://example.invalid/hook',
+      events: ['task.created'],
+    });
+    assertStep(
+      `webhook create on an archived project ${tightened ? 'returns 412/3008' : 'is accepted'}`,
+      tightened ? hook.status === 412 && /3008/.test(hook.text) : hook.status < 400,
+      `status=${hook.status} ${hook.text.slice(0, 200)}`,
+    );
+
+    // Reads must keep working on an archived project on EVERY version — the
+    // tightening is write-only, and a client that stopped reading archived
+    // projects would be a far worse regression than the one being guarded.
+    const readBuckets = await rest(jwt, 'GET', `/projects/${projB}/views/${kanbanView?.id ?? 0}/buckets`);
+    assertStep(
+      'bucket READ on an archived project still succeeds (every version)',
+      readBuckets.status === 200,
+      `status=${readBuckets.status}`,
+    );
+
+    // Un-archive so final cleanup can delete it.
+    await rest(jwt, 'POST', `/projects/${projB}`, { title: `${NAME_PREFIX}a3-foreign`, is_archived: false });
+  }
+
+  // --- A6. GET /tasks/{id}/assignees no longer carries `email`.
+  const pC = await h.call('vikunja_projects', { subcommand: 'create', title: `${NAME_PREFIX}a6-proj` });
+  const projC = extractId(pC.text);
+  if (projC === undefined) {
+    fail('A6 fixture: project created', pC.text.slice(0, 200));
+  } else {
+    const t = await h.call('vikunja_tasks', {
+      subcommand: 'create',
+      projectId: projC,
+      title: `${NAME_PREFIX}a6-task`,
+    });
+    const taskId = extractId(t.text);
+    const me = await rest(jwt, 'GET', '/user');
+    const myId = (me.json as { id?: number } | null)?.id;
+    if (taskId === undefined || myId === undefined) {
+      fail('A6 fixture: task and self id', `task=${String(taskId)} user=${String(myId)}`);
+    } else {
+      await rest(jwt, 'PUT', `/tasks/${taskId}/assignees`, { user_id: myId });
+      const assignees = await rest(jwt, 'GET', `/tasks/${taskId}/assignees`);
+      const first = Array.isArray(assignees.json)
+        ? (assignees.json[0] as Record<string, unknown> | undefined)
+        : undefined;
+      const hasEmail = Boolean(first && typeof first.email === 'string' && first.email.length > 0);
+      assertStep(
+        `GET /tasks/{id}/assignees ${tightened ? 'omits' : 'still returns'} email`,
+        tightened ? !hasEmail : hasEmail,
+        `first assignee = ${JSON.stringify(first ?? null).slice(0, 200)}`,
+      );
+    }
+  }
+
+  // --- A4 and A7 need a SECOND user. Everything below is skipped, not
+  //     failed, when that fixture is missing: an older stack bootstrapped
+  //     before e2e-other existed is a stale fixture, not a product bug.
+  let otherJwt: string;
+  try {
+    otherJwt = await loginFor(VIKUNJA_URL, OTHER_USERNAME);
+  } catch (e) {
+    const reason = `cannot log in as ${OTHER_USERNAME} (${(e as Error).message.slice(0, 120)}) — re-run npm run e2e:up`;
+    skip('unreadable team is scrubbed from GET /projects/{id}/teams', reason);
+    skip('attaching an unreadable team to a project', reason);
+    skip('relation delete when the other task became unreadable', reason);
+    return;
+  }
+
+  // A7. `e2e-other` owns a project and a team, attaches the team, then
+  // shares only the PROJECT with us. The team stays unreadable.
+  const otherProject = await rest(otherJwt, 'PUT', '/projects', { title: `${NAME_PREFIX}a7-theirs` });
+  const otherProjectId = (otherProject.json as { id?: number } | null)?.id;
+  const otherTeam = await rest(otherJwt, 'PUT', '/teams', { name: `${NAME_PREFIX}a7-secret-team` });
+  const otherTeamId = (otherTeam.json as { id?: number } | null)?.id;
+
+  if (otherProjectId === undefined || otherTeamId === undefined) {
+    fail(
+      'A7 fixture: the other user owns a project and a team',
+      `project=${otherProject.status} team=${otherTeam.status}`,
+    );
+  } else {
+    await rest(otherJwt, 'PUT', `/projects/${otherProjectId}/teams`, { team_id: otherTeamId, right: 0 });
+    await shareProjectWithUser(VIKUNJA_URL, otherJwt, otherProjectId, TEST_USERNAME);
+
+    const seenTeams = await rest(jwt, 'GET', `/projects/${otherProjectId}/teams`);
+    const seen = Array.isArray(seenTeams.json)
+      ? (seenTeams.json as Array<{ id: number; name?: string; created_by?: unknown }>).find(
+          (t) => t.id === otherTeamId,
+        )
+      : undefined;
+    const leaked = Boolean(seen && typeof seen.name === 'string' && seen.name.length > 0);
+    assertStep(
+      `unreadable team is ${tightened ? 'scrubbed from' : 'fully exposed by'} GET /projects/{id}/teams`,
+      seen !== undefined && (tightened ? !leaked : leaked),
+      `entry = ${JSON.stringify(seen ?? null).slice(0, 220)}`,
+    );
+
+    const myProject = await rest(jwt, 'PUT', '/projects', { title: `${NAME_PREFIX}a7-mine` });
+    const myProjectId = (myProject.json as { id?: number } | null)?.id;
+    if (myProjectId === undefined) {
+      fail('A7 fixture: own project created', `status=${myProject.status}`);
+    } else {
+      const attach = await rest(jwt, 'PUT', `/projects/${myProjectId}/teams`, {
+        team_id: otherTeamId,
+        right: 0,
+      });
+      assertStep(
+        `attaching a team we cannot read is ${tightened ? 'refused (403)' : 'accepted'}`,
+        tightened ? attach.status === 403 : attach.status < 400,
+        `status=${attach.status} ${attach.text.slice(0, 200)}`,
+      );
+      await rest(jwt, 'DELETE', `/projects/${myProjectId}`);
+    }
+
+    // A4. Relate one of our tasks to one of theirs while we can still read
+    // it, then have them revoke our access and try to unrelate.
+    const theirTask = await rest(otherJwt, 'PUT', `/projects/${otherProjectId}/tasks`, {
+      title: `${NAME_PREFIX}a4-theirs`,
+    });
+    const theirTaskId = (theirTask.json as { id?: number } | null)?.id;
+    const myRelProject = await rest(jwt, 'PUT', '/projects', { title: `${NAME_PREFIX}a4-mine` });
+    const myRelProjectId = (myRelProject.json as { id?: number } | null)?.id;
+    const myTask =
+      myRelProjectId === undefined
+        ? null
+        : await rest(jwt, 'PUT', `/projects/${myRelProjectId}/tasks`, { title: `${NAME_PREFIX}a4-mine` });
+    const myTaskId = (myTask?.json as { id?: number } | null)?.id;
+
+    if (theirTaskId === undefined || myTaskId === undefined) {
+      fail('A4 fixture: a task on each side', `theirs=${String(theirTaskId)} mine=${String(myTaskId)}`);
+    } else {
+      const related = await h.call('vikunja_task_relations', {
+        operation: 'relate',
+        id: myTaskId,
+        otherTaskId: theirTaskId,
+        relationKind: 'related',
+      });
+      assertStep('A4 fixture: relation created while both tasks are readable', !related.isError, related.text.slice(0, 200));
+
+      await revokeProjectUser(VIKUNJA_URL, otherJwt, otherProjectId, TEST_USERNAME);
+      const readBack = await rest(jwt, 'GET', `/tasks/${theirTaskId}`);
+      assertStep(
+        'A4 fixture: the other task really is unreadable after revocation',
+        readBack.status === 403 || readBack.status === 404,
+        `status=${readBack.status}`,
+      );
+
+      const unrelate = await h.call('vikunja_task_relations', {
+        operation: 'unrelate',
+        id: myTaskId,
+        otherTaskId: theirTaskId,
+        relationKind: 'related',
+      });
+      assertStep(
+        `unrelate against an unreadable task is ${tightened ? 'refused' : 'accepted'}`,
+        tightened ? unrelate.isError : !unrelate.isError,
+        `isError=${String(unrelate.isError)} ${unrelate.text.slice(0, 240)}`,
+      );
+      if (myRelProjectId !== undefined) await rest(jwt, 'DELETE', `/projects/${myRelProjectId}`);
+    }
+
+    await rest(otherJwt, 'DELETE', `/projects/${otherProjectId}`);
+    await rest(otherJwt, 'DELETE', `/teams/${otherTeamId}`);
+  }
+}
+
+/**
+ * Narrow-token lane (issue #254, items B1 and A1).
+ *
+ * A third server session, booted with a `tk_*` token that holds every
+ * permission EXCEPT `tasks_comments` and `reactions`. From 2.6.0 Vikunja
+ * checks `expand` values against the token's scopes, and the failure it
+ * returns is a plain `401 {"code":11,...}` — indistinguishable from an
+ * expired token by status or body. That is why this lane exists at all: no
+ * amount of unit testing can tell you what the server actually sends, and
+ * the full-scope fixture every other lane uses can never see it.
+ */
+async function runNarrowTokenLane(narrowToken: string, inheritedEnv: Record<string, string>): Promise<void> {
+  const tightened = serverAtLeast(detectedServerVersion, EXPAND_SCOPE_CHECK_VERSION);
+  log('\n╔══════════════════════════════════════════════╗');
+  log('║   Narrow-scope tk_* lane (issue #254 B1/A1)   ║');
+  log('╚══════════════════════════════════════════════╝');
+  log(
+    `Token omits: ${NARROW_TOKEN_OMITTED_GROUPS.join(', ')}. Server ${detectedServerVersion ?? 'unknown'} ` +
+      `=> expecting expand scope checks to be ${tightened ? 'ENFORCED' : 'ABSENT'}.`,
+  );
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [DIST_ENTRY],
+    env: { ...inheritedEnv, VIKUNJA_URL, VIKUNJA_API_TOKEN: narrowToken },
+  });
+  const client = new Client({ name: 'mcp-e2e-harness-narrow', version: '1.0.0' }, { capabilities: {} });
+
+  try {
+    await client.connect(transport);
+    const h = new McpHarness(client);
+
+    // A listing with no expand must work on every version — this is the
+    // control that proves the token itself is good.
+    const plain = await h.call('vikunja_tasks', { subcommand: 'list', allProjects: true });
+    assertStep(
+      'narrow token: cross-project list with no expand succeeds',
+      !plain.isError,
+      plain.text.slice(0, 240),
+    );
+
+    for (const value of EXPAND_VALUES_NEEDING_OMITTED_SCOPE) {
+      const res = await h.call('vikunja_tasks', { subcommand: 'list', allProjects: true, expand: [value] });
+      if (tightened) {
+        // The point of A1: this must SURFACE, not degrade into a successful
+        // listing that quietly dropped the expansion.
+        assertStep(
+          `narrow token: expand=${value} surfaces the scope failure instead of silently degrading`,
+          res.isError,
+          `isError=${String(res.isError)} ${res.text.slice(0, 300)}`,
+        );
+        assertStep(
+          `narrow token: the expand=${value} error names the scope, not just "invalid token"`,
+          res.isError && /scope|permission|expand/i.test(res.text),
+          res.text.slice(0, 300),
+        );
+      } else {
+        assertStep(
+          `narrow token: expand=${value} is accepted (pre-${EXPAND_SCOPE_CHECK_VERSION} server does not scope-check expand)`,
+          !res.isError,
+          res.text.slice(0, 240),
+        );
+      }
+    }
+
+    for (const value of EXPAND_VALUES_WITHIN_NARROW_SCOPE) {
+      const res = await h.call('vikunja_tasks', { subcommand: 'list', allProjects: true, expand: [value] });
+      assertStep(
+        `narrow token: expand=${value} still succeeds (scope present on every version)`,
+        !res.isError,
+        res.text.slice(0, 240),
+      );
+    }
+
+    // A following unrelated /tasks call must be unaffected — the scope
+    // failure must never have opened the shared tasks breaker.
+    const after = await h.call('vikunja_tasks', { subcommand: 'list', allProjects: true });
+    assertStep(
+      'narrow token: a following no-expand list is unaffected (no breaker fallout)',
+      !after.isError && !/breaker/i.test(after.text),
+      after.text.slice(0, 240),
+    );
+  } catch (e) {
+    fail('narrow-scope tk_* lane', (e as Error).stack || String(e));
+  } finally {
+    await client.close().catch(() => undefined);
+  }
 }
 
 async function finalCleanup(h: McpHarness, ctx: FlowContext): Promise<void> {
@@ -2043,11 +2585,239 @@ async function finalCleanup(h: McpHarness, ctx: FlowContext): Promise<void> {
 // Main
 // ============================================================================
 
+/** Newest mtime under a directory tree, ignoring anything not a .ts source. */
+function newestSourceMtime(dir: string): number {
+  let newest = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      newest = Math.max(newest, newestSourceMtime(full));
+    } else if (entry.name.endsWith('.ts')) {
+      newest = Math.max(newest, statSync(full).mtimeMs);
+    }
+  }
+  return newest;
+}
+
+/**
+ * Builds `dist/` if it is stale, under an exclusive lock.
+ *
+ * Both guards exist because of a real failure (issue #205): two concurrent
+ * harness runs each called `npm run build`, and since 0.6.2 that starts with
+ * `prebuild: rm -rf dist` — so one run's `dist/` was deleted out from under
+ * the other's server as it spawned, which surfaced as the baffling
+ * `registerAuthTool is not a function` from a half-written module graph.
+ *
+ * Freshness check first: when `dist/` already reflects `src/`, the second run
+ * does not touch it at all, which is the normal case for parallel agents on
+ * an unchanged tree. The lock then serialises the case where a rebuild really
+ * is needed, so only one process is ever writing `dist/`.
+ */
 function buildProject(): void {
-  log('Building project (npm run build)...');
-  const buildResult = spawnSync('npm', ['run', 'build'], { cwd: REPO_ROOT, stdio: 'inherit' });
-  if (buildResult.status !== 0) {
-    throw new Error(`npm run build failed with exit code ${String(buildResult.status)}`);
+  const distEntry = DIST_ENTRY;
+  const lockFile = path.join(REPO_ROOT, 'node_modules', '.mcp-e2e-build.lock');
+
+  const isFresh = (): boolean => {
+    if (!existsSync(distEntry)) return false;
+    return statSync(distEntry).mtimeMs >= newestSourceMtime(path.join(REPO_ROOT, 'src'));
+  };
+
+  if (isFresh()) {
+    log('dist/ is newer than src/ — skipping the build (another run may be using it).');
+    return;
+  }
+
+  // Crude but sufficient advisory lock: exclusive create, stale after 10min.
+  const deadline = Date.now() + 10 * 60_000;
+  for (;;) {
+    try {
+      writeFileSync(lockFile, String(process.pid), { flag: 'wx' });
+      break;
+    } catch {
+      if (existsSync(lockFile) && Date.now() - statSync(lockFile).mtimeMs > 10 * 60_000) {
+        log('Removing a stale build lock (>10min old).');
+        rmSync(lockFile, { force: true });
+        continue;
+      }
+      if (Date.now() > deadline) throw new Error('Timed out waiting for the build lock.');
+      log('Another run is building dist/ — waiting...');
+      spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},2000)']);
+      if (isFresh()) {
+        log('dist/ was rebuilt by the other run — continuing.');
+        return;
+      }
+    }
+  }
+
+  try {
+    log('Building project (npm run build)...');
+    const buildResult = spawnSync('npm', ['run', 'build'], { cwd: REPO_ROOT, stdio: 'inherit' });
+    if (buildResult.status !== 0) {
+      throw new Error(`npm run build failed with exit code ${String(buildResult.status)}`);
+    }
+  } finally {
+    rmSync(lockFile, { force: true });
+  }
+}
+
+// ============================================================================
+// JWT lane (issue #198)
+// ============================================================================
+
+/**
+ * Tools that must be PRESENT once the session is authenticated with a JWT —
+ * the positive counterpart of `EXPECTED_TOOLS_ABSENT`, which the API-token
+ * session asserts. Auth-gated only: `vikunja_users` and the export family.
+ */
+const JWT_ONLY_TOOLS_EXPECTED_PRESENT = [
+  'vikunja_users',
+  'vikunja_export_project',
+  'vikunja_request_user_export',
+  'vikunja_user_export_status',
+  'vikunja_download_user_export',
+];
+
+/**
+ * Tools that must stay ABSENT even under JWT: these are deny-by-default
+ * MODULE-config gates ("dangerous"), not auth gates, so a JWT alone must
+ * never surface them. Asserting this in the JWT lane is what proves the two
+ * gating mechanisms are independent rather than accidentally coupled.
+ */
+const DENY_BY_DEFAULT_TOOLS_EXPECTED_ABSENT = [
+  'vikunja_tokens',
+  'vikunja_caldav_tokens',
+  'vikunja_admin',
+  'vikunja_user_deletion',
+];
+
+/** Smallest valid PNG (1x1, transparent) — uploaded via `fileContent`, no temp file. */
+const TINY_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+/** Reads the current avatar provider out of a `get-avatar` response. */
+function extractAvatarProvider(text: string): string | undefined {
+  return /\*\*avatarProvider:\*\*\s*(\S+)/.exec(text)?.[1] ?? /"avatarProvider":\s*"([^"]*)"/.exec(text)?.[1];
+}
+
+/**
+ * Second session, authenticated with a JWT instead of the `tk_*` API token
+ * the main flow uses (issue #198).
+ *
+ * Why a whole second server process: JWT-only tools are gated at TOOL
+ * REGISTRATION time by the token format the server booted with (see
+ * `src/tools/index.ts`), so they cannot be reached by re-authenticating an
+ * already-running session — the tools simply are not registered in it.
+ *
+ * This closes the harness's last coverage hole: before this, the entire
+ * JWT-only surface was asserted solely by "we correctly refuse it" under
+ * API-token auth — one permanent `skip()` (avatar settings) and one
+ * mis-labelled "tolerated server drift" (user-scope webhooks). The
+ * credential needed nothing new: `getApiToken()` already logs in for a JWT
+ * and then throws it away after exchanging it for a `tk_*` token.
+ */
+async function runJwtLane(jwt: string, inheritedEnv: Record<string, string>): Promise<void> {
+  log('\n╔══════════════════════════════════════╗');
+  log('║   JWT lane (second session, issue #198)   ║');
+  log('╚══════════════════════════════════════╝');
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [DIST_ENTRY],
+    // Same localhost-verified URL as the main session (`assertLocalUrl` ran
+    // in `main` before anything spawned), same ambient-env stripping.
+    env: { ...inheritedEnv, VIKUNJA_URL, VIKUNJA_API_TOKEN: jwt },
+  });
+  const client = new Client({ name: 'mcp-e2e-harness-jwt', version: '1.0.0' }, { capabilities: {} });
+
+  try {
+    await client.connect(transport);
+    log('Connected to a second MCP server instance over stdio (JWT auth).');
+    const h = new McpHarness(client);
+
+    // --- Tool gating under JWT
+    log('\n[Tool gating (JWT session)]');
+    const tools = await h.listToolNames();
+    const missing = JWT_ONLY_TOOLS_EXPECTED_PRESENT.filter((t) => !tools.includes(t));
+    assertStep(
+      'JWT-only tools are registered under JWT auth',
+      missing.length === 0,
+      `missing under JWT: ${missing.join(', ') || 'none'}`,
+    );
+    const leaked = DENY_BY_DEFAULT_TOOLS_EXPECTED_ABSENT.filter((t) => tools.includes(t));
+    assertStep(
+      'deny-by-default modules stay absent under JWT auth (module config is not an auth gate)',
+      leaked.length === 0,
+      `unexpectedly present under JWT: ${leaked.join(', ') || 'none'}`,
+    );
+
+    // --- Avatar settings, for real this time
+    log('\n[Avatar settings (JWT session — the surface the API-token lane can only refuse)]');
+    const initial = await h.call('vikunja_users', { subcommand: 'get-avatar' });
+    const originalProvider = assertOk('get-avatar', initial) ? extractAvatarProvider(initial.text) : undefined;
+    assertStep(
+      'get-avatar returns a provider value',
+      Boolean(originalProvider),
+      `could not read avatarProvider from: ${initial.text.slice(0, 300)}`,
+    );
+
+    const setInitials = await h.call('vikunja_users', {
+      subcommand: 'set-avatar',
+      avatarProvider: 'initials',
+    });
+    if (assertOk('set-avatar (initials)', setInitials)) {
+      const afterSet = await h.call('vikunja_users', { subcommand: 'get-avatar' });
+      assertStep(
+        'set-avatar round-trips through get-avatar',
+        assertOk('get-avatar after set-avatar', afterSet) && extractAvatarProvider(afterSet.text) === 'initials',
+        `expected provider "initials", got: ${afterSet.text.slice(0, 300)}`,
+      );
+    }
+
+    const upload = await h.call('vikunja_users', {
+      subcommand: 'upload-avatar',
+      fileContent: TINY_PNG_BASE64,
+      filename: 'mcp-e2e-avatar.png',
+    });
+    if (assertOk('upload-avatar (inline base64 PNG)', upload)) {
+      const afterUpload = await h.call('vikunja_users', { subcommand: 'get-avatar' });
+      // Vikunja's UploadAvatar handler sets the provider to `upload` as a
+      // side effect — asserting that is what proves the bytes actually
+      // landed server-side rather than the call merely returning 200.
+      assertStep(
+        'upload-avatar flips the provider to "upload" server-side',
+        assertOk('get-avatar after upload', afterUpload) &&
+          extractAvatarProvider(afterUpload.text) === 'upload',
+        `expected provider "upload", got: ${afterUpload.text.slice(0, 300)}`,
+      );
+    }
+
+    // Leave the stack's test user exactly as found.
+    if (originalProvider) {
+      const restore = await h.call('vikunja_users', {
+        subcommand: 'set-avatar',
+        avatarProvider: originalProvider,
+      });
+      assertStep(
+        `avatar provider restored to "${originalProvider}"`,
+        !restore.isError,
+        restore.text.slice(0, 300),
+      );
+    }
+
+    // --- User-scope webhooks, which 401 under a tk_* token by design
+    log('\n[User-scoped webhooks (JWT session)]');
+    assertOk(
+      'user-scope list-events succeeds under JWT',
+      await h.call('vikunja_webhooks', { subcommand: 'list-events', scope: 'user' }),
+    );
+    assertOk(
+      'user-scope list succeeds under JWT',
+      await h.call('vikunja_webhooks', { subcommand: 'list', scope: 'user' }),
+    );
+  } catch (e) {
+    fail('JWT lane', (e as Error).stack || String(e));
+  } finally {
+    await client.close().catch(() => undefined);
   }
 }
 
@@ -2065,6 +2835,26 @@ async function main(): Promise<void> {
   // Stashed only so vikunja_auth.connect can be exercised with the exact
   // same token the child process was booted with (see testAuth).
   process.env.__MCP_E2E_TOKEN__ = token;
+
+  // A JWT for `e2e-test` itself, used by the direct-REST parts of
+  // `test260Tightening` (fixtures the tool surface cannot build: archiving a
+  // project, reading raw assignee JSON, attaching a team). Deliberately NOT
+  // the mutable user's — these fixtures belong to the main session's
+  // identity, and the JWT lane's avatar mutations must not collide with them.
+  const sessionJwt = await login(TEST_USERNAME);
+
+  // The narrow-scope token for the third lane (issue #254, B1). Minted per
+  // run rather than stored: it is defined by what it OMITS, and a stale one
+  // silently granting a scope that was later added to `GET /routes` would
+  // make the whole lane a false green.
+  let narrowToken: string | null = null;
+  try {
+    narrowToken = await mintScopedToken(VIKUNJA_URL, sessionJwt, {
+      title: `${TOKEN_TITLE}-narrow-${RUN_ID}`,
+    });
+  } catch (e) {
+    fail('narrow-scope token fixture', (e as Error).message);
+  }
 
   log(`\nSpawning dist/index.js against ${VIKUNJA_URL}...`);
   // Strip any ambient VIKUNJA_URL/VIKUNJA_API_TOKEN(_FILE) before overlaying
@@ -2089,6 +2879,7 @@ async function main(): Promise<void> {
   try {
     await client.connect(transport);
     log('Connected to MCP server over stdio.');
+    testHandshakeVersion(client);
 
     const h = new McpHarness(client);
     const ctx: FlowContext = {};
@@ -2113,6 +2904,7 @@ async function main(): Promise<void> {
       await testAvatarSettings(h);
       await testSavedFilters(h, ctx);
       await testUserWebhooks(h);
+      await test260Tightening(h, sessionJwt);
     } finally {
       await finalCleanup(h, ctx);
     }
@@ -2122,6 +2914,31 @@ async function main(): Promise<void> {
     exitCode = 1;
   } finally {
     await client.close().catch(() => undefined);
+  }
+
+  // Second session under JWT auth (issue #198). Deliberately AFTER the main
+  // session is closed, not concurrent with it: two servers writing to the
+  // same stack under the same prefix would make the cleanup-by-prefix
+  // sweeps race each other.
+  try {
+    // Deliberately the MUTABLE user (issue #205): this lane changes the
+    // avatar provider, which is identity-scoped state. Doing that to
+    // `e2e-test` -- the identity every harness and every stored token
+    // belongs to -- is visible to any concurrent run on this stack.
+    const jwt = await login(MUTABLE_USERNAME);
+    await runJwtLane(jwt, inheritedEnv);
+  } catch (e) {
+    // A login failure here is a real gap in coverage, not a reason to go
+    // quiet — the JWT-only surface would go unexercised.
+    fail('JWT lane (login for the second session)', (e as Error).message);
+  }
+
+  // Third session, narrow-scope tk_* token (issue #254, B1). Same reason it
+  // is sequential rather than concurrent as the JWT lane above.
+  if (narrowToken) {
+    await runNarrowTokenLane(narrowToken, inheritedEnv);
+  } else {
+    skip('narrow-scope tk_* lane', 'the narrow token could not be minted (see the failure above)');
   }
 
   // ============================================================================

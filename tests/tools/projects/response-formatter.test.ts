@@ -64,7 +64,7 @@ describe('Project Response Formatter', () => {
         'Project retrieved',
         { id: 1 },
         {},
-        'minimal'
+        'minimal',
       );
 
       expect(result.transformation.context.verbosity).toBe('minimal');
@@ -80,10 +80,55 @@ describe('Project Response Formatter', () => {
         'Projects retrieved',
         [{ id: 1 }],
         {},
-        'complete'
+        'complete',
       );
 
       expect(result.transformation.context.verbosity).toBe('complete');
+    });
+  });
+
+  describe('createProjectResponse metadata passthrough (#280)', () => {
+    it('forwards _metadata into the response payload instead of discarding it', () => {
+      jest.resetModules();
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { createProjectResponse } = require('../../../src/tools/projects/response-formatter');
+
+      const result = createProjectResponse(
+        'list_projects',
+        'Retrieved 50 projects',
+        { projects: [] },
+        {
+          pagination: { page: 1, perPage: 50, hasMore: true, nextPage: 2 },
+        },
+      );
+
+      expect(result.response.metadata?.pagination).toEqual({
+        page: 1,
+        perPage: 50,
+        hasMore: true,
+        nextPage: 2,
+      });
+      // The pagination metadata must actually render into the markdown body
+      // (the ONLY signal a caller sees), not just live on the metadata object.
+      expect(result.response.content).toContain('hasMore');
+      expect(result.response.content).toContain('nextPage');
+    });
+
+    it('forwards arbitrary call-site metadata (e.g. move-project parent ids)', () => {
+      jest.resetModules();
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { createProjectResponse } = require('../../../src/tools/projects/response-formatter');
+
+      const result = createProjectResponse(
+        'move_project',
+        'Moved project "Foo"',
+        { project: { id: 5, title: 'Foo' } },
+        { oldParentProjectId: 1, newParentProjectId: 2, movedProjectId: 5 },
+      );
+
+      expect(result.response.metadata?.oldParentProjectId).toBe(1);
+      expect(result.response.metadata?.newParentProjectId).toBe(2);
+      expect(result.response.content).toContain('newParentProjectId');
     });
   });
 
@@ -92,7 +137,9 @@ describe('Project Response Formatter', () => {
       process.env[VERBOSITY_ENV_VAR] = 'minimal';
       jest.resetModules();
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { createProjectSuccessResponse } = require('../../../src/tools/projects/response-formatter');
+      const {
+        createProjectSuccessResponse,
+      } = require('../../../src/tools/projects/response-formatter');
 
       const result = createProjectSuccessResponse('list_projects', [{ id: 1 }]);
 
@@ -103,7 +150,9 @@ describe('Project Response Formatter', () => {
       process.env[VERBOSITY_ENV_VAR] = 'minimal';
       jest.resetModules();
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { createProjectSuccessResponse } = require('../../../src/tools/projects/response-formatter');
+      const {
+        createProjectSuccessResponse,
+      } = require('../../../src/tools/projects/response-formatter');
 
       const result = createProjectSuccessResponse('list_projects', [{ id: 1 }], {
         verbosity: 'detailed',

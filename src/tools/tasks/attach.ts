@@ -41,6 +41,14 @@ interface AttachResult {
   content: Array<{ type: 'text'; text: string }>;
 }
 
+/**
+ * Strict base64 shape check: groups of 4 alphabet characters, with an
+ * optional final group padded by 1-2 `=`. Whitespace is not tolerated — a
+ * base64-encoding caller has no reason to inject it, and permitting it would
+ * widen what `Buffer.from` is trusted to decode.
+ */
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
 export async function handleAttach(
   args: TaskAttachArgs,
   authManager: AuthManager,
@@ -48,10 +56,7 @@ export async function handleAttach(
   const { id, filePath, fileContent, filename } = args ?? {};
 
   if (typeof id !== 'number' || !Number.isFinite(id) || id <= 0) {
-    throw new MCPError(
-      ErrorCode.VALIDATION_ERROR,
-      'attach requires a positive numeric task id',
-    );
+    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'attach requires a positive numeric task id');
   }
 
   let bytes: Buffer;
@@ -71,21 +76,29 @@ export async function handleAttach(
     name = filename || basename(filePath);
     source = 'filePath';
   } else if (fileContent) {
-    const decoded = Buffer.from(fileContent, 'base64');
-    if (decoded.length === 0) {
+    // Node's `Buffer.from(str, 'base64')` is lenient: it silently skips
+    // characters outside the base64 alphabet instead of rejecting them, so a
+    // genuinely malformed string (bad characters, wrong padding) still
+    // decodes to *some* bytes rather than throwing or landing on
+    // `length === 0`. Validate the string's shape first — proper alphabet,
+    // length a multiple of 4, at most two trailing `=` padding characters —
+    // before trusting the decode, so corrupted input is rejected rather than
+    // silently uploaded as corrupted bytes.
+    if (!BASE64_PATTERN.test(fileContent)) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
-        'attach: decoded fileContent is empty (not valid base64 or empty input)',
+        'attach: fileContent is not valid base64 (invalid characters or padding)',
       );
     }
-    bytes = decoded;
+    // A non-empty string that passes BASE64_PATTERN always decodes to at
+    // least one byte (the shortest valid non-empty group, e.g. 'AA==',
+    // yields 1 byte), so there is no reachable empty-decode case left to
+    // guard here once the shape is validated above.
+    bytes = Buffer.from(fileContent, 'base64');
     name = filename || 'attachment.bin';
     source = 'fileContent';
   } else {
-    throw new MCPError(
-      ErrorCode.VALIDATION_ERROR,
-      'attach requires filePath or fileContent',
-    );
+    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'attach requires filePath or fileContent');
   }
 
   // Strip any directory component a caller might inject via `filename`.

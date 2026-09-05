@@ -18,12 +18,12 @@ describe('Client Type Safety', () => {
       'gatherDeletionContext',
       'analyzeUpdateState',
       'updateTaskLabels',
-      'updateTaskAssignees'
+      'updateTaskAssignees',
     ];
 
     // This test primarily validates TypeScript compilation
     // If there are any 'client: any' parameters left, compilation will fail
-    sampleFunctions.forEach(funcName => {
+    sampleFunctions.forEach((funcName) => {
       expect(typeof funcName).toBe('string');
     });
   });

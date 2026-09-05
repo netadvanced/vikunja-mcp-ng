@@ -4,11 +4,22 @@
  */
 
 import type { components } from '../../../types/generated/vikunja-openapi';
-import type { FilterExpression, FilterGroup, ParseResult } from '../../../types/filters';
-import type { TaskListingArgs, TaskFilterValidationConfig, TaskFilterStorage } from '../types/filters';
+import type {
+  FilterCondition,
+  FilterExpression,
+  FilterGroup,
+  ParseResult,
+} from '../../../types/filters';
+import type {
+  TaskListingArgs,
+  TaskFilterValidationConfig,
+  TaskFilterStorage,
+} from '../types/filters';
+import type { AuthManager } from '../../../auth/AuthManager';
 import { MCPError, ErrorCode } from '../../../types';
 import { parseFilterString, expressionToString } from '../../../utils/filters';
 import { validateTaskCountLimit } from '../../../utils/memory';
+import { resolveLabelIdByTitle } from '../../../utils/label-ensure';
 import { logger } from '../../../utils/logger';
 import { VALID_SORT_FIELDS, SORT_FIELD_ALIASES } from '../constants';
 
@@ -42,6 +53,190 @@ function normalizeAndValidateSort(sort: string): { normalized: string; invalidTo
 }
 
 /**
+ * True only for a value that arrived as an already-resolved Vikunja label id
+ * — a genuine `number`, never a numeric-*looking* string.
+ *
+ * A label's TITLE can itself be a numeric-looking string (a label named
+ * `"123"` or `"2024"` is a perfectly valid title). Treating `'123'` as "id
+ * 123" on sight — the old behaviour — silently misresolves such a filter to
+ * the wrong label (or to no label at all) instead of looking up the label
+ * actually titled `"123"`. So a numeric-looking *string* is always run
+ * through `resolveLabelIdByTitle` first; only a genuine `number` (which can
+ * only have arrived pre-resolved, since the filter DSL parses bare tokens as
+ * strings) skips the lookup. See `isNumericLabelString` for the fallback
+ * used when title resolution finds no such label.
+ */
+function isNumericLabelValue(value: string | number | boolean): value is number {
+  return typeof value === 'number';
+}
+
+/**
+ * True for a string that *looks* like a label id (parses as a finite
+ * number), used only as a fallback once title resolution has already come
+ * back empty for that exact string — never as the first check. This is what
+ * preserves the pre-#227 behaviour of accepting a literal numeric id typed
+ * as a string (`labels in '5'`) for a value that turns out not to match any
+ * label's title.
+ */
+function isNumericLabelString(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed !== '' && Number.isFinite(Number(trimmed));
+}
+
+/**
+ * Rewrites every `labels` condition in a parsed filter expression so its
+ * values are label **ids**, resolving any title the caller wrote.
+ *
+ * Why this exists (issue #227). The filter DSL documents `labels in 'HU'` —
+ * label titles — but Vikunja's `labels` filter field matches on the label id
+ * column and rejects a title outright:
+ *
+ *   GET /api/v1/tasks?filter=labels in HU
+ *   -> 400 {"code":4019,"message":"The task filter value 'HU' for field 'labels' is invalid."}
+ *
+ * (verified against 2.4.0). So the server-side attempt always failed, the
+ * call fell through to the client-side fallback, and the fallback compared
+ * `Number('HU')` (NaN) against the task's label ids — matching nothing. The
+ * result was `Found 0 tasks`, reported as a clean success, for a label that
+ * demonstrably had tasks. Resolving titles to ids HERE — once, before the
+ * expression is both serialised for the wire AND handed to the client-side
+ * evaluator — fixes both halves with one change.
+ *
+ * Failure is loud, never a silent empty result: if NONE of the titles in a
+ * `labels` condition resolve, the filter cannot be honoured at all and a
+ * VALIDATION_ERROR is thrown naming them. If SOME resolve, the condition is
+ * still honourable (`in` is a disjunction) so the resolved ids are used and a
+ * warning naming the unresolved titles is surfaced in the response metadata.
+ *
+ * Values that are already numeric are left untouched and cost no API call, so
+ * a caller filtering by id never pays for a `GET /labels` round trip — which
+ * also means an API token without label read scope only ever hits this path
+ * when it genuinely asked to filter by title.
+ */
+async function resolveLabelTitlesInExpression(
+  expression: FilterExpression,
+  authManager: AuthManager | undefined,
+  warnings: string[],
+): Promise<FilterExpression> {
+  const mentionsLabelTitle = expression.groups.some((group) =>
+    group.conditions.some(
+      (condition) =>
+        condition.field === 'labels' &&
+        (Array.isArray(condition.value)
+          ? condition.value.some((v) => !isNumericLabelValue(v))
+          : !isNumericLabelValue(condition.value)),
+    ),
+  );
+  if (!mentionsLabelTitle) return expression;
+
+  if (!authManager) {
+    // No credentials threaded through (pure-validation call sites). Leave the
+    // titles alone rather than pretending they resolved — the client-side
+    // evaluator matches label titles as well as ids, so the expression is
+    // still evaluable; only the server-side spelling would be wrong, and
+    // callers without an authManager never issue a server-side request.
+    return expression;
+  }
+
+  // One lookup per distinct title, not per occurrence.
+  const cache = new Map<string, number | undefined>();
+  const resolve = async (title: string): Promise<number | undefined> => {
+    const key = title.trim().toLowerCase();
+    if (cache.has(key)) return cache.get(key);
+    let id: number | undefined;
+    try {
+      id = await resolveLabelIdByTitle(authManager, title.trim());
+    } catch (error) {
+      // A lookup that fails (403 from a scope-limited API token, network
+      // error, ...) must not be mistaken for "no such label" — that is
+      // exactly the silent-wrong-answer this fix removes.
+      throw new MCPError(
+        ErrorCode.API_ERROR,
+        `Could not resolve label title '${title}' used in the filter: ` +
+          `${error instanceof Error ? error.message : String(error)}. ` +
+          'Filter by numeric label id to avoid the lookup, or grant the token read access to labels.',
+      );
+    }
+    cache.set(key, id);
+    return id;
+  };
+
+  const unresolvedAll: string[] = [];
+
+  const groups: FilterGroup[] = [];
+  for (const group of expression.groups) {
+    const conditions: FilterCondition[] = [];
+    for (const condition of group.conditions) {
+      if (condition.field !== 'labels') {
+        conditions.push(condition);
+        continue;
+      }
+
+      const rawValues: Array<string | number | boolean> = Array.isArray(condition.value)
+        ? condition.value
+        : [condition.value];
+
+      const resolved: Array<string | number> = [];
+      const unresolved: string[] = [];
+      for (const raw of rawValues) {
+        // Already an id (a genuine `number`): nothing to resolve.
+        if (isNumericLabelValue(raw)) {
+          resolved.push(raw);
+          continue;
+        }
+        // Try the value as a title FIRST, even when it looks numeric — a
+        // label can be titled "123". Only once no label has that exact
+        // title do we fall back to treating a numeric-looking string as a
+        // literal id, preserving `labels in '5'` for callers who filter by
+        // id-as-string.
+        const title = String(raw);
+        const id = await resolve(title);
+        if (id !== undefined) {
+          resolved.push(id);
+        } else if (isNumericLabelString(title)) {
+          resolved.push(Number(title));
+        } else {
+          unresolved.push(title);
+        }
+      }
+
+      if (resolved.length === 0) {
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          `Label filter cannot be honoured: no label exists with ` +
+            `${unresolved.length === 1 ? 'the title' : 'any of the titles'} ` +
+            `${unresolved.map((t) => `'${t}'`).join(', ')}. ` +
+            'Use vikunja_labels list to see available labels, or filter by numeric label id. ' +
+            'Refusing to return an empty result set that would be indistinguishable from "no tasks match".',
+        );
+      }
+
+      if (unresolved.length > 0) {
+        unresolvedAll.push(...unresolved);
+      }
+
+      conditions.push({
+        ...condition,
+        value: (Array.isArray(condition.value)
+          ? resolved.map(String)
+          : resolved[0]) as unknown as (typeof condition)['value'],
+      });
+    }
+    groups.push({ ...group, conditions });
+  }
+
+  if (unresolvedAll.length > 0) {
+    warnings.push(
+      `Label filter partially resolved: no label exists with ${unresolvedAll
+        .map((t) => `'${t}'`)
+        .join(', ')}; those titles were dropped from the filter.`,
+    );
+  }
+
+  return { ...expression, groups };
+}
+
+/**
  * Validates filter parameters for task listing operations
  */
 export const FilterValidator = {
@@ -50,7 +245,8 @@ export const FilterValidator = {
    */
   async validateAndParseFilter(
     args: TaskListingArgs,
-    storage: TaskFilterStorage
+    storage: TaskFilterStorage,
+    authManager?: AuthManager,
   ): Promise<{
     filterExpression: FilterExpression | null;
     filterString: string | undefined;
@@ -69,7 +265,7 @@ export const FilterValidator = {
         if (!savedFilter) {
           throw new MCPError(
             ErrorCode.VALIDATION_ERROR,
-            `Filter with id ${args.filterId} not found`
+            `Filter with id ${args.filterId} not found`,
           );
         }
         userFilter = savedFilter.filter;
@@ -83,7 +279,7 @@ export const FilterValidator = {
         if (parseResult.error) {
           throw new MCPError(
             ErrorCode.VALIDATION_ERROR,
-            `Invalid filter syntax: ${parseResult.error.message}${parseResult.error.context ? `\n${parseResult.error.context}` : ''}`
+            `Invalid filter syntax: ${parseResult.error.message}${parseResult.error.context ? `\n${parseResult.error.context}` : ''}`,
           );
         }
         filterExpression = parseResult.expression;
@@ -93,6 +289,12 @@ export const FilterValidator = {
       // server-side (before pagination) rather than trimming an already
       // paginated page. Without this, `done=false` scattered open tasks
       // unpredictably across raw pages.
+      //
+      // `doneFoldedIntoExpression` tracks whether that fold happened at the
+      // `FilterExpression` level (0- or 1-group case, below) so the
+      // multi-group fallback (after serialisation, near `expressionToString`)
+      // knows whether it still needs to fold `done` in itself.
+      let doneFoldedIntoExpression = false;
       if (args.done !== undefined) {
         const doneGroup: FilterGroup = {
           conditions: [{ field: 'done', operator: '=', value: args.done }],
@@ -100,6 +302,7 @@ export const FilterValidator = {
         };
         if (!filterExpression) {
           filterExpression = { groups: [doneGroup] };
+          doneFoldedIntoExpression = true;
         } else if (filterExpression.groups.length === 1) {
           // Single user group: AND `done` on as a second group. The user's
           // group is parenthesised when serialised, so its own &&/|| operator
@@ -108,10 +311,21 @@ export const FilterValidator = {
             groups: [...filterExpression.groups, doneGroup],
             operator: '&&',
           };
+          doneFoldedIntoExpression = true;
         }
-        // Multi-group user filter: left untouched - appending a group here
-        // could change group-join semantics. `done` is still enforced by
-        // FilterExecutor.applyPostProcessingFilters in that case.
+        // Multi-group user filter (2+ top-level groups, only reachable via
+        // explicit parens like `(a && b) || (c && d)`): NOT folded here,
+        // because `FilterExpression` has a single top-level operator shared
+        // across every group, so naively appending a third group here would
+        // silently change `(a) || (b)`'s semantics to `(a) || (b) && done`.
+        // Folded onto the SERIALIZED string instead, below, by wrapping the
+        // whole thing in one set of parens before ANDing `done` on — see
+        // the `!doneFoldedIntoExpression` block near `expressionToString`.
+        // Previously this case was left to
+        // `FilterExecutor.applyPostProcessingFilters` alone, which ran on a
+        // possibly page-clamped result (issue #268 / CRIT-7's compounding
+        // case) — that post-filter still runs too, but is now redundant
+        // rather than load-bearing for this case.
       }
 
       // Serialise the final expression for Vikunja's server-side `filter`
@@ -139,8 +353,27 @@ export const FilterValidator = {
       // API already accepts (see tests/tools/tasks-filter-sql-syntax.test.ts
       // and the round-trip property tests in tests/utils/filters.test.ts),
       // so this is a safe, deliberate behavior change, not a regression.
+      // Rewrite label TITLES to label ids before anything downstream sees the
+      // expression — both the wire `filter` string built below AND the
+      // client-side evaluator run off this same object (issue #227).
+      if (filterExpression) {
+        filterExpression = await resolveLabelTitlesInExpression(
+          filterExpression,
+          authManager,
+          validationWarnings,
+        );
+      }
+
       if (filterExpression) {
         filterString = expressionToString(filterExpression);
+      }
+
+      // Multi-group case deferred from the fold above: AND `done` onto the
+      // fully-serialized string, wrapped in its own parens so it correctly
+      // applies to the WHOLE expression regardless of the expression's own
+      // top-level &&/|| operator.
+      if (args.done !== undefined && !doneFoldedIntoExpression && filterString) {
+        filterString = `(${filterString}) && done = ${args.done}`;
       }
 
       if (filterString) {
@@ -157,7 +390,7 @@ export const FilterValidator = {
       }
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
-        `Filter validation failed: ${error instanceof Error ? error.message : String(error)}`
+        `Filter validation failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   },
@@ -167,7 +400,7 @@ export const FilterValidator = {
    */
   validateMemoryConstraints(
     args: TaskListingArgs,
-    requestedPageSize: number
+    requestedPageSize: number,
   ): {
     isValid: boolean;
     warnings: string[];
@@ -179,24 +412,28 @@ export const FilterValidator = {
     const taskCountValidation = validateTaskCountLimit(
       requestedPageSize,
       undefined,
-      args.filter ? {
-        filterExpression: args.filter,
-        operationType: 'list'
-      } : undefined
+      args.filter
+        ? {
+            filterExpression: args.filter,
+            operationType: 'list',
+          }
+        : undefined,
     );
 
     if (!taskCountValidation.allowed) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
         `Task count limit exceeded. Requested: ${requestedPageSize}, Max allowed: ${taskCountValidation.maxAllowed}. ` +
-        `Estimated memory usage: ${taskCountValidation.estimatedMemoryMB}MB (risk: ${taskCountValidation.riskLevel}). ` +
-        'Reduce the perPage parameter, use pagination with smaller page sizes, or apply more specific filters.'
+          `Estimated memory usage: ${taskCountValidation.estimatedMemoryMB}MB (risk: ${taskCountValidation.riskLevel}). ` +
+          'Reduce the perPage parameter, use pagination with smaller page sizes, or apply more specific filters.',
       );
     }
 
     // Add warnings for large page sizes
     if (requestedPageSize > 500) {
-      warnings.push(`Large page size (${requestedPageSize}) may impact performance. Consider using smaller pages or more specific filters.`);
+      warnings.push(
+        `Large page size (${requestedPageSize}) may impact performance. Consider using smaller pages or more specific filters.`,
+      );
     }
 
     // Include enhanced memory validation warnings
@@ -207,20 +444,17 @@ export const FilterValidator = {
     return {
       isValid: true,
       warnings,
-      maxAllowed: taskCountValidation.maxAllowed
-    } as {
-      isValid: boolean;
-      warnings: string[];
-      maxAllowed?: number;
-      riskLevel?: 'low' | 'medium' | 'high';
-      estimatedMemoryMB?: number;
+      maxAllowed: taskCountValidation.maxAllowed,
     };
   },
 
   /**
    * Validates the actual loaded task count against limits
    */
-  validateLoadedTasks(actualTaskCount: number, sampleTask?: Task): {
+  validateLoadedTasks(
+    actualTaskCount: number,
+    sampleTask?: Task,
+  ): {
     isValid: boolean;
     warnings: string[];
     shouldThrow: boolean;
@@ -236,12 +470,12 @@ export const FilterValidator = {
         actualCount: actualTaskCount,
         maxRecommended: finalTaskCountValidation.maxAllowed,
         estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
-        riskLevel: finalTaskCountValidation.riskLevel
+        riskLevel: finalTaskCountValidation.riskLevel,
       });
 
       warnings.push(
         `Loaded ${actualTaskCount} tasks, which exceeds recommended limit of ${finalTaskCountValidation.maxAllowed}. ` +
-        `Estimated memory usage: ${finalTaskCountValidation.estimatedMemoryMB}MB (risk: ${finalTaskCountValidation.riskLevel}).`
+          `Estimated memory usage: ${finalTaskCountValidation.estimatedMemoryMB}MB (risk: ${finalTaskCountValidation.riskLevel}).`,
       );
 
       // For extremely large datasets, still enforce hard limits
@@ -251,7 +485,7 @@ export const FilterValidator = {
           warnings,
           shouldThrow: true,
           riskLevel: finalTaskCountValidation.riskLevel,
-          estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB
+          estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
         };
       }
     }
@@ -266,7 +500,7 @@ export const FilterValidator = {
       warnings,
       shouldThrow: false,
       riskLevel: finalTaskCountValidation.riskLevel,
-      estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB
+      estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
     };
   },
 
@@ -333,11 +567,20 @@ export const FilterValidator = {
   async validateTaskFiltering(
     args: TaskListingArgs,
     storage: TaskFilterStorage,
-    _config: TaskFilterValidationConfig = {}
+    _config: TaskFilterValidationConfig = {},
+    authManager?: AuthManager,
   ): Promise<{
     filterExpression: FilterExpression | null;
     filterString: string | undefined;
     validationWarnings: string[];
+    /**
+     * The subset of `validationWarnings` produced while resolving the FILTER
+     * itself (e.g. a label title that matched no label). Kept separate from
+     * the noisy per-call memory/page-size advisories so only the warnings
+     * that actually change how the caller should read the result set are
+     * surfaced in the response metadata.
+     */
+    filterWarnings: string[];
     memoryValidation: {
       isValid: boolean;
       warnings: string[];
@@ -351,12 +594,16 @@ export const FilterValidator = {
     if (argValidationErrors.length > 0) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
-        `Invalid task listing arguments: ${argValidationErrors.join(', ')}`
+        `Invalid task listing arguments: ${argValidationErrors.join(', ')}`,
       );
     }
 
     // Validate and parse filter
-    const filterValidation = await FilterValidator.validateAndParseFilter(args, storage);
+    const filterValidation = await FilterValidator.validateAndParseFilter(
+      args,
+      storage,
+      authManager,
+    );
     allWarnings.push(...filterValidation.validationWarnings);
 
     // Validate memory constraints
@@ -368,7 +615,8 @@ export const FilterValidator = {
       filterExpression: filterValidation.filterExpression,
       filterString: filterValidation.filterString,
       validationWarnings: allWarnings,
-      memoryValidation
+      filterWarnings: filterValidation.validationWarnings,
+      memoryValidation,
     };
   },
 };

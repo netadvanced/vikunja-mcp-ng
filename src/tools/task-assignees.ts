@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
-import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
+import { getAuthManagerFromContext, hasRequestContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { assignUsers, unassignUsers, listAssignees } from '../tools/tasks/assignees/index';
@@ -21,7 +21,7 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 export function registerTaskAssigneesTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_task_assignees',
@@ -43,10 +43,18 @@ export function registerTaskAssigneesTool(
     getToolAnnotations('vikunja_task_assignees'),
     async (args) => {
       try {
-        logger.debug('Executing task assignees tool', { operation: args.operation, taskId: args.id, assigneeCount: args.assignees?.length });
+        logger.debug('Executing task assignees tool', {
+          operation: args.operation,
+          taskId: args.id,
+          assigneeCount: args.assignees?.length,
+        });
 
-        // Check authentication
-        if (!authManager.isAuthenticated()) {
+        // Check authentication (closure-gate precedence fix: defer to the
+        // per-request context when bound — see hasRequestContext's doc
+        // comment, src/client.ts)
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task assignment operations');
         }
 
@@ -65,7 +73,7 @@ export function registerTaskAssigneesTool(
             return assignUsers(
               {
                 id: args.id,
-                assignees: args.assignees || []
+                assignees: args.assignees || [],
               },
               authManager,
             );
@@ -74,7 +82,7 @@ export function registerTaskAssigneesTool(
             return unassignUsers(
               {
                 id: args.id,
-                assignees: args.assignees || []
+                assignees: args.assignees || [],
               },
               authManager,
             );

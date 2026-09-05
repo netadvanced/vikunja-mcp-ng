@@ -22,12 +22,18 @@ import {
   groupToDslString,
   expressionToDslString,
   parseFilterString,
+  apiFilterStringToDslString,
   FilterBuilder,
   SecurityValidator,
   FILTER_FIELD_ALIASES,
 } from '../../src/utils/filters';
 import { FIELD_TYPES } from '../../src/types/filters';
-import type { FilterCondition, FilterExpression, FilterField, FilterGroup } from '../../src/types/index';
+import type {
+  FilterCondition,
+  FilterExpression,
+  FilterField,
+  FilterGroup,
+} from '../../src/types/index';
 
 describe('Consolidated Filter Utilities', () => {
   describe('validateCondition', () => {
@@ -211,20 +217,59 @@ describe('Consolidated Filter Utilities', () => {
       expect(result).toBe('done = true');
     });
 
-    it('should quote string values only for the like operator', () => {
+    it('should quote string values for the like operator', () => {
       const likeCondition: FilterCondition = {
         field: 'title',
         operator: 'like',
         value: 'test task',
       };
       expect(conditionToString(likeCondition)).toBe('title like "test task"');
+    });
 
+    it('should leave a plain unquoted string value bare for =', () => {
+      const eqCondition: FilterCondition = {
+        field: 'title',
+        operator: '=',
+        value: 'simple',
+      };
+      expect(conditionToString(eqCondition)).toBe('title = simple');
+    });
+
+    it('should quote a string value containing spaces for = so it round-trips (#290 MED-4)', () => {
       const eqCondition: FilterCondition = {
         field: 'title',
         operator: '=',
         value: 'test task',
       };
-      expect(conditionToString(eqCondition)).toBe('title = test task');
+      const serialized = conditionToString(eqCondition);
+      expect(serialized).toBe('title = "test task"');
+
+      // Round-trip: re-parsing the serialized filter must recover the same value.
+      const parsed = parseFilterString(serialized);
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.expression?.groups[0]?.conditions[0]).toEqual({
+        field: 'title',
+        operator: '=',
+        value: 'test task',
+      });
+    });
+
+    it('should quote a string value containing spaces for != so it round-trips (#290 MED-4)', () => {
+      const neCondition: FilterCondition = {
+        field: 'title',
+        operator: '!=',
+        value: 'foo bar',
+      };
+      const serialized = conditionToString(neCondition);
+      expect(serialized).toBe('title != "foo bar"');
+
+      const parsed = parseFilterString(serialized);
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.expression?.groups[0]?.conditions[0]).toEqual({
+        field: 'title',
+        operator: '!=',
+        value: 'foo bar',
+      });
     });
 
     it('should join array values with commas', () => {
@@ -243,10 +288,14 @@ describe('Consolidated Filter Utilities', () => {
       // src/utils/filters.ts and the matching evaluateCondition switch in
       // src/tools/tasks/filtering/evaluators.ts used for client-side evaluation.
       it.each<[FilterCondition['field'], string, FilterCondition['value'], string]>([
-        ['percentDone', '>=', 75, 'percent_done >= 75'],
+        // percentDone also rescales: 75 (the DSL's whole-percentage scale)
+        // becomes 0.75, the fraction Vikunja actually stores. Without this a
+        // filter of `percentDone > 50` matched nothing, silently, because no
+        // stored value ever exceeds 1.
+        ['percentDone', '>=', 75, 'percent_done >= 0.75'],
         ['dueDate', '<', 'now', 'due_date < now'],
-        ['startDate', '>=', '2024-01-01', 'start_date >= 2024-01-01'],
-        ['endDate', '<=', '2024-12-31', 'end_date <= 2024-12-31'],
+        ['startDate', '>=', '2024-01-01', 'start_date >= 2024-01-01T00:00:00Z'],
+        ['endDate', '<=', '2024-12-31', 'end_date <= 2024-12-31T00:00:00Z'],
         ['doneAt', '!=', 'now', 'done_at != now'],
         // 'project' is not just camelCased differently - it renames to the
         // API's project_id field entirely.
@@ -270,7 +319,8 @@ describe('Consolidated Filter Utilities', () => {
         'title',
         'description',
       ])('leaves %s unchanged (already matches the API field name)', (field) => {
-        const value = field === 'done' ? true : field === 'assignees' || field === 'labels' ? [1] : 'x';
+        const value =
+          field === 'done' ? true : field === 'assignees' || field === 'labels' ? [1] : 'x';
         const condition: FilterCondition = { field, operator: '=', value };
         expect(conditionToString(condition)).toBe(
           `${field} = ${Array.isArray(value) ? value.join(', ') : String(value)}`,
@@ -296,8 +346,24 @@ describe('Consolidated Filter Utilities', () => {
 
         const result = expressionToString(expression);
         expect(result).toBe(
-          '(due_date < now && start_date >= 2024-01-01 && end_date <= 2024-12-31 && done_at != now && percent_done >= 50 && project_id = 4)',
+          '(due_date < now && start_date >= 2024-01-01T00:00:00Z && end_date <= 2024-12-31T00:00:00Z && done_at != now && percent_done >= 0.5 && project_id = 4)',
         );
+      });
+
+      it('rescales every value in a percentDone "in" list', () => {
+        expect(
+          conditionToString({ field: 'percentDone', operator: 'in', value: [25, 50, 100] }),
+        ).toBe('percent_done in 0.25, 0.5, 1');
+      });
+
+      it('leaves an unparseable percentDone value alone rather than emitting NaN', () => {
+        expect(
+          conditionToString({
+            field: 'percentDone',
+            operator: '=',
+            value: 'not-a-number' as unknown as number,
+          }),
+        ).toBe('percent_done = not-a-number');
       });
 
       it('translates the field name for "in"/"not in" operators too', () => {
@@ -419,14 +485,21 @@ describe('Consolidated Filter Utilities', () => {
       ['endDate', '<=', '2024-12-31', 'endDate <= 2024-12-31'],
       ['doneAt', '!=', 'now', 'doneAt != now'],
       ['project', '=', 4, 'project = 4'],
-    ])('conditionToDslString keeps %s in DSL casing, unlike conditionToString', (field, operator, value, expected) => {
-      const condition: FilterCondition = { field, operator: operator as FilterCondition['operator'], value };
-      expect(conditionToDslString(condition)).toBe(expected);
-      // Sanity check that this genuinely differs from the API-casing sibling
-      // for every field where the two casings diverge - otherwise this test
-      // wouldn't actually be exercising the bug it targets.
-      expect(conditionToDslString(condition)).not.toBe(conditionToString(condition));
-    });
+    ])(
+      'conditionToDslString keeps %s in DSL casing, unlike conditionToString',
+      (field, operator, value, expected) => {
+        const condition: FilterCondition = {
+          field,
+          operator: operator as FilterCondition['operator'],
+          value,
+        };
+        expect(conditionToDslString(condition)).toBe(expected);
+        // Sanity check that this genuinely differs from the API-casing sibling
+        // for every field where the two casings diverge - otherwise this test
+        // wouldn't actually be exercising the bug it targets.
+        expect(conditionToDslString(condition)).not.toBe(conditionToString(condition));
+      },
+    );
 
     it('groupToDslString wraps a multi-condition group without translating field names', () => {
       const group: FilterGroup = {
@@ -463,7 +536,7 @@ describe('Consolidated Filter Utilities', () => {
       // functions are genuinely serving different purposes rather than one
       // having quietly become a no-op alias of the other.
       expect(expressionToString(expression)).toBe(
-        '(due_date < now && start_date >= 2024-01-01 && end_date <= 2024-12-31 && done_at != now && percent_done >= 50 && project_id = 4)',
+        '(due_date < now && start_date >= 2024-01-01T00:00:00Z && end_date <= 2024-12-31T00:00:00Z && done_at != now && percent_done >= 0.5 && project_id = 4)',
       );
     });
   });
@@ -534,7 +607,17 @@ describe('Consolidated Filter Utilities', () => {
       }
     };
 
-    it.each(Object.keys(FIELD_TYPES) as FilterField[])(
+    // percentDone is deliberately excluded from the value-identity sweep below
+    // and covered by its own round-trip test: expressionToString rescales it
+    // from the DSL's 0-100 percentage to Vikunja's 0-1 fraction, so re-parsing
+    // that output as if it were user input is a category error, not a
+    // round trip. apiFilterStringToDslString is the function that closes the
+    // loop for it — see the dedicated describe block below.
+    const IDENTITY_ROUND_TRIP_FIELDS = (Object.keys(FIELD_TYPES) as FilterField[]).filter(
+      (field) => field !== 'percentDone',
+    );
+
+    it.each(IDENTITY_ROUND_TRIP_FIELDS)(
       'round-trips a single-condition %s filter through the API-casing serializer',
       (field) => {
         const operator = FIELD_TYPES[field] === 'array' ? 'in' : '=';
@@ -551,6 +634,53 @@ describe('Consolidated Filter Utilities', () => {
         );
       },
     );
+
+    describe('apiFilterStringToDslString (reading a filter string back off the server)', () => {
+      it('rescales percent_done to the DSL 0-100 scale and camelCases the field', () => {
+        expect(apiFilterStringToDslString('percent_done >= 0.75')).toBe('percentDone >= 75');
+      });
+
+      it('rescales without rounding a legitimately fractional threshold', () => {
+        expect(apiFilterStringToDslString('percent_done > 0.335')).toBe('percentDone > 33.5');
+      });
+
+      it('returns a filter that never mentions percentDone byte-identically', () => {
+        // Deliberately conservative: no reformatting, no normalization, no
+        // re-quoting of somebody else's filter for no reason.
+        const untouched = 'due_date < now+14d && priority>=4';
+        expect(apiFilterStringToDslString(untouched)).toBe(untouched);
+      });
+
+      it('returns an unparseable percent_done filter unchanged rather than throwing', () => {
+        // A saved filter may have been authored in the Vikunja web UI in
+        // syntax this parser does not model. Best effort, never an error on a
+        // pure read.
+        const weird = 'percent_done ??? 0.5';
+        expect(apiFilterStringToDslString(weird)).toBe(weird);
+      });
+
+      it('rescales percentDone inside a multi-condition expression, leaving the rest alone', () => {
+        expect(apiFilterStringToDslString('percent_done >= 0.5 && priority >= 4')).toBe(
+          '(percentDone >= 50 && priority >= 4)',
+        );
+      });
+    });
+
+    it('round-trips percentDone through the scale-aware pair (to wire and back)', () => {
+      const expression = new FilterBuilder().where('percentDone', '>=', 75).build();
+
+      const serialized = expressionToString(expression);
+      expect(serialized).toBe('percent_done >= 0.75');
+
+      const backToDsl = apiFilterStringToDslString(serialized);
+      expect(backToDsl).toBe('percentDone >= 75');
+
+      const reparsed = parseFilterString(backToDsl);
+      expect(reparsed.error).toBeUndefined();
+      expect(reparsed.expression?.groups[0]?.conditions[0]).toEqual(
+        expression.groups[0]?.conditions[0],
+      );
+    });
 
     it('round-trips a multi-condition group (adds parens, preserves both conditions)', () => {
       const expression: FilterExpression = {
@@ -600,7 +730,10 @@ describe('Consolidated Filter Utilities', () => {
     it('round-trips an "in" condition with a multi-value array (normalized spacing survives re-parse)', () => {
       const expression: FilterExpression = {
         groups: [
-          { conditions: [{ field: 'priority', operator: 'in', value: ['3', '4', '5'] }], operator: '&&' },
+          {
+            conditions: [{ field: 'priority', operator: 'in', value: ['3', '4', '5'] }],
+            operator: '&&',
+          },
         ],
       };
 
@@ -624,7 +757,10 @@ describe('Consolidated Filter Utilities', () => {
       // needed.
       const expression: FilterExpression = {
         groups: [
-          { conditions: [{ field: 'title', operator: 'like', value: 'she said "hi"' }], operator: '&&' },
+          {
+            conditions: [{ field: 'title', operator: 'like', value: 'she said "hi"' }],
+            operator: '&&',
+          },
         ],
       };
 
@@ -694,6 +830,41 @@ describe('Consolidated Filter Utilities', () => {
       expect(result.error).toBeDefined();
     });
 
+    it('rejects unparenthesized mixed && / || in one group instead of silently collapsing to one operator (#272)', () => {
+      // Previously: parsed into a single group whose operator was
+      // overwritten by whichever logical operator was seen last, then
+      // re-serialized as all-`||` - silently wrong. Now: an explicit,
+      // teaching error instead of a guess.
+      const result = parseFilterString('priority = 5 && done = false || priority = 4');
+      expect(result.expression).toBeNull();
+      expect(result.error).toBeDefined();
+      expect(result.error?.message).toContain('&&');
+      expect(result.error?.message).toContain('||');
+      expect(result.error?.message).toContain('parentheses');
+    });
+
+    it('rejects mixed && / || inside a single parenthesized group too, since a group is flat (#272)', () => {
+      const result = parseFilterString('(priority = 5 && done = false || priority = 4)');
+      expect(result.expression).toBeNull();
+      expect(result.error).toBeDefined();
+      expect(result.error?.message).toContain('parentheses');
+    });
+
+    it('still accepts fully-parenthesized mixed-operator expressions, disambiguated group by group (#272)', () => {
+      const result = parseFilterString('(priority = 5 && done = false) || priority = 4');
+      expect(result.error).toBeUndefined();
+      expect(result.expression?.groups).toHaveLength(2);
+      expect(result.expression?.groups[0]?.operator).toBe('&&');
+      expect(result.expression?.operator).toBe('||');
+    });
+
+    it('still accepts a single unparenthesized operator repeated any number of times (#272)', () => {
+      const result = parseFilterString('priority = 5 && done = false && priority = 4');
+      expect(result.error).toBeUndefined();
+      expect(result.expression?.groups[0]?.conditions).toHaveLength(3);
+      expect(result.expression?.groups[0]?.operator).toBe('&&');
+    });
+
     it('should parse valid simple input with no error', () => {
       const result = parseFilterString('done = true');
       expect(result.expression).toEqual({
@@ -717,6 +888,28 @@ describe('Consolidated Filter Utilities', () => {
       });
     });
 
+    it('respects quote boundaries when splitting in-operator values, even when a quoted value contains a comma (#290 MED-5)', () => {
+      const result = parseFilterString('title in "a,b", c');
+      expect(result.error).toBeUndefined();
+      expect(result.expression?.groups[0]?.conditions[0]).toEqual({
+        field: 'title',
+        operator: 'in',
+        // Must stay exactly two values - "a,b" (comma preserved as content)
+        // and "c" - not silently fragmented into three ("a", "b", "c").
+        value: ['a,b', 'c'],
+      });
+    });
+
+    it('respects quote boundaries when splitting not-in-operator values containing a comma (#290 MED-5)', () => {
+      const result = parseFilterString('title not in "x,y,z"');
+      expect(result.error).toBeUndefined();
+      expect(result.expression?.groups[0]?.conditions[0]).toEqual({
+        field: 'title',
+        operator: 'not in',
+        value: ['x,y,z'],
+      });
+    });
+
     describe('snake_case field aliases are accepted and normalized to camelCase', () => {
       // The exact friction from battle-testing finding #2: an agent tries
       // the snake_case Task JSON spelling (due_date) before the DSL's
@@ -735,7 +928,15 @@ describe('Consolidated Filter Utilities', () => {
         expect(result.error).toBeUndefined();
         expect(result.expression?.groups[0]?.conditions[0]).toEqual({
           field: expectedField,
-          operator: filterStr.includes('!=') ? '!=' : filterStr.includes('>=') ? '>=' : filterStr.includes('<=') ? '<=' : filterStr.includes('<') ? '<' : '=',
+          operator: filterStr.includes('!=')
+            ? '!='
+            : filterStr.includes('>=')
+              ? '>='
+              : filterStr.includes('<=')
+                ? '<='
+                : filterStr.includes('<')
+                  ? '<'
+                  : '=',
           value: expectedValue,
         });
       });

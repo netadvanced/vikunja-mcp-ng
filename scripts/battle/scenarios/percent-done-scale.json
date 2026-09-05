@@ -1,0 +1,26 @@
+{
+  "id": "percent-done-scale",
+  "title": "Task progress expressed as a percentage",
+  "description": "Regression guard for the percentDone scale (decision 22, docs/ROADMAP.md §3). The prompt says \"75% done\" in plain English; the verify check reads the RAW REST field, which Vikunja stores as the 0-1 fraction 0.75. It therefore fails if the conversion in src/utils/percent-done.ts is ever removed or doubled: passing 75 straight through would store 75, and converting twice would store 0.0075. It also probes whether an agent reaches for the plain-English percentage at all now that the tool surface takes 0-100 integers — the old 0-1 fraction contract was a memorized gotcha, and a model that has not memorized it used to write `percentDone: 75` and silently get 7500%. RE-BASELINED from 2 to 1: the previous optimum was create-project (1) + create-task with percentDone in the same call (1) = 2, derived on the explicit basis that setup-kanban's per-task shape did NOT accept percentDone and so could not reach this end state in one call. That basis is gone — percentDone is now a declared field on setup-kanban's per-task shape (src/tools/projects/index.ts), forwarded through the shared 0-100 → 0-1 conversion in createOneBulkTask, because a real battle run showed a model doing exactly the natural thing (one setup-kanban call carrying `tasks: [{title, percentDone: 75}]`) and having the field silently stripped by Zod. New optimum derived from the CURRENT schemas, not from an observed run: vikunja_projects setup-kanban with `title` and `tasks: [{title: \"{{prefix}}draft release notes\", percentDone: 75}]` and NO `columns` (1) = 1. This credits setup-kanban under rule 3 of docs/BATTLE-TESTING.md's re-baselining policy, the same way labels-due-date-combo does (issue #185): the columns-less form fabricates NO Kanban view, bucket, board, or column — kanban-setup.ts's columns-less path never calls resolveKanbanView — so no structure the prompt did not ask for is created. Unlike single-task-smoke and mixed-priority-batch, crediting the composite here erodes no signal: this scenario's signal is the SCALE (the verify check reads raw percent_done whichever path wrote it), not which primitive was used. Re-derive again if setup-kanban's per-task shape changes.",
+  "promptTemplate": "Create a project called \"{{prefix}}Release Prep\" with a task called \"{{prefix}}draft release notes\", and record that the task is 75% done.",
+  "optimalCallCount": 1,
+  "verify": [
+    {
+      "type": "project-exists",
+      "titleContains": "{{prefix}}Release Prep"
+    },
+    {
+      "type": "min-tasks-in-project",
+      "projectTitleContains": "{{prefix}}Release Prep",
+      "min": 1
+    },
+    {
+      "type": "tasks-field-match-count",
+      "projectTitleContains": "{{prefix}}Release Prep",
+      "field": "percent_done",
+      "op": "eq",
+      "value": 0.75,
+      "min": 1
+    }
+  ]
+}

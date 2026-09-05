@@ -96,28 +96,26 @@ describe('listBuckets', () => {
   describe('view resolution', () => {
     it('resolves the Kanban view id when viewId is omitted', async () => {
       // 1) GET /projects/:id/views  2) GET buckets
-      mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: kanbanViews }))
-        .mockResolvedValueOnce(
-          mockResponse({
-            text: JSON.stringify([
-              {
-                id: 100,
-                title: 'Backlog',
-                project_view_id: 11,
-                position: 0,
-                limit: 0,
-              },
-              {
-                id: 101,
-                title: 'Done',
-                project_view_id: 11,
-                position: 1,
-                limit: 5,
-              },
-            ]),
-          }),
-        );
+      mockFetch.mockResolvedValueOnce(mockResponse({ text: kanbanViews })).mockResolvedValueOnce(
+        mockResponse({
+          text: JSON.stringify([
+            {
+              id: 100,
+              title: 'Backlog',
+              project_view_id: 11,
+              position: 0,
+              limit: 0,
+            },
+            {
+              id: 101,
+              title: 'Done',
+              project_view_id: 11,
+              position: 1,
+              limit: 5,
+            },
+          ]),
+        }),
+      );
 
       const result = await listBuckets({ id: 5 }, authManager);
 
@@ -135,16 +133,14 @@ describe('listBuckets', () => {
     it('flags the bucket matching the view done_bucket_id as isDoneBucket, and no others', async () => {
       // The Kanban view (id 11) has done_bucket_id 101 — bucket.is_done_bucket
       // does not exist on models.Bucket, so this must be resolved from the view.
-      mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: kanbanViews }))
-        .mockResolvedValueOnce(
-          mockResponse({
-            text: JSON.stringify([
-              { id: 100, title: 'Backlog', project_view_id: 11, position: 0 },
-              { id: 101, title: 'Done', project_view_id: 11, position: 1 },
-            ]),
-          }),
-        );
+      mockFetch.mockResolvedValueOnce(mockResponse({ text: kanbanViews })).mockResolvedValueOnce(
+        mockResponse({
+          text: JSON.stringify([
+            { id: 100, title: 'Backlog', project_view_id: 11, position: 0 },
+            { id: 101, title: 'Done', project_view_id: 11, position: 1 },
+          ]),
+        }),
+      );
 
       const result = await listBuckets({ id: 5 }, authManager);
       const text = result.content[0].text;
@@ -177,9 +173,7 @@ describe('listBuckets', () => {
     it('throws NOT_FOUND when the project has no Kanban view', async () => {
       mockFetch.mockResolvedValueOnce(
         mockResponse({
-          text: JSON.stringify([
-            { id: 10, title: 'List', project_id: 5, view_kind: 'list' },
-          ]),
+          text: JSON.stringify([{ id: 10, title: 'List', project_id: 5, view_kind: 'list' }]),
         }),
       );
 
@@ -224,10 +218,7 @@ describe('listBuckets', () => {
     it('passes a session id through to the response', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ text: '[]' }));
 
-      const result = await listBuckets(
-        { id: 5, viewId: 11, sessionId: 'sess-9' },
-        authManager,
-      );
+      const result = await listBuckets({ id: 5, viewId: 11, sessionId: 'sess-9' }, authManager);
 
       expect(result.content[0].type).toBe('text');
       expect(result.content[0].text).toContain('Success');
@@ -245,9 +236,7 @@ describe('listBuckets', () => {
         }),
       );
 
-      await expect(
-        listBuckets({ id: 5, viewId: 11 }, authManager),
-      ).rejects.toThrow(MCPError);
+      await expect(listBuckets({ id: 5, viewId: 11 }, authManager)).rejects.toThrow(MCPError);
     });
 
     it('propagates a network error raised while resolving the view', async () => {
@@ -353,9 +342,9 @@ describe('createBucket', () => {
       mockResponse({ ok: false, status: 400, statusText: 'Bad Request', text: 'invalid bucket' }),
     );
 
-    await expect(
-      createBucket({ id: 5, viewId: 11, title: 'Doing' }, authManager),
-    ).rejects.toThrow(MCPError);
+    await expect(createBucket({ id: 5, viewId: 11, title: 'Doing' }, authManager)).rejects.toThrow(
+      MCPError,
+    );
   });
 });
 
@@ -383,9 +372,9 @@ describe('updateBucket', () => {
   });
 
   it('throws a VALIDATION_ERROR when no update fields are provided', async () => {
-    await expect(
-      updateBucket({ id: 5, viewId: 11, bucketId: 100 }, authManager),
-    ).rejects.toThrow('No fields to update provided for update-bucket operation');
+    await expect(updateBucket({ id: 5, viewId: 11, bucketId: 100 }, authManager)).rejects.toThrow(
+      'No fields to update provided for update-bucket operation',
+    );
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
@@ -434,9 +423,7 @@ describe('updateBucket', () => {
         limit: 0,
       }),
     );
-    expect(result.content[0].text).toContain(
-      'Bucket 100 in the Kanban view of project 5 updated',
-    );
+    expect(result.content[0].text).toContain('Bucket 100 in the Kanban view of project 5 updated');
   });
 
   it('resolves a bucket by bucketTitle when bucketId is omitted', async () => {
@@ -565,9 +552,9 @@ describe('deleteBucket', () => {
   it('throws NOT_FOUND when the bucket does not exist', async () => {
     mockFetch.mockResolvedValueOnce(mockResponse({ text: currentBuckets }));
 
-    await expect(
-      deleteBucket({ id: 5, viewId: 11, bucketId: 999 }, authManager),
-    ).rejects.toThrow("Bucket 999 not found in project 5's Kanban view");
+    await expect(deleteBucket({ id: 5, viewId: 11, bucketId: 999 }, authManager)).rejects.toThrow(
+      "Bucket 999 not found in project 5's Kanban view",
+    );
   });
 
   it('propagates an HTTP error from the delete request', async () => {
@@ -577,9 +564,9 @@ describe('deleteBucket', () => {
         mockResponse({ ok: false, status: 404, statusText: 'Not Found', text: 'gone' }),
       );
 
-    await expect(
-      deleteBucket({ id: 5, viewId: 11, bucketId: 100 }, authManager),
-    ).rejects.toThrow(MCPError);
+    await expect(deleteBucket({ id: 5, viewId: 11, bucketId: 100 }, authManager)).rejects.toThrow(
+      MCPError,
+    );
   });
 });
 
@@ -604,9 +591,7 @@ describe('listViewTasks', () => {
   it('resolves the Kanban view id and lists tasks with no query string when unpaginated', async () => {
     mockFetch
       .mockResolvedValueOnce(mockResponse({ text: kanbanViews }))
-      .mockResolvedValueOnce(
-        mockResponse({ text: JSON.stringify([{ id: 1, title: 'Task 1' }]) }),
-      );
+      .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 1, title: 'Task 1' }]) }));
 
     const result = await listViewTasks({ id: 5 }, authManager);
 
@@ -625,9 +610,7 @@ describe('listViewTasks', () => {
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe(
-      'https://vikunja.test/api/v1/projects/5/views/11/tasks?page=2&per_page=25',
-    );
+    expect(url).toBe('https://vikunja.test/api/v1/projects/5/views/11/tasks?page=2&per_page=25');
   });
 
   it('treats a non-array response as an empty list', async () => {

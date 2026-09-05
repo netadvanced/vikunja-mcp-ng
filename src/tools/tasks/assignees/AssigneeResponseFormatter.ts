@@ -46,16 +46,30 @@ export const AssigneeResponseFormatter = {
   /**
    * Format MCP response wrapper
    */
-  formatMcpResponse(response: StandardTaskResponse): { content: Array<{ type: 'text'; text: string }> } {
-    // Create proper AORP response instead of casting StandardTaskResponse
+  formatMcpResponse(response: StandardTaskResponse): {
+    content: Array<{ type: 'text'; text: string }>;
+  } {
+    // Create proper AORP response instead of casting StandardTaskResponse.
+    // `success` MUST be carried through explicitly: createStandardResponse
+    // (createTaskResponse in response-factory.ts) reads metadata.success to
+    // decide whether to render the ✅/❌ header, defaulting to `true` when
+    // it's absent. Without this, a caller that flips response.success to
+    // false after formatAssignResponse (e.g. on a failed post-assign
+    // verification) would have that failure silently dropped here and the
+    // response would still render under a success header.
     const metadata: ResponseMetadata = {
       timestamp: response.metadata?.timestamp || new Date().toISOString(),
+      success: response.success,
       ...(response.metadata?.count !== undefined ? { count: response.metadata.count } : {}),
-      ...(response.metadata?.affectedFields ? { affectedFields: response.metadata.affectedFields } : {}),
+      ...(response.metadata?.affectedFields
+        ? { affectedFields: response.metadata.affectedFields }
+        : {}),
       // Convert previousState to proper Record<string, unknown> if it exists
-      ...(response.metadata?.previousState && typeof response.metadata.previousState === 'object' && response.metadata.previousState !== null
+      ...(response.metadata?.previousState &&
+      typeof response.metadata.previousState === 'object' &&
+      response.metadata.previousState !== null
         ? { previousState: response.metadata.previousState as Record<string, unknown> }
-        : {})
+        : {}),
     };
 
     const aorpResponse = createStandardResponse(
@@ -65,7 +79,7 @@ export const AssigneeResponseFormatter = {
       // spec-optional); the formatter's `ResponseData` wants the local `Task`.
       // The formatter reads fields defensively, so narrow via the param type.
       response as unknown as Parameters<typeof createStandardResponse>[2],
-      metadata
+      metadata,
     );
 
     return {

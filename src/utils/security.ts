@@ -26,6 +26,17 @@ const SENSITIVE_KEY_PATTERNS = [
   /(?:^|[_-])(client_secret|client_id|client_key|app_secret|app_key|app_id)(?:$|[_-])/i,
   /(?:^|[_-])(user|username|user_id|email|login|signin)(?:$|[_-])/i,
 
+  // OIDC identity patterns (#292 MED-15): `sub` and the derived
+  // `identityKey`/`sessionId` (`"<issuer>|<sub>"`, see
+  // src/context/requestContext.ts) are stable per-caller identifiers, not
+  // credentials - but leaking them still de-anonymizes a caller across log
+  // lines. `identityKey`/`sessionId` already happen to match the generic
+  // `key`/`session` patterns below, but that's incidental; `sub` matches
+  // none of them, so it needs an explicit pattern of its own. Listed
+  // together and named for what they are, so the identity-masking
+  // guarantee doesn't quietly depend on wording coincidences.
+  /(?:^|[_-])(sub|identity_key|identitykey)(?:$|[_-])/i,
+
   // Database and connection patterns
   /(?:^|[_-])(database|db|connection|connection_string|mongo_uri|mongodb_uri|redis_url)(?:$|[_-])/i,
   /(?:^|[_-])(host|hostname|server|endpoint|uri|url|link)(?:$|[_-])/i,
@@ -51,15 +62,15 @@ const SENSITIVE_KEY_PATTERNS = [
   // Enhanced patterns for camelCase and embedded sensitive keywords
   /apiToken/i, // Direct match for apiToken
   /jwtToken/i, // Direct match for jwtToken
-  /authKey/i,  // Direct match for authKey
-  /apiKey/i,  // Direct match for apiKey
+  /authKey/i, // Direct match for authKey
+  /apiKey/i, // Direct match for apiKey
 
   // Contains patterns for embedded sensitive words
   /(api|auth|token|key|secret|credential|pass|refresh)/i,
 
   // Direct matches for common sensitive keys (fallbacks)
   /^(token|key|secret|auth|credential|pass)$/i,
-  /\b(token|key|secret|auth|credential|pass)\b/i
+  /\b(token|key|secret|auth|credential|pass)\b/i,
 ];
 
 // Regex patterns for detecting credential formats in string values
@@ -98,7 +109,7 @@ const CREDENTIAL_FORMAT_PATTERNS = [
   /^[A-Za-z0-9+/]{30,}={0,2}$/, // Reduced minimum for practical testing
 
   // Request/Trace ID patterns
-  /^(req|trace|span|correlation)_[a-zA-Z0-9]{16,}$/
+  /^(req|trace|span|correlation)_[a-zA-Z0-9]{16,}$/,
 ];
 
 // Unicode normalization patterns to detect bypass attempts
@@ -113,7 +124,18 @@ const UNICODE_NORMALIZATION_PATTERNS = [
   /[\uFE00-\uFE0F]/, // Variation selectors
 ];
 
-// Performance optimization: Cache normalized keys
+// Performance optimization: Cache normalized keys.
+//
+// LOW-14 (#292, cross-audit): this cache used to grow without bound - a
+// `Map` with no eviction, despite `getSecurityCacheStats` advertising a
+// `maxSize` of `NORMALIZED_KEY_CACHE_MAX_SIZE`. Any long-running
+// `oidc-http` process that ever normalizes attacker-influenced strings
+// (e.g. object keys reaching the logger from request-derived data) leaks
+// memory one entry at a time, forever. Enforced here as a size-bounded LRU:
+// a `Map` iterates in insertion order, so a hit re-inserts its entry to
+// mark it most-recently-used, and an insert past the cap evicts the
+// oldest (first) entry before adding the new one.
+const NORMALIZED_KEY_CACHE_MAX_SIZE = 10000;
 const normalizedKeyCache = new Map<string, string>();
 
 /**
@@ -127,14 +149,19 @@ const normalizedKeyCache = new Map<string, string>();
  * @returns Normalized key safe for comparison
  */
 function normalizeSecurityKey(key: string): string {
-  if (normalizedKeyCache.has(key)) {
-    return normalizedKeyCache.get(key) as string;
+  const cached = normalizedKeyCache.get(key);
+  if (cached !== undefined) {
+    // Bump to most-recently-used: delete + re-set moves it to the end of
+    // the Map's iteration order.
+    normalizedKeyCache.delete(key);
+    normalizedKeyCache.set(key, cached);
+    return cached;
   }
 
   let normalized = key.toLowerCase();
 
   // Remove Unicode bypass characters
-  UNICODE_NORMALIZATION_PATTERNS.forEach(pattern => {
+  UNICODE_NORMALIZATION_PATTERNS.forEach((pattern) => {
     normalized = normalized.replace(pattern, '');
   });
 
@@ -146,6 +173,14 @@ function normalizeSecurityKey(key: string): string {
 
   // Trim leading/trailing underscores
   normalized = normalized.replace(/^_+|_+$/g, '');
+
+  // Evict the least-recently-used entry before growing past the cap.
+  if (normalizedKeyCache.size >= NORMALIZED_KEY_CACHE_MAX_SIZE) {
+    const oldestKey = normalizedKeyCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      normalizedKeyCache.delete(oldestKey);
+    }
+  }
 
   // Cache the result
   normalizedKeyCache.set(key, normalized);
@@ -161,11 +196,22 @@ function normalizeSecurityKey(key: string): string {
 function isSensitiveKey(key: string): boolean {
   const normalizedKey = normalizeSecurityKey(key);
 
-  return SENSITIVE_KEY_PATTERNS.some(pattern => {
+  return SENSITIVE_KEY_PATTERNS.some((pattern) => {
     // Test both original and normalized key against patterns
     return pattern.test(key) || pattern.test(normalizedKey);
   });
 }
+
+// LOW-13 (#292): the base64-ish and long-alphanumeric CREDENTIAL_FORMAT_PATTERNS
+// below allow digits, letters, '+' and '/' - which also describes an
+// ordinary REST path (`/projects/12345/webhooks/67890123`, 20+ chars, no
+// separator other than '/') and a dotted version string
+// (`2.4.0-beta.123456789`). Neither can be excluded by narrowing the
+// credential patterns' own charset without also missing real base64/hex
+// secrets that legitimately contain '/' or digits-only runs, so both shapes
+// are recognized and excluded up front instead.
+const VERSION_STRING_PATTERN = /^v?\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.]+)?$/;
+const REST_PATH_PATTERN = /^\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\/?(?:\?.*)?$/;
 
 /**
  * Checks if a string value looks like a credential based on format patterns
@@ -179,8 +225,14 @@ function isCredentialFormat(value: string): boolean {
     return false;
   }
 
+  // A plain version string or REST path is never a credential, even though
+  // it can otherwise fit the broad base64/alphanumeric shapes below.
+  if (VERSION_STRING_PATTERN.test(value) || REST_PATH_PATTERN.test(value)) {
+    return false;
+  }
+
   // Check against credential format patterns
-  return CREDENTIAL_FORMAT_PATTERNS.some(pattern => pattern.test(value));
+  return CREDENTIAL_FORMAT_PATTERNS.some((pattern) => pattern.test(value));
 }
 
 /**
@@ -198,7 +250,7 @@ export function maskCredential(credential: string | undefined | null): string {
 
   // Normalize credential by removing Unicode bypass characters
   let normalizedCredential = credential;
-  UNICODE_NORMALIZATION_PATTERNS.forEach(pattern => {
+  UNICODE_NORMALIZATION_PATTERNS.forEach((pattern) => {
     normalizedCredential = normalizedCredential.replace(pattern, '');
   });
 
@@ -229,11 +281,11 @@ export function maskUrl(url: string | undefined | null): string {
       /\/api\/v\d+\/(token|auth|login|key|session)/i,
       /(auth|login|logout|signin|signout|token|key|session)/i,
       /\/oauth\/(authorize|token|callback)/i,
-      /(admin|dashboard|control)/i
+      /(admin|dashboard|control)/i,
     ];
 
     const pathname = urlObj.pathname.toLowerCase();
-    if (sensitivePathPatterns.some(pattern => pattern.test(pathname))) {
+    if (sensitivePathPatterns.some((pattern) => pattern.test(pathname))) {
       // Mask the last path component
       urlObj.pathname = urlObj.pathname.replace(/\/[^/]*$/, '/[REDACTED]');
     }
@@ -260,14 +312,306 @@ export function maskUrl(url: string | undefined | null): string {
 }
 
 /**
+ * Credential-sounding names, used when a name appears *inside* free-form text
+ * (a URL query parameter, a `name=value` pair in a message).
+ *
+ * Deliberately much narrower than SENSITIVE_KEY_PATTERNS, which is tuned for
+ * object keys and matches very broadly (`url`, `file`, `config`, `host`, …).
+ * Applying that breadth to prose would redact most of a useful log line.
+ */
+const EMBEDDED_CREDENTIAL_NAME =
+  /^(?:.*[_-])?(?:secrets?|tokens?|access_?token|refresh_?token|id_?token|password|passwd|pwd|pass|api_?key|apikey|key|auth|authorization|credentials?|signature|sig|hmac|session|sessionid|private_?key|client_?secret)(?:[_-].*)?$/i;
+
+/**
+ * Secrets that can appear anywhere inside a string, regardless of the key that
+ * holds it. These are the cases key-name matching structurally cannot catch.
+ */
+const EMBEDDED_SECRET_RULES: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
+  // JSON Web Tokens (header.payload.signature)
+  {
+    pattern: /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}/g,
+    replacement: '[REDACTED_JWT]',
+  },
+  // Vikunja API tokens
+  { pattern: /\btk_[A-Za-z0-9_-]{8,}/g, replacement: '[REDACTED_TOKEN]' },
+  // Authorization header values
+  { pattern: /\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}/gi, replacement: '$1 [REDACTED]' },
+];
+
+// PEM private key blocks. Guarded by a cheap `includes` check before use so the
+// lazy quantifier never scans a large string that cannot contain a match.
+const PEM_PRIVATE_KEY_PATTERN =
+  /-----BEGIN[^-]*PRIVATE KEY-----[\s\S]*?-----END[^-]*PRIVATE KEY-----/g;
+
+// `name=value` / `name: value` pairs in free-form text.
+const INLINE_ASSIGNMENT_PATTERN =
+  /\b([A-Za-z0-9_-]{2,40})(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;)&"']+)/g;
+
+/**
+ * Quoted `"name": "value"` pairs, i.e. JSON.
+ *
+ * {@link INLINE_ASSIGNMENT_PATTERN} structurally cannot catch these: it wants
+ * the `:` immediately after the name, and in JSON a closing quote sits in
+ * between. That mattered little while this module only fed the logger, but
+ * upstream HTTP error bodies (now routed through here, audit #292 MED-18)
+ * are almost always JSON, and are frequently JSON that has been escaped once
+ * more into a `"message"` field. Hence the optional backslash on each quote,
+ * which lets one rule cover `"password":"x"` and `\"password\":\"x\"` alike.
+ * The value stops at the first quote or backslash, so the pattern stays
+ * linear-time on adversarial input.
+ */
+const QUOTED_ASSIGNMENT_PATTERN = /(\\?["'])([A-Za-z0-9_-]{2,40})\1(\s*:\s*)(\\?["'])([^"'\\]*)\4/g;
+
+// URL-shaped substrings, matched loosely so they can be re-parsed with `URL`.
+const URL_LIKE_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>\\]+/gi;
+
+// Keys that name a location rather than a credential. For these the URL is kept
+// (with its secret parts redacted) instead of being replaced wholesale, because
+// an endpoint is usually the single most useful thing in a log line.
+const LOCATION_KEY_PATTERN = /(url|uri|endpoint|host|link|callback|redirect)/i;
+
+/**
+ * Heuristic for a path segment that carries a secret rather than an identifier.
+ *
+ * Motivating case: Slack/Discord/Teams style webhook URLs embed the shared
+ * secret in the path itself (`https://hooks.slack.com/services/T…/B…/<secret>`),
+ * so no key-name or query-parameter rule can ever catch it.
+ *
+ * @param segment - A single URL path segment
+ * @returns True if the segment looks like an opaque high-entropy secret
+ */
+function looksLikeSecretPathSegment(segment: string): boolean {
+  if (segment.length < 20 || !/^[A-Za-z0-9_-]+$/.test(segment)) {
+    return false;
+  }
+
+  const hasDigit = /[0-9]/.test(segment);
+  const hasLower = /[a-z]/.test(segment);
+  const hasUpper = /[A-Z]/.test(segment);
+
+  // Long lowercase-only slugs (`my-very-long-project-name`) stay readable;
+  // mixed-case or digit-bearing blobs of this length are opaque tokens.
+  return (hasDigit && (hasLower || hasUpper)) || (hasLower && hasUpper);
+}
+
+/**
+ * Redacts the credential-bearing parts of a single URL: userinfo, sensitive
+ * query parameters and high-entropy path segments. The host and the readable
+ * path are preserved so the log line still says where the call went.
+ *
+ * @param rawUrl - A URL-shaped string
+ * @returns The URL with its secret components replaced
+ */
+export function redactUrlSecrets(rawUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    // Not parseable as a URL; the caller's other redaction rules still apply.
+    return rawUrl;
+  }
+
+  if (parsed.username || parsed.password) {
+    parsed.username = 'REDACTED';
+    parsed.password = 'REDACTED';
+  }
+
+  for (const name of Array.from(parsed.searchParams.keys())) {
+    if (EMBEDDED_CREDENTIAL_NAME.test(name)) {
+      parsed.searchParams.set(name, 'REDACTED');
+    }
+  }
+
+  parsed.pathname = parsed.pathname
+    .split('/')
+    .map((segment) => (looksLikeSecretPathSegment(segment) ? 'REDACTED' : segment))
+    .join('/');
+
+  if (parsed.hash.length > 1 && EMBEDDED_CREDENTIAL_NAME.test(parsed.hash.slice(1))) {
+    parsed.hash = '#REDACTED';
+  }
+
+  return parsed.toString();
+}
+
+/**
+ * Redacts credentials embedded in free-form text: URLs with secrets in them,
+ * JWTs, API tokens, authorization header values, PEM private keys and
+ * `name=value` pairs whose name reads as a credential.
+ *
+ * Unlike key-based redaction this works on the string itself, so it catches
+ * secrets that arrive inside a message, a stack trace or a URL path.
+ *
+ * @param text - Text that may contain credentials
+ * @returns The text with credential substrings replaced
+ */
+export function redactSecretsInText(text: string): string {
+  if (typeof text !== 'string' || text.length === 0) {
+    return text;
+  }
+
+  let result = text;
+
+  if (result.includes('://')) {
+    result = result.replace(URL_LIKE_PATTERN, (match) => redactUrlSecrets(match));
+  }
+
+  for (const { pattern, replacement } of EMBEDDED_SECRET_RULES) {
+    result = result.replace(pattern, replacement);
+  }
+
+  if (result.includes('-----BEGIN')) {
+    result = result.replace(PEM_PRIVATE_KEY_PATTERN, '[REDACTED_PRIVATE_KEY]');
+  }
+
+  result = result.replace(
+    QUOTED_ASSIGNMENT_PATTERN,
+    (
+      match,
+      nameQuote: string,
+      name: string,
+      separator: string,
+      valueQuote: string,
+      value: string,
+    ) =>
+      EMBEDDED_CREDENTIAL_NAME.test(name) && value.length > 0
+        ? `${nameQuote}${name}${nameQuote}${separator}${valueQuote}[REDACTED]${valueQuote}`
+        : match,
+  );
+
+  result = result.replace(INLINE_ASSIGNMENT_PATTERN, (match, name: string, separator: string) =>
+    EMBEDDED_CREDENTIAL_NAME.test(name) ? `${name}${separator}[REDACTED]` : match,
+  );
+
+  return result;
+}
+
+/**
  * Enhanced log data sanitization with comprehensive credential masking
  * Recursively processes nested objects and arrays with advanced pattern detection
+ *
+ * Strict mode: string values additionally go through the input-sanitization
+ * layer (`sanitizeString`), which *rejects* rather than escapes suspicious
+ * content. Use {@link sanitizeForLogging} for log output, where that rejection
+ * would destroy legitimate diagnostics.
  *
  * @param data - The data object to sanitize
  * @returns Sanitized data with masked sensitive fields
  */
 export function sanitizeLogData(data: unknown): unknown {
-  return sanitizeLogDataInternal(data, new Set());
+  return sanitizeLogDataInternal(data, new WeakSet(), true);
+}
+
+/**
+ * Credential-safe sanitization for logger output.
+ *
+ * Same redaction as {@link sanitizeLogData} minus the input-sanitization layer:
+ * stderr is not an HTML sink, so XSS/injection rejection buys no security there
+ * while it does turn ordinary diagnostics (paths containing `../`, strings over
+ * 1000 characters, stack traces) into `[SANITIZATION_FAILED]`. Error instances
+ * are additionally unwrapped, since their `message`/`stack` are non-enumerable
+ * and a plain object walk would reduce them to `{}`.
+ *
+ * @param data - The value to sanitize
+ * @returns Sanitized value safe to write to a log
+ */
+export function sanitizeForLogging(data: unknown): unknown {
+  return sanitizeLogDataInternal(data, new WeakSet(), false);
+}
+
+/**
+ * Sanitizes every metadata argument handed to a logger call.
+ *
+ * @param args - The variadic arguments of a logger call
+ * @returns A new array with each argument sanitized
+ */
+export function sanitizeLogArgs(args: readonly unknown[]): unknown[] {
+  return args.map((arg) => sanitizeForLogging(arg));
+}
+
+/**
+ * Sanitizes a string value for logging.
+ *
+ * @param value - The string to sanitize
+ * @param applyInputSanitization - Whether to also run the input-sanitization layer
+ * @returns Sanitized string
+ */
+function sanitizeLogString(value: string, applyInputSanitization: boolean): string {
+  // Whole-string credentials keep their existing masked-prefix representation.
+  if (isCredentialFormat(value)) {
+    return maskCredential(value);
+  }
+
+  const redacted = redactSecretsInText(value);
+
+  if (!applyInputSanitization) {
+    return redacted;
+  }
+
+  try {
+    return sanitizeString(redacted);
+  } catch {
+    // If sanitization fails, fall back to a placeholder so logging never breaks
+    // on unexpected content.
+    return '[SANITIZATION_FAILED]';
+  }
+}
+
+/**
+ * Unwraps an Error into a loggable object. `message` and `stack` are
+ * non-enumerable, so the generic object walk would otherwise yield `{}`.
+ *
+ * @param error - The error to unwrap
+ * @param visited - Set of visited objects to prevent infinite recursion
+ * @param applyInputSanitization - Whether to also run the input-sanitization layer
+ * @returns A plain object describing the error, with credentials redacted
+ */
+function sanitizeErrorForLog(
+  error: Error,
+  visited: WeakSet<object>,
+  applyInputSanitization: boolean,
+): unknown {
+  if (visited.has(error)) {
+    return '[Circular Reference]';
+  }
+
+  const extraKeys = Object.keys(error).filter(
+    (key) => key !== 'name' && key !== 'message' && key !== 'stack',
+  );
+
+  // The common case: a plain error. Return the redacted stack as a string so the
+  // log line keeps its familiar `Error: message\n    at …` rendering.
+  if (extraKeys.length === 0 && error.cause === undefined) {
+    return redactSecretsInText(error.stack ?? `${error.name}: ${error.message}`);
+  }
+
+  visited.add(error);
+
+  const result: Record<string, unknown> = {
+    name: error.name,
+    message: redactSecretsInText(error.message),
+  };
+
+  if (typeof error.stack === 'string') {
+    result.stack = redactSecretsInText(error.stack);
+  }
+
+  // Own enumerable properties (e.g. MCPError's `code`, HTTP status fields).
+  // These are where credential-bearing payloads (request configs, headers)
+  // typically ride along on an error.
+  for (const key of extraKeys) {
+    const value = (error as unknown as Record<string, unknown>)[key];
+    result[key] = isSensitiveKey(key)
+      ? '[REDACTED]'
+      : sanitizeLogDataInternal(value, visited, applyInputSanitization);
+  }
+
+  if (error.cause !== undefined) {
+    result.cause = sanitizeLogDataInternal(error.cause, visited, applyInputSanitization);
+  }
+
+  visited.delete(error);
+  return result;
 }
 
 /**
@@ -275,29 +619,21 @@ export function sanitizeLogData(data: unknown): unknown {
  *
  * @param data - The data to sanitize
  * @param visited - Set of visited objects to prevent infinite recursion
+ * @param applyInputSanitization - Whether to also run the input-sanitization layer
  * @returns Sanitized data
  */
-function sanitizeLogDataInternal(data: unknown, visited: WeakSet<object>): unknown {
+function sanitizeLogDataInternal(
+  data: unknown,
+  visited: WeakSet<object>,
+  applyInputSanitization: boolean,
+): unknown {
   // Handle primitive types
   if (data === null || data === undefined) {
     return data;
   }
 
   if (typeof data === 'string') {
-    // Check for credential formats in string values
-    if (isCredentialFormat(data)) {
-      return maskCredential(data);
-    }
-
-    // Apply input sanitization to all non-credential string values
-    // This provides comprehensive XSS and injection protection
-    try {
-      return sanitizeString(data);
-    } catch {
-      // If sanitization fails, return the original string with fallback protection
-      // This ensures we don't break logging if input contains unexpected content
-      return '[SANITIZATION_FAILED]';
-    }
+    return sanitizeLogString(data, applyInputSanitization);
   }
 
   if (typeof data === 'number' || typeof data === 'boolean') {
@@ -310,7 +646,17 @@ function sanitizeLogDataInternal(data: unknown, visited: WeakSet<object>): unkno
       return '[Circular Reference]';
     }
     visited.add(data);
-    return data.map(item => sanitizeLogDataInternal(item, visited));
+    const sanitizedArray = data.map((item) =>
+      sanitizeLogDataInternal(item, visited, applyInputSanitization),
+    );
+    // Only true cycles are `[Circular Reference]`; the same object appearing
+    // twice in a tree is still rendered on each occurrence.
+    visited.delete(data);
+    return sanitizedArray;
+  }
+
+  if (data instanceof Error) {
+    return sanitizeErrorForLog(data, visited, applyInputSanitization);
   }
 
   // Handle objects with recursion protection
@@ -329,6 +675,15 @@ function sanitizeLogDataInternal(data: unknown, visited: WeakSet<object>): unkno
           // For string sensitive values, use format detection
           if (isCredentialFormat(value)) {
             sanitized[key] = maskCredential(value);
+          } else if (
+            !applyInputSanitization &&
+            value.includes('://') &&
+            LOCATION_KEY_PATTERN.test(key) &&
+            !EMBEDDED_CREDENTIAL_NAME.test(key)
+          ) {
+            // A location-named key holding a URL: keep the endpoint, redact the
+            // credential-bearing parts of it.
+            sanitized[key] = redactSecretsInText(value);
           } else if (value.length > 50) {
             // Long strings in sensitive keys are likely credentials
             sanitized[key] = maskCredential(value);
@@ -341,10 +696,11 @@ function sanitizeLogDataInternal(data: unknown, visited: WeakSet<object>): unkno
         }
       } else {
         // Recursively sanitize non-sensitive values
-        sanitized[key] = sanitizeLogDataInternal(value, visited);
+        sanitized[key] = sanitizeLogDataInternal(value, visited, applyInputSanitization);
       }
     }
 
+    visited.delete(data);
     return sanitized;
   }
 
@@ -375,7 +731,7 @@ export function createSecureLogConfig(config: Record<string, unknown>): Record<s
 export function createSecureConnectionMessage(
   url: string | undefined,
   token: string | undefined,
-  authType?: string
+  authType?: string,
 ): string {
   const maskedUrl = maskUrl(url);
   const maskedToken = maskCredential(token);
@@ -403,6 +759,6 @@ export function clearSecurityCache(): void {
 export function getSecurityCacheStats(): { size: number; maxSize: number } {
   return {
     size: normalizedKeyCache.size,
-    maxSize: 10000 // Configurable maximum cache size
+    maxSize: NORMALIZED_KEY_CACHE_MAX_SIZE,
   };
 }

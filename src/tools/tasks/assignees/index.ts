@@ -9,6 +9,11 @@ import { createStandardResponse, formatAorpAsMarkdown } from '../../../utils/res
 import { AssigneeOperationsService } from './AssigneeOperationsService';
 import { AssigneeValidationService } from './AssigneeValidationService';
 import { AssigneeResponseFormatter } from './AssigneeResponseFormatter';
+import {
+  DEFAULT_SERVER_PAGE_CAP,
+  describePossibleTruncation,
+  readServerPageCap,
+} from '../../../utils/filtering/pagination';
 
 /**
  * Assign users to a task
@@ -28,7 +33,11 @@ export async function assignUsers(
 
     // Verify the assignees actually persisted (defense-in-depth against silent
     // API failures — adapted from upstream PR #43). Fails open on fetch errors.
-    const missingIds = await AssigneeOperationsService.verifyAssignees(authManager, taskId, assigneeIds);
+    const missingIds = await AssigneeOperationsService.verifyAssignees(
+      authManager,
+      taskId,
+      assigneeIds,
+    );
 
     // Fetch updated task data
     const task = await AssigneeOperationsService.fetchTaskWithAssignees(authManager, taskId);
@@ -42,7 +51,6 @@ export async function assignUsers(
         `This is a known Vikunja API limitation with API token auth. Try using JWT authentication instead.`;
     }
     return AssigneeResponseFormatter.formatMcpResponse(response);
-
   } catch (error) {
     throw new MCPError(
       ErrorCode.API_ERROR,
@@ -73,7 +81,6 @@ export async function unassignUsers(
     // Format and return response
     const response = AssigneeResponseFormatter.formatUnassignResponse(task);
     return AssigneeResponseFormatter.formatMcpResponse(response);
-
   } catch (error) {
     throw new MCPError(
       ErrorCode.API_ERROR,
@@ -111,9 +118,22 @@ export async function listAssignees(
       ...(perPage !== undefined && { perPage }),
     });
 
+    // "At minimum" half of the CRIT-7 pattern (issue #289 / HIGH-18
+    // spot-check): a page the caller didn't pin themselves that comes back
+    // exactly full cannot be told apart from "that's everyone" without this
+    // signal — see `describePossibleTruncation`'s doc comment.
+    const truncation = describePossibleTruncation(assignees.length, {
+      autoPaginate: page === undefined && perPage === undefined,
+      cap: readServerPageCap(authManager) ?? DEFAULT_SERVER_PAGE_CAP,
+      resourceLabel: `Task ${taskId} assignees`,
+    });
+
     const response = createStandardResponse(
       'get',
-      `Task ${taskId} has ${assignees.length} assignee(s)`,
+      `Task ${taskId} has ${assignees.length} assignee(s)` +
+        (truncation.resultComplete === false
+          ? ` — INCOMPLETE RESULT: ${truncation.warnings?.join(' ')}`
+          : ''),
       {
         taskId,
         assignees: assignees.map((a) => ({
@@ -130,6 +150,7 @@ export async function listAssignees(
         ...(search !== undefined && { search }),
         ...(page !== undefined && { page }),
         ...(perPage !== undefined && { perPage }),
+        ...truncation,
       },
       args.sessionId,
     );

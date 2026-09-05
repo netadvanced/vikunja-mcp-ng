@@ -2,12 +2,16 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
+import { getAuthManagerFromContext, hasRequestContext } from '../client';
 import { logger } from '../utils/logger';
 import { MCPError, ErrorCode } from '../types';
 import { parseInputData } from '../parsers/InputParserFactory';
 import { EntityResolver } from '../services/EntityResolver';
 import { TaskCreationService } from '../services/TaskCreationService';
-import { BatchImportResponseFormatter, type ImportResult } from '../formatters/BatchImportResponseFormatter';
+import {
+  BatchImportResponseFormatter,
+  type ImportResult,
+} from '../formatters/BatchImportResponseFormatter';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 const MAX_BATCH_SIZE = 100;
@@ -17,7 +21,11 @@ const MAX_BATCH_SIZE = 100;
  * Main tool registration and orchestration layer for batch task import
  * =================================================================== */
 
-export function registerBatchImportTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerBatchImportTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_batch_import',
     withReadOnlyNote(
@@ -41,8 +49,12 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
           dryRun: args.dryRun,
         });
 
-        // Authentication check
-        if (!authManager.isAuthenticated()) {
+        // Authentication check (closure-gate precedence fix: defer to the
+        // per-request context when bound — see hasRequestContext's doc
+        // comment, src/client.ts)
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
           throw new MCPError(
             ErrorCode.AUTH_REQUIRED,
             'Authentication required. Please use vikunja_auth.connect first.',
@@ -61,12 +73,24 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
           format: args.format,
           data: args.data,
           ...(args.skipErrors !== undefined && { skipErrors: args.skipErrors }),
-        } as { format: 'csv' | 'json'; data: string; skipErrors?: boolean };
+        };
 
-        const tasks = parseInputData(parseOptions);
+        const { tasks, skipped } = parseInputData(parseOptions);
 
         // Validate tasks
         if (tasks.length === 0) {
+          // Every row may have been dropped by the parser itself (schema
+          // validation failures under skipErrors:true) — surface that
+          // instead of a bare "no valid tasks" with no explanation (#323).
+          if (skipped.length > 0) {
+            const details = skipped
+              .map((row) => `Input row ${row.index + 1}: ${row.error}`)
+              .join('; ');
+            throw new MCPError(
+              ErrorCode.VALIDATION_ERROR,
+              `No valid tasks found to import. ${skipped.length} row(s) were skipped during parsing due to validation errors: ${details}`,
+            );
+          }
           throw new MCPError(ErrorCode.VALIDATION_ERROR, 'No valid tasks found to import');
         }
 
@@ -79,11 +103,18 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
 
         // Handle dry run
         if (args.dryRun) {
+          const skippedNote =
+            skipped.length > 0
+              ? ` ${skipped.length} row(s) were skipped during parsing due to validation errors ` +
+                `(input rows: ${skipped.map((row) => row.index + 1).join(', ')}).`
+              : '';
           return {
-            content: [{
-              type: 'text',
-              text: `Validation successful. ${tasks.length} tasks ready to import.`,
-            }],
+            content: [
+              {
+                type: 'text',
+                text: `Validation successful. ${tasks.length} tasks ready to import.${skippedNote}`,
+              },
+            ],
           };
         }
 
@@ -97,9 +128,7 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
         // unique username actually referenced by this batch's assignees and
         // search for each one individually.
         const assigneeUsernames = Array.from(
-          new Set(
-            tasks.flatMap((task) => task.assignees ?? []),
-          ),
+          new Set(tasks.flatMap((task) => task.assignees ?? [])),
         );
         const entityResult = await entityResolver.resolveEntities(authManager, assigneeUsernames);
         const { userFetchFailedDueToAuth } = entityResult;
@@ -110,7 +139,11 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
           failed: 0,
           errors: [],
           createdTasks: [],
+          ...(skipped.length > 0 && { skippedRows: skipped }),
         };
+        // Computed up front (not just for the final response) so a
+        // mid-batch abort can also format an accurate partial summary.
+        const hasAssignees = tasks.some((t) => t.assignees && t.assignees.length > 0);
 
         for (let i = 0; i < tasks.length; i++) {
           const task = tasks[i];
@@ -122,7 +155,7 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
               args.projectId,
               authManager,
               entityResult,
-              args.skipErrors === true
+              args.skipErrors === true,
             );
 
             if (creationResult.success) {
@@ -161,26 +194,56 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
             });
 
             if (!args.skipErrors) {
-              throw error;
+              // Abort. `result` at this point may already hold tasks that
+              // WERE created before this failure — discarding it here (the
+              // old behavior) meant the response never mentioned them,
+              // inviting a retry that duplicates every task that did land.
+              // Fold the partial result into the thrown error's message
+              // instead, and let it propagate as a genuine failure (caught
+              // below, rethrown) so this surfaces as isError:true like every
+              // other tool on this server does — batch-import used to be the
+              // one exception, converting every error into plain
+              // success-shaped content instead (issue #269 CRIT-8).
+              const partialSummary = responseFormatter.formatResult(
+                result,
+                userFetchFailedDueToAuth,
+                hasAssignees,
+              );
+              throw new MCPError(
+                ErrorCode.API_ERROR,
+                `Batch import aborted: ${error instanceof Error ? error.message : String(error)}\n\n${partialSummary}`,
+              );
             }
           }
         }
 
         // Format and return response
-        const hasAssignees = tasks.some((t) => t.assignees && t.assignees.length > 0);
-        const responseText = responseFormatter.formatResult(result, userFetchFailedDueToAuth, hasAssignees);
+        const responseText = responseFormatter.formatResult(
+          result,
+          userFetchFailedDueToAuth,
+          hasAssignees,
+        );
 
         return {
-          content: [{
-            type: 'text',
-            text: responseText,
-          }],
+          content: [
+            {
+              type: 'text',
+              text: responseText,
+            },
+          ],
         };
       } catch (error) {
+        // Matches this codebase's standard tool error-handling pattern (see
+        // CLAUDE.md "Error Handling Pattern"): re-throw our own MCPErrors
+        // as-is, wrap anything else. Previously this converted EVERY error
+        // — including a genuine mid-batch abort — into plain
+        // success-shaped MCP content with no `isError`, unlike every other
+        // tool on this server (issue #269 CRIT-8). Letting it throw here
+        // instead means the MCP SDK marks the response `isError: true`, so
+        // a caller checking that flag (rather than pattern-matching the
+        // text) correctly sees the import did not fully succeed.
         if (error instanceof MCPError) {
-          return {
-            content: [{ type: 'text', text: error.message }],
-          };
+          throw error;
         }
 
         logger.error('Batch import error', {
@@ -188,12 +251,10 @@ export function registerBatchImportTool(server: McpServer, authManager: AuthMana
           message: error instanceof Error ? error.message : 'Unknown error',
         });
 
-        return {
-          content: [{
-            type: 'text',
-            text: `Failed to import tasks: ${error instanceof Error ? error.message : String(error)}`,
-          }],
-        };
+        throw new MCPError(
+          ErrorCode.API_ERROR,
+          `Failed to import tasks: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     },
   );

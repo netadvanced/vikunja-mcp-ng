@@ -8,16 +8,18 @@ import { z } from 'zod';
 import type { AuthManager } from '../../auth/AuthManager';
 import type { VikunjaClientFactory } from '../../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../../types';
-import { getAuthManagerFromContext, setGlobalClientFactory } from '../../client';
+import { getAuthManagerFromContext, hasRequestContext, setGlobalClientFactory } from '../../client';
 import { logger } from '../../utils/logger';
 import { storageManager } from '../../storage';
+import { getEffectiveSessionId } from '../../context/requestContext';
 import { relationSchema, handleRelationSubcommands } from '../tasks-relations';
 import { TaskFilteringOrchestrator } from './filtering';
 import type { TaskListingArgs } from './types/filters';
 import { createAuthRequiredError, handleFetchError } from '../../utils/error-handler';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../../utils/read-only';
-
+import { percentDoneSchema } from '../../utils/percent-done';
+import { strictNestedObject } from '../../utils/strict-nested-object';
 
 // Import all operation handlers
 import { createTask, getTask, updateTask, deleteTask, createTaskResponse } from './crud';
@@ -41,7 +43,6 @@ import { createSubtask, listSubtasks, bulkCreateSubtasks } from './subtasks';
 import { duplicateTask } from './duplicate';
 import { markTaskRead } from './mark-read';
 
-
 /**
  * Subcommands where `id` is accepted as an alias for `parentTaskId`.
  *
@@ -62,11 +63,25 @@ const SUBTASK_PARENT_ID_ALIAS_SUBCOMMANDS = new Set<string>([
 ]);
 
 /**
- * Get session-scoped storage instance
+ * Get session-scoped storage instance.
+ *
+ * The session id is `(issuer,sub)`-keyed in `oidc-http` mode and falls back
+ * to the original apiUrl+token-prefix derivation in `stdio` mode — see
+ * `getEffectiveSessionId` (docs/OIDC-RESOURCE-SERVER.md §3d, isolation-table
+ * row #3). Resolves the ALS-bound per-identity manager first (falling back
+ * to the closure-captured one in `stdio` mode, where no request context is
+ * ever bound) — the closure manager is never authenticated in `oidc-http`
+ * mode, so calling `.getSession()` on it directly throws for every request
+ * regardless of provisioning status.
  */
-async function getSessionStorage(authManager: AuthManager): ReturnType<typeof storageManager.getStorage> {
-  const session = authManager.getSession();
-  const sessionId = session.apiToken ? `${session.apiUrl}:${session.apiToken.substring(0, 8)}` : 'anonymous';
+async function getSessionStorage(
+  authManager: AuthManager,
+): ReturnType<typeof storageManager.getStorage> {
+  const effectiveAuthManager = hasRequestContext()
+    ? await getAuthManagerFromContext()
+    : authManager;
+  const session = effectiveAuthManager.getSession();
+  const sessionId = getEffectiveSessionId(effectiveAuthManager);
   return storageManager.getStorage(sessionId, session.userId, session.apiUrl);
 }
 
@@ -101,21 +116,55 @@ async function listTasks(
       }
     }
 
+    // A result that is knowingly incomplete or a filter that could only be
+    // partially honoured must be visible in the SUMMARY LINE, not only in the
+    // metadata block — the whole point of issues #225/#227 is that a caller
+    // could not tell "nothing matched" from "the answer is wrong/partial".
+    const resultWarnings = filteringResult.metadata?.warnings ?? [];
+    const incomplete = filteringResult.metadata?.resultComplete === false;
+    const reliabilityMessage =
+      incomplete || resultWarnings.length > 0
+        ? ` — ${incomplete ? 'INCOMPLETE RESULT' : 'PARTIAL FILTER'}: ${resultWarnings.join(' ')}`
+        : '';
+
+    // orderBy/filterTimezone/filterIncludeNulls/expand are GET /tasks query
+    // params only honored by the cross-project direct-REST path
+    // (RestCrossProjectFilteringStrategy) — single-project listing calls
+    // GET /projects/{id}/tasks, which never supported them (see the schema
+    // comment above these fields). Supplying one on a single-project
+    // listing used to be silently accepted and silently ignored, with no
+    // signal at all (issue #290 LOW-3).
+    const isCrossProjectListing = args.projectId === undefined || args.allProjects === true;
+    const ignoredParams: string[] = [];
+    if (!isCrossProjectListing) {
+      if (args.orderBy !== undefined) ignoredParams.push('orderBy');
+      if (args.filterTimezone !== undefined) ignoredParams.push('filterTimezone');
+      if (args.filterIncludeNulls !== undefined) ignoredParams.push('filterIncludeNulls');
+      if (args.expand !== undefined && args.expand.length > 0) ignoredParams.push('expand');
+    }
+    const ignoredParamsMessage =
+      ignoredParams.length > 0
+        ? ` — NOTE: ${ignoredParams.join(', ')} ${ignoredParams.length === 1 ? 'is' : 'are'} ` +
+          'ignored on this single-project listing (only honored for cross-project listing — ' +
+          'omit projectId or pass allProjects: true).'
+        : '';
+
     const taskCount = filteringResult.tasks?.length || 0;
     const response = createTaskResponse(
       'list-tasks',
-      `Found ${taskCount} tasks${filteringMessage}`,
-      { tasks: filteringResult.tasks || [] } as unknown as Parameters<typeof createTaskResponse>[2],
+      `Found ${taskCount} tasks${filteringMessage}${reliabilityMessage}${ignoredParamsMessage}`,
+      { tasks: filteringResult.tasks || [] },
       {
         timestamp: new Date().toISOString(),
         count: taskCount,
         ...(filteringResult.metadata || {}),
+        ...(ignoredParams.length > 0 ? { ignoredParams } : {}),
       },
       undefined, // verbosity (ignored - using standard AORP)
       undefined, // useOptimizedFormat (ignored - using standard AORP)
       undefined, // useAorp (ignored - always using AORP)
       undefined, // aorpConfig (using auto-generated)
-      args.sessionId
+      args.sessionId,
     );
 
     logger.debug('Tasks tool response', { subcommand: 'list', itemCount: taskCount });
@@ -145,9 +194,9 @@ async function listTasks(
 }
 
 export function registerTasksTool(
-  server: McpServer, 
-  authManager: AuthManager, 
-  clientFactory?: VikunjaClientFactory
+  server: McpServer,
+  authManager: AuthManager,
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_tasks',
@@ -209,16 +258,64 @@ export function registerTasksTool(
         .optional()
         .describe(
           'The project id, used by create/list/etc. to scope the task(s). On set-bucket/' +
-            "bulk-set-bucket this is optional and only needed to override auto-resolution " +
-            "(normally resolved from the task itself); it is NOT the bucket id.",
+            'bulk-set-bucket this is optional and only needed to override auto-resolution ' +
+            '(normally resolved from the task itself); it is NOT the bucket id.',
         ),
       dueDate: z.string().optional(),
       startDate: z.string().optional(),
       endDate: z.string().optional(),
       priority: z.number().min(0).max(5).optional(),
-      percentDone: z.number().min(0).max(1).optional(),
+      // percentDone is a WHOLE PERCENTAGE 0-100 on this tool surface. Vikunja's
+      // wire contract really is a fraction 0-1 (`PercentDone float64`,
+      // pkg/models/tasks.go; the frontend picker stores [0, 0.1, ... 1] in
+      // PercentDoneSelect.vue and every display site renders `percentDone * 100`)
+      // — that conversion happens in src/utils/percent-done.ts, on the way to and
+      // from the API, and nowhere else. The fraction is a transport detail and is
+      // deliberately not part of the contract an agent has to learn: it leaked as
+      // a memorized "gotcha", Vikunja's own human-facing scale is 0-100, and
+      // integers make `percentDone: 1` unambiguously 1% instead of a silent
+      // "done". See decision 22 in docs/ROADMAP.md §3 for the full reasoning and
+      // its revisit condition; the two community PRs that assumed 0-100
+      // (democratize-technology/vikunja-mcp#94, #82) read the interface the same
+      // way this schema now does.
+      percentDone: percentDoneSchema.describe(
+        'Completion progress as a whole percentage between 0 and 100 (25 = 25%, 100 = done). ' +
+          'Must be an integer — 0.5 is rejected, not silently read as half a percent. ' +
+          'Accepted by create, update, bulk-create, create-subtask and bulk-create-subtasks.',
+      ),
+      // models.Task.hex_color — a real create AND update field (Vikunja's
+      // createTask normalizes and inserts it; hex_color is in the update
+      // path's column allowlist). batch-import has always accepted a per-task
+      // hexColor, so leaving it undeclared here meant the same field worked in
+      // one entry point and silently vanished in another. '' clears the color.
+      hexColor: z
+        .string()
+        .regex(
+          /^(#[0-9A-Fa-f]{6})?$/,
+          "hexColor must be #RRGGBB (e.g. #4287f5), or '' to clear the task color",
+        )
+        .optional()
+        .describe(
+          "Task color as #RRGGBB (e.g. #4287f5), or '' to clear it. Accepted by create and " +
+            'update. Not a per-task field on bulk-create/bulk-create-subtasks — create the ' +
+            'tasks, then update.',
+        ),
       labels: z.array(z.number()).optional(),
       assignees: z.array(z.number()).optional(),
+      // apply-label only: label titles to get-or-create-then-attach, merged
+      // with `labels` (deduped) — the same field vikunja_task_labels declares
+      // and the same one applyLabels has always read. Undeclared here, Zod
+      // stripped it: a call passing BOTH labels and labelTitles silently lost
+      // the titles, and a titles-only call failed with a message insisting no
+      // titles had been given. See src/utils/label-ensure.ts.
+      labelTitles: z
+        .array(z.string().min(1))
+        .optional()
+        .describe(
+          'apply-label only: label titles to attach by name. Each title is get-or-created and ' +
+            'attached in ONE call (no separate lookup), merged with any ids in `labels`. ' +
+            'remove-label takes ids only.',
+        ),
       // Kanban bucket fields (set-bucket, bulk-set-bucket subcommands).
       // z.coerce tolerates MCP clients whose cached tool schema predates
       // these params and therefore send them as strings over JSON-RPC.
@@ -234,7 +331,7 @@ export function registerTasksTool(
         .number()
         .optional()
         .describe(
-          "Optional Kanban view id for set-bucket/bulk-set-bucket, auto-resolved from the " +
+          'Optional Kanban view id for set-bucket/bulk-set-bucket, auto-resolved from the ' +
             "task's project when omitted. Get an explicit value from vikunja_projects " +
             "list-views (look for viewKind: 'kanban'). This is a view id, not a bucket id.",
         ),
@@ -272,9 +369,11 @@ export function registerTasksTool(
             'conditions with && (AND) or || (OR); group with parentheses. Examples: ' +
             '"priority >= 4" (high priority, priority is 0-5, so >= 4 means urgent/DO NOW); ' +
             '"dueDate < now+14d" (due within 14 days); "priority >= 4 && dueDate < now+7d" ' +
-            '(high priority AND due soon); "labels in \'bug\', \'urgent\'" (has either label); ' +
+            "(high priority AND due soon); \"labels in 'bug', 'urgent'\" (has either label); " +
             '"done = false && dueDate <= now" (overdue, not done). Date literals: now, ' +
-            'now+14d, now-1w, or ISO 8601 (2024-12-31). Fields use camelCase (dueDate, ' +
+            'now+14d, now-1w, or ISO 8601 (2024-12-31). percentDone in a filter uses the ' +
+            'same whole-percentage 0-100 scale as the percentDone argument above, so ' +
+            '"percentDone > 50" means more than half done. Fields use camelCase (dueDate, ' +
             'percentDone, startDate, endDate, doneAt, project, plus ' +
             'done/priority/assignees/labels/created/updated/title/description); ' +
             'snake_case aliases (due_date, percent_done, etc.) are also accepted and ' +
@@ -287,16 +386,53 @@ export function registerTasksTool(
       search: z.string().optional(),
       // List specific filters
       allProjects: z.boolean().optional(),
-      done: z.boolean().optional(),
+      // Dual-purpose: a completion filter on `list`, and the task's done state
+      // on create/update. create declared it and never sent it, so "create
+      // this task, already done" silently created an open task.
+      done: z
+        .boolean()
+        .optional()
+        .describe(
+          'On create/update: whether the task is done. On list: filters by completion state. ' +
+            'Note that a task created with done: true has no done_at timestamp (Vikunja only ' +
+            'stamps done_at when a task is UPDATED to done), so it will not match doneAt ' +
+            'filters — create it open and update it to done if you need that timestamp.',
+        ),
       // GET /tasks query params honored for cross-project listing (direct
       // REST — see RestCrossProjectFilteringStrategy). Single-project
       // listing (ClientSideFilteringStrategy/ServerSideFilteringStrategy)
       // calls GET /projects/{id}/tasks, which never supported these extra
       // params, so they are silently unused in that case.
-      orderBy: z.enum(['asc', 'desc']).optional(),
-      filterTimezone: z.string().optional(),
-      filterIncludeNulls: z.boolean().optional(),
-      expand: z.array(z.enum(['subtasks', 'buckets', 'reactions', 'comments'])).optional(),
+      orderBy: z
+        .enum(['asc', 'desc'])
+        .optional()
+        .describe(
+          'Sort direction paired with sort_by. Cross-project listing only (no projectId, or ' +
+            'allProjects: true) — ignored (with a response warning) on a single-project listing.',
+        ),
+      filterTimezone: z
+        .string()
+        .optional()
+        .describe(
+          'Timezone for filter date literals. Cross-project listing only (no projectId, or ' +
+            'allProjects: true) — ignored (with a response warning) on a single-project listing.',
+        ),
+      filterIncludeNulls: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether filtered fields with a null value should be included. Cross-project ' +
+            'listing only (no projectId, or allProjects: true) — ignored (with a response ' +
+            'warning) on a single-project listing.',
+        ),
+      expand: z
+        .array(z.enum(['subtasks', 'buckets', 'reactions', 'comments']))
+        .optional()
+        .describe(
+          'Extra relations to embed in each task. Cross-project listing only (no projectId, ' +
+            'or allProjects: true) — ignored (with a response warning) on a single-project ' +
+            'listing.',
+        ),
       // Comment fields
       comment: z.string().optional(),
       commentId: z.number().optional(),
@@ -313,18 +449,33 @@ export function registerTasksTool(
       value: z.unknown().optional(),
       tasks: z
         .array(
-          z.object({
-            title: z.string(),
-            description: z.string().optional(),
-            dueDate: z.string().optional(),
-            startDate: z.string().optional(),
-            endDate: z.string().optional(),
-            priority: z.number().min(0).max(5).optional(),
-            labels: z.array(z.number()).optional(),
-            assignees: z.array(z.number()).optional(),
-            repeatAfter: z.number().min(0).optional(),
-            repeatMode: z.enum(['day', 'week', 'month', 'year']).optional(),
-          }),
+          // strict: an undeclared key here used to be stripped silently, so a
+          // per-task field an agent invented (or reached for from the flat
+          // create shape) vanished while the call still reported success. See
+          // src/utils/strict-nested-object.ts.
+          strictNestedObject(
+            {
+              title: z.string(),
+              description: z.string().optional(),
+              dueDate: z.string().optional(),
+              startDate: z.string().optional(),
+              endDate: z.string().optional(),
+              priority: z.number().min(0).max(5).optional(),
+              // Whole percentage 0-100, same contract as the top-level
+              // percentDone above (converted to Vikunja's 0-1 wire fraction in
+              // createOneBulkTask).
+              percentDone: percentDoneSchema,
+              labels: z.array(z.number()).optional(),
+              assignees: z.array(z.number()).optional(),
+              repeatAfter: z.number().min(0).optional(),
+              repeatMode: z.enum(['day', 'week', 'month', 'year']).optional(),
+            },
+            'a bulk-create task',
+            'projectId is a TOP-LEVEL argument, not a per-task one. Fields with no bulk-create ' +
+              'equivalent (done, hexColor, position, bucketId) belong on the single-task ' +
+              'subcommands — bulk-create the tasks, then use update / set-bucket / set-position ' +
+              '(or bulk-update / bulk-set-bucket).',
+          ),
         )
         .optional(),
       // Reminder fields
@@ -362,15 +513,27 @@ export function registerTasksTool(
       // create-subtask's own fields.
       subtasks: z
         .array(
-          z.object({
-            title: z.string(),
-            description: z.string().optional(),
-            dueDate: z.string().optional(),
-            priority: z.number().min(0).max(5).optional(),
-            labels: z.array(z.number()).optional(),
-            assignees: z.array(z.number()).optional(),
-            bucketId: z.coerce.number().optional(),
-          }),
+          strictNestedObject(
+            {
+              title: z.string(),
+              description: z.string().optional(),
+              dueDate: z.string().optional(),
+              startDate: z.string().optional(),
+              endDate: z.string().optional(),
+              priority: z.number().min(0).max(5).optional(),
+              // Whole percentage 0-100, same contract as the top-level
+              // percentDone above (converted to Vikunja's 0-1 wire fraction by
+              // the shared percentDoneToFraction in src/utils/percent-done.ts).
+              percentDone: percentDoneSchema,
+              labels: z.array(z.number()).optional(),
+              assignees: z.array(z.number()).optional(),
+              bucketId: z.coerce.number().optional(),
+            },
+            'a bulk-create-subtasks subtask',
+            'parentTaskId is a TOP-LEVEL argument, not a per-subtask one. Anything else ' +
+              '(done, hexColor, repeatAfter, position) belongs on the single-task ' +
+              'subcommands — create the subtasks, then use update / set-position.',
+          ),
         )
         .optional(),
       // Session ID for AORP response tracking
@@ -408,7 +571,11 @@ export function registerTasksTool(
         logger.debug('Executing tasks tool', { subcommand: args.subcommand, args });
 
         // Check authentication with enhanced error message
-        if (!authManager.isAuthenticated()) {
+        // (closure-gate precedence fix: defer to the per-request context
+        // when bound — see hasRequestContext's doc comment, src/client.ts)
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task management features');
         }
 
@@ -459,7 +626,7 @@ export function registerTasksTool(
             return listAssignees(args as Parameters<typeof listAssignees>[0], authManager);
 
           case 'comment':
-            return handleComment(args as Parameters<typeof handleComment>[0], authManager);
+            return handleComment(args, authManager);
 
           case 'attach':
             return handleAttach(args as TaskAttachArgs, authManager);
@@ -504,18 +671,32 @@ export function registerTasksTool(
             return addReminder(args as Parameters<typeof addReminder>[0], authManager);
 
           case 'remove-reminder':
-            return removeReminder(args as Parameters<typeof removeReminder>[0], authManager);
+            return removeReminder(args, authManager);
 
           case 'list-reminders':
             return listReminders(args as Parameters<typeof listReminders>[0], authManager);
           case 'apply-label':
-            return applyLabels(args as Parameters<typeof applyLabels>[0], authManager);
+            return applyLabels(args, authManager);
 
           case 'remove-label':
-            return removeLabels(args as Parameters<typeof removeLabels>[0], authManager);
+            // `labelTitles` is an apply-label-only field: removeLabels only
+            // ever reads ids. Now that the flat schema declares labelTitles,
+            // an agent that learned it from apply-label would otherwise have
+            // its titles silently ignored here — reject instead, naming the
+            // field and the way to do what it wanted (the same treatment
+            // `position` gets on create).
+            if (args.labelTitles !== undefined && args.labelTitles.length > 0) {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'labelTitles is not supported by remove-label — removal takes label ids only, ' +
+                  'so a title here would be silently ignored. Look the ids up with ' +
+                  'list-labels (or vikunja_labels list) and pass them as `labels`.',
+              );
+            }
+            return removeLabels(args, authManager);
 
           case 'list-labels':
-            return listTaskLabels(args as Parameters<typeof listTaskLabels>[0], authManager);
+            return listTaskLabels(args, authManager);
 
           case 'set-bucket':
             return setTaskBucket(args as Parameters<typeof setTaskBucket>[0], authManager);
@@ -533,7 +714,10 @@ export function registerTasksTool(
             return createSubtask(args as Parameters<typeof createSubtask>[0], authManager);
 
           case 'bulk-create-subtasks':
-            return bulkCreateSubtasks(args as Parameters<typeof bulkCreateSubtasks>[0], authManager);
+            return bulkCreateSubtasks(
+              args as Parameters<typeof bulkCreateSubtasks>[0],
+              authManager,
+            );
 
           case 'list-subtasks':
             return listSubtasks(args as Parameters<typeof listSubtasks>[0], authManager);

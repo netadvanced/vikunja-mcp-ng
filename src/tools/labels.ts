@@ -35,6 +35,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
+import { getAuthManagerFromContext, hasRequestContext } from '../client';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
 import { validateAndConvertId } from '../utils/validation';
 import { wrapToolError } from '../utils/error-handler';
@@ -71,7 +72,11 @@ function rethrowLabelNotFound(error: unknown, id: number): never {
   throw error;
 }
 
-export function registerLabelsTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerLabelsTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_labels',
     withReadOnlyNote(
@@ -104,7 +109,11 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
     },
     getToolAnnotations('vikunja_labels'),
     async (args) => {
-      if (!authManager.isAuthenticated()) {
+      // Closure-gate precedence fix: defer to the per-request context when
+      // bound (see hasRequestContext's doc comment, src/client.ts).
+      if (hasRequestContext()) {
+        await getAuthManagerFromContext();
+      } else if (!authManager.isAuthenticated()) {
         throw new MCPError(
           ErrorCode.AUTH_REQUIRED,
           'Authentication required. Please use vikunja_auth.connect first.',
@@ -116,7 +125,6 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
       assertWriteAllowed('vikunja_labels', subcommand);
 
       try {
-
         switch (subcommand) {
           case 'list': {
             const params = new URLSearchParams();
@@ -163,7 +171,11 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
 
             let label: VikunjaLabel;
             try {
-              label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'GET', `/labels/${args.id}`);
+              label = await vikunjaRestRequest<VikunjaLabel>(
+                authManager,
+                'GET',
+                `/labels/${args.id}`,
+              );
             } catch (error) {
               rethrowLabelNotFound(error, args.id);
             }
@@ -195,13 +207,18 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
             if (args.description) labelData.description = args.description;
             if (args.hexColor) labelData.hex_color = args.hexColor;
 
-            const label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'PUT', '/labels', labelData);
+            const label = await vikunjaRestRequest<VikunjaLabel>(
+              authManager,
+              'PUT',
+              '/labels',
+              labelData,
+            );
 
             const response = createStandardResponse(
               'create-label',
               `Label "${label.title}" created successfully`,
               { label },
-              { affectedFields: Object.keys(labelData).filter(key => typeof key === 'string') },
+              { affectedFields: Object.keys(labelData).filter((key) => typeof key === 'string') },
             );
 
             return {
@@ -234,7 +251,12 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
 
             let label: VikunjaLabel;
             try {
-              label = await vikunjaRestRequest<VikunjaLabel>(authManager, 'PUT', `/labels/${args.id}`, updates);
+              label = await vikunjaRestRequest<VikunjaLabel>(
+                authManager,
+                'PUT',
+                `/labels/${args.id}`,
+                updates,
+              );
             } catch (error) {
               rethrowLabelNotFound(error, args.id);
             }
@@ -243,7 +265,7 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
               'update-label',
               `Label "${label.title}" updated successfully`,
               { label },
-              { affectedFields: Object.keys(updates).filter(key => typeof key === 'string') },
+              { affectedFields: Object.keys(updates).filter((key) => typeof key === 'string') },
             );
 
             return {

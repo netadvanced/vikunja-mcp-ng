@@ -3,7 +3,11 @@
  * Ensures tasks are displayed with useful information
  */
 
-import { formatSuccessMessage, createSuccessResponse, createErrorResponse } from '../../src/utils/simple-response';
+import {
+  formatSuccessMessage,
+  createSuccessResponse,
+  createErrorResponse,
+} from '../../src/utils/simple-response';
 import type { Task } from '../../src/types/vikunja';
 
 describe('simple-response - Task Formatting', () => {
@@ -17,23 +21,24 @@ describe('simple-response - Task Formatting', () => {
         done: false,
         priority: 5,
         due_date: '2025-01-30T17:00:00Z',
-        percent_done: 25,
-        labels: [
-          { id: 1, title: 'urgent', hex_color: '#ff0000' }
-        ],
-        assignees: [
-          { id: 1, username: 'johndoe', email: 'john@example.com' }
-        ],
+        // Wire value: Vikunja stores progress as a 0-1 fraction. The tool
+        // surface renders it as a whole percentage (0.25 -> "25%"). This test
+        // previously set 25 here and still asserted "25%" — it passed only
+        // because the formatter printed the raw number next to a % sign, which
+        // is exactly the display bug the percentage-scale change fixed.
+        percent_done: 0.25,
+        labels: [{ id: 1, title: 'urgent', hex_color: '#ff0000' }],
+        assignees: [{ id: 1, username: 'johndoe', email: 'john@example.com' }],
         repeat_after: 0,
         created: '2025-01-28T10:00:00Z',
-        updated: '2025-01-28T14:30:00Z'
+        updated: '2025-01-28T14:30:00Z',
       };
 
       const result = formatSuccessMessage(
         'list-tasks',
         'Found 1 task',
         { tasks: [task] },
-        { count: 1 }
+        { count: 1 },
       );
 
       expect(result).toContain('Fix critical bug');
@@ -59,14 +64,14 @@ describe('simple-response - Task Formatting', () => {
         project_id: 5,
         title: 'Simple task',
         done: true,
-        repeat_after: 0
+        repeat_after: 0,
       };
 
       const result = formatSuccessMessage(
         'list-tasks',
         'Found 1 task',
         { tasks: [task] },
-        { count: 1 }
+        { count: 1 },
       );
 
       expect(result).toContain('Simple task');
@@ -86,7 +91,7 @@ describe('simple-response - Task Formatting', () => {
           done: false,
           priority: 5,
           due_date: '2025-01-30T17:00:00Z',
-          repeat_after: 0
+          repeat_after: 0,
         },
         {
           id: 2,
@@ -96,15 +101,15 @@ describe('simple-response - Task Formatting', () => {
           priority: 2,
           labels: [{ id: 1, title: 'low-priority' }],
           assignees: [{ id: 2, username: 'user2' }],
-          repeat_after: 0
-        }
+          repeat_after: 0,
+        },
       ];
 
       const result = formatSuccessMessage(
         'list-tasks',
         'Found 2 tasks',
         { tasks: tasks },
-        { count: 2 }
+        { count: 2 },
       );
 
       // List items use plain numbered lines, never `### ` headings (#86).
@@ -132,17 +137,31 @@ describe('simple-response - Task Formatting', () => {
       // issue where "rich" and "sparse" items were interleaved.
       const items: Task[] = [
         { id: 76, project_id: 1, title: 'Tenant', done: false, repeat_after: 0 },
-        { id: 7, project_id: 1, title: 'DEV - Sandpit', description: 'Sandbox env', done: false, repeat_after: 0 },
+        {
+          id: 7,
+          project_id: 1,
+          title: 'DEV - Sandpit',
+          description: 'Sandbox env',
+          done: false,
+          repeat_after: 0,
+        },
         { id: 84, project_id: 1, title: 'Raccordement clients', done: false, repeat_after: 0 },
         { id: 85, project_id: 1, title: 'Gestion chantiers BGR', done: false, repeat_after: 0 },
-        { id: 86, project_id: 1, title: 'Bugs project', description: 'Bug tracker', done: false, repeat_after: 0 },
+        {
+          id: 86,
+          project_id: 1,
+          title: 'Bugs project',
+          description: 'Bug tracker',
+          done: false,
+          repeat_after: 0,
+        },
       ];
 
       const result = formatSuccessMessage(
         'list-projects',
         'Found 5 projects',
         { tasks: items },
-        { count: 5 }
+        { count: 5 },
       );
 
       // No document headings should appear inside the list — every item is a
@@ -166,16 +185,16 @@ describe('simple-response - Task Formatting', () => {
         assignees: [
           { id: 1, username: 'alice', email: 'alice@example.com' },
           { id: 2, username: 'bob', email: 'bob@example.com' },
-          { id: 3, username: 'charlie' } // No email
+          { id: 3, username: 'charlie' }, // No email
         ],
-        repeat_after: 0
+        repeat_after: 0,
       };
 
       const result = formatSuccessMessage(
         'list-tasks',
         'Found 1 task',
         { tasks: [task] },
-        { count: 1 }
+        { count: 1 },
       );
 
       expect(result).toContain('**Assignees:**');
@@ -193,22 +212,64 @@ describe('simple-response - Task Formatting', () => {
         labels: [
           { id: 1, title: 'urgent', hex_color: '#ff0000' },
           { id: 2, title: 'bug', hex_color: '#ff6600' },
-          { id: 3, title: 'frontend', hex_color: '#0066ff' }
+          { id: 3, title: 'frontend', hex_color: '#0066ff' },
         ],
-        repeat_after: 0
+        repeat_after: 0,
       };
 
       const result = formatSuccessMessage(
         'list-tasks',
         'Found 1 task',
         { tasks: [task] },
-        { count: 1 }
+        { count: 1 },
       );
 
       expect(result).toContain('**Labels:**');
       expect(result).toContain('urgent');
       expect(result).toContain('bug');
       expect(result).toContain('frontend');
+    });
+
+    it.each([
+      [0.01, '**Progress:** 1%'],
+      [0.5, '**Progress:** 50%'],
+      [0.75, '**Progress:** 75%'],
+      [1, '**Progress:** 100%'],
+    ])('renders the wire fraction %f as %s', (fraction, expected) => {
+      // Regression for the display bug this scale change fixed: the formatter
+      // printed the raw fraction next to a `%` sign, so a half-done task read
+      // as "Progress: 0.5%" and a finished one as "Progress: 1%".
+      const task: Task = {
+        id: 1,
+        project_id: 5,
+        title: 'Progress bar',
+        done: false,
+        priority: 0,
+        percent_done: fraction,
+        repeat_after: 0,
+      };
+
+      const result = formatSuccessMessage('list-tasks', 'Found 1 task', { tasks: [task] });
+
+      expect(result).toContain(expected);
+    });
+
+    it('rounds a sub-percent value stored by another Vikunja client', () => {
+      const task: Task = {
+        id: 1,
+        project_id: 5,
+        title: 'Odd progress',
+        done: false,
+        priority: 0,
+        // Vikunja's own web-UI slider can store a value this tool surface
+        // would never accept as input.
+        percent_done: 0.336,
+        repeat_after: 0,
+      };
+
+      const result = formatSuccessMessage('list-tasks', 'Found 1 task', { tasks: [task] });
+
+      expect(result).toContain('**Progress:** 34%');
     });
 
     it('should not display fields when they are falsy', () => {
@@ -219,14 +280,14 @@ describe('simple-response - Task Formatting', () => {
         done: false,
         priority: 0, // Zero priority
         percent_done: 0, // Zero progress
-        repeat_after: 0
+        repeat_after: 0,
       };
 
       const result = formatSuccessMessage(
         'list-tasks',
         'Found 1 task',
         { tasks: [task] },
-        { count: 1 }
+        { count: 1 },
       );
 
       expect(result).toContain('Minimal task');
@@ -240,46 +301,27 @@ describe('simple-response - Task Formatting', () => {
     it('should format generic items with title', () => {
       const items = [
         { id: 1, title: 'Generic Item 1' },
-        { id: 2, title: 'Generic Item 2' }
+        { id: 2, title: 'Generic Item 2' },
       ];
 
-      const result = formatSuccessMessage(
-        'list-items',
-        'Found 2 items',
-        { items },
-        { count: 2 }
-      );
+      const result = formatSuccessMessage('list-items', 'Found 2 items', { items }, { count: 2 });
 
       expect(result).toContain('1. **Generic Item 1** (ID: 1)');
       expect(result).toContain('2. **Generic Item 2** (ID: 2)');
     });
 
     it('should format generic items with name', () => {
-      const items = [
-        { id: 1, name: 'Named Item' }
-      ];
+      const items = [{ id: 1, name: 'Named Item' }];
 
-      const result = formatSuccessMessage(
-        'list-items',
-        'Found 1 item',
-        { items },
-        { count: 1 }
-      );
+      const result = formatSuccessMessage('list-items', 'Found 1 item', { items }, { count: 1 });
 
       expect(result).toContain('1. **Named Item** (ID: 1)');
     });
 
     it('should format items without id, title, or name', () => {
-      const items = [
-        { foo: 'bar', baz: 'qux' }
-      ];
+      const items = [{ foo: 'bar', baz: 'qux' }];
 
-      const result = formatSuccessMessage(
-        'list-items',
-        'Found 1 item',
-        { items },
-        { count: 1 }
-      );
+      const result = formatSuccessMessage('list-items', 'Found 1 item', { items }, { count: 1 });
 
       // When no id/title/name, it uses the entire object as the title
       expect(result).toContain('1. **');
@@ -290,14 +332,14 @@ describe('simple-response - Task Formatting', () => {
     it('should format project items', () => {
       const projects = [
         { id: 1, name: 'Project Alpha', description: 'First project' },
-        { id: 2, name: 'Project Beta', description: 'Second project' }
+        { id: 2, name: 'Project Beta', description: 'Second project' },
       ];
 
       const result = formatSuccessMessage(
         'list-projects',
         'Found 2 projects',
         { projects },
-        { count: 2 }
+        { count: 2 },
       );
 
       expect(result).toContain('1. **Project Alpha** (ID: 1)');
@@ -307,14 +349,14 @@ describe('simple-response - Task Formatting', () => {
     it('should format label items', () => {
       const labels = [
         { id: 1, title: 'urgent', hex_color: '#ff0000' },
-        { id: 2, title: 'bug', hex_color: '#ff6600' }
+        { id: 2, title: 'bug', hex_color: '#ff6600' },
       ];
 
       const result = formatSuccessMessage(
         'list-labels',
         'Found 2 labels',
         { labels },
-        { count: 2 }
+        { count: 2 },
       );
 
       expect(result).toContain('1. **urgent** (ID: 1)');
@@ -330,14 +372,14 @@ describe('simple-response - Task Formatting', () => {
         title: 'Test task',
         done: false,
         priority: 3,
-        repeat_after: 0
+        repeat_after: 0,
       };
 
       const response = createSuccessResponse(
         'get-task',
         'Task retrieved',
         { tasks: [task] },
-        { taskId: 1 }
+        { taskId: 1 },
       );
 
       expect(response.content).toContain('Test task');
@@ -351,12 +393,9 @@ describe('simple-response - Task Formatting', () => {
 
   describe('createErrorResponse', () => {
     it('should create error response', () => {
-      const response = createErrorResponse(
-        'delete-task',
-        'Task not found',
-        'NOT_FOUND',
-        { taskId: 999 }
-      );
+      const response = createErrorResponse('delete-task', 'Task not found', 'NOT_FOUND', {
+        taskId: 999,
+      });
 
       expect(response.content).toContain('❌ Error');
       expect(response.content).toContain('Task not found');
@@ -382,15 +421,15 @@ describe('simple-response - Task Formatting', () => {
         due_date: '2025-02-01T09:00:00Z',
         labels: [
           { id: 1, title: 'urgent', hex_color: '#ff0000' },
-          { id: 2, title: 'backend', hex_color: '#0066ff' }
+          { id: 2, title: 'backend', hex_color: '#0066ff' },
         ],
-        repeat_after: 0
+        repeat_after: 0,
       };
 
       const result = formatSuccessMessage(
         'get-task',
         'Retrieved task',
-        task as unknown as Parameters<typeof formatSuccessMessage>[2]
+        task as unknown as Parameters<typeof formatSuccessMessage>[2],
       );
 
       expect(result).toContain('Bare task');
@@ -414,13 +453,13 @@ describe('simple-response - Task Formatting', () => {
         description: 'No labels here',
         done: true,
         repeat_after: 0,
-        labels: []
+        labels: [],
       };
 
       const result = formatSuccessMessage(
         'get-task',
         'Retrieved task',
-        task as unknown as Parameters<typeof formatSuccessMessage>[2]
+        task as unknown as Parameters<typeof formatSuccessMessage>[2],
       );
 
       expect(result).toContain('Labelless task');
@@ -436,7 +475,7 @@ describe('simple-response - Task Formatting', () => {
       const result = formatSuccessMessage(
         'get-project',
         'Retrieved project',
-        project as unknown as Parameters<typeof formatSuccessMessage>[2]
+        project as unknown as Parameters<typeof formatSuccessMessage>[2],
       );
 
       expect(result).toContain('Alpha');
@@ -451,14 +490,14 @@ describe('simple-response - Task Formatting', () => {
       const payload = {
         id: 99,
         tasks: [
-          { id: 1, project_id: 1, title: 'In collection', done: false, repeat_after: 0 } as Task
-        ]
+          { id: 1, project_id: 1, title: 'In collection', done: false, repeat_after: 0 } as Task,
+        ],
       };
 
       const result = formatSuccessMessage(
         'list-tasks',
         'Found 1 task',
-        payload as unknown as Parameters<typeof formatSuccessMessage>[2]
+        payload as unknown as Parameters<typeof formatSuccessMessage>[2],
       );
 
       expect(result).toContain('**Results:** 1 item(s)');
@@ -472,7 +511,7 @@ describe('simple-response - Task Formatting', () => {
         'list-tasks',
         'No tasks found',
         { tasks: [] },
-        { count: 0 }
+        { count: 0 },
       );
 
       expect(result).toContain('**Results:**');
@@ -488,15 +527,10 @@ describe('simple-response - Task Formatting', () => {
         project_id: 1,
         title: `Task ${i + 1}`,
         done: false,
-        repeat_after: 0
+        repeat_after: 0,
       }));
 
-      const result = formatSuccessMessage(
-        'list-tasks',
-        'Found 15 tasks',
-        { tasks },
-        { count: 15 }
-      );
+      const result = formatSuccessMessage('list-tasks', 'Found 15 tasks', { tasks }, { count: 15 });
 
       expect(result).toContain('**Results:**');
       expect(result).toContain('15 item(s)');
@@ -513,15 +547,10 @@ describe('simple-response - Task Formatting', () => {
         project_id: 1,
         title: `Task ${i + 1}`,
         done: false,
-        repeat_after: 0
+        repeat_after: 0,
       }));
 
-      const result = formatSuccessMessage(
-        'list-tasks',
-        'Found 10 tasks',
-        { tasks },
-        { count: 10 }
-      );
+      const result = formatSuccessMessage('list-tasks', 'Found 10 tasks', { tasks }, { count: 10 });
 
       expect(result).toContain('**Results:**');
       expect(result).toContain('10 item(s)');
@@ -540,15 +569,10 @@ describe('simple-response - Task Formatting', () => {
         project_id: 1,
         title: `Task ${i + 1}`,
         done: false,
-        repeat_after: 0
+        repeat_after: 0,
       }));
 
-      const result = formatSuccessMessage(
-        'list-tasks',
-        'Found 60 tasks',
-        { tasks },
-        { count: 60 }
-      );
+      const result = formatSuccessMessage('list-tasks', 'Found 60 tasks', { tasks }, { count: 60 });
 
       expect(result).toContain('**Results:** 60 item(s)');
       // First 50 items are rendered in full.
@@ -571,7 +595,7 @@ describe('simple-response - Task Formatting', () => {
         'list-items',
         'Found 12 items',
         items as unknown as Parameters<typeof formatSuccessMessage>[2],
-        { count: 12 }
+        { count: 12 },
       );
 
       expect(result).toContain('**Results:** 12 item(s)');
@@ -587,7 +611,7 @@ describe('simple-response - Task Formatting', () => {
         'list-items',
         'Found 3 items',
         items as unknown as Parameters<typeof formatSuccessMessage>[2],
-        { count: 3 }
+        { count: 3 },
       );
 
       expect(result).toContain('1. "alpha"');

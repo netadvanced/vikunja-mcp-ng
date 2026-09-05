@@ -14,6 +14,11 @@ import { createSimpleResponse, formatAorpAsMarkdown } from '../../utils/response
 import { ensureLabelByTitle } from '../../utils/label-ensure';
 import { MAX_BULK_OPERATION_TASKS } from './constants';
 import type { components } from '../../types/generated/vikunja-openapi';
+import {
+  DEFAULT_SERVER_PAGE_CAP,
+  describePossibleTruncation,
+  readServerPageCap,
+} from '../../utils/filtering/pagination';
 
 /** `models.Label` per the OpenAPI spec, as returned by `GET /tasks/{task}/labels`. */
 type VikunjaLabel = components['schemas']['models.Label'];
@@ -222,7 +227,8 @@ export async function applyLabels(
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     const hasId = args.id !== undefined && args.id !== null;
-    const hasTaskIds = args.taskIds !== undefined && args.taskIds !== null && args.taskIds.length > 0;
+    const hasTaskIds =
+      args.taskIds !== undefined && args.taskIds !== null && args.taskIds.length > 0;
 
     if (hasId && hasTaskIds) {
       throw new MCPError(
@@ -405,7 +411,7 @@ export async function applyLabels(
           labelsCreated: createdLabels.map((l) => ({ id: l.id, title: l.title })),
           labelsReused: reusedLabels.map((l) => ({ id: l.id, title: l.title })),
         },
-      }
+      },
     );
 
     return {
@@ -519,9 +525,7 @@ async function removeLabelIdsFromOneTask(
   // Everything requested is off the task. Some ids may never have been
   // attached (Vikunja 403 → confirmed absent by the reconcile above); report
   // those as skipped, mirroring applyLabels' idempotent messaging.
-  const alreadyAbsent = removeFailures.filter(
-    (id) => attachedIds === null || !attachedIds.has(id),
-  );
+  const alreadyAbsent = removeFailures.filter((id) => attachedIds === null || !attachedIds.has(id));
   const removed = labelIds.filter((id) => !removeFailures.includes(id));
 
   return { removed, alreadyAbsent };
@@ -583,7 +587,8 @@ export async function removeLabels(
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     const hasId = args.id !== undefined && args.id !== null;
-    const hasTaskIds = args.taskIds !== undefined && args.taskIds !== null && args.taskIds.length > 0;
+    const hasTaskIds =
+      args.taskIds !== undefined && args.taskIds !== null && args.taskIds.length > 0;
 
     if (hasId && hasTaskIds) {
       throw new MCPError(
@@ -695,7 +700,11 @@ export async function removeLabels(
     validateId(args.id as number, 'id');
     const taskId = args.id as number;
 
-    const { removed, alreadyAbsent } = await removeLabelIdsFromOneTask(taskId, labelIds, authManager);
+    const { removed, alreadyAbsent } = await removeLabelIdsFromOneTask(
+      taskId,
+      labelIds,
+      authManager,
+    );
 
     let message: string;
     if (removed.length > 0) {
@@ -721,7 +730,7 @@ export async function removeLabels(
           labelsRemoved: removed,
           labelsAlreadyAbsent: alreadyAbsent,
         },
-      }
+      },
     );
 
     return {
@@ -782,11 +791,24 @@ export async function listTaskLabels(
       title: task.title ?? '',
     };
 
+    // "At minimum" half of the CRIT-7 pattern (issue #289 / HIGH-18
+    // spot-check) — this call site never exposes page/perPage to the
+    // caller at all, so it is always the "no pagination intent expressed"
+    // case. See `describePossibleTruncation`'s doc comment.
+    const truncation = describePossibleTruncation(labels.length, {
+      autoPaginate: true,
+      cap: readServerPageCap(authManager) ?? DEFAULT_SERVER_PAGE_CAP,
+      resourceLabel: `Task ${args.id} labels`,
+    });
+
     const response = createSimpleResponse(
       'list-labels',
-      `Task has ${labels.length} label(s)`,
+      `Task has ${labels.length} label(s)` +
+        (truncation.resultComplete === false
+          ? ` — INCOMPLETE RESULT: ${truncation.warnings?.join(' ')}`
+          : ''),
       { task: { ...minimalTask, labels: labels } },
-      { metadata: { count: labels.length } }
+      { metadata: { count: labels.length, ...truncation } },
     );
 
     return {

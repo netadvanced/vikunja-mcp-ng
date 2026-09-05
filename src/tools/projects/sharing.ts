@@ -22,12 +22,14 @@
  * `getProjectShare`/`deleteProjectShare` do NOT call the by-id GET route
  * above to resolve a share — they route through the LIST route instead, as a
  * workaround for a confirmed upstream server bug that makes the by-id GET
- * 404 for every share, even immediately after creation. **Status: fixed
- * upstream and confirmed shipped in the Vikunja 2.4.0 tagged release, but
- * this project's documented v1-floor minimum is still 2.3.0 (which lacks the
- * fix), so this workaround stays.** See `findShareByIdViaList`'s doc comment
- * for the full root-cause chain, the exact upstream commit, and the exact
- * condition for removing it.
+ * 404 for every share, even immediately after creation. **Status (updated
+ * 2026-08-31): fixed upstream and shipped in the Vikunja 2.4.0 tagged
+ * release, and the minimum supported Vikunja is now 2.4.0 — so this
+ * workaround's documented removal condition HAS FIRED.** It is retained here
+ * only because removing it is a behaviour change needing live
+ * re-verification, deliberately kept out of the floor-policy change that
+ * fired the condition. See `findShareByIdViaList`'s doc comment for the full
+ * root-cause chain and the exact upstream commit.
  */
 
 import type { AuthManager } from '../../auth/AuthManager';
@@ -155,36 +157,62 @@ function truncateForMessage(value: string, maxLength = 40): string {
  * `GET /projects/{project}/shares` (list) is unaffected either way — it
  * authorizes via `project.IsAdmin(s, a)`, never touching `Hash` at all.
  *
- * **Current status (as of the 2.4.0 alignment, tracking issue #28 item A1):
- * still needed.** This project's documented minimum supported Vikunja
- * version is 2.3.0 (the v1-floor, which predates the fix) even though the
- * aligned/tested default is now 2.4.0 (which has it) — see
- * `docker/e2e/docker-compose.yml`'s pin comment and `docs/API-COVERAGE.md`.
- * A caller could be pointed at any server from 2.3.0 up, so this workaround
- * cannot be removed just because the *default* moved past the fix.
+ * **Revisit condition, as originally written: remove this workaround (revert
+ * to the by-id route) only when the minimum supported Vikunja version is
+ * raised to ≥ 2.4.0** — i.e. when 2.3.0 support is dropped, not merely when
+ * the default pin is bumped.
  *
- * **Revisit condition: remove this workaround (revert to the by-id route)
- * only when the minimum supported Vikunja version is raised to ≥ 2.4.0** —
- * i.e. when 2.3.0 support is dropped, not merely when the default pin is
- * bumped.
+ * **Status 2026-08-31: that condition has FIRED.** The floor was raised
+ * 2.3.0 → 2.4.0 (docs/ROADMAP.md §3 decision 27, docs/LOCAL-TESTING.md's
+ * "Version pinning and refresh"), and the fix is an ancestor of every
+ * version this project now supports. Reverting to the by-id route is
+ * therefore correct and outstanding — but it changes what request this
+ * server sends, so it needs a live e2e run to land, and was deliberately not
+ * bundled into the documentation-and-policy change that fired the condition.
+ * Whoever picks it up: delete this helper, call
+ * `GET /projects/{project}/shares/{share}` directly from `getProjectShare`
+ * and `deleteProjectShare`, and re-run `npm run test:e2e:mcp`.
+ *
+ * FIXED (audit #291 MED-2): this used to make a single unpaginated
+ * `GET /projects/{project}/shares` call, so a share past the server's
+ * default page size read as not-found — silently no-oping `delete-share`
+ * for it. Now walks `page` (bounded by `FIND_SHARE_MAX_PAGES`, same
+ * short-final-page stop condition as `fetchAllProjects` in crud.ts) until
+ * the target id is found or every page has been read.
  */
+// Safety valve for findShareByIdViaList's pagination loop below: bounds the
+// number of `GET /projects/{id}/shares` round trips so a misbehaving server
+// (one that never returns a short final page) can't turn a single-share
+// lookup into an unbounded loop. Mirrors fetchAllProjects' page size/cap
+// choice in crud.ts.
+const FIND_SHARE_PAGE_SIZE = 200;
+const FIND_SHARE_MAX_PAGES = 50;
+
 async function findShareByIdViaList(
   authManager: AuthManager,
   projectId: number,
   shareId: string,
 ): Promise<VikunjaLinkShare> {
-  const shares = await vikunjaRestRequest<VikunjaLinkShare[]>(
-    authManager,
-    'GET',
-    `/projects/${projectId}/shares`,
-  );
-  const shareList = Array.isArray(shares) ? shares : [];
   const numericShareId = Number(shareId);
-  const share = shareList.find((candidate) => candidate.id === numericShareId);
-  if (!share) {
-    throw new MCPError(ErrorCode.NOT_FOUND, `Share with ID ${shareId} not found for project ${projectId}`);
+  for (let page = 1; page <= FIND_SHARE_MAX_PAGES; page++) {
+    const shares = await vikunjaRestRequest<VikunjaLinkShare[]>(
+      authManager,
+      'GET',
+      `/projects/${projectId}/shares?per_page=${FIND_SHARE_PAGE_SIZE}&page=${page}`,
+    );
+    const shareList = Array.isArray(shares) ? shares : [];
+    const share = shareList.find((candidate) => candidate.id === numericShareId);
+    if (share) {
+      return share;
+    }
+    if (shareList.length < FIND_SHARE_PAGE_SIZE) {
+      break;
+    }
   }
-  return share;
+  throw new MCPError(
+    ErrorCode.NOT_FOUND,
+    `Share with ID ${shareId} not found for project ${projectId}`,
+  );
 }
 
 /**
@@ -209,16 +237,7 @@ export async function createProjectShare(
   args: CreateShareArgs,
   authManager: AuthManager,
 ): Promise<McpResponse> {
-  const {
-    projectId,
-    right,
-    name,
-    title,
-    password,
-    verbosity,
-    useOptimizedFormat,
-    useAorp
-  } = args;
+  const { projectId, right, name, title, password, verbosity, useOptimizedFormat, useAorp } = args;
 
   try {
     // Reject, don't remap: `name` (the share's label) and `title` (the
@@ -262,18 +281,29 @@ export async function createProjectShare(
       body,
     );
 
+    // FIXED (audit #291 MED-17): `models.LinkSharing.password` is
+    // documented as write-only ("You can only set it, not retrieve it
+    // after the link share has been created" — the vendored OpenAPI spec's
+    // description for this field). Strip it from the response defensively
+    // rather than trust that every server build actually omits it: this
+    // response otherwise reflects exactly what the PUT returned, and the
+    // caller-supplied plaintext password has no business round-tripping
+    // back out through an MCP tool response.
+    const shareWithoutPassword: VikunjaLinkShare = { ...createdShare };
+    delete shareWithoutPassword.password;
+
     const result = createProjectResponse(
       'create_project_share',
       `Share created successfully for project ID ${projectId}`,
-      { share: createdShare },
+      { share: shareWithoutPassword },
       {
         projectId,
         shareRight: right,
-        hasPassword: !!password
+        hasPassword: !!password,
       },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -281,8 +311,8 @@ export async function createProjectShare(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
@@ -306,7 +336,7 @@ export async function listProjectShares(
     search,
     verbosity,
     useOptimizedFormat,
-    useAorp
+    useAorp,
   } = args;
 
   try {
@@ -341,11 +371,11 @@ export async function listProjectShares(
         perPage,
         ...(search !== undefined && { search }),
         count: shareList.length,
-        totalShares: shareList.length
+        totalShares: shareList.length,
       },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -353,8 +383,8 @@ export async function listProjectShares(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError && error.code === ErrorCode.VALIDATION_ERROR) {
@@ -375,17 +405,11 @@ export async function getProjectShare(
 
   try {
     if (!shareId || typeof shareId !== 'string' || shareId.trim().length === 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Share ID must be a non-empty string'
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID must be a non-empty string');
     }
 
     if (!projectId || typeof projectId !== 'number' || projectId <= 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Project ID is required'
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
     }
 
     // Routed via the LIST endpoint, not the by-id GET — see
@@ -401,7 +425,7 @@ export async function getProjectShare(
       { shareId },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -409,13 +433,16 @@ export async function getProjectShare(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError) {
       if (error.details?.statusCode === 404) {
-        throw new MCPError(ErrorCode.NOT_FOUND, `Share with ID ${shareId} not found for project ${projectId}`);
+        throw new MCPError(
+          ErrorCode.NOT_FOUND,
+          `Share with ID ${shareId} not found for project ${projectId}`,
+        );
       }
       throw error;
     }
@@ -434,17 +461,11 @@ export async function deleteProjectShare(
 
   try {
     if (!shareId || typeof shareId !== 'string' || shareId.trim().length === 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Share ID must be a non-empty string'
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share ID must be a non-empty string');
     }
 
     if (!projectId || typeof projectId !== 'number' || projectId <= 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Project ID is required'
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project ID is required');
     }
 
     // Get share details before deletion so the response can report the
@@ -473,11 +494,11 @@ export async function deleteProjectShare(
       {
         projectId,
         shareId,
-        shareName: share.name
+        shareName: share.name,
       },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -485,13 +506,16 @@ export async function deleteProjectShare(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError) {
       if (error.details?.statusCode === 404) {
-        throw new MCPError(ErrorCode.NOT_FOUND, `Share with ID ${shareId} not found for project ${projectId}`);
+        throw new MCPError(
+          ErrorCode.NOT_FOUND,
+          `Share with ID ${shareId} not found for project ${projectId}`,
+        );
       }
       throw error;
     }
@@ -510,10 +534,7 @@ export async function authProjectShare(
 
   try {
     if (!shareHash || typeof shareHash !== 'string' || shareHash.trim().length === 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Share hash must be a non-empty string'
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Share hash must be a non-empty string');
     }
 
     // v1.LinkShareAuth: {password}. Unauthenticated endpoint (no share-scoped
@@ -528,6 +549,35 @@ export async function authProjectShare(
       { password: password || '' },
     );
 
+    // INTENTIONAL: `authResult.token`, a live share-scoped JWT, is returned
+    // to the caller in full. Audit #287 (HIGH-16) flagged this; it is the one
+    // place in the tool surface where returning a credential is the point,
+    // not a leak, and it stays that way for these reasons:
+    //
+    //  - The token IS the deliverable. `POST /shares/{hash}/auth` is a
+    //    credential-exchange endpoint: the caller trades a share hash plus the
+    //    share's password for the bearer token that every subsequent read of
+    //    the shared project requires. Redacting it leaves the subcommand with
+    //    no output a caller could act on.
+    //  - It is the caller's OWN credential, minted for them in this request
+    //    from a secret (the share password) they supplied in the same call. It
+    //    is not another identity's token, and nothing about it is drawn from
+    //    process-global or cross-request state, so it is not a multi-tenancy
+    //    exposure even in `oidc-http` mode: the response goes only to the MCP
+    //    client that made the request.
+    //  - Its scope is the single link share and its lifetime is the share
+    //    token's, which is narrower than the session credential the caller
+    //    already holds.
+    //
+    // What is NOT acceptable, and is fixed separately, is this token reaching
+    // any surface the caller did not ask for: `Logger.log` redaction
+    // (`redactSecretsInText`) covers log output, and `SecureErrorHandler`
+    // now runs the same pass over thrown-error text so a failure on this path
+    // cannot echo the token back inside an error message.
+    //
+    // Pinned by tests/tools/projects/sharing.test.ts ("returns the live share
+    // token verbatim") so a future "harden the responses" sweep has to make
+    // this decision deliberately rather than silently break share auth.
     const result = createProjectResponse(
       'auth_project_share',
       `Successfully authenticated to share`,
@@ -535,11 +585,11 @@ export async function authProjectShare(
       {
         shareHash,
         hasPassword: !!password,
-        authenticated: true
+        authenticated: true,
       },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -547,8 +597,8 @@ export async function authProjectShare(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError) {

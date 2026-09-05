@@ -5,7 +5,7 @@
 import {
   fixLiteralUnicodeEscapes,
   fixLiteralUnicodeEscapesInData,
-  hasLiteralUnicodeEscapes
+  hasLiteralUnicodeEscapes,
 } from '../../src/utils/unicode-fix';
 
 describe('Unicode Fix Utilities', () => {
@@ -58,18 +58,18 @@ describe('Unicode Fix Utilities', () => {
           {
             id: 1,
             name: 'Team \\ud83d\\udc65',
-            description: 'A team with emoji'
+            description: 'A team with emoji',
           },
           {
             id: 2,
             name: 'Normal Team',
-            description: 'No unicode'
-          }
+            description: 'No unicode',
+          },
         ],
         metadata: {
           creator: 'Admin \\u26a1',
-          notes: 'Some notes'
-        }
+          notes: 'Some notes',
+        },
       };
 
       const fixed = fixLiteralUnicodeEscapesInData(data);
@@ -81,11 +81,7 @@ describe('Unicode Fix Utilities', () => {
     });
 
     test('should handle arrays', () => {
-      const data = [
-        'Item \\ud83d\\udc65',
-        'Item \\u26a1',
-        'Normal item'
-      ];
+      const data = ['Item \\ud83d\\udc65', 'Item \\u26a1', 'Normal item'];
 
       const fixed = fixLiteralUnicodeEscapesInData(data);
 
@@ -100,8 +96,8 @@ describe('Unicode Fix Utilities', () => {
         nullValue: null,
         array: ['Item \\u26a1', 123],
         nested: {
-          deep: 'Value \\ud83d\\udc65'
-        }
+          deep: 'Value \\ud83d\\udc65',
+        },
       };
 
       const fixed = fixLiteralUnicodeEscapesInData(data);
@@ -129,8 +125,8 @@ describe('Unicode Fix Utilities', () => {
         teams: Array.from({ length: 1000 }, (_, i) => ({
           id: i,
           name: `Team \\ud83d\\udc65 ${i}`,
-          description: `Description with \\u26a1 emoji ${i}`
-        }))
+          description: `Description with \\u26a1 emoji ${i}`,
+        })),
       };
 
       const startTime = performance.now();

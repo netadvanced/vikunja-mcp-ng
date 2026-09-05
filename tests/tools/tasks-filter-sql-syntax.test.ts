@@ -24,6 +24,7 @@ jest.mock('../../src/client', () => ({
   getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 jest.mock('../../src/auth/AuthManager');
 jest.mock('../../src/utils/logger');
@@ -37,7 +38,12 @@ const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
 /** Minimal Response-like object for the REST helper. */
-function mockRestResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+function mockRestResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
   return {
     ok,
@@ -143,13 +149,15 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       apiUrl: 'https://api.vikunja.test',
       apiToken: 'test-token',
       authType: 'api-token' as const,
-      userId: 'test-user-123'
+      userId: 'test-user-123',
     });
     mockAuthManager.getAuthType.mockReturnValue('api-token');
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     // Set up the session guard (returns the AuthManager now; the actual task
@@ -211,7 +219,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('list-tasks');
       expect(markdown).toContain('1 task');
     });
@@ -255,7 +263,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
     });
 
     it('should handle complex filter with multiple conditions', async () => {
@@ -282,11 +290,13 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       query.set('per_page', '1000');
       query.set('filter', filter);
       const [url] = mockFetch.mock.calls[0] as [string];
-      expect(url).toBe(`https://api.vikunja.test/api/v1/projects/${projectId}/tasks?${query.toString()}`);
+      expect(url).toBe(
+        `https://api.vikunja.test/api/v1/projects/${projectId}/tasks?${query.toString()}`,
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
     });
 
     it('should combine filter with other query parameters', async () => {
@@ -315,7 +325,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
     });
 
     it('should handle API errors gracefully', async () => {
@@ -366,7 +376,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       // RestCrossProjectFilteringStrategy.execute's metadata and
       // src/tools/tasks/index.ts's filteringMessage derivation.
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('(filtered server-side)');
       expect(markdown).not.toContain('server-side fallback');
     });
@@ -389,7 +399,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
       );
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('(filtered server-side)');
     });
   });
@@ -468,7 +478,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);
-        expect(markdown).toContain("## ✅ Success");
+        expect(markdown).toContain('## ✅ Success');
       });
     });
   });
@@ -527,7 +537,7 @@ describe('Tasks Tool - SQL-like Filter Syntax', () => {
 
         const markdown = result.content[0].text;
         const parsed = parseMarkdown(markdown);
-        expect(markdown).toContain("## ✅ Success");
+        expect(markdown).toContain('## ✅ Success');
       });
     });
   });

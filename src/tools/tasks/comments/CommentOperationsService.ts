@@ -7,9 +7,27 @@ import type { Message, TaskComment } from '../../../types/vikunja';
 import type { AuthManager } from '../../../auth/AuthManager';
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import type { components } from '../../../types/generated/vikunja-openapi';
+import {
+  createBudget,
+  DEFAULT_SERVER_PAGE_CAP,
+  fetchAllPages,
+  readServerPageCap,
+} from '../../../utils/filtering/pagination';
 
 /** `models.TaskComment` per the OpenAPI spec — note there is no `task_id` field. */
 type VikunjaTaskComment = components['schemas']['models.TaskComment'];
+
+/**
+ * Result of `fetchTaskComments`. `resultComplete`/`warnings` are present
+ * only when the listing is knowingly incomplete (issue #268's
+ * `FilteringMetadata.resultComplete` pattern, reused here) — absent means a
+ * plain, complete success.
+ */
+export interface TaskCommentListResult {
+  comments: TaskComment[];
+  resultComplete?: false;
+  warnings?: string[];
+}
 
 /**
  * Maps the REST response shape (`models.TaskComment`, no `task_id`) onto
@@ -58,14 +76,50 @@ export const CommentOperationsService = {
 
   /**
    * Fetch all comments for a task via `GET /tasks/{taskID}/comments`.
+   *
+   * PAGINATES (issue #289 / audit HIGH-18): the OpenAPI spec documents no
+   * `page`/`per_page` params for this endpoint (only `order_by`), but a live
+   * Vikunja 2.4.0 instance confirms the SAME `service.maxitemsperpage`
+   * clamp applies anyway — verified live: 60 comments added to one task,
+   * `GET /tasks/{id}/comments` (no query) returned exactly 50 with
+   * `X-Pagination-Total-Pages: 2`, and `?page=2` returned the remaining 10.
+   * A single unpaged request therefore silently dropped comments past the
+   * clamp, the same shape issue #268 fixed for task listing — this call
+   * site never exposed a `page`/`perPage` param to its own callers, so it
+   * always auto-paginates (there is no "caller asked for a specific page"
+   * case to opt out with, unlike the task-listing strategies).
    */
-  async fetchTaskComments(authManager: AuthManager, taskId: number): Promise<TaskComment[]> {
-    const result = await vikunjaRestRequest<VikunjaTaskComment[]>(
-      authManager,
-      'GET',
-      `/tasks/${taskId}/comments`,
-    );
-    return (Array.isArray(result) ? result : []).map((comment) => toTaskComment(taskId, comment));
+  async fetchTaskComments(
+    authManager: AuthManager,
+    taskId: number,
+  ): Promise<TaskCommentListResult> {
+    const cap = readServerPageCap(authManager) ?? DEFAULT_SERVER_PAGE_CAP;
+    const budget = createBudget();
+
+    const requestPage = async (page: number): Promise<VikunjaTaskComment[]> => {
+      const qs = page === 1 ? '' : `?page=${page}`;
+      const result = await vikunjaRestRequest<VikunjaTaskComment[]>(
+        authManager,
+        'GET',
+        `/tasks/${taskId}/comments${qs}`,
+      );
+      return Array.isArray(result) ? result : [];
+    };
+
+    const raw = await fetchAllPages(requestPage, {
+      autoPaginate: true,
+      firstPage: 1,
+      budget,
+      cap,
+      resourceLabel: `Task ${taskId} comments`,
+    });
+
+    return {
+      comments: raw.map((comment) => toTaskComment(taskId, comment)),
+      ...(budget.truncated || budget.warnings.length > 0
+        ? { resultComplete: false as const, warnings: budget.warnings }
+        : {}),
+    };
   },
 
   /**

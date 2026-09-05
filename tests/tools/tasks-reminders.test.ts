@@ -25,6 +25,7 @@ jest.mock('../../src/client', () => ({
   getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 jest.mock('../../src/auth/AuthManager');
 
@@ -76,10 +77,7 @@ describe('Tasks Tool - Reminders', () => {
   // reminder_date }`) does not match what the server actually returns.
   const mockTaskWithReminders = {
     ...mockTask,
-    reminders: [
-      { reminder: '2024-12-25T10:00:00Z' },
-      { reminder: '2024-12-31T23:59:00Z' },
-    ],
+    reminders: [{ reminder: '2024-12-25T10:00:00Z' }, { reminder: '2024-12-31T23:59:00Z' }],
   };
 
   /** Configures fetchMock: GET returns `getResponse`, POST captures the body and returns it. */
@@ -115,7 +113,9 @@ describe('Tasks Tool - Reminders', () => {
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as any;
 
     originalFetch = globalThis.fetch;
@@ -164,7 +164,7 @@ describe('Tasks Tool - Reminders', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('add-reminder');
       expect(markdown).toContain('Reminder added successfully');
     });
@@ -182,16 +182,32 @@ describe('Tasks Tool - Reminders', () => {
       });
 
       expect(postedBody()).toMatchObject({
-        reminders: [
-          { reminder: '2024-12-25T10:00:00Z' },
-          { reminder: '2024-12-31T23:59:00Z' },
-        ],
+        reminders: [{ reminder: '2024-12-25T10:00:00Z' }, { reminder: '2024-12-31T23:59:00Z' }],
       });
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('add-reminder');
+    });
+
+    it('normalizes a date-only reminderDate to RFC3339 before sending (LOW-5)', async () => {
+      // Every create-family path routes date-only input through
+      // normalizeDateForApi before it hits the wire; add-reminder must do
+      // the same rather than sending the bare date-only string.
+      mockFetchTaskFlow(restOk(mockTask));
+
+      const result = await callTool('add-reminder', {
+        id: 1,
+        reminderDate: '2026-09-01',
+      });
+
+      expect(postedBody()).toMatchObject({
+        reminders: [{ reminder: '2026-09-01T00:00:00Z' }],
+      });
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('2026-09-01T00:00:00Z');
     });
 
     it('should require task id', async () => {
@@ -235,7 +251,7 @@ describe('Tasks Tool - Reminders', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('remove-reminder');
       expect(markdown).toContain('Reminder 2024-12-25T10:00:00Z removed successfully');
     });
@@ -253,7 +269,7 @@ describe('Tasks Tool - Reminders', () => {
       });
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('Reminder 2024-12-25T10:00:00Z removed successfully');
     });
 
@@ -267,7 +283,7 @@ describe('Tasks Tool - Reminders', () => {
       });
 
       const markdown = result.content[0].text;
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
     });
 
     it('should error when reminderIndex and reminderDate disagree', async () => {
@@ -336,7 +352,7 @@ describe('Tasks Tool - Reminders', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('remove-reminder');
     });
 
@@ -394,7 +410,7 @@ describe('Tasks Tool - Reminders', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('list-reminders');
       expect(markdown).toContain('Found 2 reminder(s)');
     });
@@ -408,7 +424,7 @@ describe('Tasks Tool - Reminders', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('Found 0 reminder(s)');
     });
 

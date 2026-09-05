@@ -5,6 +5,7 @@
 import { MCPError, ErrorCode } from '../../../types';
 import { validateDateString, validateId } from '../validation';
 import { MAX_BULK_OPERATION_TASKS, REPEAT_MODE_MAP } from '../constants';
+import { isValidPercentDone, percentDoneScaleError } from '../../../utils/percent-done';
 
 export interface BulkUpdateArgs {
   taskIds?: number[];
@@ -23,6 +24,13 @@ export interface BulkCreateTaskData {
   startDate?: string;
   endDate?: string;
   priority?: number;
+  /**
+   * Completion progress as a whole percentage, **0-100** (50 = 50%), the tool
+   * surface's scale. Converted to Vikunja's 0-1 wire fraction in
+   * `createOneBulkTask` — see `src/utils/percent-done.ts` and the
+   * `percentDone` note on the Zod schema in `../index.ts`.
+   */
+  percentDone?: number;
   labels?: number[];
   assignees?: number[];
   repeatAfter?: number;
@@ -129,7 +137,11 @@ export const bulkOperationValidator = {
     }
 
     // Handle numeric fields that come as strings
-    if (args.field && ['priority', 'project_id', 'repeat_after'].includes(args.field) && typeof args.value === 'string') {
+    if (
+      args.field &&
+      ['priority', 'percent_done', 'project_id', 'repeat_after'].includes(args.field) &&
+      typeof args.value === 'string'
+    ) {
       const numValue = Number(args.value);
       if (!isNaN(numValue)) {
         args.value = numValue;
@@ -151,6 +163,13 @@ export const bulkOperationValidator = {
     const allowedFields = [
       'done',
       'priority',
+      // Takes the same whole-percentage 0-100 scale as `percentDone`
+      // everywhere else on this tool surface, even though this path is
+      // addressed by its raw snake_case API name — one scale, no exception to
+      // remember. Converted to the 0-1 wire fraction in
+      // `resolveBulkUpdateValue`. This field was missing here while `update`
+      // supported it, so bulk-update rejected a value single update accepted.
+      'percent_done',
       'due_date',
       'start_date',
       'end_date',
@@ -172,6 +191,12 @@ export const bulkOperationValidator = {
     if (args.field === 'priority' && typeof args.value === 'number') {
       if (args.value < 0 || args.value > 5) {
         throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Priority must be between 0 and 5');
+      }
+    }
+
+    if (args.field === 'percent_done' && typeof args.value === 'number') {
+      if (!isValidPercentDone(args.value)) {
+        throw new MCPError(ErrorCode.VALIDATION_ERROR, percentDoneScaleError('percent_done'));
       }
     }
 
@@ -303,6 +328,16 @@ export const bulkOperationValidator = {
       if (task.labels) {
         task.labels.forEach((id) => validateId(id, `tasks[${index}].label ID`));
       }
+
+      // Whole percentage 0-100 — see BulkCreateTaskData.percentDone. Checked
+      // here as well as in the Zod schema because createOneBulkTask/
+      // bulkCreateTasks are exported and reachable without it.
+      if (task.percentDone !== undefined && !isValidPercentDone(task.percentDone)) {
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          percentDoneScaleError(`tasks[${index}].percentDone`),
+        );
+      }
     });
-  }
+  },
 };

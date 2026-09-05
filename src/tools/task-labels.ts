@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
-import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
+import { getAuthManagerFromContext, hasRequestContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { applyLabels, removeLabels, listTaskLabels } from '../tools/tasks/labels';
@@ -21,7 +21,7 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 export function registerTaskLabelsTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_task_labels',
@@ -73,8 +73,12 @@ export function registerTaskLabelsTool(
           labelCount: args.labels?.length,
         });
 
-        // Check authentication
-        if (!authManager.isAuthenticated()) {
+        // Check authentication (closure-gate precedence fix: defer to the
+        // per-request context when bound — see hasRequestContext's doc
+        // comment, src/client.ts)
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task label operations');
         }
 
@@ -95,7 +99,7 @@ export function registerTaskLabelsTool(
                 id: args.id,
                 taskIds: args.taskIds,
                 labels: args.labels || [],
-                labelTitles: args.labelTitles || []
+                labelTitles: args.labelTitles || [],
               },
               authManager,
             );
@@ -105,7 +109,7 @@ export function registerTaskLabelsTool(
               {
                 id: args.id,
                 taskIds: args.taskIds,
-                labels: args.labels || []
+                labels: args.labels || [],
               },
               authManager,
             );

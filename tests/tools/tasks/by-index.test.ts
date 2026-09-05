@@ -55,24 +55,21 @@ describe('getTaskByIndex', () => {
 
     it('throws a VALIDATION_ERROR when index is missing', async () => {
       await expect(getTaskByIndex({ projectId: 5 }, authManager)).rejects.toThrow(
-        new MCPError(
-          ErrorCode.VALIDATION_ERROR,
-          'index is required for get-by-index operation',
-        ),
+        new MCPError(ErrorCode.VALIDATION_ERROR, 'index is required for get-by-index operation'),
       );
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('throws when projectId is not a positive integer', async () => {
-      await expect(
-        getTaskByIndex({ projectId: 0, index: 1 }, authManager),
-      ).rejects.toThrow('projectId must be a positive integer');
+      await expect(getTaskByIndex({ projectId: 0, index: 1 }, authManager)).rejects.toThrow(
+        'projectId must be a positive integer',
+      );
     });
 
     it('throws when index is not a positive integer', async () => {
-      await expect(
-        getTaskByIndex({ projectId: 5, index: -1 }, authManager),
-      ).rejects.toThrow('index must be a positive integer');
+      await expect(getTaskByIndex({ projectId: 5, index: -1 }, authManager)).rejects.toThrow(
+        'index must be a positive integer',
+      );
     });
   });
 
@@ -120,17 +117,15 @@ describe('getTaskByIndex', () => {
         }),
       );
 
-      await expect(
-        getTaskByIndex({ projectId: 5, index: 999 }, authManager),
-      ).rejects.toThrow(MCPError);
+      await expect(getTaskByIndex({ projectId: 5, index: 999 }, authManager)).rejects.toThrow(
+        MCPError,
+      );
     });
 
     it('propagates a network error', async () => {
       mockFetch.mockRejectedValue(new Error('network down'));
 
-      await expect(
-        getTaskByIndex({ projectId: 5, index: 1 }, authManager),
-      ).rejects.toThrow(
+      await expect(getTaskByIndex({ projectId: 5, index: 1 }, authManager)).rejects.toThrow(
         'Vikunja REST request failed (GET /projects/5/tasks/by-index/1): network down',
       );
     });

@@ -1,37 +1,17 @@
 # Vikunja MCP Server
 
-**Give your AI assistant real hands on your Vikunja instance** — create and triage tasks, manage projects and Kanban boards, assign teammates, and more, through natural conversation.
+Lets an AI assistant work in your Vikunja instance: create and triage tasks, move cards on Kanban boards, manage projects, labels and teams.
 
 [![npm](https://img.shields.io/npm/v/vikunja-mcp-ng.svg)](https://www.npmjs.com/package/vikunja-mcp-ng)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![node: 20+](https://img.shields.io/badge/node-20%2B-brightgreen.svg)](package.json)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/LICENSE)
+[![node: 22+](https://img.shields.io/badge/node-22%2B-brightgreen.svg)](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/package.json)
 [![MCP](https://img.shields.io/badge/MCP-server-purple.svg)](https://modelcontextprotocol.io)
 
-> 👋 **Why this fork exists:** we rely on this project and noticed the [upstream repo](https://github.com/democratize-technology/vikunja-mcp) had gone quiet, with a growing backlog of open PRs and issues. So we've taken over active maintenance here — triaging and resolving most of that backlog (tracked in [this issue](https://github.com/netadvanced/vikunja-mcp-ng/issues/19)). Full credit to the original authors for the foundation. If they'd like to pick it back up, we'll gladly hand the reins back — or work together.
+Vikunja is exposed as 27 tools (~150 subcommands), one per entity, each taking a `subcommand`. It is not a 1:1 REST proxy. The operations are composed for the way an assistant actually works: a username resolves to a user ID on its own, writes that Vikunja reports loosely are read back and checked, and destructive subcommands need an explicit confirmation. Partial failures are reported as partial failures.
 
----
+## Quick start
 
-## What this gives your AI assistant
-
-This server exposes Vikunja as **27 tools** (a session tool, 22 available by default or by auth type, and 4 sensitive ones that are off until an operator opts in), each covering one entity (tasks, projects, labels, teams…) with a consistent `subcommand` pattern — not a 1:1 REST proxy, but composite operations built for how an AI actually works: resolve a username instead of demanding a user ID, verify that tricky writes actually stuck instead of trusting a 200, and explicit confirmation gates on destructive operations. Your assistant reasons in natural language; the server turns that into correct Vikunja API calls and reports partial failures honestly instead of pretending success.
-
-## See it in action
-
-> **You:** "Move 'Fix login redirect bug' to In Review and show me the board."
-
-```typescript
-vikunja_tasks({ subcommand: "set-bucket", id: 342, bucketId: 43 })
-```
-
-`projectId`/`viewId` auto-resolve from the task — no need to know which view is the Kanban one. The task card slides from *Backlog* into *In Review* on the Kanban board, instantly visible to anyone else looking at the board.
-
-More end-to-end scenarios — daily triage, team sharing, project planning, staying informed, bulk imports, admin ops — each paired with the exact tool call and the resulting Vikunja UI state, live in [`docs/samples/`](docs/samples/).
-
-## Quick Start
-
-### From npm (recommended)
-
-No install step needed — point your MCP client at `npx`:
+Point your MCP client at `npx`. Nothing to install first.
 
 ```json
 {
@@ -40,7 +20,7 @@ No install step needed — point your MCP client at `npx`:
       "command": "npx",
       "args": ["-y", "vikunja-mcp-ng"],
       "env": {
-        "VIKUNJA_URL": "https://your-vikunja-instance.com/api/v1",
+        "VIKUNJA_URL": "https://your-vikunja-instance.com",
         "VIKUNJA_API_TOKEN": "your-api-token"
       }
     }
@@ -48,35 +28,34 @@ No install step needed — point your MCP client at `npx`:
 }
 ```
 
-Or install globally (`npm install -g vikunja-mcp-ng`) and use `"command": "vikunja-mcp-ng"` with no args.
+`VIKUNJA_URL` takes the bare instance URL; the server appends `/api/v1` itself. An explicit `/api/v1` suffix also works. The token is an API token (`tk_…`) or a JWT from that instance.
 
-### From source
+You can also install it globally with `npm install -g vikunja-mcp-ng` and set `"command": "vikunja-mcp-ng"` with no args.
 
-```bash
-git clone https://github.com/netadvanced/vikunja-mcp-ng.git
-cd vikunja-mcp-ng
-npm ci
-npm run build
-```
+JWT versus API-token auth, module gating, read-only mode, secrets handling, rate limits and every environment variable are covered in the [Configuration guide](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/CONFIGURATION.md).
 
-```json
-{
-  "mcpServers": {
-    "vikunja": {
-      "command": "node",
-      "args": ["/path/to/vikunja-mcp/dist/index.js"],
-      "env": {
-        "VIKUNJA_URL": "https://your-vikunja-instance.com/api/v1",
-        "VIKUNJA_API_TOKEN": "your-api-token"
-      }
-    }
-  }
-}
-```
+## Requirements
 
-### Docker
+Node.js 22 or newer. Node 20 reached end of life in April 2026.
 
-Images are published to GHCR on every release (also tagged `X.Y.Z` and `X.Y.Z-vikunja<A.B.C>` for Vikunja compatibility):
+| Vikunja | Status |
+|---|---|
+| 2.6.0 | Supported and tested. The version the e2e stacks and live test lanes run against by default |
+| 2.5.0 | Supported and tested |
+| 2.4.0 | Supported and tested. The minimum, and a full test lane on both database backends |
+| below 2.4.0 | Not supported |
+
+This project supports and tests the trailing three released Vikunja versions — currently 2.4.0, 2.5.0 and 2.6.0 — as full `test:matrix` lanes on both database backends. When a new version ships, the window shifts: the oldest version drops out and the new one takes its place, rather than the range simply growing.
+
+2.6.0 tightened several permission checks. Where it now refuses something 2.4.0 accepted, this server surfaces the refusal with an explanation instead of degrading quietly — the cases are listed in [docs/VIKUNJA_API_ISSUES.md](docs/VIKUNJA_API_ISSUES.md) and each one is asserted per-version in the e2e harness. One is worth knowing about if you use a scoped API token: asking a task listing to expand `comments` or `reactions` with a token that lacks those scopes is rejected, and Vikunja's rejection is indistinguishable from an expired token, so the error names both possibilities.
+
+The minimum rose from 2.3.0 to 2.4.0 in the `0.7.0-beta` line. Nine operations this server ships as implemented, the eight `vikunja_admin` operations and `vikunja_tasks get-by-index`, do not exist on a released 2.3.0, so the older claim was not true in practice. On Vikunja 2.3.0, either upgrade Vikunja or pin `vikunja-mcp-ng@0.6.2`.
+
+The server speaks Vikunja's v1 API. v2 adoption is tracked in [issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184) and has not started.
+
+## Docker
+
+Multi-architecture images (`linux/amd64` and `linux/arm64`) go to GHCR on every release, tagged `X.Y.Z`, the npm dist-tag it was published under, and `X.Y.Z-vikunja<A.B.C>` for the Vikunja version it is aligned with.
 
 ```bash
 docker pull ghcr.io/netadvanced/vikunja-mcp-ng:latest
@@ -94,7 +73,7 @@ docker pull ghcr.io/netadvanced/vikunja-mcp-ng:latest
         "ghcr.io/netadvanced/vikunja-mcp-ng:latest"
       ],
       "env": {
-        "VIKUNJA_URL": "https://your-vikunja-instance.com/api/v1",
+        "VIKUNJA_URL": "https://your-vikunja-instance.com",
         "VIKUNJA_API_TOKEN": "your-api-token"
       }
     }
@@ -102,42 +81,79 @@ docker pull ghcr.io/netadvanced/vikunja-mcp-ng:latest
 }
 ```
 
-Using Docker Desktop's MCP Toolkit instead of a bare `docker run`? See [docs/DOCKER-DESKTOP-MCP.md](docs/DOCKER-DESKTOP-MCP.md) for the tested, step-by-step path.
+For Docker Desktop's MCP Toolkit rather than a bare `docker run`, there is a step-by-step path in the [Docker Desktop guide](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/DOCKER-DESKTOP-MCP.md).
 
-Full install options, JWT vs. API-token auth, module gating, and every environment variable live in the [Configuration guide](docs/CONFIGURATION.md).
+## Release lines
 
-## Capabilities
+| npm tag | Version | What you get |
+|---|---|---|
+| `latest` | 0.6.2 | The single-user stdio server, which is what the quick start above installs |
+| `beta` | 0.7.0-beta.5 | The same, plus an opt-in OIDC resource-server mode |
+
+OIDC resource-server mode makes the server a hosted, multi-user deployment: a Streamable HTTP transport, per-user identity taken from a validated OIDC access token, MCP authorization discovery, and an enrollment flow where each user links their own Vikunja token once. It is off by default. Installing the beta changes nothing until you turn it on, and the stdio transport behaves as it does on stable.
+
+```bash
+npm install -g vikunja-mcp-ng@beta      # or: npx -y vikunja-mcp-ng@beta
+```
+
+It is beta. The authentication boundary, the credential vault and per-identity isolation have been exercised against a real gateway, identity provider and Vikunja, but none of it has seen sustained production use yet. Read the [OIDC setup manual](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/OIDC-SETUP.md) before enabling it; the design and threat model are in the [OIDC resource-server reference](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/OIDC-RESOURCE-SERVER.md).
+
+## What it looks like in use
+
+> You: "Move 'Fix login redirect bug' to In Review and show me the board."
+
+```typescript
+vikunja_tasks({ subcommand: "set-bucket", id: 342, bucketId: 43 })
+```
+
+`projectId` and `viewId` resolve from the task itself, so nobody needs to know which view is the Kanban one. The card moves from *Backlog* to *In Review*, visible to anyone else watching the board.
+
+Setting up a board is one call as well:
+
+```typescript
+vikunja_projects({
+  subcommand: "setup-kanban",
+  title: "Q3 Offsite",
+  columns: ["To Do", "Doing", "Done"],
+  tasks: [{ title: "Book venue", column: "To Do", priority: 4 }]
+})
+```
+
+Leave `columns` out and it becomes a plain "create a project with its tasks" call that touches no Kanban structure.
+
+## Tools
 
 | Group | Tools | Covers |
 |---|---|---|
-| **Tasks** | `vikunja_tasks`, `vikunja_task_bulk`, `vikunja_task_assignees`, `vikunja_task_comments`, `vikunja_task_labels`, `vikunja_task_relations`, `vikunja_task_reminders` | CRUD, filtering, bulk ops, Kanban placement, subtasks, duplication, mark-read, comments, relations |
-| **Projects** | `vikunja_projects` | CRUD, hierarchy, views, Kanban buckets, one-call Kanban board setup (`setup-kanban`), sharing, duplication, opt-in backgrounds |
-| **Organize** | `vikunja_labels`, `vikunja_filters`, `vikunja_templates` | Labels, saved filters, reusable task templates |
-| **Collaborate** | `vikunja_teams`, `vikunja_users`\*, `vikunja_notifications`, `vikunja_subscriptions`, `vikunja_reactions` | Team membership, user search, avatar settings, notifications, watch/react |
-| **Automate & move data** | `vikunja_webhooks`, `vikunja_batch_import`, `vikunja_export_project`\* | Webhooks (per-project and account-wide), CSV/JSON import, project export |
+| Tasks | `vikunja_tasks`, `vikunja_task_bulk`, `vikunja_task_assignees`, `vikunja_task_comments`, `vikunja_task_labels`, `vikunja_task_relations`, `vikunja_task_reminders` | CRUD, filtering, bulk ops, Kanban placement, subtasks, duplication, comments, relations, reminders |
+| Projects | `vikunja_projects` | CRUD, hierarchy, views, Kanban buckets, one-call board setup (`setup-kanban`), sharing, duplication |
+| Organize | `vikunja_labels`, `vikunja_filters`, `vikunja_templates` | Labels including attach-by-title, saved filters, reusable task templates |
+| Collaborate | `vikunja_teams`, `vikunja_users`\*, `vikunja_notifications`, `vikunja_subscriptions`, `vikunja_reactions` | Team membership, user search, avatar settings, notifications, watch and react |
+| Automate and move data | `vikunja_webhooks`, `vikunja_batch_import`, `vikunja_export_project`\* | Webhooks, CSV/JSON import, project export |
 
-\* JWT authentication only. User data export also has request/status/download tools (`vikunja_request_user_export`, `vikunja_user_export_status`, `vikunja_download_user_export`), all JWT-only. (`vikunja_webhooks`' account-wide `scope: 'user'` is JWT-only too; its default `scope: 'project'` works with either auth type.)
+\* JWT authentication only, as are the three user-data-export tools.
 
-A session tool, `vikunja_auth` (connect / status / info / refresh / disconnect), rounds out the always-on surface. Four more tools — `vikunja_tokens`, `vikunja_caldav_tokens`, `vikunja_admin`, and `vikunja_user_deletion` — exist for API-token management, CalDAV-token management, instance administration, and self account deletion. All are **disabled by default**; an operator opts in explicitly (see Configuration). `vikunja_user_deletion` is the most sensitive of the four — it can delete the connected account — so read its [Configuration guide entry](docs/CONFIGURATION.md#known-modules) before enabling it. `vikunja_projects` also has three opt-in cosmetic subcommands (project backgrounds) behind a `backgrounds` module toggle, off by default for the opposite reason: low value, not danger.
+A session tool, `vikunja_auth` (connect, status, info, refresh, disconnect), completes the always-on surface. Four others, `vikunja_tokens`, `vikunja_caldav_tokens`, `vikunja_admin` and `vikunja_user_deletion`, are disabled until an operator opts in.
 
-Full subcommand-by-subcommand reference: [`docs/TOOLS.md`](docs/TOOLS.md).
+Subcommand-by-subcommand reference: [`docs/TOOLS.md`](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/TOOLS.md).
 
-## Safety by design
+## Safety
 
-Every entity is a toggle you can disable in config, `vikunja_admin`/`vikunja_tokens`/`vikunja_caldav_tokens`/`vikunja_user_deletion` ship off until an operator opts in (and `vikunja_admin`/`vikunja_caldav_tokens`/`vikunja_user_deletion` additionally require an active JWT session), and a global read-only mode can reject every write/destructive subcommand while reads keep working. Full details: [Configuration guide](docs/CONFIGURATION.md#module-gating).
+Every entity group is a toggle you can switch off in config. The four sensitive tools ship disabled, and `vikunja_admin`, `vikunja_caldav_tokens` and `vikunja_user_deletion` additionally require an active JWT session. Read-only mode rejects every write and destructive subcommand while reads keep working.
+
+Ambiguous writes are handled conservatively. A create that fails without a clear answer is not retried, so a flaky network will not leave you with two copies of a task.
+
+Details, along with auth, secrets handling and rate limits, are in the [Configuration guide](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/CONFIGURATION.md).
 
 ## Links
 
-- [Sample walkthroughs](docs/samples/) — real conversations paired with the tool calls and UI results behind them
-- [Full tool reference](docs/TOOLS.md) — every tool, subcommand, and argument
-- [Configuration guide](docs/CONFIGURATION.md) — auth, secrets, module gating, rate limits
-- [Roadmap](docs/ROADMAP.md) — where the project is headed and why
-- [Contributing / endpoint playbook](docs/ENDPOINT-PLAYBOOK.md) — conventions for adding new coverage
-- [Local test stack](docs/LOCAL-TESTING.md) — disposable Vikunja+Postgres via Docker for trying this out safely
-- [Agent battle-testing harness](docs/BATTLE-TESTING.md) — spawns a real AI agent against the tool surface and grades it on correctness and ergonomics (manual, costs real money — see the doc before running)
-- [Docker Desktop MCP Toolkit how-to](docs/DOCKER-DESKTOP-MCP.md) — registering this server with `docker mcp`
-- [Releasing](docs/RELEASING.md) — versioning policy and the release checklist · [CHANGELOG](CHANGELOG.md)
+- [Sample walkthroughs](https://github.com/netadvanced/vikunja-mcp-ng/tree/main/docs/samples), real conversations paired with the tool calls and the resulting UI state
+- [Tool reference](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/TOOLS.md)
+- [Configuration guide](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/CONFIGURATION.md)
+- [OIDC setup manual](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/OIDC-SETUP.md)
+- [Changelog](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/CHANGELOG.md)
+- [Source, issues and contributing](https://github.com/netadvanced/vikunja-mcp-ng)
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/LICENSE).

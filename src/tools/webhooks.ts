@@ -28,28 +28,83 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
-import { getAuthManagerFromContext } from '../client';
+import { getAuthManagerFromContext, hasRequestContext } from '../client';
+import { getEffectiveSessionId } from '../context/requestContext';
 import type { Webhook } from '../types/vikunja';
 import { logger } from '../utils/logger';
+import { redactUrlSecrets } from '../utils/security';
 import { validateAndConvertId } from '../utils/validation';
 import { createAorpResponse } from '../utils/response-factory';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
+import {
+  createBudget,
+  DEFAULT_SERVER_PAGE_CAP,
+  fetchAllPages,
+  readServerPageCap,
+} from '../utils/filtering/pagination';
 
 type WebhookScope = 'project' | 'user';
 
-// Event cache for validation - one entry per scope, since project and
-// user-level webhooks are validated against separate `.../webhooks/events`
-// endpoints that may (in principle) return different valid-event sets.
+// Event cache for validation - one entry per (identity, scope) pair.
+//
+// #292 MED-9: this cache used to be keyed by scope alone, which is a
+// cross-tenant leak in `oidc-http` mode - two identities provisioned
+// against *different* Vikunja servers (or even the same server with
+// different valid-event sets, e.g. differing server versions/plugins)
+// would silently read each other's cached `/webhooks/events` response.
+// `getEffectiveSessionId` (src/context/requestContext.ts) is the same
+// identity/apiUrl-aware key already used to re-key `SimpleFilterStorage`
+// and `vikunja_templates` storage for the same reason (see
+// docs/OIDC-RESOURCE-SERVER.md §3d) - reusing it here keeps `stdio` mode's
+// single-tenant behaviour (one key, `${apiUrl}:${apiToken.slice(0,8)}`)
+// unchanged while making `oidc-http` mode safe.
 interface EventCacheEntry {
   events: string[] | null;
   expiry: Date | null;
 }
 
-const eventCache: Record<WebhookScope, EventCacheEntry> = {
-  project: { events: null, expiry: null },
-  user: { events: null, expiry: null },
-};
+// #327: like `normalizedKeyCache` in src/utils/security.ts, this used to be
+// an unbounded `Map` - in `oidc-http` mode a distinct key accumulates
+// forever per (identity, scope) pair the process has ever seen, since
+// expiry only nulls a value's `expiry` field and never removes the map
+// entry. Bounded here with the same size-capped LRU shape: a `Map` iterates
+// in insertion order, so a hit re-inserts its entry to mark it
+// most-recently-used, and an insert past the cap evicts the oldest (first)
+// entry before adding the new one.
+const EVENT_CACHE_MAX_SIZE = 10000;
+const eventCache = new Map<string, EventCacheEntry>();
+
+function eventCacheKey(authManager: AuthManager, scope: WebhookScope): string {
+  return `${getEffectiveSessionId(authManager)}::${scope}`;
+}
+
+// Exported for testing - lets the LRU-eviction test drive cache growth
+// directly instead of exercising 10,000+ full tool-handler round trips.
+export function getOrCreateEventCacheEntry(
+  authManager: AuthManager,
+  scope: WebhookScope,
+): EventCacheEntry {
+  const key = eventCacheKey(authManager, scope);
+  const existing = eventCache.get(key);
+  if (existing) {
+    // Bump to most-recently-used: delete + re-set moves it to the end of
+    // the Map's iteration order.
+    eventCache.delete(key);
+    eventCache.set(key, existing);
+    return existing;
+  }
+
+  const entry: EventCacheEntry = { events: null, expiry: null };
+  if (eventCache.size >= EVENT_CACHE_MAX_SIZE) {
+    const oldestKey = eventCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      eventCache.delete(oldestKey);
+    }
+  }
+  eventCache.set(key, entry);
+  return entry;
+}
 
 const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -72,17 +127,67 @@ const DEFAULT_WEBHOOK_EVENTS = [
   'team.deleted',
 ];
 
-// Export for testing purposes - clears both scopes' caches.
-export function clearWebhookEventCache(): void {
-  eventCache.project = { events: null, expiry: null };
-  eventCache.user = { events: null, expiry: null };
+// ---------------------------------------------------------------------------
+// Credential hygiene
+// ---------------------------------------------------------------------------
+
+/**
+ * `models.Webhook.secret` is an HMAC signing key and
+ * `basic_auth_password` is a password - both are credentials the caller
+ * supplied, and neither may ever be echoed back, logged, or embedded in an
+ * error message (see src/utils/security.ts for the repo-wide masking
+ * conventions this mirrors).
+ *
+ * Vikunja itself blanks these on every *read* path (`Webhook.ReadAll` and
+ * `GetUserWebhooks` in the server source both set `w.Secret = ""` before
+ * responding), but the *create* and *update* handlers return the bound
+ * struct as-is, so a freshly created webhook comes back with its secret
+ * intact. This redacts it on our side so the value never reaches a tool
+ * response, matching the server's own read-path behaviour.
+ *
+ * `target_url` gets the same treatment as the logging path below (~line
+ * 390-391 in this file): provider webhook URLs such as Slack's/Discord's
+ * embed a secret directly in the path (`https://hooks.slack.com/services/
+ * T…/B…/<secret>`), so the URL itself is credential-bearing even though it
+ * isn't a dedicated `secret`/`basic_auth_password` field. `redactUrlSecrets`
+ * (src/utils/security.ts) is the same high-entropy-path-segment masking
+ * already used to keep these URLs out of logs; reused here so a
+ * secret-bearing `target_url` never round-trips through a tool response
+ * either (#327).
+ */
+function redactWebhookCredentials<T extends Partial<Webhook> | null | undefined>(webhook: T): T {
+  if (webhook === null || webhook === undefined) {
+    return webhook;
+  }
+  const redacted: Record<string, unknown> = { ...webhook };
+  for (const key of ['secret', 'basic_auth_password'] as const) {
+    const value = redacted[key];
+    if (typeof value === 'string' && value.length > 0) {
+      redacted[key] = '[REDACTED]';
+    }
+  }
+  if (typeof redacted.target_url === 'string' && redacted.target_url.length > 0) {
+    redacted.target_url = redactUrlSecrets(redacted.target_url);
+  }
+  return redacted as T;
 }
 
-// Export for testing - expire both scopes' caches but keep their events.
+// Export for testing purposes - clears every identity/scope cache entry.
+export function clearWebhookEventCache(): void {
+  eventCache.clear();
+}
+
+// Export for testing - current entry count and the bound it's kept under.
+export function getWebhookEventCacheStats(): { size: number; maxSize: number } {
+  return { size: eventCache.size, maxSize: EVENT_CACHE_MAX_SIZE };
+}
+
+// Export for testing - expire every cached entry but keep its events.
 export function expireWebhookEventCache(): void {
   const past = new Date(0);
-  eventCache.project.expiry = past;
-  eventCache.user.expiry = past;
+  for (const entry of eventCache.values()) {
+    entry.expiry = past;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +265,7 @@ function assertScopeConsistency(scope: WebhookScope, projectId: number | undefin
 // Get valid webhook events with caching
 async function getValidEvents(authManager: AuthManager, scope: WebhookScope): Promise<string[]> {
   const now = new Date();
-  const cache = eventCache[scope];
+  const cache = getOrCreateEventCacheEntry(authManager, scope);
 
   // Return cached events if still valid
   if (cache.events && cache.expiry && cache.expiry > now) {
@@ -236,12 +341,16 @@ async function validateWebhookEvents(
   }
 }
 
-export function registerWebhooksTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerWebhooksTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_webhooks',
     withReadOnlyNote(
       'vikunja_webhooks',
-      "Manage webhooks for integrating Vikunja events with external services. 'scope' selects which webhook family to operate on: 'project' (default) manages a single project's webhooks (PUT/GET/POST/DELETE /projects/{id}/webhooks*, requires projectId); 'user' manages the current user's account-wide webhooks, which fire across all projects (PUT/GET/POST/DELETE /user/settings/webhooks*, must NOT be combined with projectId). Both scopes share the identical models.Webhook shape and the same subcommands. Per the OpenAPI spec, /user/settings/webhooks* is JWT-only - calls made with an API token (tk_*) session may be rejected by the server.",
+      "Manage webhooks for integrating Vikunja events with external services. 'scope' selects which webhook family to operate on: 'project' (default) manages a single project's webhooks (PUT/GET/POST/DELETE /projects/{id}/webhooks*, requires projectId); 'user' manages the current user's account-wide webhooks, which fire across all projects (PUT/GET/POST/DELETE /user/settings/webhooks*, must NOT be combined with projectId). Both scopes share the identical models.Webhook shape and the same subcommands. IMPORTANT: 'update' can only change 'events' - the Vikunja API writes no other webhook column - so targetUrl, secret, basicAuthUser, and basicAuthPassword are create-only and are REJECTED (not ignored) by 'update'; to repoint a webhook, rotate its secret, or change its Basic Auth credentials, delete it and create a replacement. basicAuthUser/basicAuthPassword, when supplied together on 'create', make the webhook send its outgoing requests with an HTTP Basic Auth header - use this when the receiving endpoint sits behind Basic Auth. Per the OpenAPI spec, /user/settings/webhooks* is JWT-only - calls made with an API token (tk_*) session may be rejected by the server.",
     ),
     {
       // Operation type
@@ -272,13 +381,40 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
       perPage: z.number().int().positive().max(100).optional(),
 
       // Create/Update parameters
-      targetUrl: z.string().url().optional(),
+      targetUrl: z
+        .string()
+        .url()
+        .optional()
+        .describe(
+          "Create-only. The Vikunja API cannot change a webhook's target URL after creation, so 'update' rejects this field - delete and re-create instead.",
+        ),
       events: z.array(z.string()).optional(),
-      secret: z.string().optional(),
+      secret: z
+        .string()
+        .optional()
+        .describe(
+          "Create-only HMAC signing key. The Vikunja API cannot rotate a webhook's secret after creation, so 'update' rejects this field - delete and re-create instead. Never echoed back in responses.",
+        ),
+      basicAuthUser: z
+        .string()
+        .optional()
+        .describe(
+          "Create-only. Paired with basicAuthPassword to send the webhook's outgoing requests with an HTTP Basic Auth header - use this when the receiving endpoint requires Basic Auth. The Vikunja API cannot change this after creation, so 'update' rejects this field - delete and re-create instead.",
+        ),
+      basicAuthPassword: z
+        .string()
+        .optional()
+        .describe(
+          "Create-only credential, paired with basicAuthUser. The Vikunja API cannot change this after creation, so 'update' rejects this field - delete and re-create instead. Never echoed back in responses or logged.",
+        ),
     },
     getToolAnnotations('vikunja_webhooks'),
     async (args) => {
-      if (!authManager.isAuthenticated()) {
+      // Closure-gate precedence fix: defer to the per-request context when
+      // bound (see hasRequestContext's doc comment, src/client.ts).
+      if (hasRequestContext()) {
+        await getAuthManagerFromContext();
+      } else if (!authManager.isAuthenticated()) {
         throw new MCPError(
           ErrorCode.AUTH_REQUIRED,
           'Authentication required. Please use vikunja_auth.connect first.',
@@ -301,19 +437,39 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
         assertScopeConsistency(scope, args.projectId);
       }
 
-      logger.debug('Webhooks tool called', { subcommand, scope, args });
+      // NEVER log `args` wholesale here: it carries `secret` (an HMAC signing
+      // key), `basicAuthPassword` (a credential), and `targetUrl` (provider
+      // webhook URLs such as Slack's embed a secret in their path). Log only
+      // non-credential scalars - `basicAuthUser` is excluded too, even
+      // though it isn't itself a secret, so its presence never hints at
+      // which fields were supplied together.
+      logger.debug('Webhooks tool called', {
+        subcommand,
+        scope,
+        projectId: args.projectId,
+        webhookId: args.webhookId,
+        page: args.page,
+        perPage: args.perPage,
+        events: args.events,
+        hasTargetUrl: args.targetUrl !== undefined,
+        hasSecret: args.secret !== undefined,
+        hasBasicAuthUser: args.basicAuthUser !== undefined,
+        hasBasicAuthPassword: args.basicAuthPassword !== undefined,
+      });
 
       try {
         switch (subcommand) {
           case 'list': {
-            const projectId = scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
+            const projectId =
+              scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
 
-            const webhooks =
+            const webhooks = (
               (await vikunjaRestRequest<Webhook[]>(
                 authManager,
                 'GET',
                 webhookCollectionPath(scope, projectId, args.page, args.perPage),
-              )) ?? [];
+              )) ?? []
+            ).map(redactWebhookCredentials);
 
             const description =
               scope === 'project'
@@ -332,9 +488,10 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
                 metadata: {
                   count: webhooks.length,
                   ...(scope === 'project' && args.page !== undefined && { page: args.page }),
-                  ...(scope === 'project' && args.perPage !== undefined && { perPage: args.perPage }),
-                }
-              }
+                  ...(scope === 'project' &&
+                    args.perPage !== undefined && { perPage: args.perPage }),
+                },
+              },
             );
 
             return {
@@ -348,17 +505,46 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
           }
 
           case 'get': {
-            const projectId = scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
+            const projectId =
+              scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
             const webhookId = validateAndConvertId(args.webhookId, 'webhookId');
 
             // Get all webhooks and find the specific one - the spec has no
-            // single-webhook GET in either scope.
-            const webhooks =
-              (await vikunjaRestRequest<Webhook[]>(
+            // single-webhook GET in either scope. `get` has no page/perPage
+            // argument of its own (unlike `list`, which forwards the
+            // caller's), so a webhook whose id lands past the server's
+            // first (clamped) page used to be indistinguishable from one
+            // that doesn't exist at all - it must walk every page itself.
+            // `scope: 'user'` has no documented page/per_page at all
+            // (see `webhookCollectionPath`'s comment), so pagination only
+            // applies to `scope: 'project'`; repeating the identical
+            // unpaged request for 'user' would just refetch the same page
+            // forever.
+            const requestWebhookPage = async (page: number): Promise<Webhook[]> => {
+              // Page 1 keeps the original unpaged spelling exactly (no
+              // `page` query param at all) so the common single-page case
+              // issues the identical request it always did; only pages
+              // synthesised by the walk below (page > 1) force an explicit
+              // `page` number, matching the pattern in `notifications.ts`.
+              const result = await vikunjaRestRequest<Webhook[]>(
                 authManager,
                 'GET',
-                webhookCollectionPath(scope, projectId),
-              )) ?? [];
+                webhookCollectionPath(scope, projectId, page === 1 ? undefined : page, undefined),
+              );
+              return Array.isArray(result) ? result : [];
+            };
+
+            const webhooks = (
+              scope === 'project'
+                ? await fetchAllPages(requestWebhookPage, {
+                    autoPaginate: true,
+                    firstPage: 1,
+                    budget: createBudget(),
+                    cap: readServerPageCap(authManager) ?? DEFAULT_SERVER_PAGE_CAP,
+                    resourceLabel: `GET /projects/${projectId}/webhooks`,
+                  })
+                : await requestWebhookPage(1)
+            ).map(redactWebhookCredentials);
 
             const webhook = webhooks.find((w: Webhook) => w.id === webhookId);
 
@@ -383,9 +569,9 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               {
                 success: true,
                 metadata: {
-                  count: 1
-                }
-              }
+                  count: 1,
+                },
+              },
             );
 
             return {
@@ -399,7 +585,8 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
           }
 
           case 'create': {
-            const projectId = scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
+            const projectId =
+              scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
 
             if (!args.targetUrl) {
               throw new MCPError(
@@ -427,11 +614,29 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               webhookData.secret = args.secret;
             }
 
-            const webhook = await vikunjaRestRequest<Webhook>(
-              authManager,
-              'PUT',
-              webhookCollectionPath(scope, projectId),
-              webhookData,
+            // basic_auth_user/basic_auth_password: create-only, per
+            // models.Webhook (go-vikunja pkg/models/webhooks.go) - Create
+            // inserts the full struct, so both fields are write fields here
+            // exactly like target_url/secret above. `update`'s hard-coded
+            // Cols("events") write excludes them the same way it excludes
+            // target_url/secret - see the rejection in the 'update' case.
+            if (args.basicAuthUser !== undefined) {
+              webhookData.basic_auth_user = args.basicAuthUser;
+            }
+            if (args.basicAuthPassword !== undefined) {
+              webhookData.basic_auth_password = args.basicAuthPassword;
+            }
+
+            // The server's create handler returns the bound struct as-is, so
+            // the response echoes back the `secret` the caller just sent.
+            // Redact it before it can reach a tool response or a log line.
+            const webhook = redactWebhookCredentials(
+              await vikunjaRestRequest<Webhook>(
+                authManager,
+                'PUT',
+                webhookCollectionPath(scope, projectId),
+                webhookData,
+              ),
             );
 
             logger.info('Created webhook', { scope, projectId, webhookId: webhook.id });
@@ -444,9 +649,9 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               {
                 success: true,
                 metadata: {
-                  count: 1
-                }
-              }
+                  count: 1,
+                },
+              },
             );
 
             return {
@@ -460,8 +665,48 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
           }
 
           case 'update': {
-            const projectId = scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
+            const projectId =
+              scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
             const webhookId = validateAndConvertId(args.webhookId, 'webhookId');
+
+            // Vikunja's webhook update is a single-column write, NOT a
+            // full-model replace and NOT a partial update either: both
+            // POST /projects/{id}/webhooks/{webhookID} and
+            // POST /user/settings/webhooks/{id} run the same
+            // `models.Webhook.Update`, which is literally
+            //   s.Where("id = ?", w.ID).Cols("events").Update(w)
+            // Every other column - target_url, secret, basic_auth_user,
+            // basic_auth_password - is excluded by that `Cols("events")` and
+            // is discarded server-side. The swagger annotation says the same
+            // thing in prose: "Change a webhook target's events. You cannot
+            // change other values of a webhook."
+            //
+            // This used to build `{ events }` and drop targetUrl/secret on
+            // the floor while still reporting success - so an agent
+            // repointing a webhook at a new URL, or rotating its secret, was
+            // told it worked when nothing had changed. Reject loudly instead;
+            // there is no payload shape that would make it work. The same
+            // applies to basicAuthUser/basicAuthPassword added alongside
+            // them - neither can be rotated after creation either.
+            const unsupportedUpdateFields: string[] = [];
+            if (args.targetUrl !== undefined) unsupportedUpdateFields.push('targetUrl');
+            if (args.secret !== undefined) unsupportedUpdateFields.push('secret');
+            if (args.basicAuthUser !== undefined) unsupportedUpdateFields.push('basicAuthUser');
+            if (args.basicAuthPassword !== undefined)
+              unsupportedUpdateFields.push('basicAuthPassword');
+            if (unsupportedUpdateFields.length > 0) {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                `Webhook update cannot change ${unsupportedUpdateFields.join(' or ')}: the Vikunja ` +
+                  "API only ever writes a webhook's `events` (both " +
+                  'POST /projects/{id}/webhooks/{webhookID} and POST /user/settings/webhooks/{id} ' +
+                  'update the events column and nothing else), so the value would be accepted and ' +
+                  'silently ignored. To point a webhook at a different URL, rotate its secret, or ' +
+                  "change its Basic Auth credentials, delete it (subcommand: 'delete') and create " +
+                  "a replacement (subcommand: 'create') with the new values - the replacement gets " +
+                  'a new webhook ID.',
+              );
+            }
 
             if (!args.events || args.events.length === 0) {
               throw new MCPError(
@@ -473,32 +718,40 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
             // Validate events against allowed list
             await validateWebhookEvents(authManager, scope, args.events);
 
-            // The API only allows updating events, in both scopes
+            // The API only allows updating events, in both scopes - see the
+            // Cols("events") note above. Anything else was already rejected.
             const updateData = {
               events: args.events,
             };
 
-            const webhook = await vikunjaRestRequest<Webhook>(
-              authManager,
-              'POST',
-              webhookItemPath(scope, webhookId, projectId),
-              updateData,
+            const webhook = redactWebhookCredentials(
+              await vikunjaRestRequest<Webhook>(
+                authManager,
+                'POST',
+                webhookItemPath(scope, webhookId, projectId),
+                updateData,
+              ),
             );
 
-            logger.info('Updated webhook events', { scope, projectId, webhookId, events: args.events });
+            logger.info('Updated webhook events', {
+              scope,
+              projectId,
+              webhookId,
+              events: args.events,
+            });
 
             // Use AORP factory for consistent response format
             const aorpResult = createAorpResponse(
               'update',
-              'Webhook events updated successfully',
+              'Webhook events updated successfully (events is the only field this endpoint writes; target URL and secret are unchanged)',
               { webhook }, // Preserve webhook data in details.data.webhook
               {
                 success: true,
                 metadata: {
                   count: 1,
-                  affectedFields: ['events']
-                }
-              }
+                  affectedFields: ['events'],
+                },
+              },
             );
 
             return {
@@ -512,7 +765,8 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
           }
 
           case 'delete': {
-            const projectId = scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
+            const projectId =
+              scope === 'project' ? validateAndConvertId(args.projectId, 'projectId') : undefined;
             const webhookId = validateAndConvertId(args.webhookId, 'webhookId');
 
             await vikunjaRestRequest(
@@ -531,9 +785,9 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               {
                 success: true,
                 metadata: {
-                  count: 1
-                }
-              }
+                  count: 1,
+                },
+              },
             );
 
             return {
@@ -561,9 +815,9 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
               {
                 success: true,
                 metadata: {
-                  count: events.length
-                }
-              }
+                  count: events.length,
+                },
+              },
             );
 
             return {
@@ -583,7 +837,14 @@ export function registerWebhooksTool(server: McpServer, authManager: AuthManager
             );
         }
       } catch (error) {
-        logger.error('Webhook operation failed', { error, subcommand, scope, args });
+        // Same credential-hygiene rule as the debug line above - no raw `args`.
+        logger.error('Webhook operation failed', {
+          error,
+          subcommand,
+          scope,
+          projectId: args.projectId,
+          webhookId: args.webhookId,
+        });
 
         if (error instanceof MCPError) {
           // vikunjaRestRequest surfaces 401/403 as a generic HTTP error; give

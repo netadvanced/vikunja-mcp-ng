@@ -45,6 +45,52 @@ interface VikunjaTaskSummary {
   title?: string;
 }
 
+interface VikunjaViewSummary {
+  id: number;
+}
+
+/**
+ * Verifies that an explicitly-supplied `projectViewId` actually belongs to
+ * the task's own project, and returns it.
+ *
+ * WHY THIS IS CLIENT-SIDE (issue #254, item A3). Vikunja only started
+ * checking this in 2.6.0. Measured on both:
+ *
+ *   2.4.0  POST /tasks/{id}/position with a view from ANOTHER project -> 200,
+ *          and with a view id that does not exist at all -> 200. The write
+ *          is accepted and orders the task in a view nobody will ever look
+ *          at, so the caller is told it worked and nothing moved.
+ *   2.6.0  foreign view -> 403 Forbidden; unknown view -> 404 (code 3014).
+ *
+ * A server-version-dependent silent no-op is the worst of the three
+ * outcomes, so this refuses it on every version rather than only on the ones
+ * that happen to be old. On 2.6.0 the check is redundant with the server's
+ * and simply produces a clearer message than a bare `Forbidden`.
+ */
+async function assertViewBelongsToProject(
+  authManager: AuthManager,
+  projectViewId: number,
+  projectId: number,
+  taskId: number,
+): Promise<number> {
+  const views = await vikunjaRestRequest<VikunjaViewSummary[]>(
+    authManager,
+    'GET',
+    `/projects/${projectId}/views`,
+  );
+  const known = Array.isArray(views) ? views.map((view) => view.id) : [];
+  if (known.includes(projectViewId)) return projectViewId;
+
+  throw new MCPError(
+    ErrorCode.VALIDATION_ERROR,
+    `projectViewId ${projectViewId} does not belong to project ${projectId}, which is the ` +
+      `project of task ${taskId}. Task positions are stored per view, so a view from another ` +
+      `project cannot order this task. Views on project ${projectId}: ` +
+      `${known.length > 0 ? known.join(', ') : '(none)'}. Omit projectViewId to use the ` +
+      "project's own view of the requested kind.",
+  );
+}
+
 /**
  * Updates a task's position within a project view.
  *
@@ -62,7 +108,10 @@ export async function setTaskPosition(
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   if (!args.id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Task id is required for set-position operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'Task id is required for set-position operation',
+    );
   }
   if (args.position === undefined || args.position === null) {
     throw new MCPError(
@@ -75,38 +124,39 @@ export async function setTaskPosition(
   if (args.projectId !== undefined) validateId(args.projectId, 'projectId');
 
   // Resolve the project id from the task when the caller did not supply it.
+  // Also fetched when the caller supplied an explicit `projectViewId`, since
+  // validating that view needs the task's REAL project — a caller-supplied
+  // `projectId` is an assertion, not evidence.
   let projectId = args.projectId;
-  if (projectId === undefined) {
+  let taskProjectId = args.projectId;
+  if (projectId === undefined || args.projectViewId !== undefined) {
     const task = await vikunjaRestRequest<VikunjaTaskSummary>(
       authManager,
       'GET',
       `/tasks/${args.id}`,
     );
     if (!task || typeof task.project_id !== 'number') {
-      throw new MCPError(
-        ErrorCode.NOT_FOUND,
-        `Could not resolve the project of task ${args.id}`,
-      );
+      throw new MCPError(ErrorCode.NOT_FOUND, `Could not resolve the project of task ${args.id}`);
     }
-    projectId = task.project_id;
+    taskProjectId = task.project_id;
+    projectId ??= task.project_id;
   }
 
   // Resolve the project view id when the caller did not supply it.
   const viewKind = args.viewKind ?? 'list';
   const projectViewId =
     args.projectViewId !== undefined
-      ? args.projectViewId
+      ? await assertViewBelongsToProject(authManager, args.projectViewId, taskProjectId as number, args.id)
       : (await resolveViewIdByKind(authManager, projectId, viewKind)).id;
 
   // Update the position. Vikunja's endpoint takes the full TaskPosition
   // model; task_id is also part of the URL but is sent in the body too, as
   // the API model documents it as a body field.
-  await vikunjaRestRequest(
-    authManager,
-    'POST',
-    `/tasks/${args.id}/position`,
-    { task_id: args.id, project_view_id: projectViewId, position: args.position },
-  );
+  await vikunjaRestRequest(authManager, 'POST', `/tasks/${args.id}/position`, {
+    task_id: args.id,
+    project_view_id: projectViewId,
+    position: args.position,
+  });
 
   const response = createStandardResponse(
     'set-task-position',

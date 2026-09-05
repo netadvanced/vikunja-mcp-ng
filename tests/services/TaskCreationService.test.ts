@@ -145,10 +145,7 @@ describe('TaskCreationService', () => {
         ['john', 101],
         ['jane', 102],
       ]),
-      projectUsers: [
-        { id: 101, username: 'john' } as User,
-        { id: 102, username: 'jane' } as User,
-      ],
+      projectUsers: [{ id: 101, username: 'john' } as User, { id: 102, username: 'jane' } as User],
     };
 
     // Setup mock task
@@ -165,6 +162,7 @@ describe('TaskCreationService', () => {
       hexColor: '#ff0000',
       repeatAfter: 3600,
       repeatMode: 1, // week
+      // ImportedTask.percentDone is a whole percentage 0-100.
       percentDone: 50,
     };
   });
@@ -177,7 +175,7 @@ describe('TaskCreationService', () => {
         title: 'Test Task',
         done: false,
         priority: 3,
-        percent_done: 50,
+        percent_done: 0.5,
       } as Task;
 
       // createBaseTask PUT succeeds; the label-bulk POST resolves via the
@@ -185,10 +183,7 @@ describe('TaskCreationService', () => {
       fetchOkOnce(createdTask);
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
-        labels: [
-          { id: 1, title: 'urgent' } as Label,
-          { id: 2, title: 'bug' } as Label,
-        ],
+        labels: [{ id: 1, title: 'urgent' } as Label, { id: 2, title: 'bug' } as Label],
       });
       mockClient.tasks.assignUserToTask.mockResolvedValue({});
 
@@ -197,7 +192,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -215,11 +210,14 @@ describe('TaskCreationService', () => {
         title: 'Test Task',
         done: false,
         priority: 3,
-        percent_done: 50,
+        // 50% in, Vikunja's 0-1 wire fraction out.
+        percent_done: 0.5,
         description: 'Test description',
-        due_date: '2024-12-31',
-        start_date: '2024-01-01',
-        end_date: '2024-12-31',
+        // Date-only values are coerced to RFC3339 before being sent — see
+        // the dedicated 'date normalization' describe block below.
+        due_date: '2024-12-31T00:00:00Z',
+        start_date: '2024-01-01T00:00:00Z',
+        end_date: '2024-12-31T00:00:00Z',
         hex_color: '#ff0000',
         repeat_after: 3600,
         repeat_mode: 'week',
@@ -246,7 +244,7 @@ describe('TaskCreationService', () => {
         minimalTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -261,6 +259,54 @@ describe('TaskCreationService', () => {
       });
     });
 
+    describe('date normalization', () => {
+      it('coerces a date-only dueDate to RFC3339 before sending the create request', async () => {
+        const task: ImportedTask = { title: 'Task', dueDate: '2026-09-01' };
+        fetchOkOnce({ id: 125, title: 'Task', done: false, priority: 0, percent_done: 0 } as Task);
+
+        await taskCreationService.createTask(task, 456, authManager, mockEntityMaps);
+
+        expect(fetchBody(0)).toMatchObject({ due_date: '2026-09-01T00:00:00Z' });
+      });
+
+      it('coerces date-only startDate and endDate to RFC3339 before sending the create request', async () => {
+        const task: ImportedTask = {
+          title: 'Task',
+          startDate: '2026-09-01',
+          endDate: '2026-09-05',
+        };
+        fetchOkOnce({ id: 126, title: 'Task', done: false, priority: 0, percent_done: 0 } as Task);
+
+        await taskCreationService.createTask(task, 456, authManager, mockEntityMaps);
+
+        expect(fetchBody(0)).toMatchObject({
+          start_date: '2026-09-01T00:00:00Z',
+          end_date: '2026-09-05T00:00:00Z',
+        });
+      });
+
+      it('leaves a full RFC3339 dueDate timestamp unchanged', async () => {
+        const task: ImportedTask = { title: 'Task', dueDate: '2026-09-01T15:30:00Z' };
+        fetchOkOnce({ id: 127, title: 'Task', done: false, priority: 0, percent_done: 0 } as Task);
+
+        await taskCreationService.createTask(task, 456, authManager, mockEntityMaps);
+
+        expect(fetchBody(0)).toMatchObject({ due_date: '2026-09-01T15:30:00Z' });
+      });
+
+      it('does not add due_date/start_date/end_date fields when not provided', async () => {
+        const task: ImportedTask = { title: 'Task' };
+        fetchOkOnce({ id: 128, title: 'Task', done: false, priority: 0, percent_done: 0 } as Task);
+
+        await taskCreationService.createTask(task, 456, authManager, mockEntityMaps);
+
+        const body = fetchBody(0);
+        expect(body).not.toHaveProperty('due_date');
+        expect(body).not.toHaveProperty('start_date');
+        expect(body).not.toHaveProperty('end_date');
+      });
+    });
+
     it('should handle authentication error during task creation', async () => {
       // Arrange
       const authError = new Error('Authentication failed');
@@ -270,7 +316,7 @@ describe('TaskCreationService', () => {
 
       // Act & Assert
       await expect(
-        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps),
       ).rejects.toThrow(MCPError);
 
       // isAuthenticationError is called with the original network-level
@@ -290,12 +336,12 @@ describe('TaskCreationService', () => {
 
       // Act & Assert - Should bubble up even with catchErrors=true
       await expect(
-        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, true)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, true),
       ).rejects.toThrow(MCPError);
 
       // Act & Assert - Should also bubble up with catchErrors=false
       await expect(
-        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, false)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, false),
       ).rejects.toThrow(MCPError);
     });
 
@@ -308,7 +354,7 @@ describe('TaskCreationService', () => {
 
       // Act & Assert
       await expect(
-        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, false)
+        taskCreationService.createTask(mockTask, 456, authManager, mockEntityMaps, false),
       ).rejects.toThrow('API rate limit exceeded');
     });
 
@@ -324,7 +370,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -351,10 +397,7 @@ describe('TaskCreationService', () => {
       fetchOkOnce(createdTask);
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
-        labels: [
-          { id: 1, title: 'urgent' } as Label,
-          { id: 2, title: 'bug' } as Label,
-        ],
+        labels: [{ id: 1, title: 'urgent' } as Label, { id: 2, title: 'bug' } as Label],
       });
 
       // Act
@@ -362,7 +405,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -400,7 +443,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -430,7 +473,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -460,7 +503,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -492,10 +535,7 @@ describe('TaskCreationService', () => {
       fetchOkOnce(createdTask);
       mockClient.tasks.getTask.mockResolvedValue({
         ...createdTask,
-        labels: [
-          { id: 1, title: 'urgent' } as Label,
-          { id: 2, title: 'bug' } as Label,
-        ],
+        labels: [{ id: 1, title: 'urgent' } as Label, { id: 2, title: 'bug' } as Label],
       });
 
       // Act
@@ -503,7 +543,7 @@ describe('TaskCreationService', () => {
         taskWithUnknownLabels,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -531,7 +571,7 @@ describe('TaskCreationService', () => {
         mockTask,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -562,7 +602,7 @@ describe('TaskCreationService', () => {
         taskWithoutLabels,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -573,7 +613,7 @@ describe('TaskCreationService', () => {
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
     });
 
-    it('should handle user assignment when no users are available', async () => {
+    it('should skip assignees with an auth-specific warning when the user fetch failed due to auth', async () => {
       // Arrange
       const taskWithoutLabels: ImportedTask = {
         ...mockTask,
@@ -585,9 +625,15 @@ describe('TaskCreationService', () => {
         done: false,
         priority: 3,
       } as Task;
-      const entityMapsWithNoUsers = {
+      // projectUsers is empty AND the entity resolver reported a real auth
+      // failure on the /users search — the auth-specific warning is only
+      // correct in this combination (issue #283 HIGH-12: previously ANY
+      // empty projectUsers list, including a clean "searched, found
+      // nobody" result, produced this same message).
+      const entityMapsWithAuthFailure = {
         ...mockEntityMaps,
         projectUsers: [],
+        userFetchFailedDueToAuth: true,
       };
 
       fetchOkOnce(createdTask);
@@ -597,13 +643,90 @@ describe('TaskCreationService', () => {
         taskWithoutLabels,
         456,
         authManager,
-        entityMapsWithNoUsers
+        entityMapsWithAuthFailure,
       );
 
       // Assert
       expect(result.success).toBe(true);
       expect(result.warnings).toHaveLength(1);
       expect(result.warnings![0]).toContain('Assignees skipped due to user fetch failure');
+      expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
+      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+    });
+
+    it('should skip assignees with a search-failure warning (not the auth one) when a non-auth search error occurred', async () => {
+      // Arrange: same empty projectUsers, but the failure was NOT an auth
+      // error (e.g. a 500 or network blip on the /users search).
+      const taskWithoutLabels: ImportedTask = {
+        ...mockTask,
+        labels: [],
+      };
+      const createdTask: Task = {
+        id: 123,
+        title: 'Test Task',
+        done: false,
+        priority: 3,
+      } as Task;
+      const entityMapsWithSearchFailure = {
+        ...mockEntityMaps,
+        projectUsers: [],
+        userSearchFailed: true,
+      };
+
+      fetchOkOnce(createdTask);
+
+      const result = await taskCreationService.createTask(
+        taskWithoutLabels,
+        456,
+        authManager,
+        entityMapsWithSearchFailure,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings![0]).toContain('user search failed');
+      expect(result.warnings![0]).not.toContain('possible API authentication issue');
+      expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
+      expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
+    });
+
+    it('should report assignees as not found (not an API-issue warning) when the user search succeeded but simply matched no one', async () => {
+      // Arrange: projectUsers is empty because the search(es) ran fine and
+      // legitimately found nobody — neither failure flag is set. This is
+      // the "correct branch is unreachable" defect from issue #283 HIGH-12:
+      // before the fix, this indistinguishable-from-a-real-failure case
+      // always produced the "possible API authentication issue" warning.
+      const taskWithoutLabels: ImportedTask = {
+        ...mockTask,
+        labels: [],
+      };
+      const createdTask: Task = {
+        id: 123,
+        title: 'Test Task',
+        done: false,
+        priority: 3,
+      } as Task;
+      const entityMapsWithNoMatches = {
+        ...mockEntityMaps,
+        userMap: new Map(), // no username matched any search
+        projectUsers: [],
+        userFetchFailedDueToAuth: false,
+        userSearchFailed: false,
+      };
+
+      fetchOkOnce(createdTask);
+
+      const result = await taskCreationService.createTask(
+        taskWithoutLabels,
+        456,
+        authManager,
+        entityMapsWithNoMatches,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings![0]).toContain('Users not found');
+      expect(result.warnings![0]).not.toContain('possible API authentication issue');
       expect(mockClient.tasks.assignUserToTask).not.toHaveBeenCalled();
       expect(mockClient.tasks.bulkAssignUsersToTask).not.toHaveBeenCalled();
     });
@@ -629,7 +752,7 @@ describe('TaskCreationService', () => {
         taskWithoutLabels,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -664,7 +787,7 @@ describe('TaskCreationService', () => {
         taskWithUnknownUsers,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -679,14 +802,19 @@ describe('TaskCreationService', () => {
   });
 
   describe('Reminder Handling', () => {
-    it('should handle reminders with API limitation warning', async () => {
-      // Arrange
+    it('should include reminders in the task creation body rather than warning they cannot be added (#284)', async () => {
+      // Arrange. `ImportedTask.reminders` is a plain array of date strings
+      // (see `importedTaskSchema`) — `prepareTaskData` maps each to
+      // `models.TaskReminder`'s wire shape (`{ reminder: <date> }`) and
+      // includes it directly in the `PUT /projects/{id}/tasks` body.
+      // Reminders are NOT dropped with a false "API limitation" warning the
+      // way they used to be: this codebase's own
+      // `vikunja_task_reminders` add-reminder operation proves reminders
+      // CAN be added after creation too, but there is no need for a second
+      // round trip when the create endpoint accepts them directly.
       const taskWithReminders: ImportedTask = {
         title: 'Test Task with Reminders',
-        reminders: [
-          { reminder: '2024-12-31T10:00:00Z' },
-          { reminder: '2024-11-30T09:00:00Z' },
-        ],
+        reminders: ['2024-12-31T10:00:00Z', '2024-11-30T09:00:00Z'],
         labels: [], // Remove labels to isolate reminder testing
         assignees: [], // Remove assignees to isolate reminder testing
       };
@@ -704,20 +832,24 @@ describe('TaskCreationService', () => {
         taskWithReminders,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
       expect(result.success).toBe(true);
-      expect(result.warnings).toHaveLength(1);
-      expect(result.warnings![0]).toContain('Reminders cannot be added after task creation');
-      expect(logger.warn).toHaveBeenCalledWith('Reminders cannot be added after task creation', {
-        taskId: 123,
-        reminders: [
-          { reminder: '2024-12-31T10:00:00Z' },
-          { reminder: '2024-11-30T09:00:00Z' },
-        ],
-      });
+      expect(result.warnings).toBeUndefined();
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        'Reminders cannot be added after task creation',
+        expect.anything(),
+      );
+      expect(fetchBody(0)).toEqual(
+        expect.objectContaining({
+          reminders: [
+            { reminder: '2024-12-31T10:00:00Z' },
+            { reminder: '2024-11-30T09:00:00Z' },
+          ],
+        }),
+      );
     });
   });
 
@@ -744,7 +876,7 @@ describe('TaskCreationService', () => {
         taskWithEmptyArrays,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -778,7 +910,7 @@ describe('TaskCreationService', () => {
         taskWithUndefined,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -813,7 +945,7 @@ describe('TaskCreationService', () => {
         taskWithInvalidRepeatMode,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
@@ -830,7 +962,10 @@ describe('TaskCreationService', () => {
         ...mockTask,
         labels: ['urgent', 'unknown'], // One valid, one not found
         assignees: ['john', 'unknown'], // One valid, one not found
-        reminders: [{ reminder: '2024-12-31T10:00:00Z' }],
+        // Reminders (a plain date-string array per importedTaskSchema) are
+        // now included directly in the create body rather than producing a
+        // warning (#284), so they no longer contribute to this count.
+        reminders: ['2024-12-31T10:00:00Z'],
       };
       const createdTask: Task = {
         id: 128,
@@ -850,16 +985,20 @@ describe('TaskCreationService', () => {
         taskWithMultipleIssues,
         456,
         authManager,
-        mockEntityMaps
+        mockEntityMaps,
       );
 
       // Assert
       expect(result.success).toBe(true);
-      expect(result.warnings).toHaveLength(4);
+      expect(result.warnings).toHaveLength(3);
       expect(result.warnings![0]).toContain('Labels not found: unknown');
       expect(result.warnings![1]).toContain('Labels specified but not assigned'); // Due to verification failure
       expect(result.warnings![2]).toContain('Users not found: unknown');
-      expect(result.warnings![3]).toContain('Reminders cannot be added after task creation');
+      expect(fetchBody(0)).toEqual(
+        expect.objectContaining({
+          reminders: [{ reminder: '2024-12-31T10:00:00Z' }],
+        }),
+      );
     });
   });
 });

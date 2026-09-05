@@ -66,7 +66,7 @@ type McpResponse = { content: Array<{ type: 'text'; text: string }> };
  * without smuggling anything past runtime behavior.
  */
 function toResponseData(data: Record<string, unknown>): ResponseData {
-  return data as unknown as ResponseData;
+  return data;
 }
 
 function buildQuery(params: Record<string, string | number | undefined>): string {
@@ -87,6 +87,44 @@ function rethrow(error: unknown, notFoundMessage: string | undefined, context: s
     throw error;
   }
   throw transformApiError(error, context);
+}
+
+// Safety valve for fetchAllPaginated's loop below: bounds the number of
+// round trips a single paginated read can make so a misbehaving server
+// (one that never returns a short final page) can't turn a verification
+// read into an unbounded loop. Mirrors fetchAllProjects' page size/cap
+// choice in crud.ts.
+const FETCH_ALL_PAGE_SIZE = 200;
+const FETCH_ALL_MAX_PAGES = 50;
+
+/**
+ * Fetches every item from a paginated `GET` list endpoint, walking `page`
+ * until a page comes back shorter than `per_page` (this API's standard
+ * "last page" signal — see docs/API_NOTES.md), bounded by
+ * `FETCH_ALL_MAX_PAGES` as a safety valve.
+ *
+ * FIXED (audit #291 MED-3): `share-with-user`/`share-with-team`'s
+ * atomic-rollback verification step used to read only the first page of
+ * `/projects/{id}/users` or `/projects/{id}/teams`. On a project with more
+ * members than fit on one page, a grant that actually landed but sorted
+ * onto a later page read as "verification failed", and `atomic: true`
+ * would then revoke a grant that had, in fact, succeeded.
+ */
+async function fetchAllPaginated<T>(authManager: AuthManager, path: string): Promise<T[]> {
+  const all: T[] = [];
+  for (let page = 1; page <= FETCH_ALL_MAX_PAGES; page++) {
+    const batch = await vikunjaRestRequest<T[]>(
+      authManager,
+      'GET',
+      `${path}${buildQuery({ per_page: FETCH_ALL_PAGE_SIZE, page })}`,
+    );
+    const items = Array.isArray(batch) ? batch : [];
+    all.push(...items);
+    if (items.length < FETCH_ALL_PAGE_SIZE) {
+      break;
+    }
+  }
+  return all;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +240,11 @@ export async function addProjectUser(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `Project with ID ${projectId} not found, or user "${username}" does not exist`, 'Failed to add project user');
+    rethrow(
+      error,
+      `Project with ID ${projectId} not found, or user "${username}" does not exist`,
+      'Failed to add project user',
+    );
   }
 }
 
@@ -241,7 +283,11 @@ export async function updateProjectUserPermission(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `User ${userId} does not have access to project ${projectId}`, 'Failed to update project user permission');
+    rethrow(
+      error,
+      `User ${userId} does not have access to project ${projectId}`,
+      'Failed to update project user permission',
+    );
   }
 }
 
@@ -276,7 +322,11 @@ export async function removeProjectUser(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `User ${userId} does not have access to project ${projectId}`, 'Failed to remove project user');
+    rethrow(
+      error,
+      `User ${userId} does not have access to project ${projectId}`,
+      'Failed to remove project user',
+    );
   }
 }
 
@@ -356,7 +406,11 @@ export async function addProjectTeam(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `Project with ID ${projectId} not found, or team ${teamId} does not exist`, 'Failed to add project team');
+    rethrow(
+      error,
+      `Project with ID ${projectId} not found, or team ${teamId} does not exist`,
+      'Failed to add project team',
+    );
   }
 }
 
@@ -395,7 +449,11 @@ export async function updateProjectTeamPermission(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `Team ${teamId} does not have access to project ${projectId}`, 'Failed to update project team permission');
+    rethrow(
+      error,
+      `Team ${teamId} does not have access to project ${projectId}`,
+      'Failed to update project team permission',
+    );
   }
 }
 
@@ -430,7 +488,11 @@ export async function removeProjectTeam(
     );
     return { content: [{ type: 'text' as const, text: formatAorpAsMarkdown(response) }] };
   } catch (error) {
-    rethrow(error, `Team ${teamId} does not have access to project ${projectId}`, 'Failed to remove project team');
+    rethrow(
+      error,
+      `Team ${teamId} does not have access to project ${projectId}`,
+      'Failed to remove project team',
+    );
   }
 }
 
@@ -504,10 +566,7 @@ export async function shareProjectWithUser(
       }
       const match = findExactUsername(Array.isArray(candidates) ? candidates : [], username);
       if (!match || match.id === undefined) {
-        throw new MCPError(
-          ErrorCode.NOT_FOUND,
-          `No user found with username "${username}"`,
-        );
+        throw new MCPError(ErrorCode.NOT_FOUND, `No user found with username "${username}"`);
       }
       resolvedUserId = match.id;
       return match;
@@ -551,9 +610,11 @@ export async function shareProjectWithUser(
       const resolvedUser = ctx.results.get('resolve-user') as VikunjaUser;
       let users: VikunjaUserWithPermission[];
       try {
-        users = await vikunjaRestRequest<VikunjaUserWithPermission[]>(
+        // Paginated (audit #291 MED-3) — a single-page read could miss a
+        // grant that landed but sorted onto a later page, causing
+        // `atomic: true` to revoke a share that actually succeeded.
+        users = await fetchAllPaginated<VikunjaUserWithPermission>(
           authManager,
-          'GET',
           `/projects/${projectId}/users`,
         );
       } catch (error) {
@@ -573,10 +634,7 @@ export async function shareProjectWithUser(
   const result = await op.run({ atomic });
 
   if (!result.ok) {
-    const err =
-      result.error instanceof Error
-        ? result.error
-        : new Error(String(result.error));
+    const err = result.error instanceof Error ? result.error : new Error(String(result.error));
     throw new MCPError(
       err instanceof MCPError ? err.code : ErrorCode.API_ERROR,
       `share-with-user failed: ${err.message}${result.guidance ? `\n${result.guidance}` : ''}`,
@@ -680,9 +738,10 @@ export async function shareProjectWithTeam(
     execute: async () => {
       let teams: VikunjaTeamWithPermission[];
       try {
-        teams = await vikunjaRestRequest<VikunjaTeamWithPermission[]>(
+        // Paginated (audit #291 MED-3) — see the `share-with-user` verify
+        // step above for why a single-page read is unsafe here.
+        teams = await fetchAllPaginated<VikunjaTeamWithPermission>(
           authManager,
-          'GET',
           `/projects/${projectId}/teams`,
         );
       } catch (error) {
@@ -702,10 +761,7 @@ export async function shareProjectWithTeam(
   const result = await op.run({ atomic });
 
   if (!result.ok) {
-    const err =
-      result.error instanceof Error
-        ? result.error
-        : new Error(String(result.error));
+    const err = result.error instanceof Error ? result.error : new Error(String(result.error));
     throw new MCPError(
       err instanceof MCPError ? err.code : ErrorCode.API_ERROR,
       `share-with-team failed: ${err.message}${result.guidance ? `\n${result.guidance}` : ''}`,
@@ -742,17 +798,32 @@ export async function listProjectMembers(
   validateId(projectId, 'projectId');
 
   const [usersResult, teamsResult, sharesResult] = await Promise.allSettled([
-    vikunjaRestRequest<VikunjaUserWithPermission[]>(authManager, 'GET', `/projects/${projectId}/users`),
-    vikunjaRestRequest<VikunjaTeamWithPermission[]>(authManager, 'GET', `/projects/${projectId}/teams`),
+    vikunjaRestRequest<VikunjaUserWithPermission[]>(
+      authManager,
+      'GET',
+      `/projects/${projectId}/users`,
+    ),
+    vikunjaRestRequest<VikunjaTeamWithPermission[]>(
+      authManager,
+      'GET',
+      `/projects/${projectId}/teams`,
+    ),
     listProjectShares({ projectId }, authManager),
   ]);
 
   if (usersResult.status === 'rejected') {
-    rethrow(usersResult.reason, `Project with ID ${projectId} not found`, 'Failed to list project members');
+    rethrow(
+      usersResult.reason,
+      `Project with ID ${projectId} not found`,
+      'Failed to list project members',
+    );
   }
 
-  const users = usersResult.status === 'fulfilled' && Array.isArray(usersResult.value) ? usersResult.value : [];
-  const teams = teamsResult.status === 'fulfilled' && Array.isArray(teamsResult.value) ? teamsResult.value : [];
+  const users =
+    usersResult.status === 'fulfilled' && Array.isArray(usersResult.value) ? usersResult.value : [];
+  const teams =
+    teamsResult.status === 'fulfilled' && Array.isArray(teamsResult.value) ? teamsResult.value : [];
+  const teamsError = teamsResult.status === 'rejected' ? describeSettledError(teamsResult) : undefined;
 
   // listProjectShares() already returns a fully-formatted MCP response, not
   // raw data — extract the share count from it best-effort for the summary
@@ -772,6 +843,7 @@ export async function listProjectMembers(
       projectId,
       users,
       teams,
+      ...(teamsError !== undefined ? { teamsError } : {}),
       linkShares:
         sharesResult.status === 'fulfilled'
           ? { available: true, summary: sharesResult.value.content[0]?.text }

@@ -85,7 +85,10 @@ export interface SearchUnsplashArgs {
  * misreported as a provider-configuration issue.
  */
 function isLikelyUnsplashNotConfigured(message: string): boolean {
-  return /unsplash/i.test(message) && /(not[\s-]*(en|configur)|disabl|no.*(key|token)|access[\s-]*token)/i.test(message);
+  return (
+    /unsplash/i.test(message) &&
+    /(not[\s-]*(en|configur)|disabl|no.*(key|token)|access[\s-]*token)/i.test(message)
+  );
 }
 
 /**
@@ -120,7 +123,10 @@ export async function removeProjectBackground(
   authManager: AuthManager,
 ): Promise<McpResponse> {
   if (!args.id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project id is required for remove-background operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'Project id is required for remove-background operation',
+    );
   }
   validateId(args.id, 'id');
 
@@ -158,7 +164,10 @@ export async function setUnsplashBackground(
   authManager: AuthManager,
 ): Promise<McpResponse> {
   if (!args.id) {
-    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project id is required for set-unsplash-background operation');
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      'Project id is required for set-unsplash-background operation',
+    );
   }
   validateId(args.id, 'id');
   if (!args.unsplashImageId || args.unsplashImageId.trim() === '') {

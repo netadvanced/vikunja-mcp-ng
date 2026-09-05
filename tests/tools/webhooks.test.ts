@@ -16,6 +16,8 @@ import {
   registerWebhooksTool,
   clearWebhookEventCache,
   expireWebhookEventCache,
+  getOrCreateEventCacheEntry,
+  getWebhookEventCacheStats,
 } from '../../src/tools/webhooks';
 import { MCPError, ErrorCode } from '../../src/types';
 import { getAuthManagerFromContext } from '../../src/client';
@@ -23,6 +25,7 @@ import * as validationUtils from '../../src/utils/validation';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
 import type { Webhook } from '../../src/types/vikunja';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
+import { logger } from '../../src/utils/logger';
 import { ConfigurationManager } from '../../src/config';
 import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
 
@@ -31,6 +34,7 @@ jest.mock('../../src/client', () => ({
   getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 jest.mock('../../src/auth/AuthManager');
 
@@ -354,6 +358,62 @@ describe('Webhooks Tool', () => {
         new MCPError(ErrorCode.NOT_FOUND, 'Webhook with ID 1 not found in project 1'),
       );
     });
+
+    it('finds a webhook past the first (server-clamped) page instead of reporting NOT_FOUND (#332)', async () => {
+      // A full first page (length === the server's page cap) used to be
+      // treated as "that's every webhook" - `get` never asked for page 2.
+      // `max_items_per_page: 2` (read via `authManager.getCapabilities()`,
+      // see `readServerPageCap`) keeps this test's fixtures small.
+      (mockAuthManager as any).getCapabilities = jest
+        .fn()
+        .mockReturnValue({ features: { max_items_per_page: 2 } });
+
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({ body: [mockWebhook, { ...mockWebhook, id: 2 }] }), // page 1: full (2 of 2)
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ body: [{ ...mockWebhook, id: 3 }] }), // page 2: the target, short (last page)
+        );
+
+      const result = await mockHandler({
+        subcommand: 'get',
+        projectId: 1,
+        webhookId: 3,
+      });
+
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        1,
+        'https://api.vikunja.test/api/v1/projects/1/webhooks',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        'https://api.vikunja.test/api/v1/projects/1/webhooks?page=2',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(result.content[0].text).toContain('"id": 3');
+    });
+
+    it("does not paginate for scope 'user' (GET /user/settings/webhooks has no page/per_page)", async () => {
+      // A single full-looking page from the user-scope endpoint must NOT
+      // trigger a second (identical, since that scope ignores page/perPage)
+      // request the way project-scope pagination would.
+      (mockAuthManager as any).getCapabilities = jest
+        .fn()
+        .mockReturnValue({ features: { max_items_per_page: 1 } });
+
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [{ ...mockWebhook, id: 5 }] }));
+
+      const result = await mockHandler({ subcommand: 'get', scope: 'user', webhookId: 5 });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.vikunja.test/api/v1/user/settings/webhooks',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(result.content[0].text).toContain('"id": 5');
+    });
   });
 
   describe('Create Webhook', () => {
@@ -418,6 +478,52 @@ describe('Webhooks Tool', () => {
           }),
         },
       );
+    });
+
+    it('sends basicAuthUser/basicAuthPassword on the wire when both are supplied', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          body: {
+            ...mockWebhook,
+            basic_auth_user: 'fake-basic-user',
+            basic_auth_password: 'fake-basic-pw',
+          },
+        }),
+      );
+
+      await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['task.created'],
+        basicAuthUser: 'fake-basic-user',
+        basicAuthPassword: 'fake-basic-pw',
+      });
+
+      const sent = JSON.parse(
+        (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+      ) as Record<string, unknown>;
+      expect(sent.basic_auth_user).toBe('fake-basic-user');
+      expect(sent.basic_auth_password).toBe('fake-basic-pw');
+    });
+
+    it('omits basic auth fields entirely when not supplied', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhook }));
+
+      await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['task.created'],
+      });
+
+      const sent = JSON.parse(
+        (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+      ) as Record<string, unknown>;
+      expect(sent).not.toHaveProperty('basic_auth_user');
+      expect(sent).not.toHaveProperty('basic_auth_password');
     });
 
     it('should throw error when targetUrl is missing', async () => {
@@ -544,6 +650,62 @@ describe('Webhooks Tool', () => {
       });
 
       expect(result.content[0].text).toContain('**success:** true');
+    });
+
+    it('does not share the event cache across identities on different Vikunja servers (#292 MED-9)', async () => {
+      // Second identity, provisioned against a DIFFERENT Vikunja server -
+      // before the fix, this shared the same 'project' cache slot as the
+      // first identity/authManager above, so its valid-events list (and
+      // TTL) would have leaked across tenants.
+      const otherAuthManager = {
+        isAuthenticated: jest.fn().mockReturnValue(true),
+        getSession: jest.fn().mockReturnValue({
+          apiUrl: 'https://other-tenant.vikunja.test',
+          apiToken: 'other-tenant-token',
+        }),
+        setSession: jest.fn(),
+        clearSession: jest.fn(),
+      } as MockAuthManager;
+
+      const otherServer = { tool: jest.fn() } as MockServer;
+      registerWebhooksTool(
+        otherServer as unknown as McpServer,
+        otherAuthManager as unknown as AuthManager,
+      );
+      const otherCalls = (otherServer.tool as jest.Mock).mock.calls;
+      const otherHandler = otherCalls[otherCalls.length - 1][
+        otherCalls[otherCalls.length - 1].length - 1
+      ] as (args: any) => Promise<any>;
+
+      // First identity populates the 'project' scope cache.
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhook }));
+      await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['task.created'],
+      });
+
+      // Second identity, same scope ('project'), must still fetch its OWN
+      // events rather than reusing the first identity's cache entry.
+      const otherEvents = ['task.created', 'other.tenant.only.event'];
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: otherEvents }));
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhook }));
+      const otherResult = await otherHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['other.tenant.only.event'],
+      });
+
+      expect(otherResult.content[0].text).toContain('**success:** true');
+
+      const eventsCalls = mockFetch.mock.calls.filter((call) =>
+        (call[0] as string).includes('/webhooks/events'),
+      );
+      // Both identities fetched events independently - no cache reuse.
+      expect(eventsCalls).toHaveLength(2);
     });
 
     it('should handle a non-OK response when creating a webhook', async () => {
@@ -705,6 +867,212 @@ describe('Webhooks Tool', () => {
           events: ['task.created'],
         }),
       ).rejects.toThrow('HTTP 500 Server Error');
+    });
+
+    // ---------------------------------------------------------------------
+    // Silent field-drop: `update` used to send `{ events }` ONLY, discarding
+    // targetUrl and secret, and then report "updated successfully".
+    //
+    // Vikunja's `models.Webhook.Update` is
+    //   s.Where("id = ?", w.ID).Cols("events").Update(w)
+    // for BOTH scopes, so target_url / secret / basic_auth_* are excluded
+    // server-side. There is no payload that makes them stick - the only
+    // honest outcome is a loud rejection.
+    // ---------------------------------------------------------------------
+    describe('rejects the create-only fields instead of silently dropping them', () => {
+      it('rejects targetUrl, naming it and pointing at delete + create', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          targetUrl: 'https://new.example.com/hook',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        const message = (error as MCPError).message;
+        expect((error as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+        expect(message).toContain('targetUrl');
+        expect(message).toContain("subcommand: 'delete'");
+        expect(message).toContain("subcommand: 'create'");
+        // Nothing may reach the wire - not even the events-validation fetch.
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('rejects secret WITHOUT ever repeating the secret value', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          secret: 'super-secret-hmac-key',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        const message = (error as MCPError).message;
+        expect(message).toContain('secret');
+        expect(message).not.toContain('super-secret-hmac-key');
+        expect(JSON.stringify((error as MCPError).details ?? {})).not.toContain(
+          'super-secret-hmac-key',
+        );
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('names BOTH fields when both are supplied', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          targetUrl: 'https://new.example.com/hook',
+          secret: 'rotated',
+        }).catch((e: unknown) => e);
+
+        expect((error as MCPError).message).toContain('targetUrl or secret');
+      });
+
+      it('rejects basicAuthUser, naming it and pointing at delete + create', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          basicAuthUser: 'fake-basic-user',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        expect((error as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+        const message = (error as MCPError).message;
+        expect(message).toContain('basicAuthUser');
+        expect(message).toContain("subcommand: 'delete'");
+        expect(message).toContain("subcommand: 'create'");
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('rejects basicAuthPassword WITHOUT ever repeating the password value', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          basicAuthPassword: 'fake-basic-pw',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        const message = (error as MCPError).message;
+        expect(message).toContain('basicAuthPassword');
+        expect(message).not.toContain('fake-basic-pw');
+        expect(JSON.stringify((error as MCPError).details ?? {})).not.toContain('fake-basic-pw');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      // The falsy case a naive `if (args.basicAuthPassword)` guard would wave
+      // through, silently keeping the old credential while reporting success.
+      it('rejects an EMPTY basicAuthPassword (falsy but supplied)', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          basicAuthPassword: '',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        expect((error as MCPError).message).toContain('basicAuthPassword');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('names all four fields when targetUrl, secret, basicAuthUser, and basicAuthPassword are all supplied', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          targetUrl: 'https://new.example.com/hook',
+          secret: 'rotated',
+          basicAuthUser: 'fake-basic-user',
+          basicAuthPassword: 'fake-basic-pw',
+        }).catch((e: unknown) => e);
+
+        const message = (error as MCPError).message;
+        expect(message).toContain('targetUrl or secret or basicAuthUser or basicAuthPassword');
+        expect(message).not.toContain('fake-basic-pw');
+      });
+
+      // The falsy case a naive `if (args.secret)` guard would wave through,
+      // silently keeping the old signing key while reporting success.
+      it('rejects an EMPTY secret (falsy but supplied)', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+          secret: '',
+        }).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(MCPError);
+        expect((error as MCPError).message).toContain('secret');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('rejects before the "events required" check, so the message is the useful one', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          targetUrl: 'https://new.example.com/hook',
+        }).catch((e: unknown) => e);
+
+        expect((error as MCPError).message).toContain('targetUrl');
+        expect((error as MCPError).message).not.toContain('At least one event is required');
+      });
+
+      it('rejects the same way in user scope', async () => {
+        const error = await mockHandler({
+          subcommand: 'update',
+          scope: 'user',
+          webhookId: 5,
+          events: ['task.created'],
+          targetUrl: 'https://new.example.com/hook',
+        }).catch((e: unknown) => e);
+
+        expect((error as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+        expect((error as MCPError).message).toContain('targetUrl');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('still sends exactly { events } on the wire for a clean update', async () => {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhook }));
+
+        await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+        });
+
+        const body = JSON.parse(
+          (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+        ) as Record<string, unknown>;
+        expect(body).toEqual({ events: ['task.created'] });
+      });
+
+      it('does not claim more than "events" changed in the success message', async () => {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockWebhook }));
+
+        const result = await mockHandler({
+          subcommand: 'update',
+          projectId: 1,
+          webhookId: 1,
+          events: ['task.created'],
+        });
+
+        expect(result.content[0].text).toContain(
+          'events is the only field this endpoint writes; target URL and secret are unchanged',
+        );
+      });
     });
 
     it('should provide helpful error message for webhook authentication errors when updating', async () => {
@@ -915,6 +1283,57 @@ describe('Webhooks Tool', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // #327: the event cache is keyed by `${sessionId}::${scope}`, one entry
+  // per distinct identity the process has ever seen. Expiry only nulls a
+  // value's `expiry` field - it never removes the map entry - so before
+  // this fix a long-running `oidc-http` process leaked one entry forever
+  // per new (identity, scope) pair. Verified here as a bounded LRU, the
+  // same shape `normalizedKeyCache` uses in src/utils/security.ts.
+  // -------------------------------------------------------------------------
+  describe('Event cache growth bound', () => {
+    it('never grows the event cache past its advertised maxSize', () => {
+      const { maxSize } = getWebhookEventCacheStats();
+      const overflowCount = maxSize + 500;
+
+      for (let i = 0; i < overflowCount; i++) {
+        const fakeAuthManager = {
+          getSession: () => ({
+            apiUrl: `https://identity-${i}.example.com`,
+            apiToken: `token-${i}`,
+          }),
+        } as unknown as AuthManager;
+        getOrCreateEventCacheEntry(fakeAuthManager, 'project');
+      }
+
+      const stats = getWebhookEventCacheStats();
+      expect(stats.size).toBeLessThanOrEqual(maxSize);
+    });
+
+    it('keeps a distinct entry per (identity, scope) pair up to the cap', () => {
+      const authManagerA = {
+        getSession: () => ({ apiUrl: 'https://a.example.com', apiToken: 'token-a' }),
+      } as unknown as AuthManager;
+      const authManagerB = {
+        getSession: () => ({ apiUrl: 'https://b.example.com', apiToken: 'token-b' }),
+      } as unknown as AuthManager;
+
+      const entryA = getOrCreateEventCacheEntry(authManagerA, 'project');
+      entryA.events = ['task.created'];
+      const entryAScopedUser = getOrCreateEventCacheEntry(authManagerA, 'user');
+      const entryB = getOrCreateEventCacheEntry(authManagerB, 'project');
+
+      // Same identity + scope returns the same entry, so the earlier write
+      // is visible...
+      expect(getOrCreateEventCacheEntry(authManagerA, 'project').events).toEqual([
+        'task.created',
+      ]);
+      // ...but a different scope or a different identity is a distinct entry.
+      expect(entryAScopedUser).not.toBe(entryA);
+      expect(entryB).not.toBe(entryA);
+    });
+  });
+
   describe('Error Handling', () => {
     it('should handle unknown subcommand', async () => {
       await expect(mockHandler({ subcommand: 'unknown' })).rejects.toThrow(
@@ -940,9 +1359,7 @@ describe('Webhooks Tool', () => {
     // validateAndConvertId is one such dependency; mock it to simulate an
     // unexpected non-MCPError failure and confirm the safety net still works.
     describe('unexpected (non-MCPError) failures from other dependencies', () => {
-      let validateAndConvertIdSpy: jest.SpiedFunction<
-        typeof validationUtils.validateAndConvertId
-      >;
+      let validateAndConvertIdSpy: jest.SpiedFunction<typeof validationUtils.validateAndConvertId>;
 
       beforeEach(() => {
         validateAndConvertIdSpy = jest.spyOn(validationUtils, 'validateAndConvertId');
@@ -1148,9 +1565,7 @@ describe('Webhooks Tool', () => {
         }),
       );
 
-      await expect(
-        mockHandler({ subcommand: 'list', scope: 'user' }),
-      ).rejects.toThrow(
+      await expect(mockHandler({ subcommand: 'list', scope: 'user' })).rejects.toThrow(
         new MCPError(
           ErrorCode.API_ERROR,
           "User-level webhook operations require JWT authentication (per the OpenAPI spec, /user/settings/webhooks* endpoints are JWTKeyAuth-only). Reconnect via vikunja_auth.connect with a JWT token, or use scope: 'project' if you only have an API token.",
@@ -1183,6 +1598,340 @@ describe('Webhooks Tool', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // `secret` is an HMAC signing key and `target_url` can itself embed one
+  // (Slack's https://hooks.slack.com/services/T…/B…/<secret> is the canonical
+  // example). Neither may ever reach a response body, a log line, or an error.
+  // -------------------------------------------------------------------------
+  describe('credential hygiene for `secret`', () => {
+    const SECRET = 'sup3r-secret-hmac-signing-key';
+
+    it('sends the secret on the wire when creating, but never echoes it back', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      // The real server returns the bound struct as-is, secret included.
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: { ...mockWebhook, secret: SECRET } }));
+
+      const result = await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['task.created'],
+        secret: SECRET,
+      });
+
+      // Still forwarded on create - this is the one place it must be sent.
+      const sent = JSON.parse(
+        (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+      ) as Record<string, unknown>;
+      expect(sent.secret).toBe(SECRET);
+
+      // ...but redacted out of the response the agent (and its transcript) sees.
+      expect(result.content[0].text).not.toContain(SECRET);
+      expect(result.content[0].text).toContain('[REDACTED]');
+    });
+
+    it('redacts a secret leaked by a list response', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [{ ...mockWebhook, secret: SECRET }] }));
+
+      const result = await mockHandler({ subcommand: 'list', projectId: 1 });
+      expect(result.content[0].text).not.toContain(SECRET);
+    });
+
+    it('redacts a secret leaked by a get response', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [{ ...mockWebhook, secret: SECRET }] }));
+
+      const result = await mockHandler({ subcommand: 'get', projectId: 1, webhookId: 1 });
+      expect(result.content[0].text).not.toContain(SECRET);
+    });
+
+    it('never puts the secret (or the target URL) into a log line', async () => {
+      const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {});
+      const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+
+      try {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: { ...mockWebhook, secret: SECRET } }));
+
+        await mockHandler({
+          subcommand: 'create',
+          projectId: 1,
+          targetUrl: 'https://hooks.example.com/services/T1/B2/tok3n',
+          events: ['task.created'],
+          secret: SECRET,
+        });
+
+        const logged = JSON.stringify([
+          debugSpy.mock.calls,
+          infoSpy.mock.calls,
+          errorSpy.mock.calls,
+        ]);
+        expect(logged).not.toContain(SECRET);
+        expect(logged).not.toContain('tok3n');
+      } finally {
+        debugSpy.mockRestore();
+        infoSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    });
+
+    // Defensive branch in redactWebhookCredentials: vikunjaRestRequest
+    // resolves to undefined for an empty response body (the same reason
+    // `list`/`get` guard with `?? []`), so the redactor must pass a nullish
+    // webhook straight through instead of spreading it.
+    it('passes an empty (nullish) update response through untouched', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(mockResponse({}));
+
+      const result = await mockHandler({
+        subcommand: 'update',
+        projectId: 1,
+        webhookId: 1,
+        events: ['task.created'],
+      });
+
+      expect(result.content[0].text).toContain('Webhook events updated successfully');
+    });
+
+    it('never puts the secret into a log line on the FAILURE path either', async () => {
+      const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {});
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+
+      try {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValue(
+          mockResponse({ ok: false, status: 500, statusText: 'Server Error' }),
+        );
+
+        await mockHandler({
+          subcommand: 'create',
+          projectId: 1,
+          targetUrl: 'https://hooks.example.com/services/T1/B2/tok3n',
+          events: ['task.created'],
+          secret: SECRET,
+        }).catch(() => undefined);
+
+        const logged = JSON.stringify([debugSpy.mock.calls, errorSpy.mock.calls]);
+        expect(logged).not.toContain(SECRET);
+        expect(logged).not.toContain('tok3n');
+      } finally {
+        debugSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #327: `target_url` itself can embed a secret (Slack/Discord/Teams-style
+  // webhook URLs put the shared secret directly in the path), so it needs
+  // the same response-side masking as `secret`/`basic_auth_password` -
+  // reusing `redactUrlSecrets`'s high-entropy-path-segment detection
+  // (src/utils/security.ts), the same logic already used to keep these URLs
+  // out of log lines.
+  // -------------------------------------------------------------------------
+  describe('credential hygiene for `target_url`', () => {
+    // 20+ chars, mixed-case + digits: matches looksLikeSecretPathSegment.
+    const SECRET_PATH_SEGMENT = 'T00000000B1111111Xyz9AbCdEf';
+    const SECRET_URL = `https://hooks.slack.com/services/T1/B2/${SECRET_PATH_SEGMENT}`;
+
+    it('redacts a secret-bearing target_url leaked by a list response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: [{ ...mockWebhook, target_url: SECRET_URL }] }),
+      );
+
+      const result = await mockHandler({ subcommand: 'list', projectId: 1 });
+
+      expect(result.content[0].text).not.toContain(SECRET_PATH_SEGMENT);
+      // The host stays visible - only the secret path segment is masked.
+      expect(result.content[0].text).toContain('hooks.slack.com');
+      expect(result.content[0].text).toContain('REDACTED');
+    });
+
+    it('redacts a secret-bearing target_url leaked by a get response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: [{ ...mockWebhook, target_url: SECRET_URL }] }),
+      );
+
+      const result = await mockHandler({ subcommand: 'get', projectId: 1, webhookId: 1 });
+
+      expect(result.content[0].text).not.toContain(SECRET_PATH_SEGMENT);
+      expect(result.content[0].text).toContain('hooks.slack.com');
+    });
+
+    it('redacts a secret-bearing target_url echoed back by create', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: { ...mockWebhook, target_url: SECRET_URL } }),
+      );
+
+      const result = await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: SECRET_URL,
+        events: ['task.created'],
+      });
+
+      // Still forwarded on the wire - this is the one place it must be sent.
+      const sent = JSON.parse(
+        (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+      ) as Record<string, unknown>;
+      expect(sent.target_url).toBe(SECRET_URL);
+
+      expect(result.content[0].text).not.toContain(SECRET_PATH_SEGMENT);
+    });
+
+    it('leaves an ordinary (non-secret-shaped) target_url untouched', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: [mockWebhook] }));
+
+      const result = await mockHandler({ subcommand: 'list', projectId: 1 });
+
+      expect(result.content[0].text).toContain('https://example.com/webhook');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // `basic_auth_password` is a credential (`models.Webhook.BasicAuthPassword`,
+  // go-vikunja pkg/models/webhooks.go) exactly like `secret` above - it must
+  // never reach a response body, a log line, or an error. `basicAuthUser` is
+  // not itself a secret but is exercised alongside it for the same flows.
+  // -------------------------------------------------------------------------
+  describe('credential hygiene for `basicAuthPassword`', () => {
+    const BASIC_AUTH_USER = 'fake-basic-user';
+    const BASIC_AUTH_PASSWORD = 'fake-basic-password-do-not-use';
+
+    it('sends the password on the wire when creating, but never echoes it back', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+      // The real server returns the bound struct as-is, credentials included.
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          body: {
+            ...mockWebhook,
+            basic_auth_user: BASIC_AUTH_USER,
+            basic_auth_password: BASIC_AUTH_PASSWORD,
+          },
+        }),
+      );
+
+      const result = await mockHandler({
+        subcommand: 'create',
+        projectId: 1,
+        targetUrl: 'https://example.com/webhook',
+        events: ['task.created'],
+        basicAuthUser: BASIC_AUTH_USER,
+        basicAuthPassword: BASIC_AUTH_PASSWORD,
+      });
+
+      // Still forwarded on create - this is the one place it must be sent.
+      const sent = JSON.parse(
+        (mockFetch.mock.calls.at(-1) as [string, RequestInit])[1].body as string,
+      ) as Record<string, unknown>;
+      expect(sent.basic_auth_password).toBe(BASIC_AUTH_PASSWORD);
+
+      // ...but redacted out of the response the agent (and its transcript) sees.
+      expect(result.content[0].text).not.toContain(BASIC_AUTH_PASSWORD);
+      expect(result.content[0].text).toContain('[REDACTED]');
+    });
+
+    it('redacts a password leaked by a list response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: [{ ...mockWebhook, basic_auth_password: BASIC_AUTH_PASSWORD }] }),
+      );
+
+      const result = await mockHandler({ subcommand: 'list', projectId: 1 });
+      expect(result.content[0].text).not.toContain(BASIC_AUTH_PASSWORD);
+    });
+
+    it('redacts a password leaked by a get response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: [{ ...mockWebhook, basic_auth_password: BASIC_AUTH_PASSWORD }] }),
+      );
+
+      const result = await mockHandler({ subcommand: 'get', projectId: 1, webhookId: 1 });
+      expect(result.content[0].text).not.toContain(BASIC_AUTH_PASSWORD);
+    });
+
+    it('never puts the password into a log line on the success path', async () => {
+      const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {});
+      const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+
+      try {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValueOnce(
+          mockResponse({
+            body: {
+              ...mockWebhook,
+              basic_auth_user: BASIC_AUTH_USER,
+              basic_auth_password: BASIC_AUTH_PASSWORD,
+            },
+          }),
+        );
+
+        await mockHandler({
+          subcommand: 'create',
+          projectId: 1,
+          targetUrl: 'https://example.com/webhook',
+          events: ['task.created'],
+          basicAuthUser: BASIC_AUTH_USER,
+          basicAuthPassword: BASIC_AUTH_PASSWORD,
+        });
+
+        const logged = JSON.stringify([
+          debugSpy.mock.calls,
+          infoSpy.mock.calls,
+          errorSpy.mock.calls,
+        ]);
+        expect(logged).not.toContain(BASIC_AUTH_PASSWORD);
+      } finally {
+        debugSpy.mockRestore();
+        infoSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('never puts the password into a log line on the FAILURE path either', async () => {
+      const debugSpy = jest.spyOn(logger, 'debug').mockImplementation(() => {});
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+
+      try {
+        mockFetch.mockResolvedValueOnce(mockResponse({ body: mockEvents }));
+        mockFetch.mockResolvedValue(
+          mockResponse({ ok: false, status: 500, statusText: 'Server Error' }),
+        );
+
+        await mockHandler({
+          subcommand: 'create',
+          projectId: 1,
+          targetUrl: 'https://example.com/webhook',
+          events: ['task.created'],
+          basicAuthUser: BASIC_AUTH_USER,
+          basicAuthPassword: BASIC_AUTH_PASSWORD,
+        }).catch(() => undefined);
+
+        const logged = JSON.stringify([debugSpy.mock.calls, errorSpy.mock.calls]);
+        expect(logged).not.toContain(BASIC_AUTH_PASSWORD);
+      } finally {
+        debugSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('never puts the password into a thrown error on the update-rejection path', async () => {
+      const error = await mockHandler({
+        subcommand: 'update',
+        projectId: 1,
+        webhookId: 1,
+        events: ['task.created'],
+        basicAuthUser: BASIC_AUTH_USER,
+        basicAuthPassword: BASIC_AUTH_PASSWORD,
+      }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(MCPError);
+      expect((error as MCPError).message).not.toContain(BASIC_AUTH_PASSWORD);
+      expect(JSON.stringify((error as MCPError).details ?? {})).not.toContain(BASIC_AUTH_PASSWORD);
+    });
+  });
+
   describe('Tool Registration', () => {
     it('should register with correct schema', () => {
       expect(mockServer.tool).toHaveBeenCalledWith(
@@ -1196,6 +1945,8 @@ describe('Webhooks Tool', () => {
           targetUrl: expect.any(Object),
           events: expect.any(Object),
           secret: expect.any(Object),
+          basicAuthUser: expect.any(Object),
+          basicAuthPassword: expect.any(Object),
         }),
         expect.any(Object), // ToolAnnotations
         expect.any(Function),
@@ -1214,7 +1965,12 @@ describe('Webhooks Tool', () => {
 
       expect(
         isReadOnlyRejection(
-          await callAndCatch(mockHandler, { subcommand: 'create', projectId: 1, targetUrl: 'https://x', events: [] }),
+          await callAndCatch(mockHandler, {
+            subcommand: 'create',
+            projectId: 1,
+            targetUrl: 'https://x',
+            events: [],
+          }),
         ),
       ).toBe(true);
       expect(
@@ -1252,7 +2008,12 @@ describe('Webhooks Tool', () => {
 
       expect(
         isReadOnlyRejection(
-          await callAndCatch(mockHandler, { subcommand: 'create', projectId: 1, targetUrl: 'https://x', events: [] }),
+          await callAndCatch(mockHandler, {
+            subcommand: 'create',
+            projectId: 1,
+            targetUrl: 'https://x',
+            events: [],
+          }),
         ),
       ).toBe(false);
     });

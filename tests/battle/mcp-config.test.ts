@@ -9,13 +9,18 @@ describe('buildMcpConfig', () => {
       vikunjaUrl: 'http://localhost:33456/api/v1',
       vikunjaApiToken: 'tk_fake',
       distEntry: '/repo/dist/index.js',
-    }) as { mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> };
+    }) as {
+      mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
+    };
 
     const servers = Object.keys(config.mcpServers);
     expect(servers).toEqual(['vikunja-battle']);
     const server = config.mcpServers['vikunja-battle']!;
     expect(server.args).toEqual(['/repo/dist/index.js']);
-    expect(server.env).toEqual({ VIKUNJA_URL: 'http://localhost:33456/api/v1', VIKUNJA_API_TOKEN: 'tk_fake' });
+    expect(server.env).toEqual({
+      VIKUNJA_URL: 'http://localhost:33456/api/v1',
+      VIKUNJA_API_TOKEN: 'tk_fake',
+    });
   });
 
   it('honors a custom server name', () => {
@@ -41,7 +46,9 @@ describe('writeMcpConfig', () => {
     });
 
     const written: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-    expect(written).toMatchObject({ mcpServers: { 'vikunja-battle': { args: ['/repo/dist/index.js'] } } });
+    expect(written).toMatchObject({
+      mcpServers: { 'vikunja-battle': { args: ['/repo/dist/index.js'] } },
+    });
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });

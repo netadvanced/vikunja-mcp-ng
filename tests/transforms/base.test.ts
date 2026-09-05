@@ -1,4 +1,9 @@
-import { Verbosity, FieldCategory, SizeEstimator, VERBOSITY_ENV_VAR } from '../../src/transforms/base';
+import {
+  Verbosity,
+  FieldCategory,
+  SizeEstimator,
+  VERBOSITY_ENV_VAR,
+} from '../../src/transforms/base';
 
 describe('Base Transformation System', () => {
   describe('Verbosity Enum', () => {
@@ -70,7 +75,9 @@ describe('Base Transformation System', () => {
 
     it('should default to standard when the env var is not set', () => {
       jest.resetModules();
-      const { getDefaultVerbosity: freshGetDefaultVerbosity } = require('../../src/transforms/base');
+      const {
+        getDefaultVerbosity: freshGetDefaultVerbosity,
+      } = require('../../src/transforms/base');
 
       expect(freshGetDefaultVerbosity()).toBe(Verbosity.STANDARD);
     });
@@ -86,7 +93,9 @@ describe('Base Transformation System', () => {
       for (const [envValue, expected] of cases) {
         process.env[VERBOSITY_ENV_VAR] = envValue;
         jest.resetModules();
-        const { getDefaultVerbosity: freshGetDefaultVerbosity } = require('../../src/transforms/base');
+        const {
+          getDefaultVerbosity: freshGetDefaultVerbosity,
+        } = require('../../src/transforms/base');
 
         expect(freshGetDefaultVerbosity()).toBe(expected);
       }
@@ -95,7 +104,9 @@ describe('Base Transformation System', () => {
     it('should match env var values case-insensitively', () => {
       process.env[VERBOSITY_ENV_VAR] = 'DeTaILeD';
       jest.resetModules();
-      const { getDefaultVerbosity: freshGetDefaultVerbosity } = require('../../src/transforms/base');
+      const {
+        getDefaultVerbosity: freshGetDefaultVerbosity,
+      } = require('../../src/transforms/base');
 
       expect(freshGetDefaultVerbosity()).toBe(Verbosity.DETAILED);
     });
@@ -103,7 +114,9 @@ describe('Base Transformation System', () => {
     it('should fall back to standard for an invalid/garbage env var value', () => {
       process.env[VERBOSITY_ENV_VAR] = 'not-a-real-verbosity-level';
       jest.resetModules();
-      const { getDefaultVerbosity: freshGetDefaultVerbosity } = require('../../src/transforms/base');
+      const {
+        getDefaultVerbosity: freshGetDefaultVerbosity,
+      } = require('../../src/transforms/base');
 
       expect(freshGetDefaultVerbosity()).toBe(Verbosity.STANDARD);
     });
@@ -111,7 +124,9 @@ describe('Base Transformation System', () => {
     it('should fall back to standard for an empty string env var value', () => {
       process.env[VERBOSITY_ENV_VAR] = '';
       jest.resetModules();
-      const { getDefaultVerbosity: freshGetDefaultVerbosity } = require('../../src/transforms/base');
+      const {
+        getDefaultVerbosity: freshGetDefaultVerbosity,
+      } = require('../../src/transforms/base');
 
       expect(freshGetDefaultVerbosity()).toBe(Verbosity.STANDARD);
     });

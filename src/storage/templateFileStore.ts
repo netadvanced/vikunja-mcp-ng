@@ -20,12 +20,26 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { Mutex } from 'async-mutex';
 import { logger } from '../utils/logger';
+import { fsyncPath } from './fsync';
 
 /**
  * A single persisted template entry. `data` is an opaque JSON-serialized
  * blob (the `TemplateData` shape from templates.ts) — this module doesn't
  * need to know its internal fields, only that it round-trips.
+ *
+ * `identity` is the owning session's stable identity string (the same value
+ * used to key `SimpleFilterStorage` instances — `(issuer,sub)` in
+ * `oidc-http` mode, `apiUrl:tokenPrefix` in `stdio` mode; see
+ * `getEffectiveSessionId`). Required as of the #265 (CRIT-4) fix: without
+ * it, hydration loaded every record in the file into whichever identity
+ * touched storage first, and each write-through overwrote the *entire*
+ * file with just that identity's set, silently erasing every other
+ * identity's templates. A record with no `identity` predates this fix and
+ * cannot be safely attributed to a tenant, so it is treated as malformed
+ * (dropped, with a warning) like any other invalid entry — see
+ * `isPersistedTemplateRecord`.
  */
 export interface PersistedTemplateRecord {
   /** The template's own id (`template_<timestamp>`), used for lookups. */
@@ -34,6 +48,8 @@ export interface PersistedTemplateRecord {
    *  underlying SavedFilter-shaped storage record. */
   name: string;
   data: string;
+  /** Owning identity — see the interface doc comment above. */
+  identity: string;
 }
 
 function isPersistedTemplateRecord(value: unknown): value is PersistedTemplateRecord {
@@ -42,7 +58,10 @@ function isPersistedTemplateRecord(value: unknown): value is PersistedTemplateRe
   }
   const record = value as Record<string, unknown>;
   return (
-    typeof record.id === 'string' && typeof record.name === 'string' && typeof record.data === 'string'
+    typeof record.id === 'string' &&
+    typeof record.name === 'string' &&
+    typeof record.data === 'string' &&
+    typeof record.identity === 'string'
   );
 }
 
@@ -55,7 +74,9 @@ function isPersistedTemplateRecord(value: unknown): value is PersistedTemplateRe
  * `undefined` when neither is set — persistence stays opt-in, and the
  * in-memory-only default is byte-identical to pre-persistence behavior.
  */
-export function resolveTemplatesPersistPath(configuredPath: string | undefined): string | undefined {
+export function resolveTemplatesPersistPath(
+  configuredPath: string | undefined,
+): string | undefined {
   const envPath = process.env.VIKUNJA_MCP_TEMPLATES_FILE;
   if (envPath !== undefined && envPath.trim().length > 0) {
     return envPath;
@@ -80,10 +101,13 @@ export function loadTemplatesFile(filePath: string): PersistedTemplateRecord[] {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== 'ENOENT') {
-      logger.warn('Failed to read templates persistence file, starting with an empty template set', {
-        filePath,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      logger.warn(
+        'Failed to read templates persistence file, starting with an empty template set',
+        {
+          filePath,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
     return [];
   }
@@ -92,10 +116,13 @@ export function loadTemplatesFile(filePath: string): PersistedTemplateRecord[] {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    logger.warn('Templates persistence file is not valid JSON, starting with an empty template set', {
-      filePath,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logger.warn(
+      'Templates persistence file is not valid JSON, starting with an empty template set',
+      {
+        filePath,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
     return [];
   }
 
@@ -127,11 +154,64 @@ export function loadTemplatesFile(filePath: string): PersistedTemplateRecord[] {
  *
  * Creates the parent directory if it doesn't exist yet, so a fresh Docker
  * volume mount works without a separate provisioning step.
+ *
+ * The temp file is `fsync`ed before the rename and the directory after it
+ * (issue #293 / LOW-10) — atomic-on-rename only orders the change within the
+ * page cache, so without the flush a power loss right after a "saved"
+ * template can still leave an empty or truncated file behind.
  */
-export function writeTemplatesFileAtomic(filePath: string, records: PersistedTemplateRecord[]): void {
+export function writeTemplatesFileAtomic(
+  filePath: string,
+  records: PersistedTemplateRecord[],
+): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
   const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
   fs.writeFileSync(tmpPath, JSON.stringify(records, null, 2), 'utf-8');
+  fsyncPath(tmpPath, 'r+');
   fs.renameSync(tmpPath, filePath);
+  try {
+    fsyncPath(dir, 'r');
+  } catch {
+    // Best-effort: opening a directory for fsync isn't portable (Windows).
+  }
+}
+
+/**
+ * Serializes every persist call made through `persistIdentityTemplateRecords`
+ * (across every identity and, since only one persist path is ever configured
+ * per process, effectively across the whole file) so a read-modify-write
+ * cycle from one identity can never interleave with another's. Without this,
+ * two concurrent `create`/`update`/`delete` calls from different identities
+ * could both read the same on-disk snapshot, and whichever finishes last
+ * would silently clobber the other's write (part of #265 / CRIT-4).
+ */
+const writeMutex = new Mutex();
+
+/**
+ * Merge `identityRecords` (the full, current template set for one identity)
+ * into the persistence file, replacing only that identity's own prior
+ * entries and leaving every other identity's records untouched, then write
+ * the result back atomically.
+ *
+ * This is the identity-scoped counterpart to the old (buggy) behavior of
+ * write-throughs overwriting the *entire* file with a single session's set
+ * — see the `PersistedTemplateRecord.identity` doc comment for why that was
+ * unsafe. The whole read-modify-write cycle runs under `writeMutex` so
+ * concurrent persists from different identities merge correctly instead of
+ * racing.
+ */
+export async function persistIdentityTemplateRecords(
+  filePath: string,
+  identity: string,
+  identityRecords: PersistedTemplateRecord[],
+): Promise<void> {
+  const release = await writeMutex.acquire();
+  try {
+    const existing = loadTemplatesFile(filePath);
+    const others = existing.filter((record) => record.identity !== identity);
+    writeTemplatesFileAtomic(filePath, [...others, ...identityRecords]);
+  } finally {
+    release();
+  }
 }

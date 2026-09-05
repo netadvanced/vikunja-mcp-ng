@@ -10,7 +10,7 @@ import {
   createSecureLogConfig,
   createSecureConnectionMessage,
   clearSecurityCache,
-  getSecurityCacheStats
+  getSecurityCacheStats,
 } from '../../src/utils/security';
 
 describe('Security Utilities', () => {
@@ -21,7 +21,8 @@ describe('Security Utilities', () => {
     });
 
     it('should mask JWT tokens correctly', () => {
-      const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+      const jwt =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
       expect(maskCredential(jwt)).toBe('eyJh...');
     });
 
@@ -66,7 +67,9 @@ describe('Security Utilities', () => {
 
     it('should mask auth endpoints', () => {
       expect(maskUrl('https://example.com/auth/login')).toBe('https://example.com/auth/[REDACTED]');
-      expect(maskUrl('https://example.com/login/user123')).toBe('https://example.com/login/[REDACTED]');
+      expect(maskUrl('https://example.com/login/user123')).toBe(
+        'https://example.com/login/[REDACTED]',
+      );
       expect(maskUrl('https://example.com/key/secret')).toBe('https://example.com/key/[REDACTED]');
     });
 
@@ -114,15 +117,15 @@ describe('Security Utilities', () => {
         username: 'john',
         password: 'secret123',
         api_token: 'tk_abcdef123456',
-        normal_field: 'safe_value'
+        normal_field: 'safe_value',
       };
 
       const sanitized = sanitizeLogData(data);
       expect(sanitized).toEqual({
         username: '[REDACTED]', // Enhanced security: username is now considered sensitive
         password: '[REDACTED]', // Short password gets redacted
-        api_token: 'tk_a...',   // Long credential-like token gets masked
-        normal_field: 'safe_value'
+        api_token: 'tk_a...', // Long credential-like token gets masked
+        normal_field: 'safe_value',
       });
     });
 
@@ -131,30 +134,30 @@ describe('Security Utilities', () => {
         config: {
           database: {
             password: 'db_secret',
-            host: 'localhost'
+            host: 'localhost',
           },
-          jwt_secret: 'very_secret_key'
+          jwt_secret: 'very_secret_key',
         },
-        public_info: 'visible'
+        public_info: 'visible',
       };
 
       const sanitized = sanitizeLogData(data);
       expect(sanitized).toEqual({
         config: '[REDACTED]', // Enhanced security: config key is now considered sensitive
-        public_info: 'visible'
+        public_info: 'visible',
       });
     });
 
     it('should handle arrays', () => {
       const data = [
         { token: 'secret1', value: 'public1' },
-        { token: 'secret2', value: 'public2' }
+        { token: 'secret2', value: 'public2' },
       ];
 
       const sanitized = sanitizeLogData(data);
       expect(sanitized).toEqual([
         { token: '[REDACTED]', value: 'public1' }, // Short token gets redacted
-        { token: '[REDACTED]', value: 'public2' }  // Short token gets redacted
+        { token: '[REDACTED]', value: 'public2' }, // Short token gets redacted
       ]);
     });
 
@@ -182,13 +185,18 @@ describe('Security Utilities', () => {
         authorization: 'secret4',
         bearer: 'secret5',
         credentials: 'secret6',
-        jwt: 'secret7'
+        jwt: 'secret7',
       };
 
       const sanitized = sanitizeLogData(data);
       expect(Object.values(sanitized)).toEqual([
-        '[REDACTED]', '[REDACTED]', '[REDACTED]',
-        '[REDACTED]', '[REDACTED]', '[REDACTED]', '[REDACTED]'
+        '[REDACTED]',
+        '[REDACTED]',
+        '[REDACTED]',
+        '[REDACTED]',
+        '[REDACTED]',
+        '[REDACTED]',
+        '[REDACTED]',
       ]); // All secrets get redacted (enhanced security)
     });
 
@@ -196,14 +204,14 @@ describe('Security Utilities', () => {
       const data = {
         token: 123,
         password: { nested: 'value' },
-        api_key: ['array', 'value']
+        api_key: ['array', 'value'],
       };
 
       const sanitized = sanitizeLogData(data);
       expect(sanitized).toEqual({
         token: '[REDACTED]',
         password: '[REDACTED]',
-        api_key: '[REDACTED]'
+        api_key: '[REDACTED]',
       });
     });
   });
@@ -216,8 +224,8 @@ describe('Security Utilities', () => {
         apiToken: 'tk_secret123',
         database: {
           host: 'localhost',
-          password: 'db_secret'
-        }
+          password: 'db_secret',
+        },
       };
 
       const secure = createSecureLogConfig(config);
@@ -225,7 +233,7 @@ describe('Security Utilities', () => {
         mode: 'production',
         debug: false,
         apiToken: 'tk_s...', // Long credential-like token gets masked
-        database: '[REDACTED]' // Enhanced security: database key is now sensitive
+        database: '[REDACTED]', // Enhanced security: database key is now sensitive
       });
     });
   });
@@ -258,7 +266,9 @@ describe('Security Utilities', () => {
       const token = 'eyJhbGciOiJIUzI1NiJ9';
 
       const message = createSecureConnectionMessage(url, token, 'JWT');
-      expect(message).toBe('Connecting to https://vikunja.example.com/auth/[REDACTED]?[REDACTED] with JWT token eyJh...');
+      expect(message).toBe(
+        'Connecting to https://vikunja.example.com/auth/[REDACTED]?[REDACTED] with JWT token eyJh...',
+      );
     });
   });
 
@@ -289,11 +299,75 @@ describe('Security Utilities', () => {
     });
 
     it('should populate cache with normalized keys', () => {
-      const data = { 'Secret-Key': 'value', 'api_token': 'token_value' };
+      const data = { 'Secret-Key': 'value', api_token: 'token_value' };
       sanitizeLogData(data);
 
       const stats = getSecurityCacheStats();
       expect(stats.size).toBeGreaterThan(0);
+    });
+
+    // LOW-14 (#292, cross-audit): the normalized-key cache advertised a
+    // 10,000-entry max via getSecurityCacheStats but never actually
+    // enforced it - unbounded growth in a long-running oidc-http process
+    // if attacker-influenced object keys keep reaching the logger.
+    it('never grows the cache past the advertised maxSize', () => {
+      const { maxSize } = getSecurityCacheStats();
+
+      // Populate with more distinct keys than the cache can hold.
+      const overflowCount = maxSize + 500;
+      for (let i = 0; i < overflowCount; i++) {
+        sanitizeLogData({ [`field_${i}`]: 'value' });
+      }
+
+      const stats = getSecurityCacheStats();
+      expect(stats.size).toBeLessThanOrEqual(maxSize);
+    });
+  });
+
+  describe('OIDC identity masking (#292 MED-15)', () => {
+    it('masks a bare `sub` field the same way secrets are masked', () => {
+      const sanitized = sanitizeLogData({ sub: 'user-a-1234567890' }) as Record<
+        string,
+        unknown
+      >;
+      expect(sanitized.sub).toBe('[REDACTED]');
+    });
+
+    it('masks `identityKey` and `sessionId` fields carrying the issuer|sub pair', () => {
+      const sanitized = sanitizeLogData({
+        identityKey: 'https://idp.example/realm|user-a',
+        sessionId: 'https://idp.example/realm|user-a',
+      }) as Record<string, unknown>;
+      expect(sanitized.identityKey).toBe('[REDACTED]');
+      expect(sanitized.sessionId).toBe('[REDACTED]');
+    });
+  });
+
+  describe('Credential-shape false positives (#292 LOW-13)', () => {
+    it('does not mask a plain REST path', () => {
+      // Key deliberately not named 'path'/'file'/etc - this is testing the
+      // value-shape (isCredentialFormat) heuristic, not key-name matching,
+      // which already (correctly) treats a 'path' key as sensitive.
+      const sanitized = sanitizeLogData({
+        restPath: '/projects/12345/webhooks/67890123',
+      }) as Record<string, unknown>;
+      expect(sanitized.restPath).toBe('/projects/12345/webhooks/67890123');
+    });
+
+    it('does not mask a dotted version string', () => {
+      const sanitized = sanitizeLogData({
+        serverVersion: '2.4.0-beta.123456789012',
+      }) as Record<string, unknown>;
+      expect(sanitized.serverVersion).toBe('2.4.0-beta.123456789012');
+    });
+
+    it('still masks a genuinely credential-shaped long alphanumeric string', () => {
+      const sanitized = sanitizeLogData({
+        blob: 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae',
+      }) as Record<string, unknown>;
+      expect(sanitized.blob).not.toBe(
+        'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae',
+      );
     });
   });
 
@@ -334,7 +408,9 @@ describe('Security Utilities', () => {
     });
 
     it('should handle unsupported types in sanitization (line 340)', () => {
-      const func = function() { return 'test'; };
+      const func = function () {
+        return 'test';
+      };
       const symbol = Symbol('test');
 
       const sanitizedFunc = sanitizeLogData(func);

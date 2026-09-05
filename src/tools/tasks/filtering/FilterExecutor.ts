@@ -4,12 +4,19 @@
  */
 
 import type { FilterExpression } from '../../../types/filters';
-import type { VikunjaTask as Task, TaskListApiParams as GetTasksParams } from '../../../utils/filtering/types';
+import type {
+  VikunjaTask as Task,
+  TaskListApiParams as GetTasksParams,
+} from '../../../utils/filtering/types';
 import type { TaskListingArgs, TaskFilterExecutionResult } from '../types/filters';
-import type { TaskFilterStorage, FilteringParams, FilteringMetadata, FilteringArgs } from '../types/filters';
+import type { TaskFilterStorage, FilteringParams, FilteringMetadata } from '../types/filters';
 import type { AuthManager } from '../../../auth/AuthManager';
 import { FilteringContext } from '../../../utils/filtering';
-import { validateTaskCountLimit, createTaskLimitExceededMessage, logMemoryUsage } from '../../../utils/memory';
+import {
+  validateTaskCountLimit,
+  createTaskLimitExceededMessage,
+  logMemoryUsage,
+} from '../../../utils/memory';
 import { MCPError, ErrorCode } from '../../../types';
 import { logger } from '../../../utils/logger';
 
@@ -36,7 +43,7 @@ export const FilterExecutor = {
     filterString: string | undefined,
     params: GetTasksParams,
     _storage: TaskFilterStorage,
-    authManager?: AuthManager
+    authManager?: AuthManager,
   ): Promise<TaskFilterExecutionResult> {
     try {
       // Execute filtering using strategy pattern. Cross-project listings
@@ -45,25 +52,22 @@ export const FilterExecutor = {
       // filter is present — see RestCrossProjectFilteringStrategy.
       const filteringContext = new FilteringContext({
         enableServerSide: Boolean(filterString),
-        crossProject: isCrossProjectListing(args)
+        crossProject: isCrossProjectListing(args),
       });
 
       const filteringParams: FilteringParams = {
-        args: args as FilteringArgs,
+        args: args,
         filterExpression,
         filterString,
         params,
-        ...(authManager !== undefined ? { authManager } : {})
+        ...(authManager !== undefined ? { authManager } : {}),
       };
 
       const filteringResult = await filteringContext.execute(filteringParams);
       const tasks = filteringResult.tasks;
 
       // Extract metadata for response formatting
-      const {
-        serverSideFilteringUsed,
-        serverSideFilteringAttempted,
-      } = filteringResult.metadata;
+      const { serverSideFilteringUsed, serverSideFilteringAttempted } = filteringResult.metadata;
 
       // Additional memory protection: validate actual loaded task count
       const actualTaskCount = tasks.length;
@@ -75,23 +79,20 @@ export const FilterExecutor = {
         logger.warn('Loaded task count exceeds recommended limits', {
           actualCount: actualTaskCount,
           maxRecommended: finalTaskCountValidation.maxAllowed,
-          estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB
+          estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
         });
 
         memoryInfo = {
           actualCount: actualTaskCount,
           maxAllowed: finalTaskCountValidation.maxAllowed,
-          estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB
+          estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
         };
 
         // For extremely large datasets, still enforce hard limits
         if (actualTaskCount > finalTaskCountValidation.maxAllowed * 1.5) {
           throw new MCPError(
             ErrorCode.INTERNAL_ERROR,
-            createTaskLimitExceededMessage(
-              'process loaded tasks',
-              actualTaskCount
-            )
+            createTaskLimitExceededMessage('process loaded tasks', actualTaskCount),
           );
         }
       }
@@ -107,7 +108,8 @@ export const FilterExecutor = {
         filterString,
         serverSideFilteringUsed,
         serverSideFilteringAttempted,
-        filteringResult.metadata.filteringNote
+        filteringResult.metadata.filteringNote,
+        filteringResult.metadata,
       );
 
       // Build return object, only including defined properties to satisfy exactOptionalPropertyTypes
@@ -122,7 +124,6 @@ export const FilterExecutor = {
       }
 
       return result;
-
     } catch (error) {
       if (error instanceof MCPError) {
         throw error;
@@ -162,8 +163,20 @@ export const FilterExecutor = {
     filterString: string | undefined,
     serverSideFilteringUsed: boolean,
     serverSideFilteringAttempted: boolean,
-    filteringNote: string
+    filteringNote: string,
+    completeness?: Pick<FilteringMetadata, 'resultComplete' | 'warnings'>,
   ): FilteringMetadata {
+    // An incomplete or partially-honoured result must survive this
+    // re-derivation intact: it is the ONLY thing that distinguishes "nothing
+    // matched" from "part of the answer" for the caller (issues #225/#227).
+    const carried: Pick<FilteringMetadata, 'resultComplete' | 'warnings'> = {};
+    if (completeness?.resultComplete !== undefined) {
+      carried.resultComplete = completeness.resultComplete;
+    }
+    if (completeness?.warnings !== undefined && completeness.warnings.length > 0) {
+      carried.warnings = completeness.warnings;
+    }
+
     if (filterString) {
       if (serverSideFilteringUsed) {
         return {
@@ -171,6 +184,7 @@ export const FilterExecutor = {
           serverSideFilteringAttempted: true,
           clientSideFiltering: false,
           filteringNote,
+          ...carried,
         };
       } else if (serverSideFilteringAttempted) {
         return {
@@ -178,6 +192,7 @@ export const FilterExecutor = {
           serverSideFilteringAttempted: true,
           clientSideFiltering: true,
           filteringNote,
+          ...carried,
         };
       } else {
         return {
@@ -185,6 +200,7 @@ export const FilterExecutor = {
           serverSideFilteringAttempted: false,
           clientSideFiltering: true,
           filteringNote,
+          ...carried,
         };
       }
     } else {
@@ -193,6 +209,7 @@ export const FilterExecutor = {
         serverSideFilteringAttempted: false,
         clientSideFiltering: false,
         filteringNote,
+        ...carried,
       };
     }
   },
@@ -220,7 +237,7 @@ export const FilterExecutor = {
       }
       logger.info('Applied default pagination for memory protection', {
         per_page: params.per_page,
-        page: params.page
+        page: params.page,
       });
     }
 
@@ -244,12 +261,12 @@ export const FilterExecutor = {
       logger.warn('Loaded task count exceeds recommended limits', {
         actualCount: actualTaskCount,
         maxRecommended: finalTaskCountValidation.maxAllowed,
-        estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB
+        estimatedMemoryMB: finalTaskCountValidation.estimatedMemoryMB,
       });
 
       warnings.push(
         `Loaded ${actualTaskCount} tasks, which exceeds recommended limit of ${finalTaskCountValidation.maxAllowed}. ` +
-        `Estimated memory usage: ${finalTaskCountValidation.estimatedMemoryMB}MB.`
+          `Estimated memory usage: ${finalTaskCountValidation.estimatedMemoryMB}MB.`,
       );
 
       // For extremely large datasets, still enforce hard limits
@@ -257,7 +274,7 @@ export const FilterExecutor = {
         return {
           isValid: false,
           warnings,
-          shouldThrow: true
+          shouldThrow: true,
         };
       }
     }
@@ -265,7 +282,7 @@ export const FilterExecutor = {
     return {
       isValid: true,
       warnings,
-      shouldThrow: false
+      shouldThrow: false,
     };
   },
 };

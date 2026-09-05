@@ -26,13 +26,19 @@ jest.mock('../../src/client', () => ({
   getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 jest.mock('../../src/auth/AuthManager');
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch as any;
 
-function mockResponse(opts: { ok?: boolean; status?: number; statusText?: string; body?: unknown }): Response {
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  body?: unknown;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', body } = opts;
   const text = body === undefined ? '' : JSON.stringify(body);
   return {
@@ -319,7 +325,11 @@ describe('Subscriptions Tool', () => {
       ).toBe(true);
       expect(
         isReadOnlyRejection(
-          await callAndCatch(mockHandler, { subcommand: 'unsubscribe', entity: 'task', entityId: 1 }),
+          await callAndCatch(mockHandler, {
+            subcommand: 'unsubscribe',
+            entity: 'task',
+            entityId: 1,
+          }),
         ),
       ).toBe(true);
     });

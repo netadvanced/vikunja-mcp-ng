@@ -1,34 +1,36 @@
-# Agent battle-testing harness
+# Agent Battle-Testing Harness
 
-Wave item T2 (tracking issue [netadvanced/vikunja-mcp-ng#28](https://github.com/netadvanced/vikunja-mcp-ng/issues/28)).
-Part 2 of the testing plan (part 1 is the version-matrix runner, see
-`docs/LOCAL-TESTING.md`).
+`npm run battle` spawns a real, headless AI agent against this repo's own MCP
+server and measures how hard the tool surface is to use. It is part 2 of the
+testing plan. Part 1 is the version-matrix runner in
+[docs/LOCAL-TESTING.md](LOCAL-TESTING.md), and this harness shipped as wave item T2 of
+tracking issue [netadvanced/vikunja-mcp-ng#28](https://github.com/netadvanced/vikunja-mcp-ng/issues/28).
 
 This harness answers a different question than `npm run test:mcp` /
 `npm run test:e2e:mcp` / `npm run test:matrix`. Those prove the tools work
 correctly against a real Vikunja server. This harness measures something
 else: **how well an actual AI agent copes with the tool surface** when
-handed a natural-language task and nothing else -- no test-writer holding
+handed a natural-language task and nothing else: no test-writer holding
 its hand, no known-good call sequence. It's a UX benchmark for the tool
 descriptions, argument shapes, and error messages themselves.
 
 It spawns a real, headless `claude -p` session whose only tools are this
 repo's own MCP server build (plus the one built-in tool needed to discover
-it -- see "Why `ToolSearch` is granted" below) and grades the run two ways:
+it; see "Why `ToolSearch` is granted" below) and grades the run two ways:
 
-1. **DID IT WORK** -- verified with direct Vikunja REST calls
+1. **DID IT WORK**: verified with direct Vikunja REST calls
    (`scripts/battle/lib/verify.ts`), never the agent's own self-report.
-2. **HOW HARD** -- parsed from the full JSONL transcript
+2. **HOW HARD**: parsed from the full JSONL transcript
    (`scripts/battle/lib/transcript-parser.ts` +
    `scripts/battle/lib/friction.ts`): tool-call count vs. a hand-estimated
    optimum, validation/argument errors, retries, wrong-tool attempts, tool
    discovery overhead, tokens, wall time, cost.
 
-## COST WARNING -- deliberate, manual runs only
+## Cost warning: deliberate, manual runs only
 
 **Every invocation other than `--list` spends real money against the
 configured Anthropic account.** This harness is **never** wired into CI, a
-pre-commit hook, `npm test`, or any other automatic trigger -- it only runs
+pre-commit hook, `npm test`, or any other automatic trigger. It only runs
 when a human deliberately types the command. Nothing in this repository
 calls `scripts/battle/run-scenario.ts` on your behalf.
 
@@ -39,7 +41,7 @@ Rough costs observed while building this harness (Claude Code 2.1.214,
 |---|---|---|
 | Cheapest scenario (`single-task-smoke`) | haiku | ~$0.07 |
 | Cheapest scenario (`single-task-smoke`) | sonnet | typically a few times the haiku cost |
-| Full scenario library (13 scenarios), one model | sonnet | expect several dollars -- run scenarios individually first if you're cost-sensitive |
+| Full scenario library (21 scenarios), one model | sonnet | expect several dollars; run scenarios individually first if you're cost-sensitive |
 
 Always start with `npm run battle -- --list` (free) and a single cheap
 scenario before running `--all`.
@@ -67,40 +69,45 @@ npm run battle -- --scenario subtask-breakdown --keep
 Requires:
 
 - The local e2e stack up and healthy: `npm run e2e:up` (see
-  `docs/LOCAL-TESTING.md`). The runner talks to `http://localhost:33456`
+  [docs/LOCAL-TESTING.md](LOCAL-TESTING.md)). The runner resolves the target's API URL through
+  `scripts/lib/e2e-target.ts` (default target `2.4.0-postgres`, i.e.
+  `http://localhost:8240/api/v1`; pick another with `VIKUNJA_E2E_TARGET`)
   and mints its own credential the same way `docker/e2e/bootstrap.sh` /
-  `scripts/mcp-e2e.ts` do -- it does not need `docker/e2e/.env` to exist.
+  `scripts/mcp-e2e.ts` do. It does not need the target's
+  `docker/e2e/.env.<version>-<db>` file to exist.
 - The `claude` CLI on `PATH`, logged in (this harness invokes it exactly
   like a human running `claude -p ...` at their own terminal).
 
-Output goes to `battle-results/<run-id>/` (gitignored -- regenerate, don't
+Output goes to `battle-results/<run-id>/` (gitignored; regenerate, don't
 commit):
 
-```
+```text
 battle-results/<run-id>/
   <scenario-id>/
     prompt.txt          the exact prompt sent (after {{prefix}} substitution)
-    mcp-config.json      the generated --mcp-config file for this run
-    transcript.jsonl      full stream-json transcript
-    stderr.log            claude CLI's stderr, if any
-    verdict.json           { verification, friction } for this scenario
-  friction-report.md      aggregated, cross-scenario markdown report
+    mcp-config.json     the generated --mcp-config file for this run
+    transcript.jsonl    full stream-json transcript
+    stderr.log          claude CLI's stderr, if any
+    verdict.json        { verification, friction } for this scenario
+  friction-report.md    aggregated, cross-scenario markdown report
 ```
 
 ## Safety model
 
 This mirrors the pattern in `scripts/mcp-e2e.ts` / `scripts/test-matrix.ts`
-(see those files' headers for the fuller rationale) -- copied deliberately
+(see those files' headers for the fuller rationale), copied deliberately
 rather than re-derived, since it protects against a real, previously-seen
 incident class (a harness inheriting ambient Vikunja credentials and
 running against a real account instead of the disposable stack):
 
-- The target URL is hard-coded to `http://localhost:33456/api/v1`, only
-  overridable via the harness-specific `BATTLE_VIKUNJA_URL` (never the
-  ambient `VIKUNJA_URL`), and `assertLocalUrl` aborts the whole run before
+- The target URL always comes from the local-only target resolver
+  (`scripts/lib/e2e-target.ts`, default `http://localhost:8240/api/v1`),
+  only overridable via the harness-specific `BATTLE_VIKUNJA_URL` /
+  `VIKUNJA_E2E_TARGET` (never the ambient `VIKUNJA_URL`), and
+  `assertLocalUrl` aborts the whole run before
   anything else happens if that URL doesn't resolve to
   localhost/127.0.0.1/`::1`. This repo directory has a real, production
-  `.envrc` -- the harness never reads `.env`/`.envrc`.
+  `.envrc`, but the harness never reads `.env`/`.envrc`.
 - The credential handed to the agent's MCP server child process is always
   freshly minted against that (now guaranteed-local) stack via
   login + `PUT /tokens`, exactly like `docker/e2e/bootstrap.sh`. The
@@ -110,19 +117,29 @@ running against a real account instead of the disposable stack):
   ambient credential, the MCP server child it spawns still gets ours.
 - Every scenario's Vikunja data is tagged with a unique
   `battle-<runid>-<scenario-id>-` title prefix. The runner sweeps by prefix
-  **before and after every scenario**, plus a bare `battle-` sweep at the
-  very start of each invocation to catch leftovers from a previous crashed
-  run under a different run id. Pass `--keep` to skip the after-sweep for
+  **before and after every scenario**. The bare `battle-` sweep that catches
+  leftovers from a previous crashed run under a different run id is **opt-in
+  via `--sweep-all`** (issue #205): it would delete a concurrently-running
+  harness's data, so it only runs when you ask for it. Pass `--keep` to skip
+  the after-sweep for
   one scenario when you want to inspect the result in the Vikunja UI --
   clean it up yourself afterward, or just let the next run's sweep catch it.
+- **Teams are swept separately from everything else**, by `name` rather than
+  `title` (`scripts/battle/lib/cleanup.ts`'s `cleanupByPrefix`). Unlike a
+  project or a label, a team is global to the Vikunja instance rather than
+  owned by a project -- a project-scoped sweep would never reclaim one, and
+  every `battle-*` team scenario would leave a permanent team behind on the
+  shared e2e stack. `cleanupByPrefix` now also lists and deletes every team
+  whose `name` starts with the run's prefix, before and after the scenario,
+  the same as everything else it sweeps.
 - The stack itself is never brought up, torn down, or version-switched by
-  this harness -- unlike `scripts/test-matrix.ts`, it assumes the stack is
+  this harness. Unlike `scripts/test-matrix.ts`, it assumes the stack is
   already up (`npm run e2e:up`) and only ever talks to it over HTTP.
 
 ## Why `ToolSearch` is granted
 
 The runner passes `--tools ToolSearch` (not `--tools ''`). This was not the
-first thing tried -- with zero built-in tools granted, a live smoke-test run
+first thing tried: with zero built-in tools granted, a live smoke-test run
 showed the agent could see `vikunja-battle`'s tools were configured
 (`mcp_servers: [{name: "vikunja-battle", status: ...}]` in the transcript's
 `init` line) but had literally no mechanism to ever load an individual
@@ -136,16 +153,16 @@ every actual unit of work confined to `vikunja_*` calls.
 This has a real consequence for how the friction numbers should be read:
 `ToolSearch` calls are tracked separately
 (`FrictionReport.toolSearchCallCount`), not folded into `toolCallCount` or
-`wrongToolAttemptCount` -- discovering a tool isn't a mistake, it's required
+`wrongToolAttemptCount`: discovering a tool isn't a mistake, it's required
 plumbing in this environment. But the count itself is still a genuine
 ergonomics signal worth reporting: the harness's own first live smoke run
 (see "Live smoke test evidence" in the PR this shipped in) needed **8**
-`ToolSearch` calls to do **3** actual `vikunja_*` calls -- a haiku-model
+`ToolSearch` calls to do **3** actual `vikunja_*` calls: a haiku-model
 agent visibly floundering on the `select:name1,name2` query syntax before
 landing on the right incantation. If a future Claude Code release changes
 how MCP tools are exposed (no longer deferred, or a different discovery
 mechanism), re-run the smoke test and update this section plus
-`scripts/battle/run-scenario.ts`'s `--tools` value accordingly -- don't
+`scripts/battle/run-scenario.ts`'s `--tools` value accordingly. Don't
 assume this behavior is permanent; re-verify with
 `claude -p --help` and a throwaway smoke run the way this section was
 originally derived (see git history / the PR description for the exact
@@ -154,44 +171,53 @@ transcript that revealed it).
 ## The scenario library
 
 `scripts/battle/scenarios/*.json`, each validated against `ScenarioSchema`
-(`scripts/battle/types.ts`) at load time. Currently 13 scenarios:
+(`scripts/battle/types.ts`) at load time. Currently 21 scenarios (verify with
+`npm run battle -- --list`, which is free):
 
 | id | optimal | probes |
 |---|---|---|
-| `q3-offsite-kanban` | 1 | Pierre's canonical example: a single sentence hiding a multi-step composite (project + 3-column Kanban + 10 tasks + priorities + due dates). `optimalCallCount` dropped from 15 to 1 once the `setup-kanban` composite (issue #173) shipped -- see `setup-kanban-composite` below |
+| `q3-offsite-kanban` | 1 | Pierre's canonical example: a single sentence hiding a multi-step composite (project + 3-column Kanban + 10 tasks + priorities + due dates). `optimalCallCount` dropped from 15 to 1 once the `setup-kanban` composite (issue #173) shipped — see `setup-kanban-composite` below |
 | `setup-kanban-composite` | 1 | added alongside issue #173's `setup-kanban` composite: a q3-offsite-kanban-style prompt (new project, 4-column board, 8 tasks distributed across columns, priorities, due dates) specifically probing whether the agent reaches for the one-call composite instead of hand-rolling create -> create-bucket (xN) -> bulk-create -> set-bucket/bulk-set-bucket (xN) |
-| `filter-high-priority-search` | 3 | the Vikunja filter query language (`docs/API_NOTES.md`'s filter notes) |
-| `share-project-by-user` | 3 | project link-sharing discoverability |
-| `subtask-breakdown` | 3 | subtask creation (Vikunja has no first-class subtask resource -- it's a task relation under the hood). Re-baselined 2026-07-25 from 5 to 3: `bulk-create-subtasks` reaches the same end state in one call instead of one `create-subtask` call per subtask -- see "Re-baselining `optimalCallCount`" below |
+| `filter-high-priority-search` | 2 | the Vikunja filter query language ([docs/API_NOTES.md](API_NOTES.md)'s filter notes). Re-baselined 2026-09-02 (issue #202) from 3 to 2: the columns-less `setup-kanban` form collapses the create-project + bulk-create-with-priority/dueDate creation step to one call, leaving the filter `list` call as the only other step — see "Re-baselining `optimalCallCount`" below |
+| `share-project-by-user` | 2 | project link-sharing discoverability. Re-baselined 2026-09-02 (issue #202) from 3 to 2: the columns-less `setup-kanban` form collapses create-project + the single kickoff task into one call, leaving `create-share` as the only other step |
+| `subtask-breakdown` | 2 | subtask creation (Vikunja has no first-class subtask resource — it's a task relation under the hood). Re-baselined 2026-07-25 from 5 to 3 (`bulk-create-subtasks` reaches the same end state in one call instead of one `create-subtask` call per subtask), then again 2026-09-02 (issue #202) from 3 to 2: the columns-less `setup-kanban` form collapses create-project + the single parent task into one call, leaving `bulk-create-subtasks` as the only other step — see "Re-baselining `optimalCallCount`" below |
 | `bulk-create-subtasks` | 3 | bulk-create-subtasks composite discoverability vs. one `create-subtask` call per subtask |
-| `bulk-priority-bump` | 3 | bulk-edit discoverability vs. one-call-per-task |
-| `bulk-set-bucket` | 1 | bulk-set-bucket composite discoverability vs. moving each task into its Kanban column one at a time. Re-baselined 2026-07-25 from 9 to 1: this scenario's prompt is a verbatim match for `setup-kanban` (PR #175) -- see "Re-baselining `optimalCallCount`" below |
-| `labels-due-date-combo` | 3 | label creation + application + due dates combined in one ask: create-project (1) + create-label (1) + bulk-create with per-task `labels`/`dueDate` (1). PR #179 briefly re-baselined this to 1 via `setup-kanban` with a fabricated placeholder column; reverted 2026-07-25 (netadvanced/vikunja-mcp#28 T1) because that route invents an unrequested Kanban board -- see "Re-baselining `optimalCallCount`" below |
-| `single-task-smoke` | 2 | deliberately the simplest, most deterministic scenario -- use this one for a first try or a live-smoke proof (see the note on `optimalCallCount` below -- it is no longer necessarily the global minimum by raw call count, but remains the designated smoke-test scenario) |
-| `mixed-priority-batch` | 2 | varying a per-item field within a single batch-creation call |
-| `existing-label-reuse` | 3 | applying an already-existing label (find-then-apply path -- seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open) |
-| `project-rename-share` | 3 | project create + rename + share-by-name in one prompt -- probes the `title`-vs-`name` field-naming footgun (`vikunja_projects`' flat args object has both) and exercises the share-by-name composite (`create-share` with a `name`) |
+| `bulk-priority-bump` | 2 | bulk-edit discoverability vs. one-call-per-task. Re-baselined 2026-09-02 (issue #202) from 3 to 2, closing the 2026-08-31 outstanding-work note below: the columns-less `setup-kanban` form collapses create-project + bulk-create into one call, leaving the prompt's prescribed, separate `bulk-update` step as the only other call |
+| `bulk-set-bucket` | 1 | bulk-set-bucket composite discoverability vs. moving each task into its Kanban column one at a time. Re-baselined 2026-07-25 from 9 to 1: this scenario's prompt is a verbatim match for `setup-kanban` (PR #175) — see "Re-baselining `optimalCallCount`" below |
+| `labels-due-date-combo` | 1 | label creation + application + due dates combined in one ask, now solved by `setup-kanban`'s columns-less form (issue #185): `title` + `tasks` (each carrying `labels`/`dueDate`), no `columns` — one call, zero Kanban structure touched. PR #179 briefly re-baselined this to 1 via a fabricated placeholder column instead; reverted 2026-07-25 (netadvanced/vikunja-mcp#28 T1). Re-baselined to 1 again 2026-07-27 for the unrelated, legitimate reason above — see "Re-baselining `optimalCallCount`" below |
+| `single-task-smoke` | 1 | deliberately the simplest, most deterministic scenario — use this one for a first try or a live-smoke proof. Re-baselined 2026-09-02 (issue #202) from 2 to 1: the columns-less `setup-kanban` form reaches 1 call with zero fabrication (no placeholder column needed, unlike the route this scenario previously declined to credit) — it remains the designated smoke-test scenario for its simplicity and determinism, not for being the lowest call count (see the note on `optimalCallCount` below) |
+| `mixed-priority-batch` | 1 | varying a per-item field within a single batch-creation call. Re-baselined 2026-09-02 (issue #202) from 2 to 1: the columns-less `setup-kanban` form varies `priority` per task within its own single `tasks` array just as `bulk-create` does, so it satisfies this scenario's signal (per-item variation within ONE call) without fabricating any Kanban structure — see "Re-baselining `optimalCallCount`" below |
+| `percent-done-scale` | 1 | the `percentDone` scale (decision 22): the prompt says "75% done" in plain English and the verify check reads the RAW REST field, which Vikunja stores as `0.75` — so it fails if the 0-100 -> 0-1 conversion in `src/utils/percent-done.ts` is removed (75 stored) or applied twice (0.0075 stored). Re-baselined from 2 to 1 (issue #236): `setup-kanban`'s per-task shape now declares `percentDone`, so `setup-kanban` with `title` + `tasks: [{title, percentDone: 75}]` and no `columns` reaches this end state in one call — see the scenario's own `description` for the full re-derivation |
+| `percent-done-update` | 3 | the `percentDone` scale on the UPDATE path (a separate call site from create): create-project (1) + create-task with an initial `percentDone` (1) + `vikunja_tasks update` with a revised `percentDone` (1) = 3. The revision is prescribed as a sequence (25% then 60%), so creating at the final value outright is not a faithful solve and is not credited |
+| `percent-done-bulk-update` | 2 | the `percentDone` scale on `vikunja_task_bulk bulk-update`'s generic `field`/`value` pair (`field: 'percent_done'`), a code path invisible from the tool schema. `setup-kanban` columns-less (1) + `bulk-update` with `taskIds` + `field: 'percent_done'` (1) = 2 |
+| `percent-done-filter-threshold` | 4 | the `percentDone` scale inside the filter DSL (`percent_done > 50` vs. the wire's `0.75`-shaped values) — the one leak that produces no error, just an empty result set. create-project (1) + bulk-create with per-task `percentDone` (1) + `list` with a `filter` (1) + `apply-label` with `taskIds` (1) = 4 |
+| `existing-label-reuse` | 1 | applying an already-existing label (find-then-apply path — seeded via `setup`, closes the evidence gap `labels-due-date-combo` leaves open). Re-baselined 2026-09-02 (issue #202) from 3 to 1: the columns-less `setup-kanban` form's per-task `labels` field resolves-and-reuses an existing label by title via the same `ensureLabelByTitle` helper `apply-label` uses, so project + tasks + label-reuse all land in one call — see "Re-baselining `optimalCallCount`" below |
+| `project-rename-share` | 3 | project create + rename + share-by-name in one prompt — probes the `title`-vs-`name` field-naming footgun (`vikunja_projects`' flat args object has both) and exercises the share-by-name composite (`create-share` with a `name`) |
+| `task-position-after-create` | 2 | the teaching error shipped in PR #229: `position` is rejected on `vikunja_tasks create` (task order is per-view state, written through `set-position`), and this scenario measures whether that error actually teaches the agent the right subcommand instead of causing a retry. `setup-kanban` columns-less (1) + `set-position` (1) = 2 |
+| `bulk-update-partial-failure` | 3 | what the tool surface does when part of a bulk operation cannot succeed (a stale task id inside a `bulk-update` call) — measures whether the honest partial-failure report is preserved or papered over by fabricating a replacement for the deleted task. `setup-kanban` columns-less (1) + `delete` on the cancelled item (1) + `bulk-update` on the survivors (1) = 3 |
+| `team-rename-keeps-visibility` | 2 | regression guard for PR #230: `POST /teams/{id}` is a full-model replace, and a rename-only update body used to silently un-publish a public team. Team is seeded (not agent-created) so the scenario actually exercises the update path. `vikunja_teams list`/`search` to resolve the id (1) + `update` with `id` + `name` (1) = 2 |
+| `team-create-with-admin-member` | 2 | team `isPublic` on CREATE (only became settable in PR #230) plus membership keyed by USERNAME, never a numeric user id, with an admin flag set in the same call as `members add`. `teams create` with `isPublic: true` (1) + `members add` with `username` + `admin: true` (1) = 2 |
 
 ### Live evidence runs
 
 Scenarios added by E5 (`existing-label-reuse`, `project-rename-share`) were
-never executed live at the time they shipped -- this is that first live run,
+never executed live at the time they shipped. This is that first live run,
 one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
 
-- `existing-label-reuse` -- last run 2026-07-20, **PASS, clean**: 6 calls vs.
-  optimal 3 (2.0x, fully explained by one `apply-label` call per task -- no
+- `existing-label-reuse`: last run 2026-07-20, **PASS, clean**: 6 calls vs.
+  optimal 3 (2.0x, fully explained by one `apply-label` call per task, since no
   bulk-apply composite exists), 0 validation errors, 0 retries, agent found
   the seeded label via `vikunja_labels list --search` and applied its
-  existing id to all 3 tasks -- no duplicate label created. Confirms the
+  existing id to all 3 tasks; no duplicate label created. Confirms the
   parked **label-ensure composite** verdict; stays parked. UPDATE 2026-07-25:
   `apply-label`/`remove-label` now accept `taskIds` (PR #178), so "no
-  bulk-apply composite exists" is no longer true as of this writing -- a
+  bulk-apply composite exists" is no longer true as of this writing: a
   re-run today could plausibly do the 3-task apply in one `apply-label`
   call with `taskIds` + `labelTitles` instead of three individual calls.
   `optimalCallCount` stays 3 either way (see the scenario file's own
-  description) -- this note only corrects the "no bulk-apply composite"
+  description); this note only corrects the "no bulk-apply composite"
   claim, which was accurate on 2026-07-20 but is stale now.
-- `project-rename-share` -- last run 2026-07-20, **PASS verification, but
+- `project-rename-share`: last run 2026-07-20, **PASS verification, but
   high friction, REOPENED**: 15 calls vs. optimal 3 (5.0x), 3 validation
   errors, 3 retries. The agent's first `create-share` call passed `title`
   (the project-rename field) instead of `name` (the share-label field) --
@@ -205,7 +231,7 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
   share behind for the harness's own project-delete cleanup to reclaim.
   Reopens the parked **`name` vs `title` ergonomics** queue item with this
   evidence; the delete-share "not found" bug is a new, separate finding
-  worth its own follow-up item (not fixed here -- out of scope for this
+  worth its own follow-up item (not fixed here, out of scope for this
   evidence-only item).
 
 ### Anatomy of a scenario file
@@ -234,14 +260,25 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
   // an already-existing label -- see existing-label-reuse.json). Every
   // string field supports {{prefix}} the same as verify checks do, so
   // seeded data is swept by the same prefix-based cleanup as everything
-  // else. Currently one action type: { "type": "create-label", "title": "..." }.
+  // else. Two action types currently: { "type": "create-label", "title": "..." }
+  // and { "type": "create-team", "name": "...", "isPublic": true } -- the
+  // latter seeds a team the agent must FIND and modify (see
+  // team-rename-keeps-visibility.json), for the same reason create-label
+  // seeds a label existing-label-reuse.json must find rather than create.
   "setup": [{ "type": "create-label", "title": "{{prefix}}existing-tag" }],
   "verify": [
     { "type": "project-exists", "titleContains": "{{prefix}}Demo" }
     // ... see scripts/battle/types.ts's VerifyCheck union for every
     // available check type (min-tasks-in-project, min-buckets-in-project,
-    // tasks-field-match-count, tasks-due-date-in-range, label-exists,
-    // tasks-with-label-count, task-has-subtasks, project-has-share).
+    // buckets-with-tasks-count, buckets-in-order, tasks-field-match-count,
+    // tasks-due-date-in-range, label-exists, tasks-with-label-count (with an
+    // optional `max` upper bound, for scenarios where over-matching is as
+    // wrong as under-matching), task-has-subtasks, task-absent-from-project
+    // (proves a dishonest recovery wasn't fabricated), task-first-in-list-view
+    // (reads a project's actual list-view task order), project-has-share,
+    // team-exists (with optional isPublic/hasMemberUsername/memberIsAdmin),
+    // and team-absent (proves a rename happened rather than a second team
+    // being created alongside the original).
   ]
 }
 ```
@@ -251,20 +288,20 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
 1. Drop a new `scripts/battle/scenarios/<id>.json` file (any filename
    ending in `.json` is picked up; the `id` field inside is what matters).
 2. Write `promptTemplate` as a single, natural sentence a real user might
-   type -- resist the urge to spell out the exact tool calls. The whole
+   type. Resist the urge to spell out the exact tool calls. The whole
    point is testing what the agent does with an under-specified ask.
 3. Reference `{{prefix}}` in every title the prompt asks the agent to
    create, and reuse those same substrings in the matching `verify` checks'
    `*TitleContains` fields.
 4. Hand-estimate `optimalCallCount`: how many `vikunja_*` calls would an
    expert user of this tool surface need? Check `src/tools/*/index.ts`'s
-   subcommand lists and `docs/API_NOTES.md` for the composite operations
+   subcommand lists and [docs/API_NOTES.md](API_NOTES.md) for the composite operations
    already available (`bulk-create` accepts per-task `priority`/`dueDate`/
    `labels` in one call, `create-subtask`, `share-with-user`, etc.) --
    the estimate should reflect what's *possible* with this tool surface,
    not a naive one-call-per-field count. State the reasoning inline in the
    scenario's own `description` field (e.g. "create-project (1) + bulk-create
-   (1) + apply-label with taskIds (1) = 3") -- see "Re-baselining
+   (1) + apply-label with taskIds (1) = 3"); see "Re-baselining
    `optimalCallCount`" below for the full policy this estimate must follow.
 5. Add a unit test in `tests/battle/scenario.test.ts` if the check verifies
    a shape not already covered.
@@ -279,15 +316,15 @@ one shot each, sonnet model, tracking issue #28's Q2 (2026-07-20):
 
 The friction report ranks scenarios by `callCountRatio` (actual calls /
 `optimalCallCount`), so a stale `optimalCallCount` makes that ranking
-meaningless -- worse, an `optimalCallCount` the agent routinely *beats*
-isn't an optimum at all, it just makes every run of that scenario look
+meaningless. Worse, an `optimalCallCount` the agent routinely *beats*
+isn't an optimum at all; it just makes every run of that scenario look
 artificially cheap. `optimalCallCount` is not a one-time estimate: it must
 be re-derived whenever a new composite tool ships that changes what's
 *possible* on this tool surface, the same way the coverage-threshold ratchet
 in `CLAUDE.md` only ever moves in the direction of the evidence.
 
 **A controlled haiku sweep on 2026-07-25 (main @ `8c49b68`)** found three
-scenarios where `actual < optimalCallCount` -- direct proof the recorded
+scenarios where `actual < optimalCallCount`: direct proof the recorded
 optimum was stale, because two composites had shipped after those estimates
 were written:
 
@@ -300,7 +337,7 @@ were written:
 full re-baseline:
 
 - `vikunja_task_labels` `apply-label`/`remove-label` accept `taskIds: number[]`
-  -- N tasks in ONE call instead of one call per task (PR #178).
+, N tasks in ONE call instead of one call per task (PR #178).
 - `vikunja_projects` `setup-kanban` provisions an entire board (project +
   ordered buckets + tasks placed into columns) in ONE call (PR #175, issue
   #173).
@@ -309,7 +346,7 @@ full re-baseline:
 originally also re-baselined `labels-due-date-combo` from 3 to 1, crediting
 `setup-kanban` with a single *fabricated placeholder column* even though the
 scenario's prompt never asks for a Kanban board. That was wrong and has been
-reverted (optimum is 3 again -- see the scenario file's own description).
+reverted (optimum is 3 again; see the scenario file's own description).
 Two live runs prove why the 1-call figure was never a real optimum:
 `battle-results/20260725-172435-r9pgwd` is the run that produced the actual=1
 measurement, and its transcript shows exactly the fabrication in question --
@@ -320,6 +357,20 @@ where an agent took the honest 3-call path (create-project + create-label +
 bulk-create with labels/dueDate) and got flagged as 300%-over-optimal for it
 -- proof the 1-call figure made the metric actively lie about the honest
 route. The rules below are sharpened so this specific mistake can't recur.
+
+**Re-baseline, 2026-07-27 (issue #185)**: `labels-due-date-combo` is back to
+`optimalCallCount: 1`, but NOT via the reverted placeholder-column trick --
+`setup-kanban`'s `columns` argument shipped as genuinely OPTIONAL (issue
+#185), so the columns-less form (`title` + `tasks`, no `columns`) creates
+the project and its tasks in one call while resolving/touching zero Kanban
+views or buckets (`kanban-setup.ts` skips `resolveKanbanView` entirely on
+this path; see its module doc comment). This satisfies rule 3 below for
+the first time on this scenario: no structure, view, board, or column is
+fabricated, because none is created at all. Rule 3's ban stays in force for
+the *placeholder-column* route specifically (an explicit, non-empty
+`columns` array the prompt never asked for). It does not generalize to
+"never credit `setup-kanban`" now that a columns-less call exists that
+invents nothing.
 
 **The policy, so the next re-baseline doesn't have to re-litigate this**:
 
@@ -335,14 +386,14 @@ route. The rules below are sharpened so this specific mistake can't recur.
    the transcript.
 2. Credit a composite's full capability when the scenario's own prompt is a
    direct match for what it does (`bulk-set-bucket`, `q3-offsite-kanban`,
-   `setup-kanban-composite` -- all genuinely 1 call via `setup-kanban`,
+   `setup-kanban-composite`, all genuinely 1 call via `setup-kanban`,
    because each of those prompts explicitly asks for a Kanban board with
    named columns).
 3. A composite is creditable on a scenario whose prompt does NOT literally
    ask for what the composite is designed for ONLY if reaching that call
    count requires NO structure, view, board, column, or other state the
    prompt did not ask for. "Describes an end state rather than prescribing
-   a process" is necessary but never sufficient by itself -- it does not
+   a process" is necessary but never sufficient by itself; it does not
    license fabricating unrequested state to reach that end state more
    cheaply. Concretely: `setup-kanban`'s placeholder-column trick is
    permanently NOT creditable on any scenario whose prompt doesn't itself
@@ -359,23 +410,114 @@ route. The rules below are sharpened so this specific mistake can't recur.
    theoretically reach just because it's technically possible. Nearly every
    "create a project with N tasks" scenario in this library could be
    collapsed to 1 call by feeding `setup-kanban` a throwaway placeholder
-   column -- doing that unconditionally (or even selectively, per rule 3)
+   column. Doing that unconditionally (or even selectively, per rule 3)
    would fabricate unrequested Kanban boards across the suite and collapse
    almost every `optimalCallCount` to 1, destroying the harness's ability to
    ever show friction again. Only apply a composite's shortcut where it's
-   the tool's actual designed purpose for that prompt (rule 2); otherwise
-   keep the natural, intended-use derivation, and say so explicitly in the
-   scenario's `description` (see `mixed-priority-batch.json`,
-   `single-task-smoke.json` for scenarios that explicitly decline the
-   shortcut and state why).
+   the tool's actual designed purpose for that prompt (rule 2), or where
+   rule 3's zero-fabrication test is independently satisfied. The
+   columns-less `setup-kanban` form (see `labels-due-date-combo.json`) is a
+   plain project+tasks composite that fabricates no structure at all, so —
+   unlike the placeholder-column route this paragraph is warning about — it
+   qualifies for ANY "create a project with N tasks (with per-task fields)"
+   ask, not only Kanban-shaped ones: see the 2026-09-02 re-baseline of
+   `mixed-priority-batch.json`, `single-task-smoke.json`,
+   `existing-label-reuse.json`, `filter-high-priority-search.json`,
+   `share-project-by-user.json`, `subtask-breakdown.json`, and
+   `bulk-priority-bump.json` (issue #202). What stays excluded is the
+   placeholder-*column* fabrication specifically (rule 3), and
+   front-loading a value the prompt prescribes as a separate, later step
+   (see `bulk-priority-bump.json`'s description for that distinct,
+   still-in-force exclusion). Otherwise keep the natural, intended-use
+   derivation, and say so explicitly in the scenario's `description`.
 5. Record the reasoning in the scenario's own `description` field (this
-   schema has no separate "why" field -- `ScenarioSchema.parse` silently
+   schema has no separate "why" field: `ScenarioSchema.parse` silently
    strips unknown keys, so `description` is the only place a comment
    survives load time). State which specific calls make up the optimum,
    e.g. `"create (1) + bulk-create (1) + apply-label with taskIds (1) = 3"`.
    If the optimum is genuinely 1, say so plainly rather than padding it back
-   up for the sake of a "more interesting" ratio -- but "genuinely 1" must
+   up for the sake of a "more interesting" ratio, but "genuinely 1" must
    survive rule 3's test first.
+
+### Full-library run, 2026-08-31 (13 scenarios, pre-#235 library)
+
+A haiku full-library run against the 13-scenario library that predates issue
+#235's seven additions (this run happened before that PR landed, so it does
+not cover `team-rename-keeps-visibility`, `team-create-with-admin-member`,
+`task-position-after-create`, `percent-done-update`,
+`percent-done-bulk-update`, `percent-done-filter-threshold`,
+`bulk-update-partial-failure`, or the re-baselined `percent-done-scale`):
+**13/13 passed, total cost $0.4555, zero validation errors, zero retries, and
+zero wrong-tool attempts** across the whole run.
+
+**Do not read this as an improvement over the 2026-07-28 baseline**. It
+isn't one, and issue #202 is still open. Call-count changes versus that
+baseline: `bulk-create-subtasks` 3 → 2, `bulk-priority-bump` 2 → 1,
+`filter-high-priority-search` 2 → 3; the other ten scenarios were unchanged.
+The `filter-high-priority-search` regression is single-run noise (nothing in
+that area of the tool surface changed between the two runs) and is recorded
+as such rather than investigated as a regression.
+
+Issue #202's shape shifted rather than improved: **still 7 of the 13
+scenarios beat their own recorded `optimalCallCount`, but not the same 7**:
+`filter-high-priority-search` dropped out of that set on this run,
+`bulk-create-subtasks` joined it. A scenario beating its own optimum is not
+good news by itself (see the re-baselining policy above): it means the
+recorded optimum is stale, not that the tool surface got better.
+
+Two re-derivations are on record from this same round of evidence:
+
+- `percent-done-scale`'s optimum was re-derived 2 → 1 by issue #236 (see the
+  scenario table above): **done**, reflected in `percent-done-scale.json`.
+- `bulk-priority-bump`'s optimum was reported as **stale and likely wrong**:
+  it should plausibly be 2, not the then-recorded 3, because that scenario's
+  optimum was last re-verified on 2026-07-25, which predates the
+  columns-less `setup-kanban` form that shipped on 2026-07-27 (issue #185).
+  At the time this section was written, that had **NOT been re-derived
+  yet**. **Done as of 2026-09-02** — see the next section.
+
+### Re-baseline, 2026-09-02 (issue #202)
+
+Closes issue #202. Re-derived, from the CURRENT tool schemas (never from the
+observed `actual` alone — see the re-baselining policy above), the
+`optimalCallCount` of every one of the 7 scenarios the 2026-07-28 and
+2026-08-31 sweeps found beating their own recorded optimum:
+`mixed-priority-batch`, `single-task-smoke`, `bulk-priority-bump`,
+`existing-label-reuse`, `filter-high-priority-search`,
+`share-project-by-user`, and `subtask-breakdown`. The issue's own hypothesis
+held for all 7: every one of them had a `create-project` + (`bulk-create` /
+`create-task`) creation step that predates `setup-kanban`'s `columns`
+argument becoming optional (issue #185), and that step collapses to ONE
+call via the columns-less form (`title` + `tasks`, no `columns` — verified
+against `src/tools/projects/kanban-setup.ts`, which never resolves a Kanban
+view or bucket on that path) without fabricating anything the prompt didn't
+ask for.
+
+Two scenarios (`mixed-priority-batch`, `single-task-smoke`) had previously
+declined this same shortcut on the grounds that reaching it required a
+fabricated placeholder column (rule 3) or would erode scenario-specific
+signal; both grounds are now stale (the columns-less route fabricates
+nothing, and it tests the identical "vary/set a field within one call"
+property `bulk-create` was chosen to probe), so both are re-baselined too —
+see rule 4 above and each scenario's own `description` for the full
+reasoning. `bulk-priority-bump` keeps its prescribed-sequence exclusion
+(rule 3's addendum): only the creation step collapses, the priority change
+still has to happen in a separate, later `bulk-update` call.
+
+| scenario | old optimal | new optimal | why |
+|---|---|---|---|
+| `mixed-priority-batch` | 2 | 1 | setup-kanban columns-less varies `priority` per task in its own one-call `tasks` array |
+| `single-task-smoke` | 2 | 1 | setup-kanban columns-less reaches 1 call with zero fabrication (no placeholder column needed) |
+| `bulk-priority-bump` | 3 | 2 | creation step (project + 8 tasks) collapses to 1 call; the prescribed separate `bulk-update` stays a second call |
+| `existing-label-reuse` | 3 | 1 | setup-kanban columns-less's per-task `labels` field reuses the seeded label by title via the same `ensureLabelByTitle` helper `apply-label` uses |
+| `filter-high-priority-search` | 3 | 2 | creation step collapses to 1 call; the filter `list` read stays a second, unreplaceable call |
+| `share-project-by-user` | 3 | 2 | creation step collapses to 1 call; `create-share` stays a second, unreplaceable call |
+| `subtask-breakdown` | 3 | 2 | creation step (project + parent task) collapses to 1 call, returning the parent's id for `bulk-create-subtasks` |
+
+Sanity-checked per the issue's own requirement: `npm run battle -- --scenario
+<name> --model haiku` was re-run for each changed scenario after the
+re-baseline to confirm no scenario still beats its new optimum on a routine
+run (see this PR's description for the results).
 
 ## Testing the harness itself (no live Claude needed)
 
@@ -386,7 +528,7 @@ depends on) are unit-tested against static, recorded fixtures --
 `VikunjaRestClient` (`tests/battle/helpers/fake-rest-client.ts`)
 respectively. `filter-syntax-real-errors.jsonl` is derived from a real
 campaign transcript (run `20260718-211659-05yr35`, scenario
-`filter-high-priority-search`) rather than hand-written -- when
+`filter-high-priority-search`) rather than hand-written. When
 `invalidArgErrorCount`'s `VALIDATION_ERROR_PATTERNS` misses a genuine failure
 in a future campaign, add the real error text as a new fixture the same way
 rather than a synthetic one, so the regex list stays grounded in what
@@ -404,19 +546,19 @@ everything under `tests/battle/` is free and deterministic.
 ## Reading the friction report
 
 `friction-report.md` ranks scenarios by `callCountRatio` (actual calls /
-hand-estimated optimum) descending -- the scenarios where the agent worked
+hand-estimated optimum) descending: the scenarios where the agent worked
 hardest relative to what should have been possible come first. Look for:
 
 - **High `callCountRatio`** with a PASS verdict: the agent got there, but
-  the tool surface made it take more calls than it should have -- a
+  the tool surface made it take more calls than it should have. That is a
   candidate for a new composite tool, or a better tool description nudging
   the agent toward the cheaper path.
 - **Nonzero `invalidArgErrorCount`**: the agent's first guess at argument
-  shapes was wrong -- a discoverability smoking gun. Check whether the
+  shapes was wrong: a discoverability smoking gun. Check whether the
   tool's Zod schema description/examples could make the correct shape more
   obvious.
-- **Nonzero `retryCount`**: the agent repeated a byte-identical failed call
-  -- often paired with a validation error above, but sometimes a sign the
+- **Nonzero `retryCount`**: the agent repeated a byte-identical failed call,
+  often paired with a validation error above, but sometimes a sign the
   error message itself didn't give the agent anything to act on.
 - **High `toolSearchCallCount` relative to `toolCallCount`**: the agent
   spent more effort finding the right tool than using it (see "Why
@@ -426,13 +568,13 @@ hardest relative to what should have been possible come first. Look for:
   expected vs. observed.
 
 This report format is meant to feed future tool-description and
-composite-tool improvement waves directly -- when a friction pattern
+composite-tool improvement waves directly. When a friction pattern
 recurs across multiple runs of the same scenario, that's the signal to act
 on, not a single run's noise.
 
 ## Its place in the release checklist
 
-This harness is now part of `docs/RELEASING.md`'s pre-tag checklist (§2,
+This harness is now part of [docs/RELEASING.md](RELEASING.md)'s pre-tag checklist (§2,
 Step 4, "Battle smoke"): at minimum the cheapest scenario
 (`single-task-smoke`) runs before every release, and the full scenario
 library (`--all`) runs when a release changes tool descriptions, argument
@@ -440,7 +582,7 @@ shapes, error messages, or subcommands. Its friction heuristics
 (validation-error pattern matching, the retry definition, etc.) are still
 evolving with real runs, so read the friction report with that in mind
 rather than treating a single run's noise as load-bearing. It remains
-explicitly **not an automated gate** -- it spawns a paid agent session and
+explicitly **not an automated gate**: it spawns a paid agent session and
 must never become something CI or a hook runs unattended.
 
 ## Re-deriving the transcript shape
@@ -452,7 +594,7 @@ harness (`claude -p --help` was the source of truth for available flags --
 run it yourself before assuming any flag mentioned here still exists).
 If a future CLI version changes the stream-json shape, the parser will
 surface it as a `parseWarnings` entry (surfaced in turn as a friction note)
-rather than silently misreporting -- treat any `parseWarnings` in a run's
+rather than silently misreporting. Treat any `parseWarnings` in a run's
 `verdict.json` as a signal to re-check this file's assumptions against a
 fresh `claude -p --help` and a throwaway smoke transcript before trusting
 that run's friction numbers.

@@ -11,10 +11,18 @@ import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { withRetry, RETRY_CONFIG } from '../../../utils/retry';
 import { transformApiError, handleFetchError } from '../../../utils/error-handler';
 import { sanitizeString } from '../../../utils/validation';
+import { assertValidPercentDone, percentDoneToFraction } from '../../../utils/percent-done';
 import { AUTH_ERROR_MESSAGES } from '../constants';
-import { validateDateString, validateId, convertRepeatConfiguration, normalizeDateForApi } from '../validation';
+import {
+  validateDateString,
+  validateHexColor,
+  validateId,
+  convertRepeatConfiguration,
+  normalizeDateForApi,
+} from '../validation';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
+import { moveTaskToBucket } from '../buckets';
 import type { components } from '../../../types/generated/vikunja-openapi';
 
 /** `models.Task` per the OpenAPI spec — request/response shape for the task endpoints. */
@@ -28,10 +36,64 @@ export interface CreateTaskArgs {
   startDate?: string;
   endDate?: string;
   priority?: number;
+  /**
+   * Completion progress as a whole percentage, **0-100** (50 = 50%), the
+   * tool surface's scale. Converted to Vikunja's 0-1 wire fraction by
+   * `percentDoneToFraction` on the way out — see `src/utils/percent-done.ts`
+   * and the `percentDone` note on the Zod schema in `../index.ts`.
+   */
+  percentDone?: number;
+  /**
+   * Create the task already marked done ("log this, it's finished").
+   *
+   * Genuinely honoured by the server at create time: `createTask`
+   * (pkg/models/tasks.go) inserts the whole task struct — `done` included —
+   * and `setTaskInBucketInViews` even routes a `done: true` task straight
+   * into the Kanban view's Done bucket instead of the default one. So this is
+   * forwarded rather than rejected (the `position` treatment below), because
+   * the API really does back it.
+   *
+   * One server-side wart the caller should know about: `done_at` is only ever
+   * written by `updateDone`, which the create path never calls, so a task
+   * created done has an empty `done_at` and will not match a `doneAt` filter.
+   * `done_at` is system-controlled and cannot be set via the API
+   * (models.Task, docs/vikunja-openapi.json), so the only way to get a
+   * populated `done_at` is to create the task open and then `update` it to
+   * done.
+   */
+  done?: boolean;
+  /**
+   * Task colour, `#RRGGBB`. `''` explicitly means "no colour".
+   *
+   * `models.Task.hex_color` is a real create/update field — Vikunja's
+   * `createTask` normalises it (`utils.NormalizeHex`, which strips the `#`)
+   * and inserts it with the rest of the task, and `hex_color` is in the
+   * update path's column allowlist. It was already accepted per-task by
+   * batch-import (`importedTaskSchema`), so leaving it unknown here made the
+   * same field work in one entry point and vanish in another.
+   */
+  hexColor?: string;
   labels?: number[];
   assignees?: number[];
   repeatAfter?: number;
   repeatMode?: 'day' | 'week' | 'month' | 'year';
+  /**
+   * Drop the new task straight into a Kanban bucket. Applied as a
+   * post-create `moveTaskToBucket` call (the same view/bucket resolution
+   * `set-bucket` and `update` use) because `PUT /projects/{id}/tasks` has no
+   * bucket field of its own. Without this the tool's flat schema accepted
+   * `bucketId` on create and silently dropped it — the exact friction
+   * already fixed for `update`.
+   */
+  bucketId?: number;
+  /** Optional Kanban view id, used with `bucketId`. Auto-resolved when omitted. */
+  viewId?: number;
+  /**
+   * Not settable at create time — see the explicit rejection in `createTask`.
+   * Declared so the flat tool schema's `position` (used by `set-position`)
+   * has a home and can be rejected loudly instead of silently ignored.
+   */
+  position?: number;
   // Session ID for AORP response tracking
   sessionId?: string;
 }
@@ -64,9 +126,10 @@ export async function createTask(
     }
 
     // Sanitize and validate user inputs for comprehensive security
-    const sanitizedTitle = sanitizeString(args.title);
+    const sanitizedTitle = sanitizeString(args.title, 'title');
     // Preserve empty strings as they are valid descriptions
-    const sanitizedDescription = args.description !== undefined ? sanitizeString(args.description) : undefined;
+    const sanitizedDescription =
+      args.description !== undefined ? sanitizeString(args.description, 'description') : undefined;
 
     // Validate optional date fields
     if (args.dueDate) {
@@ -89,6 +152,44 @@ export async function createTask(
       args.labels.forEach((id) => validateId(id, 'label ID'));
     }
 
+    // Validate the Kanban bucket move target if provided (applied after the
+    // create call, below).
+    if (args.bucketId !== undefined) {
+      validateId(args.bucketId, 'bucketId');
+    }
+    if (args.viewId !== undefined) {
+      validateId(args.viewId, 'viewId');
+    }
+
+    // `position` is deliberately NOT settable at create time. Task position is
+    // per-view state written through the dedicated Task Position endpoint
+    // (`POST /tasks/{id}/position`, models.TaskPosition), which needs a
+    // project_view_id that has no sensible default for a brand-new task — and
+    // Vikunja already assigns every new task a position in every view. Rather
+    // than accept the field and silently drop it (the trap `bucketId` used to
+    // fall into on update), say so.
+    if (args.position !== undefined) {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'position cannot be set when creating a task — Vikunja writes task position through ' +
+          'a per-view endpoint. Create the task, then use the set-position subcommand ' +
+          '(with projectViewId or viewKind).',
+      );
+    }
+
+    // `hexColor: ''` is a legitimate value (no colour), so this is an
+    // explicit undefined check — a truthiness guard would silently drop it.
+    if (args.hexColor !== undefined) {
+      validateHexColor(args.hexColor);
+    }
+
+    // percentDone is a whole percentage 0-100 on this tool surface (50 = 50%)
+    // — see the schema note in ../index.ts. Guarded here too, since createTask
+    // is also reachable from callers that don't go through the Zod schema.
+    if (args.percentDone !== undefined) {
+      assertValidPercentDone(args.percentDone);
+    }
+
     // Build the initial task object with sanitized values
     const newTask: VikunjaTask = {
       title: sanitizedTitle,
@@ -102,10 +203,24 @@ export async function createTask(
     // provided" (#167), the same error that trips the circuit-breaker
     // cascade (#163). Full timestamps and empty/undefined values pass
     // through unchanged.
-    if (args.dueDate !== undefined) newTask.due_date = normalizeDateForApi(args.dueDate) ?? args.dueDate;
-    if (args.startDate !== undefined) newTask.start_date = normalizeDateForApi(args.startDate) ?? args.startDate;
-    if (args.endDate !== undefined) newTask.end_date = normalizeDateForApi(args.endDate) ?? args.endDate;
+    if (args.dueDate !== undefined)
+      newTask.due_date = normalizeDateForApi(args.dueDate) ?? args.dueDate;
+    if (args.startDate !== undefined)
+      newTask.start_date = normalizeDateForApi(args.startDate) ?? args.startDate;
+    if (args.endDate !== undefined)
+      newTask.end_date = normalizeDateForApi(args.endDate) ?? args.endDate;
     if (args.priority !== undefined) newTask.priority = args.priority;
+    // `done` and `hexColor` are both forwarded on an explicit-undefined
+    // check: `done: false` and `hexColor: ''` are meaningful values, and a
+    // `if (args.done)` guard would drop exactly those. `done` was declared on
+    // the tool schema and honoured by update/batch-import but never copied
+    // here, so "create this task already done" created an open task and
+    // reported success.
+    if (args.done !== undefined) newTask.done = args.done;
+    if (args.hexColor !== undefined) newTask.hex_color = args.hexColor;
+    // 0-100 percentage in, 0-1 fraction on the wire.
+    if (args.percentDone !== undefined)
+      newTask.percent_done = percentDoneToFraction(args.percentDone);
 
     // Handle repeat configuration. The generated `models.Task.repeat_mode`
     // type (0 | 1 | 2) matches the real API, unlike the legacy client's
@@ -143,7 +258,7 @@ export async function createTask(
     const creationState: CreationState = {
       createdTask,
       labelsAdded: false,
-      assigneesAdded: false
+      assigneesAdded: false,
     };
 
     if (needsPostCreate) {
@@ -159,11 +274,43 @@ export async function createTask(
           await addAssigneesToTask(authManager, createdTask.id, args.assignees);
           creationState.assigneesAdded = true;
         }
-
       } catch (updateError) {
         // Attempt to clean up the partially created task
         await rollbackTaskCreation(authManager, creationState, updateError);
         // The rollback function will re-throw the original error with context
+      }
+    }
+
+    // Drop the task into a Kanban bucket if requested. `PUT /projects/{id}/tasks`
+    // has no bucket field, so this reuses the exact post-write
+    // `moveTaskToBucket` step `update` performs (same view/bucket resolution as
+    // `set-bucket`). Deliberately NOT rolled back on failure, unlike the
+    // label/assignee steps above: the task itself was created correctly and
+    // only its column placement failed, so destroying it would lose real work.
+    // The error names the created task id so the caller can finish the job with
+    // `set-bucket`.
+    if (args.bucketId !== undefined) {
+      if (!createdTask.id) {
+        throw new MCPError(
+          ErrorCode.API_ERROR,
+          'Task was created but Vikunja did not return a task id, so bucketId could not be applied',
+        );
+      }
+      const createdId = createdTask.id;
+      try {
+        await moveTaskToBucket(authManager, {
+          taskId: createdId,
+          bucketId: args.bucketId,
+          viewId: args.viewId,
+          projectId: args.projectId,
+        });
+      } catch (bucketError) {
+        const detail = bucketError instanceof Error ? bucketError.message : String(bucketError);
+        throw new MCPError(
+          ErrorCode.API_ERROR,
+          `Task ${createdId} was created but could not be moved into bucket ${args.bucketId}: ` +
+            `${detail}. The task exists — retry the move with the set-bucket subcommand.`,
+        );
       }
     }
 
@@ -211,7 +358,7 @@ export async function createTask(
       assigneeWarning
         ? `Task created, but assignees may not have been saved. ${assigneeWarning}`
         : 'Task created successfully',
-      { task: completeTask } as unknown as Parameters<typeof createTaskResponse>[2],
+      { task: completeTask },
       {
         timestamp: new Date().toISOString(),
         projectId: args.projectId,
@@ -221,12 +368,15 @@ export async function createTask(
         // once the corresponding step has genuinely succeeded.
         labelsAdded: creationState.labelsAdded,
         assigneesAdded: creationState.assigneesAdded,
+        // Only reported once the move actually succeeded — a failed move
+        // throws above and never reaches this response.
+        ...(args.bucketId !== undefined && { bucketId: args.bucketId }),
       },
       undefined, // verbosity (ignored - using standard AORP)
       undefined, // useOptimizedFormat (ignored - using standard AORP)
       undefined, // useAorp (ignored - always using AORP)
       undefined, // aorpConfig (using auto-generated)
-      args.sessionId
+      args.sessionId,
     );
 
     logger.debug('Tasks tool response', {
@@ -249,11 +399,12 @@ export async function createTask(
     }
 
     // Handle fetch/connection errors with helpful guidance
-    if (error instanceof Error && (
-      error.message.includes('fetch failed') ||
-      error.message.includes('ECONNREFUSED') ||
-      error.message.includes('ENOTFOUND')
-    )) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('fetch failed') ||
+        error.message.includes('ECONNREFUSED') ||
+        error.message.includes('ENOTFOUND'))
+    ) {
       throw handleFetchError(error, 'create task');
     }
 
@@ -272,7 +423,11 @@ export async function createTask(
  * circuit breaker across calls, so a later create would re-fire the first
  * call's label set against the wrong task.
  */
-async function addLabelsToTask(authManager: AuthManager, taskId: number, labelIds: number[]): Promise<void> {
+async function addLabelsToTask(
+  authManager: AuthManager,
+  taskId: number,
+  labelIds: number[],
+): Promise<void> {
   try {
     for (const labelId of labelIds) {
       await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/labels`, {
@@ -295,7 +450,11 @@ async function addLabelsToTask(authManager: AuthManager, taskId: number, labelId
  * Adds assignees to a task with retry logic for authentication errors, via the
  * direct-REST additive single-assign endpoint.
  */
-async function addAssigneesToTask(authManager: AuthManager, taskId: number, assigneeIds: number[]): Promise<void> {
+async function addAssigneesToTask(
+  authManager: AuthManager,
+  taskId: number,
+  assigneeIds: number[],
+): Promise<void> {
   try {
     // Assign each user via the ADDITIVE single-assign endpoint (PUT
     // /tasks/{taskID}/assignees, body { user_id }, models.TaskAssginee) rather
@@ -308,11 +467,12 @@ async function addAssigneesToTask(authManager: AuthManager, taskId: number, assi
     // assignee-restore fix.
     for (const userId of assigneeIds) {
       await withRetry(
-        () => vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }),
+        () =>
+          vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId }),
         {
           ...RETRY_CONFIG.AUTH_ERRORS,
-          shouldRetry: (error) => isAuthenticationError(error)
-        }
+          shouldRetry: (error) => isAuthenticationError(error),
+        },
       );
     }
   } catch (assigneeError) {
@@ -333,7 +493,7 @@ async function addAssigneesToTask(authManager: AuthManager, taskId: number, assi
 async function rollbackTaskCreation(
   authManager: AuthManager,
   creationState: CreationState,
-  originalError: unknown
+  originalError: unknown,
 ): Promise<never> {
   // Attempt to clean up the partially created task
   let rollbackSucceeded = false;

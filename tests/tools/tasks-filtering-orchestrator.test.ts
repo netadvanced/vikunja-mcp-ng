@@ -35,7 +35,10 @@ jest.mock('../../src/utils/retry', () => ({
 // Mock the error handler
 jest.mock('../../src/utils/error-handler', () => ({
   MCPError: class MCPError extends Error {
-    constructor(public code: string, message: string) {
+    constructor(
+      public code: string,
+      message: string,
+    ) {
       super(message);
     }
   },
@@ -57,7 +60,7 @@ jest.mock('../../src/utils/filtering/HybridFilteringStrategy', () => ({
         serverSideFilteringUsed: false,
         serverSideFilteringAttempted: false,
         optimizationApplied: 'none',
-      }
+      },
     }),
   })),
 }));
@@ -72,7 +75,7 @@ jest.mock('../../src/utils/filtering/ClientSideFilteringStrategy', () => ({
         serverSideFilteringUsed: false,
         serverSideFilteringAttempted: false,
         optimizationApplied: 'client-side',
-      }
+      },
     }),
   })),
 }));
@@ -87,7 +90,7 @@ jest.mock('../../src/utils/filtering/ServerSideFilteringStrategy', () => ({
         serverSideFilteringUsed: false,
         serverSideFilteringAttempted: false,
         optimizationApplied: 'server-side',
-      }
+      },
     }),
   })),
 }));

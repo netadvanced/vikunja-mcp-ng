@@ -25,10 +25,7 @@ export const AssigneeValidationService = {
     validateId(args.id, 'id');
 
     if (!args.assignees || args.assignees.length === 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'At least one assignee (user id) is required',
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'At least one assignee (user id) is required');
     }
 
     // Validate assignee IDs
@@ -72,12 +69,12 @@ export const AssigneeValidationService = {
    * page/perPage happens in AssigneeOperationsService.fetchAssigneesViaRest,
    * which is the only place that knows the field names used on the wire.
    */
-  validateListInput(args: {
-    id?: number;
+  validateListInput(args: { id?: number; search?: string; page?: number; perPage?: number }): {
+    taskId: number;
     search?: string;
     page?: number;
     perPage?: number;
-  }): { taskId: number; search?: string; page?: number; perPage?: number } {
+  } {
     if (args.id === undefined) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,

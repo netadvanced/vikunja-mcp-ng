@@ -1,0 +1,70 @@
+# ONE SHARED POSTGRES SERVER for the newer e2e targets (issue #254, infra
+# prerequisite).
+#
+# Background. `docker-compose.yml`'s original design (issue #205) gives every
+# `<version>-<db>` target its own Compose project, and a postgres target
+# therefore its own *full Postgres container plus volume*. That is airtight
+# isolation, but three supported versions x postgres means three Postgres
+# containers idling on a laptop for no benefit: the databases never talk to
+# each other, and per-target isolation is equally well served by a database
+# per target inside one server.
+#
+# So this file runs exactly ONE `postgres:16-alpine` in its own long-lived
+# Compose project (`vikunja-e2e-shared-db`), and each participating target
+# gets its own DATABASE inside it (`vikunja_2_6_0`, `vikunja_2_5_0`, ...),
+# created on demand by docker/e2e/bootstrap.sh. Target app containers reach
+# it over the explicitly-named external network declared below, joined by
+# `docker-compose.shared-db.yml` (the per-target overlay).
+#
+# WHAT STILL USES A DEDICATED POSTGRES. The 2.3.0 and 2.4.0 lanes do, and
+# deliberately: 2.4.0-postgres is a running, relied-upon stack holding a
+# stable API token (see bootstrap.sh's "STABLE TOKENS" note), and migrating a
+# live stack's database into a new server would rotate that credential for no
+# gain. `DEDICATED_DB_VERSIONS` in scripts/lib/e2e-target.ts is the single
+# place that decides; every version outside that set is shared.
+#
+# LIFECYCLE. This project is a singleton brought up automatically by
+# bootstrap.sh whenever a shared target is started, and it is *not* torn down
+# by `docker/e2e/stacks.sh down`, exactly like a database server you would
+# leave running. `stacks.sh reset <target>` drops only that target's database.
+# To remove the server itself (and every shared target's data with it):
+#
+#   docker compose -f docker/e2e/docker-compose.shared-db-server.yml down -v
+#
+# PORT. Published on a flat 15432 rather than the derived 18000/19000 ranges,
+# because it belongs to no single version — the derived `dbPort` of a target
+# stays reserved for the dedicated-Postgres lanes. Host publishing is for
+# ad-hoc psql only; the stacks themselves talk over the network below.
+name: vikunja-e2e-shared-db
+
+services:
+  shared-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vikunja
+      POSTGRES_PASSWORD: vikunja
+      # A bookkeeping database only — no target ever uses it. Each target
+      # gets `vikunja_<version with underscores>`, created by bootstrap.sh.
+      POSTGRES_DB: postgres
+    volumes:
+      - vikunja-mcp-e2e-shared-db:/var/lib/postgresql/data
+    ports:
+      - '${E2E_SHARED_DB_PORT:-15432}:5432'
+    networks:
+      - shared
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vikunja']
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+networks:
+  # Explicitly named (not `vikunja-e2e-shared-db_shared`) so the per-target
+  # overlay can reference it as an external network by a stable name.
+  shared:
+    name: vikunja-e2e-shared-db-net
+
+volumes:
+  vikunja-mcp-e2e-shared-db:

@@ -31,7 +31,12 @@ const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
 /** Minimal Response-like object for the REST helper. */
-function mockResponse(opts: { ok?: boolean; status?: number; statusText?: string; text?: string }): Response {
+function mockResponse(opts: {
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  text?: string;
+}): Response {
   const { ok = true, status = 200, statusText = 'OK', text = '' } = opts;
   return {
     ok,
@@ -52,7 +57,9 @@ describe('vikunja_tasks dispatch — set-position / get-by-index', () => {
     mockFetch.mockReset();
     circuitBreakerRegistry.clear();
 
-    mockClient = { getToken: jest.fn().mockReturnValue('test-token') } as unknown as MockVikunjaClient;
+    mockClient = {
+      getToken: jest.fn().mockReturnValue('test-token'),
+    } as unknown as MockVikunjaClient;
 
     mockAuthManager = createMockTestableAuthManager();
     mockAuthManager.isAuthenticated.mockReturnValue(true);
@@ -65,7 +72,9 @@ describe('vikunja_tasks dispatch — set-position / get-by-index', () => {
     mockAuthManager.getAuthType.mockReturnValue('api-token');
 
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     mockGetAuthManagerFromContext.mockResolvedValue(mockAuthManager as any);
@@ -80,7 +89,13 @@ describe('vikunja_tasks dispatch — set-position / get-by-index', () => {
   });
 
   it('routes set-position through the switch statement to setTaskPosition', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse({ text: '' }));
+    // An explicit projectViewId is verified against the task's own project
+    // first (issue #254 A3), so the dispatch now makes three calls: the task
+    // lookup, the project's views, then the position write.
+    mockFetch
+      .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, project_id: 5 }) }))
+      .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 10, view_kind: 'list' }]) }))
+      .mockResolvedValueOnce(mockResponse({ text: '' }));
 
     const result = await toolHandler({
       subcommand: 'set-position',
@@ -90,8 +105,8 @@ describe('vikunja_tasks dispatch — set-position / get-by-index', () => {
       projectViewId: 10,
     });
 
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    const [url] = mockFetch.mock.calls[2] as [string];
     expect(url).toBe('https://api.vikunja.test/api/v1/tasks/1/position');
     expect(result.content[0].text).toContain('Task 1 repositioned to 100');
   });
@@ -136,12 +151,18 @@ describe('vikunja_tasks dispatch — set-position / get-by-index', () => {
   it('routes bulk-create-subtasks through the switch statement to bulkCreateSubtasks', async () => {
     mockFetch
       // resolve-parent
-      .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, project_id: 5, related_tasks: {} }) }))
+      .mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ id: 1, project_id: 5, related_tasks: {} }) }),
+      )
       // create-task
-      .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 42, title: 'Child', project_id: 5 }) }))
+      .mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ id: 42, title: 'Child', project_id: 5 }) }),
+      )
       // create-relation
       .mockResolvedValueOnce(
-        mockResponse({ text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }) }),
+        mockResponse({
+          text: JSON.stringify({ task_id: 1, other_task_id: 42, relation_kind: 'subtask' }),
+        }),
       )
       // verify-relation
       .mockResolvedValueOnce(
@@ -161,6 +182,8 @@ describe('vikunja_tasks dispatch — set-position / get-by-index', () => {
     });
 
     expect(mockFetch).toHaveBeenCalledTimes(4);
-    expect(result.content[0].text).toContain('Successfully created and related 1 subtask(s) under parent 1');
+    expect(result.content[0].text).toContain(
+      'Successfully created and related 1 subtask(s) under parent 1',
+    );
   });
 });

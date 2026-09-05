@@ -3,11 +3,7 @@
  * Extends the base filter types with task-specific functionality
  */
 
-import type {
-  FilterExpression,
-  SavedFilter,
-  FilterValidationConfig
-} from '../../../types/filters';
+import type { FilterExpression, SavedFilter, FilterValidationConfig } from '../../../types/filters';
 import type { AorpBuilderConfig } from '../../../types';
 import type { SimpleFilterStorage } from '../../../storage';
 import type { AuthManager } from '../../../auth/AuthManager';
@@ -61,6 +57,26 @@ export interface FilteringMetadata {
   serverSideFilteringAttempted: boolean;
   clientSideFiltering: boolean;
   filteringNote: string;
+  /**
+   * `false` when the returned set is KNOWN to be a subset of what was asked
+   * for — a per-project page budget was exhausted, or a project failed
+   * mid-aggregation and was skipped. Absent/`true` means the listing is
+   * believed complete for the requested page.
+   *
+   * This exists because the failure mode being fixed (issues #225/#227) was
+   * never an exception — it was a plausible-looking answer. A caller asking
+   * "what is tagged X so I know what to act on" must be able to tell "nothing
+   * matched" from "here is part of the answer". Anything that sets this to
+   * `false` MUST also explain itself in `warnings`, and the tool surface
+   * renders it visibly rather than burying it in metadata.
+   */
+  resultComplete?: boolean;
+  /**
+   * Human-readable notes about anything that makes the result less than a
+   * plain, complete success: truncation, skipped projects, a partially
+   * resolved filter. Surfaced to the caller, not just logged.
+   */
+  warnings?: string[];
 }
 
 /**

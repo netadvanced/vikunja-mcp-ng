@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
-import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
+import { getAuthManagerFromContext, hasRequestContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { handleRelationSubcommands } from '../tools/tasks-relations';
@@ -21,7 +21,7 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 export function registerTaskRelationsTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_task_relations',
@@ -34,20 +34,22 @@ export function registerTaskRelationsTool(
       // Task identification
       id: z.number(),
       otherTaskId: z.number().optional(),
-      relationKind: z.enum([
-        'unknown',
-        'subtask',
-        'parenttask',
-        'related',
-        'duplicateof',
-        'duplicates',
-        'blocking',
-        'blocked',
-        'precedes',
-        'follows',
-        'copiedfrom',
-        'copiedto',
-      ]).optional(),
+      relationKind: z
+        .enum([
+          'unknown',
+          'subtask',
+          'parenttask',
+          'related',
+          'duplicateof',
+          'duplicates',
+          'blocking',
+          'blocked',
+          'precedes',
+          'follows',
+          'copiedfrom',
+          'copiedto',
+        ])
+        .optional(),
     },
     getToolAnnotations('vikunja_task_relations'),
     async (args) => {
@@ -56,11 +58,15 @@ export function registerTaskRelationsTool(
           operation: args.operation,
           taskId: args.id,
           otherTaskId: args.otherTaskId,
-          relationKind: args.relationKind
+          relationKind: args.relationKind,
         });
 
-        // Check authentication
-        if (!authManager.isAuthenticated()) {
+        // Check authentication (closure-gate precedence fix: defer to the
+        // per-request context when bound — see hasRequestContext's doc
+        // comment, src/client.ts)
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task relation operations');
         }
 
@@ -84,7 +90,6 @@ export function registerTaskRelationsTool(
           },
           authManager,
         );
-
       } catch (error) {
         if (error instanceof MCPError) {
           throw error;

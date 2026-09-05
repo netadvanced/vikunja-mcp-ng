@@ -10,10 +10,36 @@ import type { MockServer, MockAuthManager } from '../types/mocks';
 import { parseMarkdown } from '../utils/markdown';
 import { ConfigurationManager } from '../../src/config';
 import { callAndCatch, isReadOnlyRejection } from '../utils/read-only-test-helpers';
+import { getCurrentIdentity } from '../../src/context/requestContext';
+import { getActiveVaultStore } from '../../src/storage/vaultFileStore';
+import { setActiveEnrollmentService, type EnrollmentService } from '../../src/transport/enrollment';
 
-// Mock the clearGlobalClientFactory function
+// Mock context/requestContext: only getCurrentIdentity is used by auth.ts,
+// and only the oidc-http-mode provisioning describe block below sets it —
+// every other test in this file leaves it `undefined`, matching stdio mode.
+jest.mock('../../src/context/requestContext', () => ({
+  getCurrentIdentity: jest.fn(),
+}));
+
+// Mock the vault seam: auth.ts reads the active vault store via
+// getActiveVaultStore() for provision/status/deprovision and the
+// oidc-mode-aliased connect/disconnect/status branches.
+jest.mock('../../src/storage/vaultFileStore', () => ({
+  getActiveVaultStore: jest.fn(),
+}));
+
+// Mock src/client: clearGlobalClientFactory (as before), plus
+// getAuthManagerFromContext/hasRequestContext — this test suite exercises
+// stdio-mode behaviour (no ALS request context bound), so hasRequestContext
+// stays false throughout, matching real stdio behaviour exactly. The oidc-
+// http-mode provisioning subcommands get their own describe block below with
+// hasRequestContext mocked true.
+const mockGetAuthManagerFromContext = jest.fn();
+const mockHasRequestContext = jest.fn(() => false);
 jest.mock('../../src/client', () => ({
   clearGlobalClientFactory: jest.fn(),
+  getAuthManagerFromContext: (...args: unknown[]) => mockGetAuthManagerFromContext(...args),
+  hasRequestContext: () => mockHasRequestContext(),
 }));
 
 // Mock the direct middleware to bypass middleware
@@ -22,9 +48,23 @@ jest.mock('../../src/middleware/direct-middleware', () => ({
 }));
 
 // Mock security utils
-jest.mock('../../src/utils/security', () => ({
-  createSecureConnectionMessage: jest.fn((url, token) => `Connecting to ${url} with token ${token.slice(0, 4)}...`),
-}));
+// Partial mock: only the two message-formatting helpers this suite asserts on
+// are stubbed. The rest of the module must stay real, because `src/utils/error-handler`
+// now calls `redactSecretsInText` from here on every sanitized error, so a
+// wholesale mock would make that call `undefined is not a function` in any test
+// that goes through the error path.
+jest.mock('../../src/utils/security', () => {
+  const actual = jest.requireActual('../../src/utils/security');
+  return {
+    ...actual,
+    createSecureConnectionMessage: jest.fn(
+      (url, token) => `Connecting to ${url} with token ${token.slice(0, 4)}...`,
+    ),
+    maskCredential: jest.fn((token: string | undefined | null) =>
+      token && token.length > 4 ? `${token.slice(0, 4)}...` : '***',
+    ),
+  };
+});
 
 // Mock logger
 jest.mock('../../src/utils/logger', () => ({
@@ -76,13 +116,15 @@ describe('Auth Tool', () => {
     jest.clearAllMocks();
 
     mockVikunjaRestRequest.mockReset();
-    mockVikunjaRestRequest.mockImplementation(async (_authManager: unknown, _method: string, path: string) => {
-      if (path === '/info') {
-        return { version: '1.2.3', frontend_url: 'https://vikunja.example.com' };
-      }
-      // GET /user (JWT validation) or GET /projects?per_page=1 (API token validation)
-      return [];
-    });
+    mockVikunjaRestRequest.mockImplementation(
+      async (_authManager: unknown, _method: string, path: string) => {
+        if (path === '/info') {
+          return { version: '1.2.3', frontend_url: 'https://vikunja.example.com' };
+        }
+        // GET /user (JWT validation) or GET /projects?per_page=1 (API token validation)
+        return [];
+      },
+    );
 
     mockGetOrDetectCapabilities.mockReset();
     mockGetOrDetectCapabilities.mockImplementation(
@@ -119,7 +161,13 @@ describe('Auth Tool', () => {
     // Capture the tool handler
     expect(mockServer.tool).toHaveBeenCalledWith(
       'vikunja_auth',
-      'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info)',
+      'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info). ' +
+        'In oidc-http mode, self-service credential provisioning (provision, status, ' +
+        'deprovision) additionally links your validated OIDC identity to a Vikunja API ' +
+        "token in the server's encrypted credential vault — connect is not available in " +
+        'that mode (provision replaces it), and disconnect acts as an alias of deprovision. ' +
+        'When SSO enrollment is enabled, calling provision WITHOUT a token returns a ' +
+        'one-click enrollment link instead.',
       expect.any(Object),
       expect.any(Object), // ToolAnnotations
       expect.any(Function),
@@ -155,11 +203,24 @@ describe('Auth Tool', () => {
       // Connect verification round trip: unauthenticated GET /info, then a
       // cheap authenticated call. API tokens can't use /user (see
       // docs/VIKUNJA_API_ISSUES.md #2), so /projects is used instead.
-      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/info');
+      // verifyConnection probes with ignoreRequestContext so the central
+      // credential-threading resolver (src/utils/vikunja-rest.ts) never
+      // substitutes a request-context manager for the connect/throwaway one.
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/info',
+        undefined,
+        {
+          ignoreRequestContext: true,
+        },
+      );
       expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
         mockAuthManager,
         'GET',
         '/projects?per_page=1',
+        undefined,
+        { ignoreRequestContext: true },
       );
       expect(markdown).toContain('1.2.3');
     });
@@ -173,29 +234,51 @@ describe('Auth Tool', () => {
         apiToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.signature',
       });
 
-      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/info');
-      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(mockAuthManager, 'GET', '/user');
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/info',
+        undefined,
+        {
+          ignoreRequestContext: true,
+        },
+      );
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/user',
+        undefined,
+        {
+          ignoreRequestContext: true,
+        },
+      );
       expect(mockVikunjaRestRequest).not.toHaveBeenCalledWith(
         mockAuthManager,
         'GET',
         '/projects?per_page=1',
+        undefined,
+        { ignoreRequestContext: true },
       );
     });
 
     it('should roll back the session and throw when GET /info is unreachable', async () => {
       mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
       mockAuthManager.getAuthType.mockReturnValue('api-token');
-      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
-        if (path === '/info') {
-          throw new Error('fetch failed');
-        }
-        return [];
-      });
+      mockVikunjaRestRequest.mockImplementation(
+        async (_am: unknown, _method: string, path: string) => {
+          if (path === '/info') {
+            throw new Error('fetch failed');
+          }
+          return [];
+        },
+      );
 
-      await expect(callTool('connect', {
-        apiUrl: 'https://bad.example.com',
-        apiToken: 'tk_test-token-123',
-      })).rejects.toThrow('Could not reach a Vikunja server');
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://bad.example.com',
+          apiToken: 'tk_test-token-123',
+        }),
+      ).rejects.toThrow('Could not reach a Vikunja server');
 
       expect(mockAuthManager.disconnect).toHaveBeenCalled();
     });
@@ -203,17 +286,21 @@ describe('Auth Tool', () => {
     it('should roll back the session and throw when the credential is rejected', async () => {
       mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
       mockAuthManager.getAuthType.mockReturnValue('api-token');
-      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
-        if (path === '/info') {
-          return { version: '1.2.3' };
-        }
-        throw new Error('HTTP 401 Unauthorized');
-      });
+      mockVikunjaRestRequest.mockImplementation(
+        async (_am: unknown, _method: string, path: string) => {
+          if (path === '/info') {
+            return { version: '1.2.3' };
+          }
+          throw new Error('HTTP 401 Unauthorized');
+        },
+      );
 
-      await expect(callTool('connect', {
-        apiUrl: 'https://vikunja.example.com',
-        apiToken: 'tk_bad-token',
-      })).rejects.toThrow('token was rejected');
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://vikunja.example.com',
+          apiToken: 'tk_bad-token',
+        }),
+      ).rejects.toThrow('token was rejected');
 
       expect(mockAuthManager.disconnect).toHaveBeenCalled();
     });
@@ -221,17 +308,21 @@ describe('Auth Tool', () => {
     it('should reject a bad JWT session and mention JWT specifically', async () => {
       mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
       mockAuthManager.getAuthType.mockReturnValue('jwt');
-      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
-        if (path === '/info') {
-          return { version: '1.2.3' };
-        }
-        throw new Error('HTTP 401 Unauthorized');
-      });
+      mockVikunjaRestRequest.mockImplementation(
+        async (_am: unknown, _method: string, path: string) => {
+          if (path === '/info') {
+            return { version: '1.2.3' };
+          }
+          throw new Error('HTTP 401 Unauthorized');
+        },
+      );
 
-      await expect(callTool('connect', {
-        apiUrl: 'https://vikunja.example.com',
-        apiToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.bad.signature',
-      })).rejects.toThrow('the provided JWT token was rejected');
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://vikunja.example.com',
+          apiToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.bad.signature',
+        }),
+      ).rejects.toThrow('the provided JWT token was rejected');
 
       expect(mockAuthManager.disconnect).toHaveBeenCalled();
     });
@@ -239,29 +330,37 @@ describe('Auth Tool', () => {
     it('should handle non-Error values thrown by the /info round trip', async () => {
       mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
       mockAuthManager.getAuthType.mockReturnValue('api-token');
-      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
-        if (path === '/info') {
-          // eslint-disable-next-line @typescript-eslint/no-throw-literal
-          throw 'connection refused';
-        }
-        return [];
-      });
+      mockVikunjaRestRequest.mockImplementation(
+        async (_am: unknown, _method: string, path: string) => {
+          if (path === '/info') {
+            // eslint-disable-next-line @typescript-eslint/no-throw-literal
+            throw 'connection refused';
+          }
+          return [];
+        },
+      );
 
-      await expect(callTool('connect', {
-        apiUrl: 'https://vikunja.example.com',
-        apiToken: 'tk_test-token-123',
-      })).rejects.toThrow('Could not reach a Vikunja server at https://vikunja.example.com: connection refused');
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://vikunja.example.com',
+          apiToken: 'tk_test-token-123',
+        }),
+      ).rejects.toThrow(
+        'Could not reach a Vikunja server at https://vikunja.example.com: connection refused',
+      );
     });
 
     it('should omit serverVersion from the response when /info has no version field', async () => {
       mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
       mockAuthManager.getAuthType.mockReturnValue('api-token');
-      mockVikunjaRestRequest.mockImplementation(async (_am: unknown, _method: string, path: string) => {
-        if (path === '/info') {
-          return { frontend_url: 'https://vikunja.example.com' };
-        }
-        return [];
-      });
+      mockVikunjaRestRequest.mockImplementation(
+        async (_am: unknown, _method: string, path: string) => {
+          if (path === '/info') {
+            return { frontend_url: 'https://vikunja.example.com' };
+          }
+          return [];
+        },
+      );
 
       const result = await callTool('connect', {
         apiUrl: 'https://vikunja.example.com',
@@ -271,11 +370,16 @@ describe('Auth Tool', () => {
       expect(result.content[0].text).not.toContain('serverVersion');
     });
 
-    it('should return already connected message when authenticating to same URL', async () => {
+    it('should return already connected message when reconnecting with the SAME url and token', async () => {
       // Mock getStatus to return authenticated
       mockAuthManager.getStatus.mockReturnValue({
         authenticated: true,
         apiUrl: 'https://vikunja.example.com',
+      });
+      mockAuthManager.getSession.mockReturnValue({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123',
+        authType: 'api-token',
       });
 
       const result = await callTool('connect', {
@@ -294,24 +398,91 @@ describe('Auth Tool', () => {
       expect(markdown).toContain('https://vikunja.example.com');
     });
 
+    // Issue #276: 'refresh' tells a user whose JWT expired to call connect
+    // again with a new token against the same URL. Short-circuiting on the
+    // URL alone silently dropped that token and reported success while the
+    // expired credential stayed in the session.
+    it('stores and verifies a NEW token supplied for the same url (#276)', async () => {
+      mockAuthManager.getStatus.mockReturnValue({
+        authenticated: true,
+        apiUrl: 'https://vikunja.example.com',
+      });
+      mockAuthManager.getSession.mockReturnValue({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'eyJhbGciOiJIUzI1NiJ9.expired.signature',
+        authType: 'jwt',
+      });
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      const result = await callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'eyJhbGciOiJIUzI1NiJ9.fresh.signature',
+      });
+
+      expect(mockAuthManager.connect).toHaveBeenCalledWith(
+        'https://vikunja.example.com',
+        'eyJhbGciOiJIUzI1NiJ9.fresh.signature',
+      );
+      // The new credential is verified, not just stored.
+      expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
+        mockAuthManager,
+        'GET',
+        '/user',
+        undefined,
+        { ignoreRequestContext: true },
+      );
+      expect(result.content[0].text).toContain('Successfully connected to Vikunja');
+    });
+
+    it('does not short-circuit when the new token is a prefix of the stored one (#276)', async () => {
+      mockAuthManager.getStatus.mockReturnValue({
+        authenticated: true,
+        apiUrl: 'https://vikunja.example.com',
+      });
+      mockAuthManager.getSession.mockReturnValue({
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123-extra',
+        authType: 'api-token',
+      });
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+      await callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_test-token-123',
+      });
+
+      expect(mockAuthManager.connect).toHaveBeenCalledWith(
+        'https://vikunja.example.com',
+        'tk_test-token-123',
+      );
+    });
+
     it('should throw error when apiUrl is missing', async () => {
-      await expect(callTool('connect', {
-        apiToken: 'tk_test-token-123',
-      })).rejects.toThrow(MCPError);
-      
-      await expect(callTool('connect', {
-        apiToken: 'tk_test-token-123',
-      })).rejects.toThrow('apiUrl and apiToken are required for connect');
+      await expect(
+        callTool('connect', {
+          apiToken: 'tk_test-token-123',
+        }),
+      ).rejects.toThrow(MCPError);
+
+      await expect(
+        callTool('connect', {
+          apiToken: 'tk_test-token-123',
+        }),
+      ).rejects.toThrow('apiUrl and apiToken are required for connect');
     });
 
     it('should throw error when apiToken is missing', async () => {
-      await expect(callTool('connect', {
-        apiUrl: 'https://vikunja.example.com',
-      })).rejects.toThrow(MCPError);
-      
-      await expect(callTool('connect', {
-        apiUrl: 'https://vikunja.example.com',
-      })).rejects.toThrow('apiUrl and apiToken are required for connect');
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://vikunja.example.com',
+        }),
+      ).rejects.toThrow(MCPError);
+
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://vikunja.example.com',
+        }),
+      ).rejects.toThrow('apiUrl and apiToken are required for connect');
     });
 
     it('should handle connection errors', async () => {
@@ -323,19 +494,24 @@ describe('Auth Tool', () => {
         throw connectionError;
       });
 
-      await expect(callTool('connect', {
-        apiUrl: 'https://vikunja.example.com',
-        apiToken: 'tk_test-token-123',
-      })).rejects.toThrow(MCPError);
-      
-      await expect(callTool('connect', {
-        apiUrl: 'https://vikunja.example.com',
-        apiToken: 'tk_test-token-123',
-      })).rejects.toThrow('Authentication error: Network error');
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://vikunja.example.com',
+          apiToken: 'tk_test-token-123',
+        }),
+      ).rejects.toThrow(MCPError);
+
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://vikunja.example.com',
+          apiToken: 'tk_test-token-123',
+        }),
+      ).rejects.toThrow('Authentication error: Network error');
     });
 
     it('should auto-detect and connect with JWT token', async () => {
-      const jwtToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+      const jwtToken =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
 
       // Mock getStatus to return not authenticated
       mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
@@ -346,10 +522,7 @@ describe('Auth Tool', () => {
         apiToken: jwtToken,
       });
 
-      expect(mockAuthManager.connect).toHaveBeenCalledWith(
-        'https://vikunja.example.com',
-        jwtToken,
-      );
+      expect(mockAuthManager.connect).toHaveBeenCalledWith('https://vikunja.example.com', jwtToken);
       expect(result.content[0].type).toBe('text');
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
@@ -423,10 +596,10 @@ describe('Auth Tool', () => {
         apiToken: 'tk_test-token-123',
       });
 
-      expect(mockGetOrDetectCapabilities).toHaveBeenCalledWith(
-        mockAuthManager,
-        { version: '1.2.3', frontend_url: 'https://vikunja.example.com' },
-      );
+      expect(mockGetOrDetectCapabilities).toHaveBeenCalledWith(mockAuthManager, {
+        version: '1.2.3',
+        frontend_url: 'https://vikunja.example.com',
+      });
     });
 
     it('should surface hasV2Api and activeApiVersion in the connect response', async () => {
@@ -733,16 +906,16 @@ describe('Auth Tool', () => {
     it('should never log plaintext tokens in connect attempts', async () => {
       const sensitiveToken = 'tk_very_secret_api_token_123456789';
       const apiUrl = 'https://vikunja.example.com/api/v1';
-      
+
       // Mock successful connection
       mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
       mockAuthManager.connect.mockReturnValue(undefined);
       mockAuthManager.getAuthType.mockReturnValue('api-token');
-      
+
       // Execute the tool
       await callTool('connect', {
         apiUrl,
-        apiToken: sensitiveToken
+        apiToken: sensitiveToken,
       });
 
       // Verify logger.debug was called
@@ -755,7 +928,7 @@ describe('Auth Tool', () => {
         const logMessage = call.join(' ');
         expect(logMessage).not.toContain('very_secret_api_token_123456789');
         expect(logMessage).not.toContain(sensitiveToken);
-        
+
         // If it mentions a token, it should be masked
         if (logMessage.toLowerCase().includes('token')) {
           expect(logMessage).toMatch(/tk_v\.\.\./); // Should be masked to first 4 chars
@@ -767,7 +940,7 @@ describe('Auth Tool', () => {
       const testTokens = [
         'tk_short123456789',
         'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.very_long_jwt_payload.signature',
-        'api_key_supersecret123456789'
+        'api_key_supersecret123456789',
       ];
 
       for (const token of testTokens) {
@@ -782,20 +955,20 @@ describe('Auth Tool', () => {
         // Execute the tool
         await callTool('connect', {
           apiUrl: 'https://test.example.com',
-          apiToken: token
+          apiToken: token,
         });
 
         // Verify no plaintext token in logs
         const loggerSpy = require('../../src/utils/logger').logger.debug;
         const debugCalls = loggerSpy.mock.calls;
-        
+
         debugCalls.forEach((call: any[]) => {
           const logMessage = call.join(' ');
           expect(logMessage).not.toContain(token);
-          
+
           // Should show only first 4 characters + ellipsis
           if (logMessage.toLowerCase().includes('token')) {
-            expect(logMessage).toMatch(/\w{4}\.\.\./); 
+            expect(logMessage).toMatch(/\w{4}\.\.\./);
           }
         });
       }
@@ -834,10 +1007,12 @@ describe('Auth Tool', () => {
         throw mcpError;
       });
 
-      await expect(callTool('connect', {
-        apiUrl: 'https://vikunja.example.com',
-        apiToken: 'tk_test-token-123',
-      })).rejects.toThrow(mcpError);
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://vikunja.example.com',
+          apiToken: 'tk_test-token-123',
+        }),
+      ).rejects.toThrow(mcpError);
     });
 
     it('should handle non-Error object thrown during connect', async () => {
@@ -849,10 +1024,12 @@ describe('Auth Tool', () => {
       // Plain objects (even ones with a .message property) are untrusted
       // upstream payloads and never surface their message; the error
       // handler normalizes them to "Unknown error".
-      await expect(callTool('connect', {
-        apiUrl: 'https://vikunja.example.com',
-        apiToken: 'tk_test-token-123',
-      })).rejects.toThrow('Authentication error: Unknown error');
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://vikunja.example.com',
+          apiToken: 'tk_test-token-123',
+        }),
+      ).rejects.toThrow('Authentication error: Unknown error');
     });
 
     it('should handle status when MCPError is thrown', async () => {
@@ -888,22 +1065,28 @@ describe('Auth Tool', () => {
     });
 
     it('should validate URL format', async () => {
-      await expect(callTool('connect', {
-        apiUrl: 'not-a-valid-url',
-        apiToken: 'tk_test-token-123',
-      })).rejects.toThrow();
+      await expect(
+        callTool('connect', {
+          apiUrl: 'not-a-valid-url',
+          apiToken: 'tk_test-token-123',
+        }),
+      ).rejects.toThrow();
     });
 
     it('should handle empty string parameters', async () => {
-      await expect(callTool('connect', {
-        apiUrl: '',
-        apiToken: 'tk_test-token-123',
-      })).rejects.toThrow();
+      await expect(
+        callTool('connect', {
+          apiUrl: '',
+          apiToken: 'tk_test-token-123',
+        }),
+      ).rejects.toThrow();
 
-      await expect(callTool('connect', {
-        apiUrl: 'https://vikunja.example.com',
-        apiToken: '',
-      })).rejects.toThrow();
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://vikunja.example.com',
+          apiToken: '',
+        }),
+      ).rejects.toThrow();
     });
 
     it('should handle status with partial authentication info', async () => {
@@ -929,9 +1112,7 @@ describe('Auth Tool', () => {
         throw error;
       });
 
-      await expect(callTool('status')).rejects.toThrow(
-        'Authentication error: Status check failed'
-      );
+      await expect(callTool('status')).rejects.toThrow('Authentication error: Status check failed');
     });
 
     it('should test Promise.resolve path in connect success', async () => {
@@ -953,26 +1134,32 @@ describe('Auth Tool', () => {
 
     it('should handle all possible error code paths', async () => {
       // Test validation error path
-      await expect(callTool('connect', {
-        // Missing both required fields
-      })).rejects.toThrow(MCPError);
+      await expect(
+        callTool('connect', {
+          // Missing both required fields
+        }),
+      ).rejects.toThrow(MCPError);
 
       // Test unknown subcommand validation
       await expect(callTool('invalid_subcommand' as any)).rejects.toThrow(
-        'Unknown subcommand: invalid_subcommand'
+        'Unknown subcommand: invalid_subcommand',
       );
     });
 
     it('should handle null/undefined in parameters gracefully', async () => {
-      await expect(callTool('connect', {
-        apiUrl: null as any,
-        apiToken: 'tk_test-token-123',
-      })).rejects.toThrow();
+      await expect(
+        callTool('connect', {
+          apiUrl: null as any,
+          apiToken: 'tk_test-token-123',
+        }),
+      ).rejects.toThrow();
 
-      await expect(callTool('connect', {
-        apiUrl: 'https://vikunja.example.com',
-        apiToken: null as any,
-      })).rejects.toThrow();
+      await expect(
+        callTool('connect', {
+          apiUrl: 'https://vikunja.example.com',
+          apiToken: null as any,
+        }),
+      ).rejects.toThrow();
     });
 
     it('should test security logging with edge case tokens', async () => {
@@ -993,13 +1180,13 @@ describe('Auth Tool', () => {
         try {
           await callTool('connect', {
             apiUrl: 'https://test.example.com',
-            apiToken: token
+            apiToken: token,
           });
 
           // Check logging doesn't expose the full token (beyond first 4 chars)
           const loggerSpy = require('../../src/utils/logger').logger.debug;
           const debugCalls = loggerSpy.mock.calls;
-          
+
           debugCalls.forEach((call: any[]) => {
             const logMessage = call.join(' ');
             // Should not contain the full token, only the masked version
@@ -1028,6 +1215,11 @@ describe('Auth Tool', () => {
   describe('global read-only mode', () => {
     afterEach(() => {
       ConfigurationManager.reset();
+      // mockHasRequestContext.mockReturnValue() persists across
+      // jest.clearAllMocks() (which clears calls, not implementations) —
+      // reset it explicitly so oidc-mode-only setup never bleeds into an
+      // unrelated test.
+      mockHasRequestContext.mockReturnValue(false);
     });
 
     it('never rejects any vikunja_auth subcommand — session management only, not Vikunja data', async () => {
@@ -1037,6 +1229,440 @@ describe('Auth Tool', () => {
       for (const subcommand of ['status', 'refresh', 'disconnect', 'info']) {
         expect(isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand }))).toBe(false);
       }
+    });
+
+    it('DOES reject provision/deprovision in oidc-http mode — they mutate the credential vault', async () => {
+      mockHasRequestContext.mockReturnValue(true);
+      (getCurrentIdentity as jest.Mock).mockReturnValue({
+        issuer: 'https://idp.example/realm',
+        sub: 'user-1',
+      });
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { readOnly: true } });
+
+      expect(
+        isReadOnlyRejection(
+          await callAndCatch(toolHandler, {
+            subcommand: 'provision',
+            apiToken: 'tk_x',
+            vikunjaUrl: 'https://vikunja.example.com',
+          }),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyRejection(await callAndCatch(toolHandler, { subcommand: 'deprovision' })),
+      ).toBe(true);
+    });
+  });
+
+  describe('closure-gate precedence fix (oidc-http mode)', () => {
+    beforeEach(() => {
+      mockHasRequestContext.mockReturnValue(true);
+      mockGetAuthManagerFromContext.mockReset();
+    });
+
+    afterEach(() => {
+      mockHasRequestContext.mockReturnValue(false);
+    });
+
+    it("'info' defers to getAuthManagerFromContext instead of the closure authManager's isAuthenticated()", async () => {
+      // The closure authManager reports NOT authenticated — under the old
+      // (buggy) ordering this would throw the generic "please connect"
+      // error immediately. With the fix, hasRequestContext() short-circuits
+      // straight to getAuthManagerFromContext(), whose (mocked) resolution
+      // here succeeds, so the call proceeds to the real /info request.
+      mockAuthManager.isAuthenticated.mockReturnValue(false);
+      mockGetAuthManagerFromContext.mockResolvedValue(mockAuthManager);
+      mockVikunjaRestRequest.mockResolvedValue({ version: '2.3.0' });
+
+      const result = await callTool('info');
+
+      expect(mockGetAuthManagerFromContext).toHaveBeenCalled();
+      expect(result.content[0].type).toBe('text');
+      expect(result.content[0].text).toContain('auth-info');
+    });
+
+    it("'info' propagates getAuthManagerFromContext's AUTH_REQUIRED provisioning-prompt error, never the generic message", async () => {
+      mockAuthManager.isAuthenticated.mockReturnValue(false);
+      const provisionPrompt = new MCPError(
+        ErrorCode.AUTH_REQUIRED,
+        "You're authenticated as abcd... but haven't linked a Vikunja API token yet. " +
+          'Run vikunja_auth provision with a token you create in Vikunja → Settings → API Tokens.',
+      );
+      mockGetAuthManagerFromContext.mockRejectedValue(provisionPrompt);
+
+      await expect(callTool('info')).rejects.toThrow('vikunja_auth provision');
+      await expect(callTool('info')).rejects.not.toThrow('Please use vikunja_auth.connect first');
+    });
+  });
+
+  describe('oidc-http-mode provisioning subcommands', () => {
+    const identity = { issuer: 'https://idp.example/realm', sub: 'user-1' };
+    let mockVault: {
+      getCredential: jest.Mock;
+      getStatus: jest.Mock;
+      provision: jest.Mock;
+      deprovision: jest.Mock;
+    };
+
+    beforeEach(() => {
+      mockHasRequestContext.mockReturnValue(true);
+      (getCurrentIdentity as jest.Mock).mockReturnValue(identity);
+      mockVault = {
+        getCredential: jest.fn(),
+        getStatus: jest.fn().mockReturnValue({ provisioned: false }),
+        provision: jest.fn().mockResolvedValue(undefined),
+        deprovision: jest.fn().mockResolvedValue(true),
+      };
+      (getActiveVaultStore as jest.Mock).mockReturnValue(mockVault);
+      mockVikunjaRestRequest.mockReset();
+      mockVikunjaRestRequest.mockImplementation(
+        async (_authManager: unknown, _method: string, path: string) => {
+          if (path === '/info') {
+            return { version: '1.2.3' };
+          }
+          return [];
+        },
+      );
+    });
+
+    afterEach(() => {
+      mockHasRequestContext.mockReturnValue(false);
+      (getCurrentIdentity as jest.Mock).mockReturnValue(undefined);
+      (getActiveVaultStore as jest.Mock).mockReturnValue(undefined);
+    });
+
+    describe('provision', () => {
+      it('validates the token against Vikunja BEFORE storing it, then stores it keyed by the validated identity', async () => {
+        const result = await callTool('provision', {
+          apiToken: 'tk_real-token-1234567890',
+          vikunjaUrl: 'https://vikunja.example.com',
+        });
+
+        expect(mockVikunjaRestRequest).toHaveBeenCalledWith(
+          expect.anything(),
+          'GET',
+          '/info',
+          undefined,
+          {
+            ignoreRequestContext: true,
+          },
+        );
+        expect(mockVault.provision).toHaveBeenCalledWith(
+          identity,
+          'https://vikunja.example.com',
+          'tk_real-token-1234567890',
+        );
+        // Validation must happen before storage — the mock records call
+        // order via the shared mockVikunjaRestRequest/mockVault.provision
+        // invocation sequence; asserting both were called is the
+        // behavioural proof this test is titled for.
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('auth-provision');
+        expect(markdown).not.toContain('tk_real-token-1234567890');
+      });
+
+      it('never stores the token when server validation fails', async () => {
+        mockVikunjaRestRequest.mockRejectedValue(new Error('connection refused'));
+
+        await expect(
+          callTool('provision', { apiToken: 'tk_bad', vikunjaUrl: 'https://vikunja.example.com' }),
+        ).rejects.toThrow(MCPError);
+        expect(mockVault.provision).not.toHaveBeenCalled();
+      });
+
+      it('ignores any identity-shaped fields on args — identity always comes from the validated request context', async () => {
+        await callTool('provision', {
+          apiToken: 'tk_real',
+          vikunjaUrl: 'https://vikunja.example.com',
+          // Not part of the schema, but even if a caller smuggled these in,
+          // getCurrentIdentity() (mocked here to the real identity) is the
+          // only source auth.ts ever reads from.
+          sub: 'attacker-controlled-sub',
+          issuer: 'https://attacker.example/realm',
+        } as Record<string, unknown>);
+
+        expect(mockVault.provision).toHaveBeenCalledWith(
+          identity,
+          'https://vikunja.example.com',
+          'tk_real',
+        );
+      });
+
+      it('rejects a JWT-shaped token before it ever reaches Vikunja or the vault (#322)', async () => {
+        // The vault stores API tokens: `getCredential` labels every resolved
+        // credential 'api-token', and the JWT-only registration gate reads
+        // that label, so a vaulted JWT would be silently mislabeled — and
+        // would expire within hours with no refresh path here anyway.
+        await expect(
+          callTool('provision', {
+            apiToken: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.sig',
+            vikunjaUrl: 'https://vikunja.example.com',
+          }),
+        ).rejects.toThrow(/API tokens/i);
+
+        expect(mockVault.provision).not.toHaveBeenCalled();
+        // Refused locally: no round-trip is spent validating a token this
+        // mode would refuse to keep.
+        expect(mockVikunjaRestRequest).not.toHaveBeenCalled();
+      });
+
+      it('tells the user where to get an API token instead of just refusing', async () => {
+        await expect(
+          callTool('provision', {
+            apiToken: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.sig',
+            vikunjaUrl: 'https://vikunja.example.com',
+          }),
+        ).rejects.toThrow(/Settings → API Tokens/);
+      });
+
+      it('does not mistake an opaque token that merely starts with eyJ for a JWT', async () => {
+        await callTool('provision', {
+          apiToken: 'eyJopaque-but-not-a-jwt',
+          vikunjaUrl: 'https://vikunja.example.com',
+        });
+
+        expect(mockVault.provision).toHaveBeenCalledWith(
+          identity,
+          'https://vikunja.example.com',
+          'eyJopaque-but-not-a-jwt',
+        );
+      });
+
+      it('requires apiToken when no SSO enrollment service is registered', async () => {
+        await expect(
+          callTool('provision', { vikunjaUrl: 'https://vikunja.example.com' }),
+        ).rejects.toThrow('apiToken is required');
+      });
+
+      describe('SSO enrollment (issue #220): provision without a token', () => {
+        const ENROLL_TARGET = 'https://vikunja.example.com/api/v1';
+        const createEnrollmentUrl = jest.fn(() => 'https://mcp.example.test/enroll?ticket=abc123');
+
+        beforeEach(() => {
+          createEnrollmentUrl.mockClear();
+          setActiveEnrollmentService({
+            createEnrollmentUrl,
+            vikunjaUrl: ENROLL_TARGET,
+          } as unknown as EnrollmentService);
+        });
+
+        afterEach(() => {
+          setActiveEnrollmentService(undefined);
+        });
+
+        it('returns a one-click enrollment URL bound to the validated identity instead of erroring', async () => {
+          const result = await callTool('provision', {});
+
+          expect(createEnrollmentUrl).toHaveBeenCalledWith(identity);
+          const markdown = result.content[0].text;
+          expect(markdown).toContain('https://mcp.example.test/enroll?ticket=abc123');
+          expect(markdown).toContain('auth-provision');
+          // The response names the Vikunja instance the flow enrolls against
+          // (finding #3 — no silent target substitution).
+          expect(markdown).toContain(ENROLL_TARGET);
+          // Nothing was stored — the vault write happens in the browser flow.
+          expect(mockVault.provision).not.toHaveBeenCalled();
+        });
+
+        it('rejects an explicit vikunjaUrl that differs from the enrollment target (finding #3)', async () => {
+          await expect(
+            callTool('provision', { vikunjaUrl: 'https://other-vikunja.example.com/api/v1' }),
+          ).rejects.toThrow(/https:\/\/vikunja\.example\.com\/api\/v1/);
+          expect(createEnrollmentUrl).not.toHaveBeenCalled();
+        });
+
+        it('accepts an explicit vikunjaUrl that matches the enrollment target', async () => {
+          const result = await callTool('provision', { vikunjaUrl: ENROLL_TARGET });
+          expect(createEnrollmentUrl).toHaveBeenCalledWith(identity);
+          expect(result.content[0].text).toContain('/enroll?ticket=');
+        });
+
+        it('short-circuits to "already linked" when the identity is provisioned (finding #9)', async () => {
+          mockVault.getStatus.mockReturnValue({
+            provisioned: true,
+            vikunjaUrl: ENROLL_TARGET,
+          });
+
+          const result = await callTool('provision', {});
+
+          // No fresh ticket, no re-mint of another full-permission token.
+          expect(createEnrollmentUrl).not.toHaveBeenCalled();
+          const markdown = result.content[0].text;
+          expect(markdown).toMatch(/already linked/i);
+          expect(markdown).toContain('deprovision');
+        });
+
+        it('still performs a normal manual provision when a token IS passed', async () => {
+          await callTool('provision', {
+            apiToken: 'tk_manual',
+            vikunjaUrl: 'https://vikunja.example.com',
+          });
+
+          expect(createEnrollmentUrl).not.toHaveBeenCalled();
+          expect(mockVault.provision).toHaveBeenCalledWith(
+            identity,
+            'https://vikunja.example.com',
+            'tk_manual',
+          );
+        });
+
+        it('wraps a ticket-issuing failure (e.g. pending-ticket cap) in an MCPError', async () => {
+          createEnrollmentUrl.mockImplementation(() => {
+            throw new Error('Too many pending enrollment tickets');
+          });
+
+          await expect(callTool('provision', {})).rejects.toThrow(MCPError);
+        });
+      });
+
+      it('requires a resolvable Vikunja URL', async () => {
+        const originalUrl = process.env.VIKUNJA_URL;
+        delete process.env.VIKUNJA_URL;
+        ConfigurationManager.reset();
+        try {
+          await expect(callTool('provision', { apiToken: 'tk_real' })).rejects.toThrow(
+            'No Vikunja URL is configured',
+          );
+        } finally {
+          ConfigurationManager.reset();
+          if (originalUrl !== undefined) {
+            process.env.VIKUNJA_URL = originalUrl;
+          }
+        }
+      });
+
+      it('rejects in stdio mode with a clear "oidc-http mode feature" error', async () => {
+        mockHasRequestContext.mockReturnValue(false);
+
+        await expect(
+          callTool('provision', { apiToken: 'tk_real', vikunjaUrl: 'https://vikunja.example.com' }),
+        ).rejects.toThrow('oidc-http mode feature');
+        expect(mockVault.provision).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('status (oidc-http mode)', () => {
+      it("reports the calling identity's own vault status, masked", async () => {
+        mockVault.getStatus.mockReturnValue({
+          provisioned: true,
+          vikunjaUrl: 'https://vikunja.example.com',
+          maskedToken: 'tk_r...',
+          lastUsedAt: null,
+        });
+
+        const result = await callTool('status');
+
+        expect(mockVault.getStatus).toHaveBeenCalledWith(identity);
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('tk_r...');
+        expect(markdown).not.toContain('tk_real');
+      });
+
+      it('reports not-provisioned honestly when unlinked', async () => {
+        mockVault.getStatus.mockReturnValue({ provisioned: false });
+
+        const result = await callTool('status');
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('No Vikunja API token linked yet');
+      });
+
+      it('surfaces the vault\'s own reason when a stored record is unusable (#278)', async () => {
+        // A record exists but cannot be decrypted (e.g. master key rotated):
+        // "run provision" is not the honest explanation on its own.
+        mockVault.getStatus.mockReturnValue({
+          provisioned: false,
+          recordPresent: true,
+          issue: 'A credential is stored for you but cannot be decrypted.',
+          vikunjaUrl: 'https://vikunja.example.com',
+        });
+
+        const result = await callTool('status');
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('cannot be decrypted');
+        expect(markdown).not.toContain('No Vikunja API token linked yet');
+      });
+
+      it("surfaces a usable-but-outdated record's migration notice in the message (#322)", async () => {
+        // A legacy keyVersion 1 record still works, so it is reported as
+        // linked — but the operator/user must learn it needs re-provisioning
+        // somewhere other than a log line they may never read.
+        mockVault.getStatus.mockReturnValue({
+          provisioned: true,
+          recordPresent: true,
+          vikunjaUrl: 'https://vikunja.example.com',
+          maskedToken: 'tk_r...',
+          keyVersion: 1,
+          needsMigration: true,
+          migrationNotice:
+            'Your credential is stored in the legacy pre-binding format (keyVersion 1). ' +
+            'Re-run vikunja_auth provision with the same token to upgrade it.',
+        });
+
+        const result = await callTool('status');
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('keyVersion 1');
+        expect(markdown).toContain('action recommended');
+        expect(markdown).toContain('vikunja_auth provision');
+      });
+
+      it('stays quiet about migration when the record is already current', async () => {
+        mockVault.getStatus.mockReturnValue({
+          provisioned: true,
+          recordPresent: true,
+          vikunjaUrl: 'https://vikunja.example.com',
+          maskedToken: 'tk_r...',
+          keyVersion: 2,
+        });
+
+        const result = await callTool('status');
+
+        const markdown = result.content[0].text;
+        expect(markdown).toContain('Vikunja API token linked');
+        expect(markdown).not.toContain('action recommended');
+      });
+    });
+
+    describe('deprovision', () => {
+      it("deletes the calling identity's vault record", async () => {
+        const result = await callTool('deprovision');
+
+        expect(mockVault.deprovision).toHaveBeenCalledWith(identity);
+        expect(result.content[0].text).toContain('Deprovisioned');
+      });
+
+      it('is idempotent — reports honestly when there was nothing to remove', async () => {
+        mockVault.deprovision.mockResolvedValue(false);
+
+        const result = await callTool('deprovision');
+
+        expect(result.content[0].text).toContain('No linked Vikunja API token to remove');
+      });
+
+      it('rejects in stdio mode with a clear "oidc-http mode feature" error', async () => {
+        mockHasRequestContext.mockReturnValue(false);
+
+        await expect(callTool('deprovision')).rejects.toThrow('oidc-http mode feature');
+        expect(mockVault.deprovision).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('connect/disconnect aliasing in oidc-http mode', () => {
+      it("'connect' returns a structured error pointing at 'provision'", async () => {
+        await expect(
+          callTool('connect', { apiUrl: 'https://vikunja.example.com', apiToken: 'tk_x' }),
+        ).rejects.toThrow('vikunja_auth provision');
+      });
+
+      it("'disconnect' aliases 'deprovision'", async () => {
+        const result = await callTool('disconnect');
+
+        expect(mockVault.deprovision).toHaveBeenCalledWith(identity);
+        expect(result.content[0].text).toContain('Deprovisioned');
+      });
     });
   });
 

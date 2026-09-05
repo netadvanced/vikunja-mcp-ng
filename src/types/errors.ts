@@ -42,6 +42,53 @@ interface MCPErrorDetails {
    * which use `statusCode` instead).
    */
   transient?: boolean;
+  /**
+   * Set by network-layer failures wrapped into an MCPError (see
+   * `transient` above) when the original cause proves the request was never
+   * delivered — connection refused, host not resolved, network unreachable,
+   * or the TCP/TLS handshake itself timed out. Distinct from `transient`,
+   * which is also true for mid-flight failures (ECONNRESET, read timeouts)
+   * where the server may well have committed the write before the response
+   * was lost. Retry predicates for non-idempotent writes
+   * (`shouldRetryNonIdempotentWrite` in src/utils/vikunja-rest.ts) use this
+   * to distinguish "provably nothing happened" from merely "transient".
+   */
+  preRequest?: boolean;
+  /**
+   * Set when the failure is the CALLER giving up, not the server failing:
+   * the tool-execution deadline (src/middleware/simplified-rate-limit.ts)
+   * aborted an in-flight request. Distinct from `transient` — nothing is
+   * known to be wrong upstream — which is why
+   * `isClientErrorExcludedFromBreaker` (src/utils/retry.ts) keeps these out
+   * of the shared circuit breakers' failure statistics.
+   */
+  cancelled?: boolean;
+  /**
+   * Set by OIDC bearer-token validation failures (src/auth/oidc/jwtValidator.ts)
+   * so an HTTP transport can build the `WWW-Authenticate: Bearer error="..."`
+   * header per RFC 6750 without re-deriving it from `code`/`statusCode`.
+   * `invalid_token` pairs with `statusCode: 401`; `insufficient_scope` pairs
+   * with `statusCode: 403`.
+   */
+  wwwAuthenticateError?: 'invalid_token' | 'insufficient_scope';
+  /**
+   * Set when a Vikunja 401 is most likely the API token lacking the SCOPE
+   * for a scope-checked `expand` value rather than a bad session (Vikunja
+   * >= 2.6.0 — see `describeLikelyExpandScopeFailure` in
+   * src/utils/vikunja-rest.ts, which also explains why this can only ever be
+   * an inference: the server sends the identical 401 body either way).
+   *
+   * Two things read it, both because this is a property of the CALL and not
+   * of the service: `isClientErrorExcludedFromBreaker` (src/utils/retry.ts)
+   * keeps it out of the shared circuit breakers, and
+   * `RestCrossProjectFilteringStrategy` refuses to fall back to per-project
+   * aggregation for it — the fallback drops `expand`, so falling back turns
+   * a refusal into a silently incomplete success.
+   *
+   * Unrelated to `wwwAuthenticateError: 'insufficient_scope'` above, which
+   * is about OIDC bearer tokens presented TO this server.
+   */
+  insufficientScope?: boolean;
 }
 
 export class MCPError extends Error {

@@ -65,9 +65,9 @@ describe('setTaskBucket', () => {
     });
 
     it('throws a VALIDATION_ERROR when the task id is zero (falsy)', async () => {
-      await expect(
-        setTaskBucket({ id: 0, bucketId: 3 }, authManager),
-      ).rejects.toThrow('is required for set-bucket operation');
+      await expect(setTaskBucket({ id: 0, bucketId: 3 }, authManager)).rejects.toThrow(
+        'is required for set-bucket operation',
+      );
     });
 
     it('throws a VALIDATION_ERROR when bucketId is undefined', async () => {
@@ -89,21 +89,21 @@ describe('setTaskBucket', () => {
 
     it('treats a bucketId of 0 as provided and validates it as an id', async () => {
       // bucketId 0 passes the undefined/null guard but fails validateId.
-      await expect(
-        setTaskBucket({ id: 1, bucketId: 0 }, authManager),
-      ).rejects.toThrow('bucketId must be a positive integer');
+      await expect(setTaskBucket({ id: 1, bucketId: 0 }, authManager)).rejects.toThrow(
+        'bucketId must be a positive integer',
+      );
     });
 
     it('throws when the task id is not a positive integer', async () => {
-      await expect(
-        setTaskBucket({ id: -2, bucketId: 3 }, authManager),
-      ).rejects.toThrow('id must be a positive integer');
+      await expect(setTaskBucket({ id: -2, bucketId: 3 }, authManager)).rejects.toThrow(
+        'id must be a positive integer',
+      );
     });
 
     it('throws when an explicit viewId is invalid', async () => {
-      await expect(
-        setTaskBucket({ id: 1, bucketId: 3, viewId: -1 }, authManager),
-      ).rejects.toThrow('viewId must be a positive integer');
+      await expect(setTaskBucket({ id: 1, bucketId: 3, viewId: -1 }, authManager)).rejects.toThrow(
+        'viewId must be a positive integer',
+      );
     });
 
     it('throws when an explicit projectId is invalid', async () => {
@@ -129,9 +129,7 @@ describe('setTaskBucket', () => {
       const urls = mockFetch.mock.calls.map((c) => c[0]);
       expect(urls[0]).toBe('https://vikunja.test/api/v1/tasks/1');
       expect(urls[1]).toBe('https://vikunja.test/api/v1/projects/5/views');
-      expect(urls[2]).toBe(
-        'https://vikunja.test/api/v1/projects/5/views/11/buckets/3/tasks',
-      );
+      expect(urls[2]).toBe('https://vikunja.test/api/v1/projects/5/views/11/buckets/3/tasks');
 
       // The POST body carries the TaskBucket payload.
       const [, postInit] = mockFetch.mock.calls[2] as [string, RequestInit];
@@ -154,17 +152,13 @@ describe('setTaskBucket', () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
       const urls = mockFetch.mock.calls.map((c) => c[0]);
       expect(urls[0]).toBe('https://vikunja.test/api/v1/projects/5/views');
-      expect(urls[1]).toBe(
-        'https://vikunja.test/api/v1/projects/5/views/11/buckets/3/tasks',
-      );
+      expect(urls[1]).toBe('https://vikunja.test/api/v1/projects/5/views/11/buckets/3/tasks');
     });
 
     it('does not resolve the view when viewId is supplied explicitly', async () => {
       // projectId omitted -> GET /tasks/:id, then POST (no views lookup)
       mockFetch
-        .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ id: 1, project_id: 8 }) }),
-        )
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, project_id: 8 }) }))
         .mockResolvedValueOnce(mockResponse({ text: '' }));
 
       await setTaskBucket({ id: 1, bucketId: 3, viewId: 22 }, authManager);
@@ -172,9 +166,7 @@ describe('setTaskBucket', () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
       const urls = mockFetch.mock.calls.map((c) => c[0]);
       expect(urls[0]).toBe('https://vikunja.test/api/v1/tasks/1');
-      expect(urls[1]).toBe(
-        'https://vikunja.test/api/v1/projects/8/views/22/buckets/3/tasks',
-      );
+      expect(urls[1]).toBe('https://vikunja.test/api/v1/projects/8/views/22/buckets/3/tasks');
     });
 
     it('issues only the bucket POST when both projectId and viewId are supplied', async () => {
@@ -187,22 +179,15 @@ describe('setTaskBucket', () => {
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const [url] = mockFetch.mock.calls[0] as [string];
-      expect(url).toBe(
-        'https://vikunja.test/api/v1/projects/5/views/11/buckets/3/tasks',
-      );
+      expect(url).toBe('https://vikunja.test/api/v1/projects/5/views/11/buckets/3/tasks');
       expect(result.content[0].type).toBe('text');
     });
 
     it('throws NOT_FOUND when the task lookup returns no body', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ text: '' }));
 
-      await expect(
-        setTaskBucket({ id: 1, bucketId: 3 }, authManager),
-      ).rejects.toThrow(
-        new MCPError(
-          ErrorCode.NOT_FOUND,
-          'Could not resolve the project of task 1',
-        ),
+      await expect(setTaskBucket({ id: 1, bucketId: 3 }, authManager)).rejects.toThrow(
+        new MCPError(ErrorCode.NOT_FOUND, 'Could not resolve the project of task 1'),
       );
     });
 
@@ -222,20 +207,16 @@ describe('setTaskBucket', () => {
 
     it('throws NOT_FOUND when the project has no Kanban view', async () => {
       mockFetch
-        .mockResolvedValueOnce(
-          mockResponse({ text: JSON.stringify({ id: 1, project_id: 5 }) }),
-        )
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ id: 1, project_id: 5 }) }))
         .mockResolvedValueOnce(
           mockResponse({
-            text: JSON.stringify([
-              { id: 10, title: 'List', project_id: 5, view_kind: 'list' },
-            ]),
+            text: JSON.stringify([{ id: 10, title: 'List', project_id: 5, view_kind: 'list' }]),
           }),
         );
 
-      await expect(
-        setTaskBucket({ id: 1, bucketId: 3 }, authManager),
-      ).rejects.toThrow('Project 5 has no Kanban view, so it has no buckets');
+      await expect(setTaskBucket({ id: 1, bucketId: 3 }, authManager)).rejects.toThrow(
+        'Project 5 has no Kanban view, so it has no buckets',
+      );
     });
   });
 
@@ -260,9 +241,9 @@ describe('setTaskBucket', () => {
       // policy, so every retry attempt must see the same rejection.
       mockFetch.mockRejectedValue(new Error('network down'));
 
-      await expect(
-        setTaskBucket({ id: 1, bucketId: 3 }, authManager),
-      ).rejects.toThrow('Vikunja REST request failed (GET /tasks/1): network down');
+      await expect(setTaskBucket({ id: 1, bucketId: 3 }, authManager)).rejects.toThrow(
+        'Vikunja REST request failed (GET /tasks/1): network down',
+      );
     });
   });
 });

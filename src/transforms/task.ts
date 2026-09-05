@@ -45,7 +45,22 @@ export interface Task {
   cover_image_attachment_id?: number;
   is_favorite?: boolean;
   // Allow dynamic field access for transformation with specific types
-  [key: string]: string | number | boolean | undefined | Array<string | number | boolean> | Array<{ id: number; title: string; description?: string; hex_color?: string }> | Array<{ id: number; username: string; email?: string }> | Array<Task> | Array<{ id: number; relation_kind: 'parenttask' | 'subtask' | 'related'; created_by: number }> | { id: number; title: string; description?: string; hex_color?: string } | { id: number; username: string; email?: string } | { id: number; relation_kind: 'parenttask' | 'subtask' | 'related'; created_by: number } | Task | { [key: string]: unknown } | null;
+  [key: string]:
+    | string
+    | number
+    | boolean
+    | undefined
+    | Array<string | number | boolean>
+    | Array<{ id: number; title: string; description?: string; hex_color?: string }>
+    | Array<{ id: number; username: string; email?: string }>
+    | Array<Task>
+    | Array<{ id: number; relation_kind: 'parenttask' | 'subtask' | 'related'; created_by: number }>
+    | { id: number; title: string; description?: string; hex_color?: string }
+    | { id: number; username: string; email?: string }
+    | { id: number; relation_kind: 'parenttask' | 'subtask' | 'related'; created_by: number }
+    | Task
+    | { [key: string]: unknown }
+    | null;
 }
 
 /**
@@ -84,7 +99,22 @@ export interface OptimizedTask {
   cover_image_attachment_id?: number;
   is_favorite?: boolean;
   // Allow dynamic field access for transformation with specific types
-  [key: string]: string | number | boolean | undefined | Array<string | number | boolean> | Array<{ id: number; title: string; description?: string; hex_color?: string }> | Array<{ id: number; username: string; email?: string }> | Array<Task> | Array<{ id: number; relation_kind: 'parenttask' | 'subtask' | 'related'; created_by: number }> | { id: number; title: string; description?: string; hex_color?: string } | { id: number; username: string; email?: string } | { id: number; relation_kind: 'parenttask' | 'subtask' | 'related'; created_by: number } | Task | { [key: string]: unknown } | null;
+  [key: string]:
+    | string
+    | number
+    | boolean
+    | undefined
+    | Array<string | number | boolean>
+    | Array<{ id: number; title: string; description?: string; hex_color?: string }>
+    | Array<{ id: number; username: string; email?: string }>
+    | Array<Task>
+    | Array<{ id: number; relation_kind: 'parenttask' | 'subtask' | 'related'; created_by: number }>
+    | { id: number; title: string; description?: string; hex_color?: string }
+    | { id: number; username: string; email?: string }
+    | { id: number; relation_kind: 'parenttask' | 'subtask' | 'related'; created_by: number }
+    | Task
+    | { [key: string]: unknown }
+    | null;
 }
 
 /**
@@ -98,13 +128,16 @@ export class TaskTransformer {
     const startTime = Date.now();
 
     // Get available fields from the task
-    const availableFields = Object.keys(task).filter(key => typeof key === 'string');
+    const availableFields = Object.keys(task).filter((key) => typeof key === 'string');
 
     // Select fields based on configuration
     const fieldSelection = defaultFieldSelector.selectFields(config, availableFields);
 
     // Transform the task
-    const optimizedTask: OptimizedTask = this.applyTransformations(task, fieldSelection.fieldDefinitions);
+    const optimizedTask: OptimizedTask = this.applyTransformations(
+      task,
+      fieldSelection.fieldDefinitions,
+    );
 
     const originalSize = SizeEstimator.estimateSize(task);
     const optimizedSize = SizeEstimator.estimateSize(optimizedTask);
@@ -118,14 +151,16 @@ export class TaskTransformer {
         reductionPercentage: SizeEstimator.calculateReduction(originalSize, optimizedSize),
         fieldsIncluded: fieldSelection.includedFields.length,
         totalFields: availableFields.length,
-        fieldInclusionPercentage: Math.round((fieldSelection.includedFields.length / availableFields.length) * 100)
+        fieldInclusionPercentage: Math.round(
+          (fieldSelection.includedFields.length / availableFields.length) * 100,
+        ),
       },
       metadata: {
         verbosity: config.verbosity,
         categoriesIncluded: fieldSelection.activeCategories,
         timestamp: new Date().toISOString(),
-        processingTimeMs: processingTime
-      }
+        processingTimeMs: processingTime,
+      },
     };
   }
 
@@ -135,7 +170,7 @@ export class TaskTransformer {
   transformTasks(tasks: Task[], config: TransformerConfig): TransformationResult<OptimizedTask[]> {
     const startTime = Date.now();
 
-    const transformedTasks = tasks.map(task => {
+    const transformedTasks = tasks.map((task) => {
       const taskResult = this.transformTask(task, config);
       return taskResult.data;
     });
@@ -143,31 +178,45 @@ export class TaskTransformer {
     const processingTime = Date.now() - startTime;
 
     // Calculate combined metrics
-    const totalOriginalSize = tasks.reduce((sum, task) => sum + SizeEstimator.estimateSize(task), 0);
-    const totalOptimizedSize = transformedTasks.reduce((sum, task) => sum + SizeEstimator.estimateSize(task), 0);
+    const totalOriginalSize = tasks.reduce(
+      (sum, task) => sum + SizeEstimator.estimateSize(task),
+      0,
+    );
+    const totalOptimizedSize = transformedTasks.reduce(
+      (sum, task) => sum + SizeEstimator.estimateSize(task),
+      0,
+    );
 
     // Get unique available fields across all tasks
     const allAvailableFields = new Set<string>();
-    tasks.forEach(task => Object.keys(task).forEach(field => allAvailableFields.add(field)));
+    tasks.forEach((task) => Object.keys(task).forEach((field) => allAvailableFields.add(field)));
 
-    const fieldSelection = defaultFieldSelector.selectFields(config, Array.from(allAvailableFields));
+    const fieldSelection = defaultFieldSelector.selectFields(
+      config,
+      Array.from(allAvailableFields),
+    );
 
     return {
       data: transformedTasks,
       metrics: {
         originalSize: totalOriginalSize,
         optimizedSize: totalOptimizedSize,
-        reductionPercentage: SizeEstimator.calculateReduction(totalOriginalSize, totalOptimizedSize),
+        reductionPercentage: SizeEstimator.calculateReduction(
+          totalOriginalSize,
+          totalOptimizedSize,
+        ),
         fieldsIncluded: fieldSelection.includedFields.length,
         totalFields: allAvailableFields.size,
-        fieldInclusionPercentage: Math.round((fieldSelection.includedFields.length / allAvailableFields.size) * 100)
+        fieldInclusionPercentage: Math.round(
+          (fieldSelection.includedFields.length / allAvailableFields.size) * 100,
+        ),
       },
       metadata: {
         verbosity: config.verbosity,
         categoriesIncluded: fieldSelection.activeCategories,
         timestamp: new Date().toISOString(),
-        processingTimeMs: processingTime
-      }
+        processingTimeMs: processingTime,
+      },
     };
   }
 
@@ -177,7 +226,7 @@ export class TaskTransformer {
   private applyTransformations(task: Task, fieldDefinitions: FieldDefinition[]): OptimizedTask {
     const optimizedTask: Partial<OptimizedTask> = {};
 
-    fieldDefinitions.forEach(fieldDef => {
+    fieldDefinitions.forEach((fieldDef) => {
       const sourceValue = task[fieldDef.fieldName];
 
       if (sourceValue !== undefined && sourceValue !== null) {
@@ -252,7 +301,7 @@ export class TaskTransformer {
     return {
       id: task.id,
       title: task.title,
-      done: task.done
+      done: task.done,
     };
   }
 
@@ -264,7 +313,7 @@ export class TaskTransformer {
       id: task.id,
       title: task.title,
       done: task.done,
-      priority: task.priority
+      priority: task.priority,
     };
 
     if (task.description !== undefined) {
@@ -286,7 +335,7 @@ export class TaskTransformer {
       id: task.id,
       title: task.title,
       done: task.done,
-      priority: task.priority
+      priority: task.priority,
     };
 
     if (task.description !== undefined) {
@@ -324,16 +373,20 @@ export class TaskTransformer {
     const { subtasks, ...taskWithoutSubtasks } = task;
     const optimizedTaskData: Partial<OptimizedTask> = {
       ...taskWithoutSubtasks,
-      ...(subtasks && { subtasks: subtasks.map(subtask => subtask.id) })
+      ...(subtasks && { subtasks: subtasks.map((subtask) => subtask.id) }),
     };
     const completeTask: OptimizedTask = optimizedTaskData as OptimizedTask;
 
     // Normalize date fields
-    ['due_date', 'start_date', 'end_date', 'created_at', 'updated_at', 'completed_at'].forEach(dateField => {
-      if (completeTask[dateField]) {
-        completeTask[dateField] = new Date(completeTask[dateField] as string | number | Date).toISOString();
-      }
-    });
+    ['due_date', 'start_date', 'end_date', 'created_at', 'updated_at', 'completed_at'].forEach(
+      (dateField) => {
+        if (completeTask[dateField]) {
+          completeTask[dateField] = new Date(
+            completeTask[dateField] as string | number | Date,
+          ).toISOString();
+        }
+      },
+    );
 
     return completeTask;
   }
@@ -347,12 +400,18 @@ export const defaultTaskTransformer = new TaskTransformer();
 /**
  * Utility functions for quick task transformation
  */
-export function transformTask(task: Task, verbosity: Verbosity): TransformationResult<OptimizedTask> {
+export function transformTask(
+  task: Task,
+  verbosity: Verbosity,
+): TransformationResult<OptimizedTask> {
   const config: TransformerConfig = { verbosity };
   return defaultTaskTransformer.transformTask(task, config);
 }
 
-export function transformTasks(tasks: Task[], verbosity: Verbosity): TransformationResult<OptimizedTask[]> {
+export function transformTasks(
+  tasks: Task[],
+  verbosity: Verbosity,
+): TransformationResult<OptimizedTask[]> {
   const config: TransformerConfig = { verbosity };
   return defaultTaskTransformer.transformTasks(tasks, config);
 }

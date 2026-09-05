@@ -24,8 +24,8 @@ jest.mock('../../src/utils/logger', () => ({
     info: jest.fn(),
     warn: jest.fn(),
     debug: jest.fn(),
-    error: jest.fn()
-  }
+    error: jest.fn(),
+  },
 }));
 
 const mockGetAuthManagerFromContext = getAuthManagerFromContext as jest.MockedFunction<
@@ -130,17 +130,24 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
     // Route global.fetch to the node-vikunja client mocks above — see the
     // module-level comment on `mockFetch` for why.
     mockFetch.mockImplementation(async (url: string) => {
-      const path = new URL(url).pathname.replace(/^\/api\/v\d+/, '');
+      const parsed = new URL(url);
+      const path = parsed.pathname.replace(/^\/api\/v\d+/, '');
+      // Both list endpoints are paged now (issue #225). A real server returns
+      // an empty page past the end; mirror that here so the aggregation
+      // terminates instead of re-reading page 1 forever.
+      const page = Number(parsed.searchParams.get('page') ?? '1');
       if (path === '/tasks') {
         throw new Error('mock: REST GET /tasks unavailable');
       }
       if (path === '/projects') {
-        return jsonResponse(await mockClient.projects.getProjects({ per_page: 1000 }));
+        return jsonResponse(
+          page > 1 ? [] : await mockClient.projects.getProjects({ per_page: 1000 }),
+        );
       }
       const projectTasksMatch = /^\/projects\/(-?\d+)\/tasks$/.exec(path);
       if (projectTasksMatch?.[1] !== undefined) {
         const tasks = await mockClient.tasks.getProjectTasks(Number(projectTasksMatch[1]), {});
-        return jsonResponse(tasks);
+        return jsonResponse(page > 1 ? [] : tasks);
       }
       throw new Error(`mock: unhandled fetch path ${path}`);
     });
@@ -152,13 +159,15 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       apiUrl: 'https://api.vikunja.test',
       apiToken: 'test-token',
       authType: 'api-token' as const,
-      userId: 'test-user-123'
+      userId: 'test-user-123',
     });
     mockAuthManager.getAuthType.mockReturnValue('api-token');
 
     // Setup mock server
     mockServer = {
-      tool: jest.fn() as jest.MockedFunction<(name: string, description: string, schema: any, handler: any) => void>,
+      tool: jest.fn() as jest.MockedFunction<
+        (name: string, description: string, schema: any, handler: any) => void
+      >,
     } as MockServer;
 
     mockGetAuthManagerFromContext.mockResolvedValue(mockAuthManager as any);
@@ -192,7 +201,7 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       // Attack: Try to load more tasks than memory limit allows
       const attackPayload = {
         subcommand: 'list',
-        perPage: 1000 // Exceeds limit of 100
+        perPage: 1000, // Exceeds limit of 100
       };
 
       await expect(toolHandler(attackPayload)).rejects.toThrow(MCPError);
@@ -222,7 +231,7 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       const projectAttackPayload = {
         subcommand: 'list',
         projectId: 1,
-        perPage: 1000 // Exceeds limit
+        perPage: 1000, // Exceeds limit
       };
 
       await expect(toolHandler(projectAttackPayload)).rejects.toThrow(MCPError);
@@ -259,16 +268,18 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       const complexFilterAttack = {
         subcommand: 'list',
         filter: JSON.stringify({
-          groups: [{
-            conditions: Array(60).fill({
-              field: 'title',
-              operator: 'like',
-              value: 'test'
-            }),
-            operator: '&&'
-          }]
+          groups: [
+            {
+              conditions: Array(60).fill({
+                field: 'title',
+                operator: 'like',
+                value: 'test',
+              }),
+              operator: '&&',
+            },
+          ],
         }),
-        perPage: 50
+        perPage: 50,
       };
 
       await expect(toolHandler(complexFilterAttack)).rejects.toThrow(MCPError);
@@ -280,35 +291,44 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
     it('should block filter expressions with deeply nested structures', async () => {
       // Attack: Create deeply nested filter expression
       let deepFilter: any = {
-        groups: [{
-          conditions: [{
-            field: 'title',
-            operator: 'like',
-            value: 'test'
-          }],
-          operator: '&&'
-        }]
+        groups: [
+          {
+            conditions: [
+              {
+                field: 'title',
+                operator: 'like',
+                value: 'test',
+              },
+            ],
+            operator: '&&',
+          },
+        ],
       };
 
       // Nest beyond depth limit
       for (let i = 0; i < 15; i++) {
         deepFilter = {
-          groups: [deepFilter, {
-            conditions: [{
-              field: 'priority',
-              operator: '>',
-              value: i
-            }],
-            operator: '&&'
-          }],
-          operator: '&&'
+          groups: [
+            deepFilter,
+            {
+              conditions: [
+                {
+                  field: 'priority',
+                  operator: '>',
+                  value: i,
+                },
+              ],
+              operator: '&&',
+            },
+          ],
+          operator: '&&',
         };
       }
 
       const deepFilterAttack = {
         subcommand: 'list',
         filter: JSON.stringify(deepFilter),
-        perPage: 10
+        perPage: 10,
       };
 
       await expect(toolHandler(deepFilterAttack)).rejects.toThrow(MCPError);
@@ -322,31 +342,39 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
         {
           subcommand: 'list',
           filter: JSON.stringify({
-            groups: [{
-              conditions: [{
-                field: '__proto__',
-                operator: '=',
-                value: 'pollution'
-              }],
-              operator: '&&'
-            }]
+            groups: [
+              {
+                conditions: [
+                  {
+                    field: '__proto__',
+                    operator: '=',
+                    value: 'pollution',
+                  },
+                ],
+                operator: '&&',
+              },
+            ],
           }),
-          perPage: 10
+          perPage: 10,
         },
         {
           subcommand: 'list',
           filter: JSON.stringify({
-            groups: [{
-              conditions: [{
-                field: 'title',
-                operator: 'like',
-                value: '<script>alert("XSS")</script>'
-              }],
-              operator: '&&'
-            }]
+            groups: [
+              {
+                conditions: [
+                  {
+                    field: 'title',
+                    operator: 'like',
+                    value: '<script>alert("XSS")</script>',
+                  },
+                ],
+                operator: '&&',
+              },
+            ],
           }),
-          perPage: 10
-        }
+          perPage: 10,
+        },
       ];
 
       for (const attack of maliciousFilterAttacks) {
@@ -361,16 +389,20 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       const oversizedStringAttack = {
         subcommand: 'list',
         filter: JSON.stringify({
-          groups: [{
-            conditions: [{
-              field: 'title',
-              operator: 'like',
-              value: 'a'.repeat(1500) // Exceeds 1000 char limit
-            }],
-            operator: '&&'
-          }]
+          groups: [
+            {
+              conditions: [
+                {
+                  field: 'title',
+                  operator: 'like',
+                  value: 'a'.repeat(1500), // Exceeds 1000 char limit
+                },
+              ],
+              operator: '&&',
+            },
+          ],
         }),
-        perPage: 10
+        perPage: 10,
       };
 
       await expect(toolHandler(oversizedStringAttack)).rejects.toThrow(MCPError);
@@ -385,7 +417,7 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       const oversizedArrayAttack = {
         subcommand: 'list',
         filter: `id = [${Array(101).fill(0).join(',')}]`, // 101 items
-        perPage: 10
+        perPage: 10,
       };
 
       // Should be rejected due to invalid filter syntax
@@ -413,7 +445,7 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       const longStringAttack = {
         subcommand: 'list',
         filter: `title = "${'a'.repeat(1000)}"`, // Exceeds simple filter limits
-        perPage: 10
+        perPage: 10,
       };
 
       // Should be rejected due to filter string length limit
@@ -429,14 +461,16 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
         subcommand: 'list',
         perPage: 200, // Memory limit bypass
         filter: JSON.stringify({
-          groups: [{
-            conditions: [
-              { field: '__proto__', operator: '=', value: 'pollution' }, // Prototype pollution
-              { field: 'title', operator: 'like', value: '<script>alert("XSS")</script>' }, // XSS
-            ],
-            operator: '&&'
-          }]
-        })
+          groups: [
+            {
+              conditions: [
+                { field: '__proto__', operator: '=', value: 'pollution' }, // Prototype pollution
+                { field: 'title', operator: 'like', value: '<script>alert("XSS")</script>' }, // XSS
+              ],
+              operator: '&&',
+            },
+          ],
+        }),
       };
 
       await expect(toolHandler(combinedAttack)).rejects.toThrow(MCPError);
@@ -447,15 +481,15 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
 
     it('should handle rapid successive attack attempts', async () => {
       // Attack: Send multiple attack requests rapidly
-      const rapidAttacks = Array(20).fill(null).map((_, i) => ({
-        subcommand: 'list',
-        perPage: 150 + i, // Different oversized values
-        filter: `title = "attack-${i}"`
-      }));
+      const rapidAttacks = Array(20)
+        .fill(null)
+        .map((_, i) => ({
+          subcommand: 'list',
+          perPage: 150 + i, // Different oversized values
+          filter: `title = "attack-${i}"`,
+        }));
 
-      const results = await Promise.allSettled(
-        rapidAttacks.map(attack => toolHandler(attack))
-      );
+      const results = await Promise.allSettled(rapidAttacks.map((attack) => toolHandler(attack)));
 
       // All attacks should be rejected
       results.forEach((result, index) => {
@@ -477,7 +511,18 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       const attackScenarios = [
         { subcommand: 'list', perPage: 150 }, // Memory limit
         { subcommand: 'list', perPage: 10, filter: '__proto__ = value' }, // Simple filter attack
-        { subcommand: 'list', perPage: 10, filter: JSON.stringify({ groups: [{ conditions: Array(60).fill({ field: 'title', operator: 'like', value: 'test' }), operator: '&&' }] }) }, // Complex filter attack
+        {
+          subcommand: 'list',
+          perPage: 10,
+          filter: JSON.stringify({
+            groups: [
+              {
+                conditions: Array(60).fill({ field: 'title', operator: 'like', value: 'test' }),
+                operator: '&&',
+              },
+            ],
+          }),
+        }, // Complex filter attack
       ];
 
       for (const scenario of attackScenarios) {
@@ -503,16 +548,16 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       const boundaryAttacks = [
         { subcommand: 'list', perPage: 100 }, // Exactly at limit
         { subcommand: 'list', perPage: 101 }, // Just over limit
-        { subcommand: 'list', perPage: 99 },  // Just under limit
+        { subcommand: 'list', perPage: 99 }, // Just under limit
       ];
 
       const results = await Promise.allSettled(
-        boundaryAttacks.map(attack => toolHandler(attack))
+        boundaryAttacks.map((attack) => toolHandler(attack)),
       );
 
       // Only requests over limit should be rejected
       expect(results[0].status).toBe('fulfilled'); // Exactly at limit should work
-      expect(results[1].status).toBe('rejected');   // Over limit should be rejected
+      expect(results[1].status).toBe('rejected'); // Over limit should be rejected
       expect(results[2].status).toBe('fulfilled'); // Under limit should work
 
       // Valid requests should reach API (aggregated across the single mocked project)
@@ -579,7 +624,7 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
               payload = {
                 subcommand: 'list',
                 perPage: 10,
-                filter: '__proto__ = value'
+                filter: '__proto__ = value',
               };
               break;
             case 2: // Complex filter attack
@@ -587,15 +632,17 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
                 subcommand: 'list',
                 perPage: 10,
                 filter: JSON.stringify({
-                  groups: [{
-                    conditions: Array(60).fill({
-                      field: 'title',
-                      operator: 'like',
-                      value: 'attack'
-                    }),
-                    operator: '&&'
-                  }]
-                })
+                  groups: [
+                    {
+                      conditions: Array(60).fill({
+                        field: 'title',
+                        operator: 'like',
+                        value: 'attack',
+                      }),
+                      operator: '&&',
+                    },
+                  ],
+                }),
               };
               break;
             default:
@@ -603,14 +650,14 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
           }
 
           cyclePromises.push(
-            toolHandler(payload).catch(error => error) // Catch errors to continue
+            toolHandler(payload).catch((error) => error), // Catch errors to continue
           );
         }
 
         const results = await Promise.all(cyclePromises);
 
         // All attacks should be handled (either rejected or processed safely)
-        results.forEach(result => {
+        results.forEach((result) => {
           if (result instanceof MCPError) {
             expect(result.code).toBe(ErrorCode.VALIDATION_ERROR);
           } else {
@@ -627,7 +674,17 @@ describe('Integration Memory Exhaustion Attack Tests', () => {
       const attackPayloads = [
         { subcommand: 'list', perPage: 200 }, // Memory limit
         { subcommand: 'list', filter: '__proto__ = value' }, // Simple filter
-        { subcommand: 'list', filter: JSON.stringify({ groups: [{ conditions: Array(60).fill({ field: 'title', operator: 'like', value: 'test' }), operator: '&&' }] }) }, // Complex filter
+        {
+          subcommand: 'list',
+          filter: JSON.stringify({
+            groups: [
+              {
+                conditions: Array(60).fill({ field: 'title', operator: 'like', value: 'test' }),
+                operator: '&&',
+              },
+            ],
+          }),
+        }, // Complex filter
       ];
 
       for (const payload of attackPayloads) {

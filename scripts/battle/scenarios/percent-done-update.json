@@ -1,0 +1,19 @@
+{
+  "id": "percent-done-update",
+  "title": "Task progress revised on the update path",
+  "description": "Companion to percent-done-scale.json, which covers `percentDone` on CREATE only. This one exercises the UPDATE path (`TaskUpdateService`), a separate call site of the same conversion in src/utils/percent-done.ts, and does it with two different values so a stuck/ignored update is distinguishable from a working one. The prompt says \"a quarter done\" and then \"60%\" in plain English; the verify check reads the RAW REST field, which Vikunja stores as the 0-1 fraction 0.6 (confirmed live against 2.4.0). It therefore fails if the 0-100 -> 0-1 conversion is removed on the update path (60 stored), applied twice (0.006 stored), or if the update silently no-ops (0.25 left in place -- which is why the initial value is deliberately non-zero rather than starting from an unset field). optimalCallCount derived from the CURRENT tool schemas: `vikunja_projects create` (1) + `vikunja_tasks create` with `title` and `percentDone: 25` in the same call (1) + `vikunja_tasks update` with `percentDone: 60` (1) = 3. `setup-kanban` cannot shave a call here even in its columns-less form: its per-task shape (src/tools/projects/index.ts) accepts title/column/description/priority/dueDate/startDate/endDate/labels/assignees but NOT percentDone -- the field whose silent stripping in that very shape motivated this scenario batch -- so the columns-less route still needs a separate update to reach 25%, landing on the same 3. The 25% -> 60% revision is prescribed as a sequence, so creating the task at 60 outright (2 calls) is not a faithful solve and is not credited (docs/BATTLE-TESTING.md re-baselining policy, rule 3).",
+  "promptTemplate": "Create a project called \"{{prefix}}Manuscript\" with a task called \"{{prefix}}first draft\" that is about a quarter done. We have just had our weekly check-in and the draft has moved on since -- it is 60% done now, so please bring the task up to date.",
+  "optimalCallCount": 3,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Manuscript" },
+    { "type": "min-tasks-in-project", "projectTitleContains": "{{prefix}}Manuscript", "min": 1 },
+    {
+      "type": "tasks-field-match-count",
+      "projectTitleContains": "{{prefix}}Manuscript",
+      "field": "percent_done",
+      "op": "eq",
+      "value": 0.6,
+      "min": 1
+    }
+  ]
+}

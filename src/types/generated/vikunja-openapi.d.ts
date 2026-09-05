@@ -2282,7 +2282,7 @@ export interface paths {
         };
         /**
          * Get all notifications for the current user
-         * @description Returns an array with all notifications for the current user.
+         * @description Returns an array with all notifications for the current user. Notifications about a project the current user can no longer read are omitted; the filtering happens in the query, so paging and the `x-pagination-*` headers all describe the visible notifications only.
          */
         get: {
             parameters: {
@@ -2358,7 +2358,48 @@ export interface paths {
                 };
             };
         };
-        delete?: never;
+        /**
+         * Delete all notifications of the current user
+         * @description Deletes every notification belonging to the authenticated user. Only the caller's own notifications are affected.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description All notifications deleted. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["models.Message"];
+                    };
+                };
+                /** @description Link shares cannot have notifications. */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["web.HTTPError"];
+                    };
+                };
+                /** @description Internal error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["models.Message"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -5162,7 +5203,7 @@ export interface paths {
         post?: never;
         /**
          * Unsubscribe the current user from an entity.
-         * @description Unsubscribes the current user to an entity.
+         * @description Unsubscribes the current user to an entity. If the subscription is inherited from a parent project, an opt-out is stored for this entity instead.
          */
         delete: {
             parameters: {
@@ -10768,6 +10809,7 @@ export interface components {
             is_local_user?: boolean;
             /** @description The full name of the user. */
             name?: string;
+            pending_email?: string;
             settings?: components["schemas"]["models.UserGeneralSettings"];
             /** @description A timestamp when this task was last updated. You cannot change this value. */
             updated?: string;

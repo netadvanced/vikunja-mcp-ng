@@ -1,0 +1,17 @@
+{
+  "id": "team-create-with-admin-member",
+  "title": "Create a team and put someone in it as an admin",
+  "description": "Probes the two team footguns no scenario covered before: (a) `isPublic` on team CREATE (a field that only became settable in PR #230 -- reads passed it through, writes never sent it, so a request for a discoverable team used to be silently dropped), and (b) team membership being keyed by USERNAME, never a numeric user id (Vikunja does this deliberately, to prevent enumerated user-id entry -- see models.TeamMember.username). The interesting friction signal is the admin dimension: `members add` accepts `admin: true` in the same call, while `toggleAdmin` is a separate no-body operation that FLIPS the flag rather than setting it, so an agent that reaches for toggleAdmin needs an extra call (and risks flipping an already-admin member back off). The `memberIsAdmin` assertion reads the raw `admin` flag off the team's embedded `members[]` array, so either route is accepted as long as the end state is right. Uses the `e2e-mutable` account, which `docker/e2e/bootstrap.sh` creates on every e2e stack alongside `e2e-test` -- it is the only other real user available, and `e2e-test` itself cannot be added (it is already the team's creator/admin). Membership is team-scoped state, reclaimed entirely by the prefix sweep deleting the team, so nothing about that user outlives the run. optimalCallCount derived from the CURRENT tool schemas: `vikunja_teams create` with `name` + `isPublic: true` (1) + `vikunja_teams members` / `memberSubcommand: add` with `username` + `admin: true` (1) = 2. It cannot be 1: `PUT /teams` takes no members array, so membership is always a second write, and the create response is where the team id needed for that second call comes from.",
+  "promptTemplate": "Set up a new team in Vikunja called \"{{prefix}}Platform Crew\" that should be discoverable by other people when they go to share a project with it. Put the user \"e2e-mutable\" in that team, and they should have admin rights over it.",
+  "optimalCallCount": 2,
+  "verify": [
+    { "type": "team-exists", "nameContains": "{{prefix}}Platform Crew" },
+    { "type": "team-exists", "nameContains": "{{prefix}}Platform Crew", "isPublic": true },
+    {
+      "type": "team-exists",
+      "nameContains": "{{prefix}}Platform Crew",
+      "hasMemberUsername": "e2e-mutable",
+      "memberIsAdmin": true
+    }
+  ]
+}

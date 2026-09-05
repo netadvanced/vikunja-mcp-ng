@@ -7,7 +7,14 @@ import { MCPError, ErrorCode } from '../../../types';
 import type { AuthManager } from '../../../auth/AuthManager';
 import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
 import { getTaskViaRest } from '../../../utils/task-rest-transport';
-import { validateDateString, validateId, convertRepeatConfiguration } from '../validation';
+import {
+  validateDateString,
+  validateHexColor,
+  validateId,
+  convertRepeatConfiguration,
+} from '../validation';
+import { sanitizeString } from '../../../utils/validation';
+import { assertValidPercentDone, percentDoneToFraction } from '../../../utils/percent-done';
 import { isAuthenticationError } from '../../../utils/auth-error-handler';
 import { RETRY_CONFIG } from '../../../utils/retry';
 import { setTaskLabels } from '../../../utils/label-bulk';
@@ -35,8 +42,23 @@ export interface UpdateTaskArgs {
   startDate?: string;
   endDate?: string;
   priority?: number;
+  /**
+   * Completion progress as a whole percentage, **0-100** (50 = 50%), the
+   * tool surface's scale. Converted to Vikunja's 0-1 wire fraction before it
+   * reaches the API — see `src/utils/percent-done.ts`.
+   */
   percentDone?: number;
   done?: boolean;
+  /**
+   * Task colour, `#RRGGBB`, or `''` to clear it.
+   *
+   * `hex_color` is in `updateSingleTask`'s column allowlist and Vikunja
+   * deliberately maps an empty value back onto the task, so both setting and
+   * clearing are real, server-backed operations — see `validateHexColor` in
+   * `../validation`. Undeclared here until now, which meant a caller
+   * recolouring a task got a success response and no colour change.
+   */
+  hexColor?: string;
   /** Move the task to another project (merged into full-model update). */
   projectId?: number;
   labels?: number[];
@@ -79,6 +101,18 @@ export async function updateTask(
     }
     validateId(args.id, 'id');
 
+    // Sanitize title/description the same way TaskCreationService does — previously this
+    // service passed both straight through unsanitized, so `update` silently accepted
+    // content that `create`/`create-subtask`/`bulk-create-subtasks` rejected (issue #226).
+    // Mutating args in place so every downstream read (affected-field diffing in
+    // analyzeUpdateState, the payload built in buildUpdateData) sees the sanitized value.
+    if (args.title !== undefined) {
+      args.title = sanitizeString(args.title, 'title');
+    }
+    if (args.description !== undefined) {
+      args.description = sanitizeString(args.description, 'description');
+    }
+
     // Validate dates if provided
     if (args.dueDate) {
       validateDateString(args.dueDate, 'dueDate');
@@ -88,6 +122,19 @@ export async function updateTask(
     }
     if (args.endDate) {
       validateDateString(args.endDate, 'endDate');
+    }
+
+    // percentDone is a whole percentage 0-100 on this tool surface. Guarded
+    // here as well as in the Zod schema because updateTask is exported and
+    // reachable from callers that never see the schema.
+    if (args.percentDone !== undefined) {
+      assertValidPercentDone(args.percentDone);
+    }
+
+    // `hexColor: ''` clears the colour, so this is an explicit undefined
+    // check rather than a truthiness guard.
+    if (args.hexColor !== undefined) {
+      validateHexColor(args.hexColor);
     }
 
     // Validate project move target if provided
@@ -135,7 +182,11 @@ export async function updateTask(
     }
 
     // Fetch the complete updated task
-    const completeTask = await vikunjaRestRequest<VikunjaTask>(authManager, 'GET', `/tasks/${args.id}`);
+    const completeTask = await vikunjaRestRequest<VikunjaTask>(
+      authManager,
+      'GET',
+      `/tasks/${args.id}`,
+    );
 
     // Verify project move actually stuck — Vikunja can report success while leaving
     // the task in the old project (silent failure → data loss if the old project is deleted)
@@ -151,18 +202,18 @@ export async function updateTask(
     const response = createTaskResponse(
       'update-task',
       'Task updated successfully',
-      { task: completeTask } as unknown as Parameters<typeof createTaskResponse>[2],
+      { task: completeTask },
       {
         timestamp: new Date().toISOString(),
         affectedFields: updateState.affectedFields,
         previousState: updateState.previousState,
         taskId: args.id,
-      } as unknown as Parameters<typeof createTaskResponse>[3],
+      },
       undefined, // verbosity (ignored - using standard AORP)
       undefined, // useOptimizedFormat (ignored - using standard AORP)
       undefined, // useAorp (ignored - always using AORP)
       undefined, // aorpConfig (using auto-generated)
-      args.sessionId
+      args.sessionId,
     );
 
     return {
@@ -192,17 +243,23 @@ export async function updateTask(
     }
 
     // Handle fetch/connection errors with helpful guidance
-    if (error instanceof Error && (
-      error.message.includes('fetch failed') ||
-      error.message.includes('ECONNREFUSED') ||
-      error.message.includes('ENOTFOUND')
-    )) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('fetch failed') ||
+        error.message.includes('ECONNREFUSED') ||
+        error.message.includes('ENOTFOUND'))
+    ) {
       throw handleFetchError(error, 'update task');
     }
 
     // Use standardized error transformation for all other errors
     if (args.id) {
-      throw handleStatusCodeError(error, 'update task', args.id, `Task with ID ${args.id} not found`);
+      throw handleStatusCodeError(
+        error,
+        'update task',
+        args.id,
+        `Task with ID ${args.id} not found`,
+      );
     }
     throw transformApiError(error, 'Failed to update task');
   }
@@ -227,6 +284,7 @@ async function analyzeUpdateState(
   if (currentTask.priority !== undefined) previousState.priority = currentTask.priority;
   if (currentTask.done !== undefined) previousState.done = currentTask.done;
   if (currentTask.percent_done !== undefined) previousState.percent_done = currentTask.percent_done;
+  if (currentTask.hex_color !== undefined) previousState.hex_color = currentTask.hex_color;
   if (currentTask.project_id !== undefined) previousState.project_id = currentTask.project_id;
   if (currentTask.repeat_after !== undefined) previousState.repeat_after = currentTask.repeat_after;
   if (currentTask.repeat_mode !== undefined) previousState.repeat_mode = currentTask.repeat_mode;
@@ -235,22 +293,46 @@ async function analyzeUpdateState(
   const affectedFields: string[] = [];
 
   if (args.title !== undefined && args.title !== currentTask.title) affectedFields.push('title');
-  if (args.description !== undefined && args.description !== currentTask.description) affectedFields.push('description');
-  if (args.dueDate !== undefined && args.dueDate !== currentTask.due_date) affectedFields.push('dueDate');
-  if (args.startDate !== undefined && args.startDate !== currentTask.start_date) affectedFields.push('start_date');
-  if (args.endDate !== undefined && args.endDate !== currentTask.end_date) affectedFields.push('end_date');
-  if (args.priority !== undefined && args.priority !== currentTask.priority) affectedFields.push('priority');
-  if (args.percentDone !== undefined && args.percentDone !== currentTask.percent_done) affectedFields.push('percentDone');
+  if (args.description !== undefined && args.description !== currentTask.description)
+    affectedFields.push('description');
+  if (args.dueDate !== undefined && args.dueDate !== currentTask.due_date)
+    affectedFields.push('dueDate');
+  if (args.startDate !== undefined && args.startDate !== currentTask.start_date)
+    affectedFields.push('start_date');
+  if (args.endDate !== undefined && args.endDate !== currentTask.end_date)
+    affectedFields.push('end_date');
+  if (args.priority !== undefined && args.priority !== currentTask.priority)
+    affectedFields.push('priority');
+  // args.percentDone is a 0-100 percentage; currentTask.percent_done is the
+  // 0-1 wire fraction. Compare in wire space so "already 75%" is correctly
+  // reported as unchanged instead of always looking different.
+  if (
+    args.percentDone !== undefined &&
+    percentDoneToFraction(args.percentDone) !== currentTask.percent_done
+  )
+    affectedFields.push('percentDone');
   if (args.done !== undefined && args.done !== currentTask.done) affectedFields.push('done');
-  if (args.projectId !== undefined && args.projectId !== currentTask.project_id) affectedFields.push('projectId');
-  if (args.repeatAfter !== undefined && args.repeatAfter !== currentTask.repeat_after) affectedFields.push('repeatAfter');
+  // Vikunja stores hex_color WITHOUT the leading '#' (utils.NormalizeHex), so
+  // the stored '4287f5' is compared against the caller's '#4287f5' with the
+  // '#' stripped — otherwise a no-op recolour would always look like a change.
+  if (
+    args.hexColor !== undefined &&
+    args.hexColor.replace(/^#/, '').toLowerCase() !==
+      (currentTask.hex_color ?? '').replace(/^#/, '').toLowerCase()
+  )
+    affectedFields.push('hexColor');
+  if (args.projectId !== undefined && args.projectId !== currentTask.project_id)
+    affectedFields.push('projectId');
+  if (args.repeatAfter !== undefined && args.repeatAfter !== currentTask.repeat_after)
+    affectedFields.push('repeatAfter');
   // args.repeatMode is the user-facing string enum ('day'|'week'|...);
   // currentTask.repeat_mode is the API's numeric enum (0|1|2) — these were
   // never the same representation even before this migration (the legacy client's
   // type incorrectly claimed both were the string enum), so this comparison
   // is always true when repeatMode is supplied. Cast preserves that existing
   // runtime behavior while satisfying the now-correctly-typed comparison.
-  if (args.repeatMode !== undefined && (args.repeatMode as unknown) !== currentTask.repeat_mode) affectedFields.push('repeatMode');
+  if (args.repeatMode !== undefined && (args.repeatMode as unknown) !== currentTask.repeat_mode)
+    affectedFields.push('repeatMode');
   if (args.labels !== undefined) affectedFields.push('labels');
   if (args.assignees !== undefined) affectedFields.push('assignees');
   // bucketId has no comparable "current" representation here (models.Task's
@@ -264,7 +346,7 @@ async function analyzeUpdateState(
   return {
     currentTask,
     previousState,
-    affectedFields
+    affectedFields,
   };
 }
 
@@ -282,25 +364,42 @@ function buildUpdateData(currentTask: VikunjaTask, args: UpdateTaskArgs): Vikunj
     ...(args.startDate !== undefined && { start_date: args.startDate }),
     ...(args.endDate !== undefined && { end_date: args.endDate }),
     ...(args.priority !== undefined && { priority: args.priority }),
-    ...(args.percentDone !== undefined && { percent_done: args.percentDone }),
+    // 0-100 percentage in, 0-1 fraction on the wire.
+    ...(args.percentDone !== undefined && {
+      percent_done: percentDoneToFraction(args.percentDone),
+    }),
     ...(args.done !== undefined && { done: args.done }),
+    // Explicit-undefined so `hexColor: ''` reaches the wire as an empty
+    // hex_color, which is how Vikunja clears a task colour.
+    ...(args.hexColor !== undefined && { hex_color: args.hexColor }),
     // Move between projects — must be part of the full-model payload or Vikunja ignores it
     ...(args.projectId !== undefined && { project_id: args.projectId }),
     // Handle repeat configuration for updates. The generated
     // `models.Task.repeat_mode` type (0 | 1 | 2) matches the real API, so no
     // bypass cast is needed here (unlike the legacy client's incorrect string enum).
+    //
+    // #274 (HIGH-3): `convertRepeatConfiguration` expects `repeatAfter` as a
+    // user-friendly day/week/month/year *count* and multiplies it into
+    // seconds. `currentTask.repeat_after` is already in seconds (it came
+    // straight off the wire), so it must never be fed back into that
+    // converter as a fallback — doing so re-applies the multiplier to an
+    // already-converted value (e.g. a weekly task's 604800 seconds becomes
+    // 604800 * 604800 seconds, ~1650 years). When only `repeatMode` is being
+    // changed, leave `repeat_after` untouched and set `repeat_mode` directly.
     ...(args.repeatAfter !== undefined || args.repeatMode !== undefined
       ? ((): Partial<VikunjaTask> => {
-          const repeatConfig = convertRepeatConfiguration(
-            args.repeatAfter !== undefined ? args.repeatAfter : currentTask.repeat_after,
-            args.repeatMode !== undefined ? args.repeatMode : undefined,
-          );
-          const updates: Partial<VikunjaTask> = {};
-          if (repeatConfig.repeat_after !== undefined)
-            updates.repeat_after = repeatConfig.repeat_after;
-          if (repeatConfig.repeat_mode !== undefined)
-            updates.repeat_mode = repeatConfig.repeat_mode as 0 | 1 | 2;
-          return updates;
+          if (args.repeatAfter !== undefined) {
+            const repeatConfig = convertRepeatConfiguration(args.repeatAfter, args.repeatMode);
+            const updates: Partial<VikunjaTask> = {};
+            if (repeatConfig.repeat_after !== undefined)
+              updates.repeat_after = repeatConfig.repeat_after;
+            if (repeatConfig.repeat_mode !== undefined)
+              updates.repeat_mode = repeatConfig.repeat_mode as 0 | 1 | 2;
+            return updates;
+          }
+          // Only repeatMode was provided: repeat_after is already in
+          // seconds on the current task and must be left as-is.
+          return { repeat_mode: args.repeatMode === 'month' ? 1 : 0 };
         })()
       : {}),
   };
@@ -318,7 +417,11 @@ function buildUpdateData(currentTask: VikunjaTask, args: UpdateTaskArgs): Vikunj
  * vs an invalid label id) from the MCP client and made the diagnostic
  * round-trip much longer for the consumer.
  */
-async function updateTaskLabels(authManager: AuthManager, taskId: number, labelIds: number[]): Promise<void> {
+async function updateTaskLabels(
+  authManager: AuthManager,
+  taskId: number,
+  labelIds: number[],
+): Promise<void> {
   try {
     await setTaskLabels(authManager, taskId, labelIds);
   } catch (labelError) {
@@ -326,16 +429,11 @@ async function updateTaskLabels(authManager: AuthManager, taskId: number, labelI
     if (isAuthenticationError(labelError)) {
       throw new MCPError(
         ErrorCode.API_ERROR,
-        detail
-          ? `${AUTH_ERROR_MESSAGES.LABEL_UPDATE} ${detail}`
-          : AUTH_ERROR_MESSAGES.LABEL_UPDATE,
+        detail ? `${AUTH_ERROR_MESSAGES.LABEL_UPDATE} ${detail}` : AUTH_ERROR_MESSAGES.LABEL_UPDATE,
       );
     }
     if (detail) {
-      throw new MCPError(
-        ErrorCode.API_ERROR,
-        `Failed to update task labels ${detail}`,
-      );
+      throw new MCPError(ErrorCode.API_ERROR, `Failed to update task labels ${detail}`);
     }
     throw labelError;
   }
@@ -345,7 +443,11 @@ async function updateTaskLabels(authManager: AuthManager, taskId: number, labelI
  * Updates task assignees with diff calculation and authentication error
  * handling, via the direct-REST assignee endpoints.
  */
-async function updateTaskAssignees(authManager: AuthManager, taskId: number, newAssigneeIds: number[]): Promise<void> {
+async function updateTaskAssignees(
+  authManager: AuthManager,
+  taskId: number,
+  newAssigneeIds: number[],
+): Promise<void> {
   try {
     // Get current assignees to calculate diff
     const currentTask = await getTaskViaRest(authManager, taskId);
@@ -367,7 +469,9 @@ async function updateTaskAssignees(authManager: AuthManager, taskId: number, new
     // removal loop directly below): concurrent per-user writes to the same
     // task risk "database is locked" 500s on SQLite-backed instances.
     for (const userId of toAdd) {
-      await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId });
+      await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
+        user_id: userId,
+      });
     }
 
     // Remove old assignees only after new ones are successfully added. DELETE
@@ -388,7 +492,7 @@ async function updateTaskAssignees(authManager: AuthManager, taskId: number, new
     if (isAuthenticationError(assigneeError)) {
       throw new MCPError(
         ErrorCode.API_ERROR,
-        `${AUTH_ERROR_MESSAGES.ASSIGNEE_UPDATE} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`
+        `${AUTH_ERROR_MESSAGES.ASSIGNEE_UPDATE} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`,
       );
     }
     throw assigneeError;

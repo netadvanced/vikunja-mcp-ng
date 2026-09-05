@@ -23,6 +23,7 @@ jest.mock('../../src/client', () => ({
   getAuthManagerFromContext: jest.fn(),
   setGlobalClientFactory: jest.fn(),
   clearGlobalClientFactory: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 
 jest.mock('../../src/storage', () => ({
@@ -203,6 +204,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -225,12 +227,13 @@ describe('Templates Tool', () => {
         name: expect.stringMatching(/^template_\d+$/),
         filter: expect.any(String),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** create-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** create-template');
       expect(markdown).toContain('Template "Sprint Template" created successfully');
     });
 
@@ -271,6 +274,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -281,8 +285,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** create-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** create-template');
 
       // Verify the template data structure
       const createCall = (mockFilterStorage.create as jest.Mock).mock.calls[0][0];
@@ -310,6 +314,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -320,8 +325,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** create-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** create-template');
 
       // Verify undefined IDs are filtered out
       const createCall = (mockFilterStorage.create as jest.Mock).mock.calls[0][0];
@@ -365,6 +370,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -377,8 +383,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** create-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** create-template');
 
       const createCall = (mockFilterStorage.create as jest.Mock).mock.calls[0][0];
       const templateData = JSON.parse(createCall.filter);
@@ -414,6 +420,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -424,8 +431,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** create-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** create-template');
 
       const createCall = (mockFilterStorage.create as jest.Mock).mock.calls[0][0];
       const templateData = JSON.parse(createCall.filter);
@@ -465,6 +472,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         },
         {
           id: 'filter_2',
@@ -473,6 +481,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         },
       ];
       (mockFilterStorage.list as jest.Mock).mockResolvedValue(mockSavedFilters);
@@ -483,8 +492,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** list-templates");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** list-templates');
       expect(markdown).toContain('2'); // Should show count of 2 templates
     });
 
@@ -497,6 +506,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         },
         {
           id: 'filter_2',
@@ -505,6 +515,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         },
       ];
       (mockFilterStorage.list as jest.Mock).mockResolvedValue(mockSavedFilters);
@@ -513,8 +524,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** list-templates");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** list-templates');
       expect(markdown).toContain('1'); // Should show count of 1 template (invalid one filtered out)
     });
 
@@ -527,7 +538,9 @@ describe('Templates Tool', () => {
     it('should handle list errors with non-Error objects', async () => {
       (mockFilterStorage.list as jest.Mock).mockRejectedValue('String error');
 
-      await expect(toolHandler({ subcommand: 'list' })).rejects.toThrow('Failed to list templates: Unknown error');
+      await expect(toolHandler({ subcommand: 'list' })).rejects.toThrow(
+        'Failed to list templates: Unknown error',
+      );
     });
   });
 
@@ -548,6 +561,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       const result = await toolHandler({
@@ -559,8 +573,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** get-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** get-template');
       expect(markdown).toContain('Sprint Template');
     });
 
@@ -621,6 +635,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.update as jest.Mock).mockResolvedValue(undefined);
 
@@ -637,8 +652,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** update-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** update-template');
       expect(markdown).toContain('Template "New Name" updated successfully');
     });
 
@@ -655,6 +670,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.update as jest.Mock).mockResolvedValue(undefined);
 
@@ -704,6 +720,7 @@ describe('Templates Tool', () => {
           created: new Date(),
           updated: new Date(),
           isGlobal: true,
+          namespace: 'template' as const,
         })
         .mockResolvedValueOnce(null);
 
@@ -716,8 +733,8 @@ describe('Templates Tool', () => {
       // Should still return success even if the second findByName fails
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** update-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** update-template');
       expect(markdown).toContain('Template "New Name" updated successfully');
     });
 
@@ -733,6 +750,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.update as jest.Mock).mockRejectedValue(new Error('Update failed'));
 
@@ -757,6 +775,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.update as jest.Mock).mockRejectedValue('String error');
 
@@ -780,6 +799,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.delete as jest.Mock).mockResolvedValue(undefined);
 
@@ -792,8 +812,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** delete-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** delete-template');
       expect(markdown).toContain('Template "Template to delete" deleted successfully');
     });
 
@@ -824,6 +844,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.delete as jest.Mock).mockRejectedValue(new Error('Delete failed'));
 
@@ -843,6 +864,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       (mockFilterStorage.delete as jest.Mock).mockRejectedValue('String error');
 
@@ -885,6 +907,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       // Project + task creation succeed; the label-bulk POST resolves via
       // the default-success mockFetch configured in beforeEach.
@@ -928,8 +951,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** instantiate-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** instantiate-template');
       expect(markdown).toContain('Project "Sprint 24" created from template');
     });
 
@@ -948,6 +971,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       // Project + task creation succeed; the label-bulk POST fails.
       fetchOkOnce({ ...mockProject, id: 100 });
@@ -960,12 +984,15 @@ describe('Templates Tool', () => {
         projectName: 'New Project',
       });
 
-      // Should still succeed even if labels fail
+      // #271 (CRIT-10): a label-attach failure must never be swallowed —
+      // the task itself was created, but the response must be honest that
+      // instantiation did not fully succeed.
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** instantiate-template");
-      expect(markdown).toContain('1'); // Should show 1 created task
+      expect(markdown).toContain('## ❌ Error');
+      expect(markdown).toContain('Template instantiation partially completed');
+      expect(markdown).toContain('Failed to attach labels');
+      expect(markdown).toContain('Label not found');
+      expect(markdown).toContain('**FailedCount**:\n1');
     });
 
     it('should throw error if required params missing', async () => {
@@ -1011,6 +1038,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       mockFetch.mockRejectedValue(new Error('Project creation failed'));
 
@@ -1043,6 +1071,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
 
@@ -1056,12 +1085,16 @@ describe('Templates Tool', () => {
         projectName: 'New Project',
       });
 
-      // Should still succeed but report the failure
+      // #271 (CRIT-10): a per-task creation failure must flip
+      // metadata.success to false and be visible in the response, not just
+      // logged and buried in a `failedTasks` count nobody reads.
       const markdown = result.content[0].text;
-      const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** instantiate-template");
-      expect(markdown).toContain('1'); // Should show created and failed task counts
+      expect(markdown).toContain('## ❌ Error');
+      expect(markdown).toContain('Template instantiation partially completed');
+      expect(markdown).toContain('1/2 tasks created');
+      expect(markdown).toContain('Failed tasks');
+      expect(markdown).toContain('Task creation failed');
+      expect(markdown).toContain('**FailedCount**:\n1');
     });
 
     it('should handle unexpected errors', async () => {
@@ -1120,6 +1153,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1141,8 +1175,8 @@ describe('Templates Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(markdown).toContain("## ✅ Success");
-      expect(markdown).toContain("**Operation:** instantiate-template");
+      expect(markdown).toContain('## ✅ Success');
+      expect(markdown).toContain('**Operation:** instantiate-template');
     });
 
     it('should handle tasks with position field', async () => {
@@ -1165,6 +1199,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1198,6 +1233,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
 
       // Project created with null ID
@@ -1242,6 +1278,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
 
@@ -1287,6 +1324,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1340,6 +1378,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1377,6 +1416,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
 
@@ -1409,6 +1449,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
 
@@ -1444,6 +1485,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
 
@@ -1473,10 +1515,12 @@ describe('Templates Tool', () => {
           title: 'Project',
           // No description field at all
         },
-        tasks: [{
-          title: 'Task',
-          // No description
-        }],
+        tasks: [
+          {
+            title: 'Task',
+            // No description
+          },
+        ],
       };
 
       (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
@@ -1486,6 +1530,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1514,11 +1559,13 @@ describe('Templates Tool', () => {
           title: 'Project {{TODAY}}',
           description: 'Desc {{NOW}}',
         },
-        tasks: [{
-          title: 'Task {{TODAY}}',
-          description: 'Task desc {{NOW}}',
-          due_date: '2025-12-31T00:00:00Z', // Add due_date to test line 357
-        }],
+        tasks: [
+          {
+            title: 'Task {{TODAY}}',
+            description: 'Task desc {{NOW}}',
+            due_date: '2025-12-31T00:00:00Z', // Add due_date to test line 357
+          },
+        ],
       };
 
       (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
@@ -1528,6 +1575,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1548,6 +1596,95 @@ describe('Templates Tool', () => {
       expect(taskCall.due_date).toBe('2025-12-31T00:00:00Z');
     });
 
+    describe('date normalization', () => {
+      it('coerces a date-only due_date to RFC3339 before creating the task', async () => {
+        const mockTemplate = {
+          id: 'template_123',
+          name: 'Template',
+          projectData: { title: 'Project' },
+          tasks: [{ title: 'Task', due_date: '2026-09-01' }],
+        };
+
+        (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
+          id: 'filter_123',
+          name: 'template_123',
+          filter: JSON.stringify(mockTemplate),
+          created: new Date(),
+          updated: new Date(),
+          isGlobal: true,
+          namespace: 'template' as const,
+        });
+        fetchOkOnce({ ...mockProject, id: 100 });
+        fetchOkOnce({ ...mockTask, id: 200 });
+
+        await toolHandler({
+          subcommand: 'instantiate',
+          id: 'template_123',
+          projectName: 'Test Project',
+        });
+
+        expect(fetchBody(1).due_date).toBe('2026-09-01T00:00:00Z');
+      });
+
+      it('leaves a full RFC3339 due_date timestamp unchanged', async () => {
+        const mockTemplate = {
+          id: 'template_123',
+          name: 'Template',
+          projectData: { title: 'Project' },
+          tasks: [{ title: 'Task', due_date: '2026-09-01T15:30:00Z' }],
+        };
+
+        (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
+          id: 'filter_123',
+          name: 'template_123',
+          filter: JSON.stringify(mockTemplate),
+          created: new Date(),
+          updated: new Date(),
+          isGlobal: true,
+          namespace: 'template' as const,
+        });
+        fetchOkOnce({ ...mockProject, id: 100 });
+        fetchOkOnce({ ...mockTask, id: 200 });
+
+        await toolHandler({
+          subcommand: 'instantiate',
+          id: 'template_123',
+          projectName: 'Test Project',
+        });
+
+        expect(fetchBody(1).due_date).toBe('2026-09-01T15:30:00Z');
+      });
+
+      it('does not add a due_date field when the task template has none', async () => {
+        const mockTemplate = {
+          id: 'template_123',
+          name: 'Template',
+          projectData: { title: 'Project' },
+          tasks: [{ title: 'Task' }],
+        };
+
+        (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
+          id: 'filter_123',
+          name: 'template_123',
+          filter: JSON.stringify(mockTemplate),
+          created: new Date(),
+          updated: new Date(),
+          isGlobal: true,
+          namespace: 'template' as const,
+        });
+        fetchOkOnce({ ...mockProject, id: 100 });
+        fetchOkOnce({ ...mockTask, id: 200 });
+
+        await toolHandler({
+          subcommand: 'instantiate',
+          id: 'template_123',
+          projectName: 'Test Project',
+        });
+
+        expect(fetchBody(1)).not.toHaveProperty('due_date');
+      });
+    });
+
     it('should handle undefined text in applyVariables', async () => {
       const mockTemplate = {
         id: 'template_123',
@@ -1556,9 +1693,11 @@ describe('Templates Tool', () => {
           title: undefined, // Undefined title
           description: 'Description',
         },
-        tasks: [{
-          title: undefined, // Undefined task title
-        }],
+        tasks: [
+          {
+            title: undefined, // Undefined task title
+          },
+        ],
       };
 
       (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
@@ -1568,6 +1707,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1613,9 +1753,11 @@ describe('Templates Tool', () => {
           title: 'Project {{TODAY}}',
           description: 'Starting {{NOW}}',
         },
-        tasks: [{
-          title: 'Task for {{TODAY}}',
-        }],
+        tasks: [
+          {
+            title: 'Task for {{TODAY}}',
+          },
+        ],
       };
 
       (mockFilterStorage.findByName as jest.Mock).mockResolvedValue({
@@ -1625,6 +1767,7 @@ describe('Templates Tool', () => {
         created: new Date(),
         updated: new Date(),
         isGlobal: true,
+        namespace: 'template' as const,
       });
       fetchOkOnce({ ...mockProject, id: 100 });
       fetchOkOnce({ ...mockTask, id: 200 });
@@ -1688,7 +1831,7 @@ describe('Templates Tool', () => {
       // Make session storage resolution throw an unexpected error; this happens
       // before the subcommand switch, so it hits the handler's top-level catch.
       (storageManager.getStorage as jest.Mock).mockRejectedValue(
-        new TypeError('Unexpected type error')
+        new TypeError('Unexpected type error'),
       );
 
       await expect(
@@ -1701,7 +1844,7 @@ describe('Templates Tool', () => {
     it('should handle non-Error objects thrown at top level', async () => {
       // Reject with a non-Error value to exercise the 'Unknown error' branch.
       (storageManager.getStorage as jest.Mock).mockRejectedValue(
-        'String thrown' // eslint-disable-line no-throw-literal
+        'String thrown', // eslint-disable-line no-throw-literal
       );
 
       await expect(

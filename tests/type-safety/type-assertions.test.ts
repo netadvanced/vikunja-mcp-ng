@@ -113,8 +113,14 @@ describe('Type Assertion Safety', () => {
   describe('Type Safety in Conditional Logic', () => {
     it('should handle conditional types safely', () => {
       // Safe conditional type handling
-      interface DataA { type: 'A'; valueA: string; }
-      interface DataB { type: 'B'; valueB: number; }
+      interface DataA {
+        type: 'A';
+        valueA: string;
+      }
+      interface DataB {
+        type: 'B';
+        valueB: number;
+      }
       type Data = DataA | DataB;
 
       const data: Data = { type: 'A', valueA: 'test' };

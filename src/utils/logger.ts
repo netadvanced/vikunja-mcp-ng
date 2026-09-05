@@ -1,5 +1,7 @@
 import { format } from 'util';
 
+import { redactSecretsInText, sanitizeLogArgs } from './security';
+
 export enum LogLevel {
   ERROR = 0,
   WARN = 1,
@@ -44,10 +46,21 @@ class Logger {
   }
 
   private log(level: LogLevel, message: string, ...args: unknown[]): void {
+    // The level gate comes first: nothing is cloned, walked or scanned for a
+    // level that will not be emitted, so redaction costs nothing when off.
     if (level <= this.level) {
       const timestamp = new Date().toISOString();
       const levelStr = this.levelNames[level];
-      const formattedMessage = format(message, ...args);
+
+      // Structural pass: redacts by key name and unwraps Errors. Every call
+      // site is covered here, so no caller has to remember to strip its own
+      // credentials before logging.
+      const safeArgs = sanitizeLogArgs(args);
+
+      // Textual backstop over the rendered line: catches credentials
+      // interpolated into the message itself and anything util.format pulled
+      // out of a value the structural pass could not reach.
+      const formattedMessage = redactSecretsInText(format(message, ...safeArgs));
 
       // Always use console.error for MCP servers as stdout is reserved for protocol
       console.error(`[${timestamp}] [${levelStr}] ${formattedMessage}`);

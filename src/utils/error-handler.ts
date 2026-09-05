@@ -7,6 +7,7 @@
 
 import { z } from 'zod';
 import { MCPError, ErrorCode } from '../types/errors';
+import { redactSecretsInText } from './security';
 
 /**
  * Shared prefix for every `MCPError` thrown by `vikunjaRestRequest`/
@@ -21,25 +22,36 @@ const REST_ERROR_MESSAGE_PREFIX = 'Vikunja REST request failed (';
 /**
  * Security-sensitive patterns that should be sanitized from error messages
  * Minimal set of patterns for essential security while maintaining usability
+ *
+ * SECURITY: these regexes are module-level constants shared by every call to
+ * {@link SecureErrorHandler.sanitize}, and they are used with `.test()`. They
+ * therefore MUST NOT carry the `g` (or `y`) flag. A global regex keeps a
+ * mutable `lastIndex` on the shared object, so a match in one call makes the
+ * *next* call resume scanning from that offset, so a shorter follow-up message
+ * gets no match at all and is returned unsanitized. In `oidc-http` mode one
+ * process serves many identities, so that turned into a cross-request (and
+ * therefore cross-tenant) leak of raw error text: audit #292 MED-8. Keeping
+ * the patterns non-global makes `.test()` stateless, which is all this array
+ * is ever used for.
  */
 const SECURITY_PATTERNS = [
   // File paths and system paths
-  /\/[a-zA-Z0-9_\-/.]+\.(json|js|ts|yml|yaml|conf|config|env|key|pem|p12|jks)/g,
-  /[A-Z]:\\[a-zA-Z0-9_\-\\]+\.(json|js|ts|yml|yaml|conf|config|env|key|pem|p12|jks)/g,
+  /\/[a-zA-Z0-9_\-/.]+\.(json|js|ts|yml|yaml|conf|config|env|key|pem|p12|jks)/,
+  /[A-Z]:\\[a-zA-Z0-9_\-\\]+\.(json|js|ts|yml|yaml|conf|config|env|key|pem|p12|jks)/,
 
   // Database connection strings
-  /mysql:\/\/[^@\s]+@[^/\s]+\/[a-zA-Z0-9_-]+/g,
-  /postgresql:\/\/[^@\s]+@[^/\s]+\/[a-zA-Z0-9_-]+/g,
-  /mongodb:\/\/[^@\s]+/g,
+  /mysql:\/\/[^@\s]+@[^/\s]+\/[a-zA-Z0-9_-]+/,
+  /postgresql:\/\/[^@\s]+@[^/\s]+\/[a-zA-Z0-9_-]+/,
+  /mongodb:\/\/[^@\s]+/,
 
   // Network details
-  /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g,
-  /Bearer\s+[a-zA-Z0-9-_.]+/g,
-  /tk_[a-zA-Z0-9]{32,}/g,
+  /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/,
+  /Bearer\s+[a-zA-Z0-9-_.]+/,
+  /tk_[a-zA-Z0-9]{32,}/,
 
   // Stack traces
-  /at\s+[a-zA-Z_$][a-zA-Z0-9_$]*\s*\([^)]*\)/g,
-  /:\d+:\d+\)/g,
+  /at\s+[a-zA-Z_$][a-zA-Z0-9_$]*\s*\([^)]*\)/,
+  /:\d+:\d+\)/,
 ];
 
 /**
@@ -75,7 +87,7 @@ class SecureErrorHandler {
     // Database schema and connection details (table names, hosts, passwords)
     if (
       lowerMessage.includes('er_no_such_table') ||
-      lowerMessage.includes('table \'') ||
+      lowerMessage.includes("table '") ||
       lowerMessage.includes('mysql://') ||
       lowerMessage.includes('postgresql://') ||
       lowerMessage.includes('mongodb://') ||
@@ -131,14 +143,28 @@ class SecureErrorHandler {
     }
 
     // Check for other security patterns
-    const hasSensitiveInfo = SECURITY_PATTERNS.some(pattern => pattern.test(message));
+    const hasSensitiveInfo = SECURITY_PATTERNS.some((pattern) => pattern.test(message));
 
     if (hasSensitiveInfo) {
       return 'System error occurred';
     }
 
-    // If no security patterns detected, return original message
-    return message;
+    // Final, always-on credential pass (audit #287 / HIGH-16).
+    //
+    // Everything above is a coarse *category* heuristic: it recognizes a
+    // handful of shapes and replaces the whole message with a canned string.
+    // None of those shapes covers a bare credential (a raw `eyJ...` JWT, a PEM
+    // block, a webhook URL with the secret in its path), so before this pass
+    // existed such a value travelled verbatim into `MCPError.message` and out
+    // to the MCP client. Only `Logger.log` went through redaction (decision
+    // 26); the thrown-error surface had no redaction path at all.
+    //
+    // `redactSecretsInText` is the same function the logger uses, so there is
+    // one definition of "what a secret looks like". It is applied last and
+    // surgically (it replaces only the credential substring, keeping the rest
+    // of the message readable), which is why it does not disturb the canned
+    // returns above: a message that matched a category never reaches here.
+    return redactSecretsInText(message);
   }
 
   /**
@@ -177,7 +203,7 @@ class SecureErrorHandler {
     error: unknown,
     operation: string,
     resourceId?: string | number,
-    customMessage?: string
+    customMessage?: string,
   ): MCPError {
     if (this.isStatusCodeError(error) && error.statusCode === 404) {
       if (customMessage) {
@@ -189,7 +215,7 @@ class SecureErrorHandler {
 
       return new MCPError(
         ErrorCode.NOT_FOUND,
-        `${resourceType.charAt(0).toUpperCase() + resourceType.slice(1)}${resourceInfo} not found`
+        `${resourceType.charAt(0).toUpperCase() + resourceType.slice(1)}${resourceInfo} not found`,
       );
     }
 
@@ -250,7 +276,7 @@ class SecureErrorHandler {
     toolName: string,
     operation: string,
     resourceId?: string | number,
-    customMessage?: string
+    customMessage?: string,
   ): MCPError {
     if (error instanceof MCPError) {
       return error;
@@ -263,10 +289,7 @@ class SecureErrorHandler {
     const message = error instanceof Error ? error.message : 'Unknown error';
     const sanitized = this.sanitize(message);
 
-    return new MCPError(
-      ErrorCode.API_ERROR,
-      `${toolName}.${operation} failed: ${sanitized}`
-    );
+    return new MCPError(ErrorCode.API_ERROR, `${toolName}.${operation} failed: ${sanitized}`);
   }
 
   /**
@@ -277,11 +300,11 @@ class SecureErrorHandler {
     return new MCPError(
       ErrorCode.AUTH_REQUIRED,
       `Authentication required${context}. Please connect first:\n` +
-      `vikunja_auth.connect({\n` +
-      `  apiUrl: 'https://your-vikunja.com/api/v1',\n` +
-      `  apiToken: 'your-api-token'\n` +
-      `})\n\n` +
-      `Get your API token from Vikunja Settings > API Access.`
+        `vikunja_auth.connect({\n` +
+        `  apiUrl: 'https://your-vikunja.com/api/v1',\n` +
+        `  apiToken: 'your-api-token'\n` +
+        `})\n\n` +
+        `Get your API token from Vikunja Settings > API Access.`,
     );
   }
 
@@ -321,7 +344,7 @@ class SecureErrorHandler {
     ) {
       return new MCPError(
         ErrorCode.AUTH_REQUIRED,
-        `Failed to ${operation}. Please check authentication and API access.`
+        `Failed to ${operation}. Please check authentication and API access.`,
       );
     }
 
@@ -329,7 +352,7 @@ class SecureErrorHandler {
     if (lowerMessage.includes('timeout')) {
       return new MCPError(
         ErrorCode.API_ERROR,
-        `Request timeout while trying to ${operation}. Please try again.`
+        `Request timeout while trying to ${operation}. Please try again.`,
       );
     }
 
@@ -366,7 +389,7 @@ export const handleStatusCodeError = (
   error: unknown,
   operation: string,
   resourceId?: string | number,
-  customMessage?: string
+  customMessage?: string,
 ): MCPError => errorHandler.handleStatusCode(error, operation, resourceId, customMessage);
 
 export const wrapIfRestOrigin = (error: MCPError, operation: string): MCPError =>
@@ -380,7 +403,7 @@ export const wrapToolError = (
   toolName: string,
   operation: string,
   resourceId?: string | number,
-  customMessage?: string
+  customMessage?: string,
 ): MCPError => errorHandler.wrap(error, toolName, operation, resourceId, customMessage);
 
 export const createAuthRequiredError = (operation?: string): MCPError =>

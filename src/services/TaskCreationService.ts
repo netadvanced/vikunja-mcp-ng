@@ -3,11 +3,13 @@ import type { TaskCreationData } from '../types';
 import { MCPError, ErrorCode } from '../types';
 import { isAuthenticationError } from '../utils/auth-error-handler';
 import { setTaskLabels } from '../utils/label-bulk';
+import { percentDoneToFraction } from '../utils/percent-done';
 import type { ImportedTask } from '../parsers/InputParserFactory';
 import type { EntityResolutionResult } from './EntityResolver';
 import type { AuthManager } from '../auth/AuthManager';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { getTaskViaRest } from '../utils/task-rest-transport';
+import { normalizeDateForApi } from '../tools/tasks/validation';
 import type { components } from '../types/generated/vikunja-openapi';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json).
@@ -37,6 +39,7 @@ interface TaskCreateRequest {
   hex_color?: string;
   repeat_after?: number;
   repeat_mode?: 'day' | 'week' | 'month' | 'year';
+  reminders?: Array<{ reminder: string }>;
 }
 
 /**
@@ -76,6 +79,9 @@ function convertTaskCreationDataToTask(taskData: TaskCreationData): TaskCreateRe
   }
   if (taskData.repeat_after !== undefined) {
     convertedTask.repeat_after = taskData.repeat_after;
+  }
+  if (taskData.reminders !== undefined) {
+    convertedTask.reminders = taskData.reminders;
   }
   if (taskData.repeat_mode !== undefined) {
     // Only assign if it's a valid repeat_mode value
@@ -120,7 +126,7 @@ export class TaskCreationService {
     projectId: number,
     authManager: AuthManager,
     entityMaps: EntityResolutionResult,
-    catchErrors: boolean = true
+    catchErrors: boolean = true,
   ): Promise<TaskCreationResult> {
     const warnings: string[] = [];
 
@@ -133,7 +139,7 @@ export class TaskCreationService {
         authManager,
         createdTask,
         task,
-        entityMaps.labelMap
+        entityMaps.labelMap,
       );
       warnings.push(...labelWarnings);
 
@@ -142,13 +148,15 @@ export class TaskCreationService {
         createdTask,
         task,
         entityMaps.userMap,
-        entityMaps.projectUsers
+        entityMaps.projectUsers,
+        entityMaps.userFetchFailedDueToAuth,
+        entityMaps.userSearchFailed,
       );
       warnings.push(...assigneeWarnings);
 
-      if (task.reminders && task.reminders.length > 0) {
-        warnings.push(this.handleReminders(createdTask.id, task.reminders as Array<{ reminder_date?: string; reminder?: string }>));
-      }
+      // Reminders (when present) were already included in the create body
+      // by `prepareTaskData` — see its comment on why no post-creation
+      // reminder call, or warning about needing one, belongs here (#284).
 
       const result: TaskCreationResult = {
         success: true,
@@ -193,7 +201,12 @@ export class TaskCreationService {
       title: task.title,
       done: task.done || false,
       priority: task.priority || 0,
-      percent_done: task.percentDone || 0,
+      // ImportedTask.percentDone is a whole percentage 0-100 (importedTaskSchema
+      // has always validated it that way); TaskCreationData.percent_done is the
+      // 0-1 wire field. The conversion was missing, so importing a task at 75%
+      // sent `percent_done: 75` — 75x out of range, silently accepted by
+      // Vikunja. See src/utils/percent-done.ts.
+      percent_done: percentDoneToFraction(task.percentDone || 0),
     };
 
     // Only add description if it's not undefined
@@ -202,11 +215,31 @@ export class TaskCreationService {
     }
 
     // Handle dates
-    if (task.dueDate) taskData.due_date = task.dueDate;
-    if (task.startDate) taskData.start_date = task.startDate;
-    if (task.endDate) taskData.end_date = task.endDate;
+    // Coerce date-only values (e.g. '2026-09-01') to RFC3339 before sending
+    // — verified live against Vikunja 2.4.0: this path's `createBaseTask`
+    // hits the exact same endpoint (PUT /projects/{id}/tasks) as
+    // `TaskCreationService.createTask` (src/tools/tasks/crud/), which
+    // rejects a bare date-only due_date with HTTP 400 code 2004 "Invalid
+    // model provided" (issues #167/#163). Same shared helper that path uses
+    // — never a second hand-rolled coercion.
+    if (task.dueDate) taskData.due_date = normalizeDateForApi(task.dueDate) ?? task.dueDate;
+    if (task.startDate) taskData.start_date = normalizeDateForApi(task.startDate) ?? task.startDate;
+    if (task.endDate) taskData.end_date = normalizeDateForApi(task.endDate) ?? task.endDate;
 
     if (task.hexColor) taskData.hex_color = task.hexColor;
+
+    // Reminders CAN be included at creation time — `PUT /projects/{id}/tasks`
+    // accepts a full task body (`models.Task`, which includes `reminders`),
+    // so there is no need to defer to a post-creation call the way this path
+    // used to claim was required (issue #284 HIGH-13: reminders were
+    // accepted by the import schema but silently dropped, with a warning
+    // message asserting an API limitation that doesn't exist — this
+    // codebase's own `vikunja_task_reminders` add-reminder proves reminders
+    // can be added after creation too, but including them here up front
+    // avoids the extra round trip entirely).
+    if (task.reminders && task.reminders.length > 0) {
+      taskData.reminders = task.reminders.map((reminder) => ({ reminder }));
+    }
 
     if (task.repeatAfter) taskData.repeat_after = task.repeatAfter;
     if (task.repeatMode !== undefined) {
@@ -236,7 +269,7 @@ export class TaskCreationService {
   private async createBaseTask(
     authManager: AuthManager,
     taskData: TaskCreationData,
-    taskTitle: string
+    taskTitle: string,
   ): Promise<VikunjaTask> {
     try {
       // Safely convert TaskCreationData to the request body shape Vikunja expects
@@ -293,7 +326,7 @@ export class TaskCreationService {
     authManager: AuthManager,
     createdTask: VikunjaTask,
     task: ImportedTask,
-    labelMap: Map<string, number>
+    labelMap: Map<string, number>,
   ): Promise<string[]> {
     const warnings: string[] = [];
 
@@ -329,7 +362,11 @@ export class TaskCreationService {
         await setTaskLabels(authManager, createdTask.id, labelIds);
 
         // Verify the labels were actually assigned (API tokens may silently fail)
-        const labelsActuallyAssigned = await this.verifyLabelAssignment(authManager, createdTask.id, labelIds);
+        const labelsActuallyAssigned = await this.verifyLabelAssignment(
+          authManager,
+          createdTask.id,
+          labelIds,
+        );
 
         if (!labelsActuallyAssigned) {
           // Label assignment silently failed (common with API tokens)
@@ -338,7 +375,9 @@ export class TaskCreationService {
             labelIds,
             labelNames: task.labels,
           });
-          warnings.push(`Labels specified but not assigned (API token limitation). Consider using JWT authentication for label support.`);
+          warnings.push(
+            `Labels specified but not assigned (API token limitation). Consider using JWT authentication for label support.`,
+          );
         } else {
           logger.debug('Labels assigned and verified successfully', {
             taskId: createdTask.id,
@@ -347,7 +386,11 @@ export class TaskCreationService {
           });
         }
       } catch (labelError) {
-        const warning = this.handleLabelAssignmentError(labelError as Error | { code?: string; message?: string }, createdTask.id, task.labels);
+        const warning = this.handleLabelAssignmentError(
+          labelError as Error | { code?: string; message?: string },
+          createdTask.id,
+          task.labels,
+        );
         warnings.push(warning);
       }
     }
@@ -366,7 +409,7 @@ export class TaskCreationService {
   private async verifyLabelAssignment(
     authManager: AuthManager,
     taskId: number,
-    expectedLabelIds: number[]
+    expectedLabelIds: number[],
   ): Promise<boolean> {
     try {
       const updatedTask = await getTaskViaRest(authManager, taskId);
@@ -393,20 +436,30 @@ export class TaskCreationService {
    * @param labelNames - The label names that were being assigned
    * @returns Warning message
    */
-  private handleLabelAssignmentError(labelError: Error | { code?: string; message?: string }, taskId: number | undefined, labelNames: string[]): string {
+  private handleLabelAssignmentError(
+    labelError: Error | { code?: string; message?: string },
+    taskId: number | undefined,
+    labelNames: string[],
+  ): string {
     // Check if this is an authentication error
     if (isAuthenticationError(labelError)) {
       logger.warn('Label assignment failed due to authentication issue', {
         taskId,
         labelNames,
-        error: labelError instanceof Error ? labelError.message : (labelError?.message ?? 'Unknown error'),
+        error:
+          labelError instanceof Error
+            ? labelError.message
+            : (labelError?.message ?? 'Unknown error'),
       });
       return `Label assignment requires JWT authentication. Labels were not assigned.`;
     } else {
       logger.error('Failed to assign labels to task', {
         taskId,
         labelNames,
-        error: labelError instanceof Error ? labelError.message : (labelError?.message ?? 'Unknown error'),
+        error:
+          labelError instanceof Error
+            ? labelError.message
+            : (labelError?.message ?? 'Unknown error'),
       });
       return `Failed to assign labels: ${labelError instanceof Error ? labelError.message : 'Unknown error'}`;
     }
@@ -420,6 +473,17 @@ export class TaskCreationService {
    * @param task - Original task data with assignees
    * @param userMap - Mapping of usernames to IDs
    * @param projectUsers - List of available project users
+   * @param userFetchFailedDueToAuth - True if `EntityResolver.fetchUsers` hit
+   *   a real auth failure on at least one search (see
+   *   `EntityResolutionResult.userFetchFailedDueToAuth`)
+   * @param userSearchFailed - True if at least one non-auth search call
+   *   itself failed (network/5xx/etc, see
+   *   `EntityResolutionResult.userSearchFailed`). Distinguishing this from
+   *   "the search succeeded and found nobody" is the issue #283 HIGH-12 fix:
+   *   an empty `projectUsers` with BOTH flags false means the search(es)
+   *   worked and legitimately matched no one, so control falls through to
+   *   the same "Users not found" reporting a partial miss gets below, rather
+   *   than misdiagnosing it as an API problem.
    * @returns Array of warnings from user assignment
    */
   private async handleUserAssignment(
@@ -427,7 +491,9 @@ export class TaskCreationService {
     createdTask: VikunjaTask,
     task: ImportedTask,
     userMap: Map<string, number>,
-    projectUsers: VikunjaUser[]
+    projectUsers: VikunjaUser[],
+    userFetchFailedDueToAuth: boolean,
+    userSearchFailed: boolean,
   ): Promise<string[]> {
     const warnings: string[] = [];
 
@@ -435,20 +501,34 @@ export class TaskCreationService {
       return warnings;
     }
 
-    // Check if we have any users mapped (might be empty due to API issue)
-    if (projectUsers.length === 0) {
-      logger.warn('Skipping assignees due to user fetch failure', {
-        taskId: createdTask.id || 'unknown',
-        assignees: task.assignees,
-      });
-      warnings.push('Assignees skipped due to user fetch failure (possible API authentication issue)');
+    // An empty projectUsers list means no assignee could possibly resolve,
+    // but "empty" has two very different causes: the search call(s) broke
+    // (auth or otherwise), or every search ran fine and simply matched no
+    // one. Only the former is actually an API problem worth surfacing as
+    // one — the latter is the ordinary "Users not found" case handled below.
+    if (projectUsers.length === 0 && (userFetchFailedDueToAuth || userSearchFailed)) {
+      if (userFetchFailedDueToAuth) {
+        logger.warn('Skipping assignees due to user fetch authentication failure', {
+          taskId: createdTask.id || 'unknown',
+          assignees: task.assignees,
+        });
+        warnings.push(
+          'Assignees skipped due to user fetch failure (possible API authentication issue)',
+        );
+      } else {
+        logger.warn('Skipping assignees due to user search failure', {
+          taskId: createdTask.id || 'unknown',
+          assignees: task.assignees,
+        });
+        warnings.push(
+          'Assignees skipped: user search failed (network or server error, not an authentication issue)',
+        );
+      }
       return warnings;
     }
 
     // Check for users that are not found first
-    const notFoundUsers = task.assignees.filter(
-      (username) => !userMap.has(username.toLowerCase()),
-    );
+    const notFoundUsers = task.assignees.filter((username) => !userMap.has(username.toLowerCase()));
 
     if (notFoundUsers.length > 0) {
       warnings.push(`Users not found: ${notFoundUsers.join(', ')}`);
@@ -471,7 +551,9 @@ export class TaskCreationService {
         // on SQLite-backed instances.
         const taskId = createdTask.id;
         for (const userId of userIds) {
-          await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, { user_id: userId });
+          await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
+            user_id: userId,
+          });
         }
       } catch (assignError) {
         logger.error('Failed to assign users to task', {
@@ -480,28 +562,12 @@ export class TaskCreationService {
           assignees: task.assignees,
           error: assignError instanceof Error ? assignError.message : String(assignError),
         });
-        warnings.push(`Failed to assign users: ${assignError instanceof Error ? assignError.message : 'Unknown error'}`);
+        warnings.push(
+          `Failed to assign users: ${assignError instanceof Error ? assignError.message : 'Unknown error'}`,
+        );
       }
     }
 
     return warnings;
-  }
-
-  /**
-   * Handles reminders for a task (API limitation)
-   *
-   * @param taskId - The task ID
-   * @param reminders - Array of reminder data
-   * @returns Warning message about API limitation
-   */
-  private handleReminders(taskId: number | undefined, reminders: Array<{ reminder_date?: string; reminder?: string }>): string {
-    // Note: The API doesn't support adding reminders separately,
-    // they need to be added during task creation
-    // This is a limitation of the current implementation
-    logger.warn('Reminders cannot be added after task creation', {
-      taskId: taskId || 'unknown',
-      reminders,
-    });
-    return 'Reminders cannot be added after task creation (API limitation). Include them in the initial task data.';
   }
 }

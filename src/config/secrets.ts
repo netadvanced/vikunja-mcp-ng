@@ -20,7 +20,7 @@ import { ConfigurationError } from './types';
  * therefore support the `_FILE` secrets convention. Audited against all
  * `process.env.*` reads under `src/` — see docs/CONFIGURATION.md.
  */
-export const SENSITIVE_ENV_VARS = ['VIKUNJA_API_TOKEN'] as const;
+export const SENSITIVE_ENV_VARS = ['VIKUNJA_API_TOKEN', 'VIKUNJA_MCP_VAULT_KEY'] as const;
 
 export type SensitiveEnvVar = (typeof SENSITIVE_ENV_VARS)[number];
 
@@ -45,7 +45,7 @@ export function readSecretEnv(varName: string): string | undefined {
       varName,
       `Both ${varName} and ${fileVarName} are set. Set only one — remove ` +
         `${varName} to read the secret from a file, or remove ${fileVarName} ` +
-        `to use the plain environment variable.`
+        `to use the plain environment variable.`,
     );
   }
 
@@ -56,7 +56,7 @@ export function readSecretEnv(varName: string): string | undefined {
       throw new ConfigurationError(
         varName,
         `Failed to read secret file for ${fileVarName} (${filePath}): ` +
-          `${error instanceof Error ? error.message : String(error)}`
+          `${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

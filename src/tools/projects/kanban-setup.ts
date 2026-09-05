@@ -1,7 +1,10 @@
 /**
- * `setup-kanban` — a single-call composite that provisions a whole Kanban
- * board: project (new or existing), Kanban view, ordered buckets/columns,
- * and tasks placed into their named column.
+ * `setup-kanban` — a single-call composite that provisions a project (new or
+ * existing) and its tasks. `columns` is optional (issue #185): when
+ * supplied, it also provisions a Kanban view with ordered buckets/columns
+ * and places each task into its named column; when omitted, this is purely
+ * a project+tasks composite — no Kanban view, bucket, or placement step
+ * runs at all, and it costs strictly fewer API calls than the columns form.
  *
  * Why this exists (issue #173, battle-campaign transcript analysis
  * 2026-07-23/24): the `q3-offsite-kanban` battle scenario (new project, a
@@ -50,6 +53,18 @@
  * claimed by any requested column are left untouched (never deleted) —
  * this composite only ever creates, renames, or reuses; it never removes.
  *
+ * Done-bucket protection (issue #273): the view's `done_bucket_id` is NEVER
+ * eligible for that leftover-repurpose fallback. On a fresh project Vikunja
+ * auto-creates To-Do/Doing/Done buckets with Done set as the view's
+ * done-bucket; without this guard, `setup-kanban { columns: ["Todo", "In
+ * Progress", "QA"] }` would rename Done to "QA" purely by position, and
+ * every task later placed there would be silently auto-completed by
+ * Vikunja's own done-bucket behavior — reported as success:true. An
+ * exact-title match against the done-bucket is still honored (deliberate,
+ * name-driven reuse); only the blind positional fallback is excluded. When
+ * the done-bucket survives untouched this way, the response's columns data
+ * carries doneBucketPreserved: true and the summary message says so.
+ *
  * Ordering guarantee: every bucket this composite touches — reused,
  * renamed, or newly created — has its `position` explicitly pinned to a
  * NON-ZERO, 65536-spaced value derived from its index in the requested
@@ -73,7 +88,10 @@
  * up front is cheap to recover from (re-running setup-kanban reuses the
  * existing project/view/buckets rather than duplicating them), whereas an
  * orphaned created-but-unplaced task is not. A task with no `column` at all
- * is never an error — it is simply created unplaced.
+ * is never an error — it is simply created unplaced. Same fail-fast
+ * treatment applies when `columns` is omitted altogether: a task naming a
+ * `column` with no `columns` array at all rejects the WHOLE call up front,
+ * for the same reason — there is no board to place it on.
  *
  * Error semantics (honest, server-derived, bulk-style): resolving each
  * column and creating+placing each task are independent, try/caught
@@ -96,9 +114,11 @@
 import type { AuthManager } from '../../auth/AuthManager';
 import { MCPError, ErrorCode, type CreateProjectRequest } from '../../types';
 import { validateId } from '../../utils/validation';
+import { validateHexColor } from './validation';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
 import { vikunjaRestRequest, resolveKanbanView } from '../../utils/vikunja-rest';
 import { ensureLabelByTitle } from '../../utils/label-ensure';
+import { assertValidPercentDone } from '../../utils/percent-done';
 import { fetchBuckets, createBucketRaw, updateBucketRaw } from './buckets';
 import { moveTaskToBucket } from '../tasks/buckets';
 import { createOneBulkTask, type BulkCreateTaskData } from '../tasks/bulk-operations';
@@ -122,6 +142,17 @@ export interface SetupKanbanTaskInput {
   description?: string;
   /** 0 (unset) through 5 (DO NOW), per Vikunja's priority range. */
   priority?: number;
+  /**
+   * Completion progress as a whole percentage, **0-100** (75 = 75%), the tool
+   * surface's scale — identical to `percentDone` on `vikunja_tasks create` and
+   * `vikunja_task_bulk bulk-create`. Converted to Vikunja's 0-1 wire fraction
+   * by the SHARED `percentDoneToFraction` inside `createOneBulkTask`; this
+   * module never converts it itself. Declared here because it used to be
+   * silently stripped: a battle run asked for a task "75% done", the model
+   * correctly sent `percentDone: 75` in the one setup-kanban call, Zod dropped
+   * the undeclared key, and the composite reported success with the task at 0%.
+   */
+  percentDone?: number;
   /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD' (normalized to midnight UTC). */
   dueDate?: string;
   /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD' (normalized to midnight UTC). */
@@ -149,6 +180,14 @@ export interface SetupKanbanArgs {
   description?: string;
   /** New project's parent project id. Only used when creating a new project (`id` omitted). */
   parentProjectId?: number;
+  /**
+   * New project's hex color (`#rrggbb`), forwarded as `hex_color` on the
+   * create call exactly as `vikunja_projects create` does. Only meaningful
+   * when creating a new project — supplying it alongside an existing `id` is
+   * REJECTED (with a pointer to `vikunja_projects update`) rather than
+   * silently ignored, since this composite never updates a reused project.
+   */
+  hexColor?: string;
   /**
    * Ordered list of Kanban column (bucket) names, e.g. `["To Do", "Doing",
    * "Done"]`. Order is authoritative — see the module doc's "Ordering
@@ -238,7 +277,12 @@ async function resolveColumns(
   projectId: number,
   viewId: number,
   columnNames: string[],
-): Promise<{ results: KanbanColumnOutcome[]; bucketIdByColumn: Map<string, number> }> {
+  doneBucketId: number | undefined,
+): Promise<{
+  results: KanbanColumnOutcome[];
+  bucketIdByColumn: Map<string, number>;
+  doneBucketPreserved: boolean;
+}> {
   const existingBuckets = await fetchBuckets(authManager, projectId, viewId);
   const sortedExisting = [...existingBuckets].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
   const claimedIds = new Set<number>();
@@ -252,9 +296,7 @@ async function resolveColumns(
   // ["Backlog", "Done"] — a single pass would consume "Done" as the
   // leftover for "Doing" before ever reaching the "Done" column itself,
   // wrongly renaming the one bucket that should have been reused as-is).
-  type Assignment =
-    | { kind: 'exact' | 'leftover'; bucket: VikunjaBucket }
-    | { kind: 'create' };
+  type Assignment = { kind: 'exact' | 'leftover'; bucket: VikunjaBucket } | { kind: 'create' };
   const assignments: Assignment[] = new Array(columnNames.length) as Assignment[];
 
   for (let i = 0; i < columnNames.length; i++) {
@@ -271,9 +313,22 @@ async function resolveColumns(
       assignments[i] = { kind: 'exact', bucket: exactMatch };
     }
   }
+  // The view's done-bucket is NEVER eligible for the leftover-fallback pool
+  // (#273): a bucket only reaches this pass because no requested column's
+  // title matched it exactly, so repurposing it here would silently rename
+  // whichever bucket Vikunja is treating as "done" for THIS view — every
+  // task later moved into it would then be silently auto-completed by
+  // Vikunja's own done-bucket behavior, with setup-kanban reporting
+  // success:true. An exact-title match against the done-bucket (pass one,
+  // above) is still allowed — that is a deliberate, name-driven reuse, not a
+  // blind repurpose. The done-bucket is left completely untouched here: not
+  // renamed, not repositioned; see the 'done-bucket-preserved' note pushed
+  // onto the results below.
   for (let i = 0; i < columnNames.length; i++) {
     if (assignments[i]) continue;
-    const leftover = sortedExisting.find((b) => b.id !== undefined && !claimedIds.has(b.id));
+    const leftover = sortedExisting.find(
+      (b) => b.id !== undefined && !claimedIds.has(b.id) && b.id !== doneBucketId,
+    );
     if (leftover) {
       claimedIds.add(leftover.id as number);
       assignments[i] = { kind: 'leftover', bucket: leftover };
@@ -281,6 +336,15 @@ async function resolveColumns(
       assignments[i] = { kind: 'create' };
     }
   }
+
+  // Informational only (surfaced in the response, never affects behavior
+  // above): true when the done-bucket exists but was never claimed by any
+  // requested column (no exact-title match) — it was deliberately excluded
+  // from the leftover pool rather than repurposed, so it survives untouched.
+  const doneBucketPreserved =
+    doneBucketId !== undefined &&
+    sortedExisting.some((b) => b.id === doneBucketId) &&
+    !claimedIds.has(doneBucketId);
 
   // Perform the actual REST calls in requested column order, regardless of
   // which pass produced each assignment.
@@ -296,7 +360,9 @@ async function resolveColumns(
       let status: KanbanColumnOutcome['status'];
       const position = bucketPositionForIndex(i);
       if (assignment.kind === 'exact') {
-        bucket = await updateBucketRaw(authManager, projectId, viewId, assignment.bucket, { position });
+        bucket = await updateBucketRaw(authManager, projectId, viewId, assignment.bucket, {
+          position,
+        });
         status = 'reused';
       } else if (assignment.kind === 'leftover') {
         bucket = await updateBucketRaw(authManager, projectId, viewId, assignment.bucket, {
@@ -323,7 +389,7 @@ async function resolveColumns(
     }
   }
 
-  return { results, bucketIdByColumn };
+  return { results, bucketIdByColumn, doneBucketPreserved };
 }
 
 /**
@@ -335,7 +401,7 @@ async function resolveColumns(
 async function createAndPlaceTasks(
   authManager: AuthManager,
   projectId: number,
-  viewId: number,
+  viewId: number | undefined,
   bucketIdByColumn: Map<string, number>,
   tasks: SetupKanbanTaskInput[],
 ): Promise<KanbanTaskOutcome[]> {
@@ -359,6 +425,9 @@ async function createAndPlaceTasks(
       if (t.startDate !== undefined) bulkTaskData.startDate = t.startDate;
       if (t.endDate !== undefined) bulkTaskData.endDate = t.endDate;
       if (t.priority !== undefined) bulkTaskData.priority = t.priority;
+      // 0-100 in, 0-1 wire fraction out — the conversion lives in
+      // createOneBulkTask (src/utils/percent-done.ts), never here.
+      if (t.percentDone !== undefined) bulkTaskData.percentDone = t.percentDone;
       if (labelIds !== undefined) bulkTaskData.labels = labelIds;
       if (t.assignees !== undefined) bulkTaskData.assignees = t.assignees;
 
@@ -395,8 +464,22 @@ async function createAndPlaceTasks(
       }
 
       try {
-        await moveTaskToBucket(authManager, { taskId, bucketId, viewId, projectId });
-        results.push({ index: i, title: t.title, taskId, column: t.column, bucketId, status: 'placed' });
+        // bucketId only resolves on the columns path, where viewId is
+        // always set before resolveColumns runs (setupKanban step 2/3).
+        await moveTaskToBucket(authManager, {
+          taskId,
+          bucketId,
+          viewId: viewId,
+          projectId,
+        });
+        results.push({
+          index: i,
+          title: t.title,
+          taskId,
+          column: t.column,
+          bucketId,
+          status: 'placed',
+        });
       } catch (moveError) {
         results.push({
           index: i,
@@ -421,6 +504,84 @@ async function createAndPlaceTasks(
 }
 
 /**
+ * When `setup-kanban` reuses an existing project (`id` supplied), it never
+ * writes to that project - `title`/`description`/`parentProjectId` were
+ * historically accepted alongside `id` and silently ignored, which let a
+ * caller believe a rename/re-description/re-parent had happened when it
+ * had not.
+ *
+ * Owner-approved resolution: reject only when a supplied value would
+ * actually CHANGE something. A value that already matches the project's
+ * current state is treated as a no-op and let through silently, so a
+ * caller that always passes `projectId` + `description` (harmlessly
+ * re-asserting the same description on every call) keeps working.
+ *
+ * Equality rules (deliberately normalized, not raw `===`, to avoid a false
+ * rejection on a harmless formatting difference):
+ *  - `title`/`description`: compared trimmed. A caller resending the same
+ *    description with different leading/trailing whitespace is a no-op,
+ *    not a change. `null`/`undefined` on the fetched project is treated as
+ *    `''` before trimming (an empty description compares equal to an
+ *    absent one).
+ *  - `parentProjectId`: `models.Project.parent_project_id` represents "no
+ *    parent" as `0` (or omits the field), never as an explicit `null`. Our
+ *    surface's `parentProjectId` is always a validated positive integer
+ *    when supplied (see `validateId` above) - it can never itself be `0` -
+ *    so the only normalization needed is on the FETCHED side: a missing or
+ *    `0` current value both mean "no parent" and are compared as `0`.
+ *
+ * Only called when at least one of the three fields was actually supplied
+ * (see the call site) - `setupKanban` does not fetch the project at all for
+ * the common "reuse by id alone" call, so this never adds a round trip to
+ * that path.
+ */
+function assertReuseFieldsMatchExisting(
+  projectId: number,
+  requested: { title?: string; description?: string; parentProjectId?: number },
+  current: VikunjaProject,
+): void {
+  const mismatches: string[] = [];
+
+  if (requested.title !== undefined) {
+    const requestedTitle = requested.title.trim();
+    const currentTitle = (current.title ?? '').trim();
+    if (requestedTitle !== currentTitle) {
+      mismatches.push(`title (current: "${currentTitle}", requested: "${requestedTitle}")`);
+    }
+  }
+
+  if (requested.description !== undefined) {
+    const requestedDescription = requested.description.trim();
+    const currentDescription = (current.description ?? '').trim();
+    if (requestedDescription !== currentDescription) {
+      mismatches.push(
+        `description (current: "${currentDescription}", requested: "${requestedDescription}")`,
+      );
+    }
+  }
+
+  if (requested.parentProjectId !== undefined) {
+    const currentParentProjectId = current.parent_project_id ?? 0;
+    if (requested.parentProjectId !== currentParentProjectId) {
+      mismatches.push(
+        `parentProjectId (current: ${currentParentProjectId === 0 ? 'none (no parent)' : currentParentProjectId}, requested: ${requested.parentProjectId})`,
+      );
+    }
+  }
+
+  if (mismatches.length > 0) {
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `setup-kanban reuses project ${projectId} as-is and does not modify it, but the following ` +
+        `supplied value(s) differ from the project's current value and would NOT take effect: ` +
+        `${mismatches.join('; ')}. Remove the mismatched field(s) to reuse the project as-is (a ` +
+        "value that already matches is fine), or change them first with vikunja_projects update, " +
+        'then re-run setup-kanban. Nothing has been created by this call.',
+    );
+  }
+}
+
+/**
  * Provisions a whole Kanban board in one call: creates (or reuses) the
  * project, ensures its Kanban view, resolves the requested columns IN
  * ORDER (reusing/renaming/creating buckets as needed), then bulk-creates
@@ -431,20 +592,26 @@ export async function setupKanban(
   args: SetupKanbanArgs,
   authManager: AuthManager,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  if (!args.columns || args.columns.length === 0) {
+  // `columns` is optional (issue #185): when omitted entirely, this call is
+  // a project+tasks-only composite — no Kanban view, bucket, or placement
+  // step runs at all (see the "columns-less path" branches below). An
+  // EXPLICITLY empty array is still rejected, same as before — it signals a
+  // caller mistake (omit the field instead) rather than "no board".
+  const hasColumns = args.columns !== undefined;
+  if (hasColumns && args.columns?.length === 0) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
-      'columns is required for setup-kanban operation — an ordered, non-empty array of ' +
-        'column/bucket names (e.g. ["To Do", "Doing", "Done"]).',
+      'When columns is provided it must be a non-empty array of column/bucket names (e.g. ' +
+        '["To Do", "Doing", "Done"]) — omit columns entirely for the project+tasks-only path.',
     );
   }
-  if (args.columns.some((c) => typeof c !== 'string' || c.trim() === '')) {
+  if (hasColumns && args.columns?.some((c) => typeof c !== 'string' || c.trim() === '')) {
     throw new MCPError(
       ErrorCode.VALIDATION_ERROR,
       'Every entry in columns must be a non-empty string.',
     );
   }
-  const columnNames = args.columns.map((c) => c.trim());
+  const columnNames = hasColumns ? (args.columns as string[]).map((c) => c.trim()) : [];
 
   if (args.id === undefined && (!args.title || args.title.trim() === '')) {
     throw new MCPError(
@@ -455,6 +622,21 @@ export async function setupKanban(
   }
   if (args.id !== undefined) validateId(args.id, 'id');
   if (args.parentProjectId !== undefined) validateId(args.parentProjectId, 'parentProjectId');
+  if (args.hexColor !== undefined) {
+    validateHexColor(args.hexColor);
+    // Reject-loudly rather than drop: this composite only ever CREATES a
+    // project (it reuses an existing one as-is and never updates it), so a
+    // color supplied with an existing `id` could never be applied.
+    if (args.id !== undefined) {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        'hexColor only applies when setup-kanban CREATES a project (i.e. when `title` is given ' +
+          'instead of `id`) — setup-kanban never modifies the project behind an existing `id`. ' +
+          'Recolor it with vikunja_projects update { id, hexColor } (a separate call), then ' +
+          're-run setup-kanban without hexColor. Nothing has been created by this call.',
+      );
+    }
+  }
 
   const tasks = args.tasks ?? [];
   if (tasks.length > MAX_BULK_OPERATION_TASKS) {
@@ -480,7 +662,22 @@ export async function setupKanban(
     if (!t.title || t.title.trim() === '') {
       throw new MCPError(ErrorCode.VALIDATION_ERROR, `tasks[${i}].title is required`);
     }
-    if (t.column !== undefined && !columnKeySet.has(columnKey(t.column))) {
+    // Whole percentage 0-100. Checked here as well as in the Zod schema
+    // because `setupKanban` is exported and reachable without it (same
+    // reasoning as validateBulkCreate's guard).
+    if (t.percentDone !== undefined)
+      assertValidPercentDone(t.percentDone, `tasks[${i}].percentDone`);
+    if (t.column === undefined) return;
+    if (!hasColumns) {
+      throw new MCPError(
+        ErrorCode.VALIDATION_ERROR,
+        `tasks[${i}] ("${t.title.trim()}") has column "${t.column}" but no columns were ` +
+          'provided to setup-kanban. Either add a `columns` array (e.g. ["To Do", "Doing", ' +
+          '"Done"]) or remove `column` from this task and re-run — no project, view, bucket, ' +
+          'or task has been created by this call.',
+      );
+    }
+    if (!columnKeySet.has(columnKey(t.column))) {
       throw new MCPError(
         ErrorCode.VALIDATION_ERROR,
         `tasks[${i}] ("${t.title.trim()}") has column "${t.column}" which is not one of the ` +
@@ -497,11 +694,37 @@ export async function setupKanban(
   let projectCreated = false;
   if (args.id !== undefined) {
     projectId = args.id;
+
+    // Only fetch the project when there is actually something to compare -
+    // the common "reuse by id alone" call supplies none of these three
+    // fields, and must not pay for an extra round trip it doesn't need.
+    const hasReuseFieldsToCheck =
+      args.title !== undefined ||
+      args.description !== undefined ||
+      args.parentProjectId !== undefined;
+    if (hasReuseFieldsToCheck) {
+      const currentProject = await vikunjaRestRequest<VikunjaProject>(
+        authManager,
+        'GET',
+        `/projects/${projectId}`,
+      );
+      assertReuseFieldsMatchExisting(
+        projectId,
+        {
+          ...(args.title !== undefined && { title: args.title }),
+          ...(args.description !== undefined && { description: args.description }),
+          ...(args.parentProjectId !== undefined && { parentProjectId: args.parentProjectId }),
+        },
+        currentProject,
+      );
+    }
   } else {
     const trimmedTitle = (args.title as string).trim();
     const projectBody: CreateProjectRequest = { title: trimmedTitle };
     if (args.description !== undefined) projectBody.description = args.description;
     if (args.parentProjectId !== undefined) projectBody.parent_project_id = args.parentProjectId;
+    // Same normalization `createProject` applies (src/tools/projects/crud.ts).
+    if (args.hexColor !== undefined) projectBody.hex_color = args.hexColor.toLowerCase();
 
     const createdProject = await vikunjaRestRequest<VikunjaProject>(
       authManager,
@@ -522,30 +745,55 @@ export async function setupKanban(
 
   // 2. Resolve the Kanban view — auto-created by Vikunja for a brand new
   // project; must already exist for a reused project (propagates a clear
-  // NOT_FOUND if it doesn't, same as list-buckets/create-bucket).
-  const kanbanView = await resolveKanbanView(authManager, projectId);
-  const viewId = kanbanView.id;
+  // NOT_FOUND if it doesn't, same as list-buckets/create-bucket). Skipped
+  // entirely on the columns-less path (issue #185) — no Kanban view, bucket,
+  // or placement step runs when the caller didn't ask for a board, so this
+  // path costs strictly fewer API calls than the columns form, not the same.
+  let viewId: number | undefined;
+  let columnResults: KanbanColumnOutcome[] = [];
+  let bucketIdByColumn = new Map<string, number>();
+  let columnFailures: KanbanColumnOutcome[] = [];
+  let doneBucketPreserved = false;
+  if (hasColumns) {
+    const kanbanView = await resolveKanbanView(authManager, projectId);
+    viewId = kanbanView.id;
 
-  // 3. Resolve every requested column's bucket, IN ORDER.
-  const { results: columnResults, bucketIdByColumn } = await resolveColumns(
-    authManager,
-    projectId,
-    viewId,
-    columnNames,
-  );
-
-  const columnFailures = columnResults.filter((c) => c.status === 'failed');
-  if (columnResults.length > 0 && columnFailures.length === columnResults.length) {
-    throw new MCPError(
-      ErrorCode.API_ERROR,
-      `Kanban setup failed: could not create or resolve any of the ${columnResults.length} ` +
-        `requested columns in project ${projectId}. First error: ` +
-        `${columnFailures[0]?.error ?? 'unknown error'}`,
+    // 3. Resolve every requested column's bucket, IN ORDER. The view's
+    // done_bucket_id is threaded through so resolveColumns never repurposes
+    // it via the leftover-fallback pool (#273) — e.g. a fresh project's
+    // auto-created "Done" bucket must not get silently renamed to whatever
+    // unmatched column comes last, which would then auto-complete every task
+    // later placed there via Vikunja's own done-bucket behavior.
+    const resolved = await resolveColumns(
+      authManager,
+      projectId,
+      viewId,
+      columnNames,
+      kanbanView.done_bucket_id,
     );
+    columnResults = resolved.results;
+    bucketIdByColumn = resolved.bucketIdByColumn;
+    doneBucketPreserved = resolved.doneBucketPreserved;
+
+    columnFailures = columnResults.filter((c) => c.status === 'failed');
+    if (columnResults.length > 0 && columnFailures.length === columnResults.length) {
+      throw new MCPError(
+        ErrorCode.API_ERROR,
+        `Kanban setup failed: could not create or resolve any of the ${columnResults.length} ` +
+          `requested columns in project ${projectId}. First error: ` +
+          `${columnFailures[0]?.error ?? 'unknown error'}`,
+      );
+    }
   }
 
   // 4. Bulk-create the requested tasks and place each into its column.
-  const taskResults = await createAndPlaceTasks(authManager, projectId, viewId, bucketIdByColumn, tasks);
+  const taskResults = await createAndPlaceTasks(
+    authManager,
+    projectId,
+    viewId,
+    bucketIdByColumn,
+    tasks,
+  );
 
   // 5. Build the honest, server-derived summary — never claim success for
   // anything that did not land.
@@ -565,8 +813,15 @@ export async function setupKanban(
   // extractor can parse.
   const summaryParts = [
     `project ${projectId} ${projectCreated ? 'created' : 'reused'} (ID: ${projectId})`,
-    `${columnResults.length - columnFailures.length}/${columnResults.length} columns ready`,
   ];
+  if (hasColumns) {
+    summaryParts.push(
+      `${columnResults.length - columnFailures.length}/${columnResults.length} columns ready`,
+    );
+    if (doneBucketPreserved) {
+      summaryParts.push("the project's existing done-bucket was left untouched (not repurposed)");
+    }
+  }
   if (tasks.length > 0) {
     summaryParts.push(`${tasks.length - taskFailures.length}/${tasks.length} tasks created`);
     if (taskNotPlaced.length > 0) {
@@ -600,7 +855,10 @@ export async function setupKanban(
   if (taskNotPlaced.length > 0) {
     detailParts.push(
       `Created but not placed: ${taskNotPlaced
-        .map((t) => `#${t.index} "${t.title}" -> "${String(t.column)}" (${t.error ?? 'unknown error'})`)
+        .map(
+          (t) =>
+            `#${t.index} "${t.title}" -> "${String(t.column)}" (${t.error ?? 'unknown error'})`,
+        )
         .join('; ')}.`,
     );
   }
@@ -610,7 +868,12 @@ export async function setupKanban(
 
   const failures = [
     ...columnFailures.map((c) => ({ type: 'column' as const, column: c.column, error: c.error })),
-    ...taskFailures.map((t) => ({ type: 'task' as const, index: t.index, title: t.title, error: t.error })),
+    ...taskFailures.map((t) => ({
+      type: 'task' as const,
+      index: t.index,
+      title: t.title,
+      error: t.error,
+    })),
     ...taskNotPlaced.map((t) => ({
       type: 'task-not-placed' as const,
       index: t.index,
@@ -628,8 +891,19 @@ export async function setupKanban(
       projectId,
       projectCreated,
       ...(projectTitle !== undefined && { projectTitle }),
-      viewId,
-      columns: columnResults,
+      // `viewId`/`columns` only exist when a board was actually requested —
+      // never fabricated on the columns-less path (issue #185), where no
+      // Kanban view was even resolved.
+      ...(hasColumns && {
+        viewId,
+        columns: columnResults,
+        // Surfaced explicitly (#273) whenever the view's done-bucket existed
+        // but wasn't claimed by any requested column's exact-title match —
+        // it was deliberately excluded from the leftover-repurpose pool
+        // rather than silently renamed, so it is still the done-bucket
+        // afterwards, just under its old (unrequested) title.
+        doneBucketPreserved,
+      }),
       // Named `taskResults` (not `tasks`) — `ResponseData.tasks` is typed
       // `Task[]` (full Vikunja task objects) for other tools' responses;
       // this composite's per-task outcomes are a different, smaller shape

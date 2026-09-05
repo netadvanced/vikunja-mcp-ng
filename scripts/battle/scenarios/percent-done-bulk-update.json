@@ -1,0 +1,23 @@
+{
+  "id": "percent-done-bulk-update",
+  "title": "Progress recorded across a whole batch at once",
+  "description": "Third and last call site of the percentDone scale conversion, and the one with the most surface area to get wrong: `vikunja_task_bulk` `bulk-update` takes the value through a generic `field`/`value` pair (`field: 'percent_done'`, `value: 80`) rather than a typed `percentDone` argument, so the 0-100 -> 0-1 conversion lives in a `field === 'percent_done'` branch of `bulk-operations-simplified.ts` instead of a Zod schema. That branch is invisible from the tool schema, which is exactly why an end-to-end check is worth having: the verify check reads the RAW stored fraction 0.8 on all six tasks, so it fails if that branch is removed (80 stored -- a value Vikunja will happily accept and render as 8000%), applied twice (0.008), or applied to only some of the batch. Note the surface names the field `percent_done` here and `percentDone` everywhere else; the tool's own description calls that out, and whether an agent trips over it is part of what this scenario measures. optimalCallCount derived from the CURRENT tool schemas: `vikunja_projects setup-kanban` in its COLUMNS-LESS form (issue #185 -- project + all six tasks in one call, no Kanban view or bucket created or touched, nothing unrequested fabricated; same reasoning as labels-due-date-combo.json) (1) + `vikunja_task_bulk bulk-update` with `taskIds` (all six, from the composite's per-task outcomes) + `field: 'percent_done'` + `value: 80` (1) = 2. The hand-rolled create-project + bulk-create + bulk-update route is 3. `vikunja_task_bulk bulk-create` DOES accept a per-task `percentDone`, so create-project + bulk-create-at-80 would also be 2 -- but the prompt prescribes the sequence (the tasks exist first, then the batch clears review and gets marked), so front-loading the value at creation time is not a faithful solve and is not what the 2 is derived from (docs/BATTLE-TESTING.md re-baselining policy, rule 3).",
+  "promptTemplate": "Create a project called \"{{prefix}}Migration Wave\" with six tasks called \"{{prefix}}svc-1\" through \"{{prefix}}svc-6\". All six have just cleared code review together, so in one bulk update record every one of them as 80% complete.",
+  "optimalCallCount": 2,
+  "verify": [
+    { "type": "project-exists", "titleContains": "{{prefix}}Migration Wave" },
+    {
+      "type": "min-tasks-in-project",
+      "projectTitleContains": "{{prefix}}Migration Wave",
+      "min": 6
+    },
+    {
+      "type": "tasks-field-match-count",
+      "projectTitleContains": "{{prefix}}Migration Wave",
+      "field": "percent_done",
+      "op": "eq",
+      "value": 0.8,
+      "min": 6
+    }
+  ]
+}

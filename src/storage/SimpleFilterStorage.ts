@@ -45,11 +45,27 @@ export class SimpleFilterStorage implements FilterStorage {
     this.session.lastAccessAt = new Date();
   }
 
+  /**
+   * Bump `lastAccessAt` without touching any filter data. Called by
+   * `FilterStorageManager.getStorage` on every lookup (not just filter
+   * CRUD) so an active session's eviction clock resets simply by being
+   * looked up — see the `getStorage` doc comment for why this matters
+   * (#264 / MED-11: a read-only stretch of activity, e.g. repeated `list`
+   * calls that internally re-derive storage without mutating it, could
+   * previously look idle to the 1h cleanup sweep and get evicted out from
+   * under an active session).
+   */
+  touch(): void {
+    this.updateAccessTime();
+  }
+
   async list(): Promise<SavedFilter[]> {
     const release = await this.mutex.acquire();
     try {
       this.updateAccessTime();
-      return Array.from(this.filters.values()).sort((a, b) => b.updated.getTime() - a.updated.getTime());
+      return Array.from(this.filters.values()).sort(
+        (a, b) => b.updated.getTime() - a.updated.getTime(),
+      );
     } finally {
       release();
     }
@@ -246,13 +262,34 @@ export class FilterStorageManager {
     this.startCleanupTimer();
   }
 
-  async getStorage(sessionId: string, userId?: string, apiUrl?: string): Promise<SimpleFilterStorage> {
+  /**
+   * Look up (or lazily create) the storage instance for a session.
+   *
+   * Bumps `lastAccessAt` unconditionally on every call — not just when the
+   * caller subsequently mutates or reads filters — so simply *being looked
+   * up* counts as activity for the idle-eviction sweep in
+   * `cleanupInactiveSessions`. Before this fix (#264 / MED-11), a session
+   * could be handed back an instance here without its clock resetting, so a
+   * lookup landing right at the 1h boundary could still be evicted a moment
+   * later by the cleanup timer, discarding a write the caller believed had
+   * already landed in an existing, live session. Newly-created instances
+   * already set `lastAccessAt` in their constructor, but touching them here
+   * too keeps this method's contract simple: every call resets the clock,
+   * full stop.
+   */
+  async getStorage(
+    sessionId: string,
+    userId?: string,
+    apiUrl?: string,
+  ): Promise<SimpleFilterStorage> {
     const release = await this.mutex.acquire();
     try {
       let storage = this.storageInstances.get(sessionId);
       if (!storage) {
         storage = new SimpleFilterStorage(sessionId, userId, apiUrl);
         this.storageInstances.set(sessionId, storage);
+      } else {
+        storage.touch();
       }
       return storage;
     } finally {
@@ -260,13 +297,15 @@ export class FilterStorageManager {
     }
   }
 
-  async getAllStats(): Promise<Array<{
-    sessionId: string;
-    filterCount: number;
-    createdAt: Date;
-    lastAccessAt: Date;
-    memoryUsageKb: number;
-  }>> {
+  async getAllStats(): Promise<
+    Array<{
+      sessionId: string;
+      filterCount: number;
+      createdAt: Date;
+      lastAccessAt: Date;
+      memoryUsageKb: number;
+    }>
+  > {
     const release = await this.mutex.acquire();
     try {
       const stats = [];
@@ -288,8 +327,10 @@ export class FilterStorageManager {
 
   private startCleanupTimer(): void {
     this.cleanupInterval = setInterval(() => {
-      this.cleanupInactiveSessions().catch(error => {
-        logger.error('Failed to cleanup inactive sessions', { error: error instanceof Error ? error.message : String(error) });
+      this.cleanupInactiveSessions().catch((error) => {
+        logger.error('Failed to cleanup inactive sessions', {
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
     }, this.CLEANUP_INTERVAL_MS);
     // Timer hygiene: don't let this module-level interval keep the process
@@ -381,17 +422,23 @@ process.on('exit', () => {
 });
 
 process.on('SIGINT', () => {
-  storageManager.destroy().then(() => {
-    process.exit(0);
-  }).catch(() => {
-    process.exit(1);
-  });
+  storageManager
+    .destroy()
+    .then(() => {
+      process.exit(0);
+    })
+    .catch(() => {
+      process.exit(1);
+    });
 });
 
 process.on('SIGTERM', () => {
-  storageManager.destroy().then(() => {
-    process.exit(0);
-  }).catch(() => {
-    process.exit(1);
-  });
+  storageManager
+    .destroy()
+    .then(() => {
+      process.exit(0);
+    })
+    .catch(() => {
+      process.exit(1);
+    });
 });

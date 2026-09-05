@@ -30,7 +30,8 @@ const task = (overrides: Partial<Task> = {}): Task =>
     description: 'Quarterly numbers',
     done: false,
     priority: 3,
-    percent_done: 25,
+    // Wire value: Vikunja stores progress as a 0-1 fraction (25%).
+    percent_done: 0.25,
     project_id: 7,
     ...overrides,
   }) as Task;
@@ -116,7 +117,9 @@ describe('parseRelativeDate', () => {
   });
 
   it('parses an ISO datetime', () => {
-    expect(parseRelativeDate('2026-03-04T10:30:00Z')?.toISOString()).toBe('2026-03-04T10:30:00.000Z');
+    expect(parseRelativeDate('2026-03-04T10:30:00Z')?.toISOString()).toBe(
+      '2026-03-04T10:30:00.000Z',
+    );
   });
 
   it('parses bare `now`', () => {
@@ -224,24 +227,58 @@ describe('evaluateCondition', () => {
 
   it('evaluates `priority`, defaulting a missing priority to 0', () => {
     expect(evaluateCondition(task({ priority: 5 }), condition('priority', '>=', 4))).toBe(true);
-    expect(evaluateCondition(task({ priority: undefined }), condition('priority', '=', 0))).toBe(true);
+    expect(evaluateCondition(task({ priority: undefined }), condition('priority', '=', 0))).toBe(
+      true,
+    );
   });
 
-  it('evaluates `percentDone`, defaulting a missing value to 0', () => {
-    expect(evaluateCondition(task({ percent_done: 50 }), condition('percentDone', '>', 25))).toBe(true);
-    expect(evaluateCondition(task({ percent_done: undefined }), condition('percentDone', '=', 0))).toBe(true);
+  // The filter DSL carries percentDone on the tool surface's 0-100 scale; the
+  // task itself carries Vikunja's 0-1 fraction. The comparison happens in wire
+  // space (threshold / 100), so `percentDone > 25` means "more than a quarter
+  // done" — before the percentage-scale change it meant "more than 2500% done"
+  // and matched nothing.
+  it('evaluates `percentDone` against the 0-100 threshold, defaulting a missing value to 0', () => {
+    const halfDone = task({ percent_done: 0.5 });
+    expect(evaluateCondition(halfDone, condition('percentDone', '>', 25))).toBe(true);
+    expect(evaluateCondition(halfDone, condition('percentDone', '>', 75))).toBe(false);
+    expect(evaluateCondition(halfDone, condition('percentDone', '=', 50))).toBe(true);
+    expect(
+      evaluateCondition(task({ percent_done: undefined }), condition('percentDone', '=', 0)),
+    ).toBe(true);
+  });
+
+  it('matches an exact percentage whose fraction is not representable cleanly', () => {
+    // 7 / 100 lands on the same double the API stored for 7%; scaling the
+    // task's fraction UP instead (0.07 * 100 === 7.000000000000001) would make
+    // this equality miss.
+    expect(evaluateCondition(task({ percent_done: 0.07 }), condition('percentDone', '=', 7))).toBe(
+      true,
+    );
+  });
+
+  it('treats a 100% task as complete rather than as 1%', () => {
+    expect(evaluateCondition(task({ percent_done: 1 }), condition('percentDone', '=', 100))).toBe(
+      true,
+    );
+    expect(evaluateCondition(task({ percent_done: 1 }), condition('percentDone', '=', 1))).toBe(
+      false,
+    );
   });
 
   it('evaluates `project`, defaulting a missing project to 0', () => {
     expect(evaluateCondition(task({ project_id: 7 }), condition('project', '=', 7))).toBe(true);
-    expect(evaluateCondition(task({ project_id: undefined }), condition('project', '=', 0))).toBe(true);
+    expect(evaluateCondition(task({ project_id: undefined }), condition('project', '=', 0))).toBe(
+      true,
+    );
   });
 
   it('evaluates `title` and `description` as strings', () => {
     expect(evaluateCondition(task(), condition('title', 'like', 'REPORT'))).toBe(true);
     expect(evaluateCondition(task({ title: undefined }), condition('title', '=', ''))).toBe(true);
     expect(evaluateCondition(task(), condition('description', 'like', 'numbers'))).toBe(true);
-    expect(evaluateCondition(task({ description: undefined }), condition('description', '=', ''))).toBe(true);
+    expect(
+      evaluateCondition(task({ description: undefined }), condition('description', '=', '')),
+    ).toBe(true);
   });
 
   describe('due dates', () => {
@@ -255,6 +292,20 @@ describe('evaluateCondition', () => {
       expect(evaluateCondition(t, condition('dueDate', '!=', '2026-03-04'))).toBe(true);
       expect(evaluateCondition(t, condition('dueDate', '=', '2026-03-04'))).toBe(false);
       expect(evaluateCondition(t, condition('dueDate', '<', '2026-03-04'))).toBe(false);
+    });
+
+    // #285 (HIGH-14): Vikunja returns '0001-01-01T00:00:00Z', not null, for an
+    // unset due date. Before the fix, only `!task.due_date` was checked, so
+    // this non-empty sentinel string passed straight through to
+    // evaluateDateComparison as if it were a real (very old) due date -
+    // meaning an "overdue" filter (`dueDate < now`) matched every task with
+    // no due date at all on the client-side fallback path.
+    it("treats Vikunja's '0001-01-01' zero-date sentinel as unset, same as startDate/endDate/doneAt (only != matches)", () => {
+      const t = task({ due_date: '0001-01-01T00:00:00Z' });
+      expect(evaluateCondition(t, condition('dueDate', '!=', '2026-03-04'))).toBe(true);
+      expect(evaluateCondition(t, condition('dueDate', '=', '2026-03-04'))).toBe(false);
+      // The regression: this used to be `true` for every no-due-date task.
+      expect(evaluateCondition(t, condition('dueDate', '<', '2099-01-01'))).toBe(false);
     });
   });
 
@@ -330,7 +381,10 @@ describe('evaluateGroup', () => {
   it('requires every condition for &&', () => {
     const t = task({ done: false, priority: 5 });
     expect(
-      evaluateGroup(t, group('&&', [condition('done', '=', false), condition('priority', '>=', 4)])),
+      evaluateGroup(
+        t,
+        group('&&', [condition('done', '=', false), condition('priority', '>=', 4)]),
+      ),
     ).toBe(true);
     expect(
       evaluateGroup(t, group('&&', [condition('done', '=', true), condition('priority', '>=', 4)])),
@@ -357,11 +411,14 @@ describe('applyFilter', () => {
 
   const expression = (
     operator: '&&' | '||' | undefined,
-    groups: Array<[('&&' | '||'), FilterCondition[]]>,
+    groups: Array<['&&' | '||', FilterCondition[]]>,
   ): FilterExpression =>
     ({
       ...(operator ? { operator } : {}),
-      groups: groups.map(([groupOperator, conditions]) => ({ operator: groupOperator, conditions })),
+      groups: groups.map(([groupOperator, conditions]) => ({
+        operator: groupOperator,
+        conditions,
+      })),
     }) as unknown as FilterExpression;
 
   it('ANDs groups together by default', () => {
@@ -391,6 +448,8 @@ describe('applyFilter', () => {
   });
 
   it('returns an empty list when nothing matches', () => {
-    expect(applyFilter(tasks, expression('&&', [['&&', [condition('priority', '>', 9)]]]))).toEqual([]);
+    expect(applyFilter(tasks, expression('&&', [['&&', [condition('priority', '>', 9)]]]))).toEqual(
+      [],
+    );
   });
 });

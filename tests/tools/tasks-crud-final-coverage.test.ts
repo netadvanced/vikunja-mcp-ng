@@ -28,6 +28,7 @@ jest.mock('../../src/utils/vikunja-rest', () => ({
 jest.mock('../../src/client', () => ({
   getClientFromContext: jest.fn(),
   getAuthManagerFromContext: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 
 // Mock logger to suppress output during tests
@@ -96,7 +97,7 @@ describe('Tasks CRUD - Final Coverage', () => {
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
 
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('get-task');
       expect(markdown).toContain('Retrieved task "Test Task Title"');
       expect(markdown).toContain('**taskId:**');
@@ -121,7 +122,7 @@ describe('Tasks CRUD - Final Coverage', () => {
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
 
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('Retrieved task "undefined"');
       expect(markdown).toContain('**taskId:**');
     });
@@ -142,7 +143,7 @@ describe('Tasks CRUD - Final Coverage', () => {
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
 
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('Retrieved task "null"');
       expect(markdown).toContain('**taskId:**');
     });
@@ -173,16 +174,19 @@ describe('Tasks CRUD - Final Coverage', () => {
         .mockResolvedValueOnce(updatedTask) // POST /tasks/{id}
         .mockResolvedValueOnce(updatedTask); // final GET
 
-      const result = await updateTask({
-        id: 1,
-        dueDate: '2024-12-31T23:59:59Z',
-        priority: 5,
-      }, mockAuthManager);
+      const result = await updateTask(
+        {
+          id: 1,
+          dueDate: '2024-12-31T23:59:59Z',
+          priority: 5,
+        },
+        mockAuthManager,
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
 
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       expect(markdown).toContain('dueDate');
       expect(markdown).toContain('priority');
     });
@@ -205,16 +209,19 @@ describe('Tasks CRUD - Final Coverage', () => {
         .mockResolvedValueOnce(mockTask) // POST /tasks/{id}
         .mockResolvedValueOnce(mockTask); // final GET
 
-      const result = await updateTask({
-        id: 1,
-        dueDate: '2024-01-01T00:00:00Z', // Same due date
-        priority: 1, // Same priority
-      }, mockAuthManager);
+      const result = await updateTask(
+        {
+          id: 1,
+          dueDate: '2024-01-01T00:00:00Z', // Same due date
+          priority: 1, // Same priority
+        },
+        mockAuthManager,
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
 
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       // For unchanged fields, they might not appear in affectedFields section
       // but the operation should still succeed
     });
@@ -247,10 +254,13 @@ describe('Tasks CRUD - Final Coverage', () => {
       });
 
       await expect(
-        updateTask({
-          id: 1,
-          assignees: [1, 3], // Remove 2, add 3
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            assignees: [1, 3], // Remove 2, add 3
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Network timeout during remove operation');
     });
 
@@ -278,10 +288,13 @@ describe('Tasks CRUD - Final Coverage', () => {
       });
 
       await expect(
-        updateTask({
-          id: 1,
-          assignees: [1, 3], // Remove 2, add 3
-        }, mockAuthManager)
+        updateTask(
+          {
+            id: 1,
+            assignees: [1, 3], // Remove 2, add 3
+          },
+          mockAuthManager,
+        ),
       ).rejects.toThrow('Failed to update task: Unknown error');
     });
   });
@@ -321,23 +334,26 @@ describe('Tasks CRUD - Final Coverage', () => {
       mockClient.tasks.getTask.mockResolvedValueOnce(mockTask); // assignee diff calculation
       mockClient.tasks.assignUserToTask.mockResolvedValue(undefined);
 
-      const result = await updateTask({
-        id: 1,
-        title: 'New Title',
-        description: 'New Description',
-        dueDate: '2024-12-31T23:59:59Z',
-        priority: 5,
-        done: true,
-        repeatAfter: 1,
-        repeatMode: 'day',
-        labels: [1, 2],
-        assignees: [1, 2],
-      }, mockAuthManager);
+      const result = await updateTask(
+        {
+          id: 1,
+          title: 'New Title',
+          description: 'New Description',
+          dueDate: '2024-12-31T23:59:59Z',
+          priority: 5,
+          done: true,
+          repeatAfter: 1,
+          repeatMode: 'day',
+          labels: [1, 2],
+          assignees: [1, 2],
+        },
+        mockAuthManager,
+      );
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
 
-      expect(markdown).toContain("## ✅ Success");
+      expect(markdown).toContain('## ✅ Success');
       // Verify all affected fields are mentioned in the markdown output
       expect(markdown).toContain('title');
       expect(markdown).toContain('description');

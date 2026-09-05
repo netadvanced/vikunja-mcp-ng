@@ -55,15 +55,13 @@ describe('bulkSetTaskBucket', () => {
     });
 
     it('throws a VALIDATION_ERROR when taskIds is empty', async () => {
-      await expect(
-        bulkSetTaskBucket({ taskIds: [], bucketId: 3 }, authManager),
-      ).rejects.toThrow('taskIds array is required for bulk-set-bucket operation');
+      await expect(bulkSetTaskBucket({ taskIds: [], bucketId: 3 }, authManager)).rejects.toThrow(
+        'taskIds array is required for bulk-set-bucket operation',
+      );
     });
 
     it('throws a VALIDATION_ERROR when bucketId is undefined', async () => {
-      await expect(
-        bulkSetTaskBucket({ taskIds: [1, 2] }, authManager),
-      ).rejects.toThrow(
+      await expect(bulkSetTaskBucket({ taskIds: [1, 2] }, authManager)).rejects.toThrow(
         new MCPError(
           ErrorCode.VALIDATION_ERROR,
           'bucketId is required for bulk-set-bucket operation — the destination Kanban bucket ' +
@@ -76,9 +74,9 @@ describe('bulkSetTaskBucket', () => {
 
     it('rejects a batch larger than MAX_BULK_OPERATION_TASKS', async () => {
       const taskIds = Array.from({ length: 101 }, (_, i) => i + 1);
-      await expect(
-        bulkSetTaskBucket({ taskIds, bucketId: 3 }, authManager),
-      ).rejects.toThrow(/Too many tasks for bulk operation/);
+      await expect(bulkSetTaskBucket({ taskIds, bucketId: 3 }, authManager)).rejects.toThrow(
+        /Too many tasks for bulk operation/,
+      );
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
@@ -90,9 +88,9 @@ describe('bulkSetTaskBucket', () => {
     });
 
     it('validates bucketId, viewId, and projectId', async () => {
-      await expect(
-        bulkSetTaskBucket({ taskIds: [1], bucketId: 0 }, authManager),
-      ).rejects.toThrow('bucketId must be a positive integer');
+      await expect(bulkSetTaskBucket({ taskIds: [1], bucketId: 0 }, authManager)).rejects.toThrow(
+        'bucketId must be a positive integer',
+      );
       await expect(
         bulkSetTaskBucket({ taskIds: [1], bucketId: 3, viewId: -1 }, authManager),
       ).rejects.toThrow('viewId must be a positive integer');
@@ -117,10 +115,7 @@ describe('bulkSetTaskBucket', () => {
         .mockResolvedValueOnce(mockResponse({ text: '' }))
         .mockResolvedValueOnce(mockResponse({ text: '' }));
 
-      const result = await bulkSetTaskBucket(
-        { taskIds: [1, 2, 3], bucketId: 9 },
-        authManager,
-      );
+      const result = await bulkSetTaskBucket({ taskIds: [1, 2, 3], bucketId: 9 }, authManager);
 
       expect(mockFetch).toHaveBeenCalledTimes(5);
       const calls = mockFetch.mock.calls as [string, RequestInit?][];

@@ -45,10 +45,7 @@ export async function getTaskByIndex(
     );
   }
   if (args.index === undefined || args.index === null) {
-    throw new MCPError(
-      ErrorCode.VALIDATION_ERROR,
-      'index is required for get-by-index operation',
-    );
+    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'index is required for get-by-index operation');
   }
   validateId(args.projectId, 'projectId');
   validateId(args.index, 'index');

@@ -16,11 +16,13 @@ import type { VikunjaRestClient } from './rest-client';
 
 export interface SetupResult {
   createdLabelIds: number[];
+  createdTeamIds: number[];
   errors: string[];
 }
 
 export async function runSetup(client: VikunjaRestClient, actions: SetupAction[]): Promise<SetupResult> {
   const createdLabelIds: number[] = [];
+  const createdTeamIds: number[] = [];
   const errors: string[] = [];
 
   for (const action of actions) {
@@ -29,6 +31,11 @@ export async function runSetup(client: VikunjaRestClient, actions: SetupAction[]
         case 'create-label': {
           const label = await client.createLabel(action.title);
           createdLabelIds.push(label.id);
+          break;
+        }
+        case 'create-team': {
+          const team = await client.createTeam(action.name, action.isPublic);
+          createdTeamIds.push(team.id);
           break;
         }
         default: {
@@ -43,5 +50,5 @@ export async function runSetup(client: VikunjaRestClient, actions: SetupAction[]
     }
   }
 
-  return { createdLabelIds, errors };
+  return { createdLabelIds, createdTeamIds, errors };
 }

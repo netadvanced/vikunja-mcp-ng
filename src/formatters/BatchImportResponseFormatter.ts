@@ -24,6 +24,19 @@ export interface ImportResult {
     title: string;
     warning: string;
   }>;
+  /**
+   * Rows/tasks the parser itself dropped before task creation ever ran —
+   * e.g. a CSV row or JSON task that failed `importedTaskSchema` validation
+   * while `skipErrors` was set. Kept separate from `errors` (task-creation
+   * failures) since the two happen at different pipeline stages and use
+   * different index numbering; without this, an "imported N tasks" response
+   * under `skipErrors:true` had zero visibility into rows the parser silently
+   * discarded (#323).
+   */
+  skippedRows?: Array<{
+    index: number;
+    error: string;
+  }>;
 }
 
 export interface FormatterOptions {
@@ -46,7 +59,7 @@ export class BatchImportResponseFormatter {
   formatResult(
     result: ImportResult,
     userFetchFailedDueToAuth: boolean = false,
-    hasAssignees: boolean = false
+    hasAssignees: boolean = false,
   ): string {
     let responseText = '';
 
@@ -64,6 +77,9 @@ export class BatchImportResponseFormatter {
 
     // Add errors if any
     responseText += this.formatErrors(result);
+
+    // Add rows the parser dropped before task creation ran, if any (#323)
+    responseText += this.formatSkippedRows(result);
 
     return responseText;
   }
@@ -144,6 +160,24 @@ export class BatchImportResponseFormatter {
         errors += `- Row ${error.index + 1} (${error.title}): ${error.error}\n`;
       });
       return errors;
+    }
+    return '';
+  }
+
+  /**
+   * Format the rows the parser itself dropped (schema validation failures
+   * under `skipErrors:true`), before any task-creation attempt ran (#323).
+   *
+   * @param result - The import result
+   * @returns Skipped-rows text or empty string
+   */
+  private formatSkippedRows(result: ImportResult): string {
+    if (result.skippedRows && result.skippedRows.length > 0) {
+      let skipped = `\nSkipped during parsing (invalid rows, not sent to Vikunja):\n`;
+      result.skippedRows.forEach((row) => {
+        skipped += `- Input row ${row.index + 1}: ${row.error}\n`;
+      });
+      return skipped;
     }
     return '';
   }

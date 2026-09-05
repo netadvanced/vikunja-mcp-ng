@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Pre-Commit Requirements (ALL must pass)
 ```bash
 npm run lint           # ESLint validation
-npm run test:coverage  # Jest with 90%+ branches, 95%+ lines coverage requirement  
+npm run test:coverage  # Jest behind the ratcheted coverage gate (see "Coverage Thresholds")
 npm run typecheck      # TypeScript compilation check
 ```
 
@@ -64,7 +64,7 @@ server.tool('vikunja_tasks', {
    - Replaced custom tokenizer/parser/validator with secure Zod schemas
    - Enhanced security with DoS protection and input validation
    - Production-ready parsing with comprehensive error handling
-   - Located in `src/utils/filters-zod.ts`
+   - Located in `src/utils/filters.ts`
    - Backward compatible filter syntax with improved reliability
 
 3. **Production-Ready Retry System (580+ Lines Replaced)**
@@ -103,15 +103,15 @@ server.tool('vikunja_tasks', {
 ```json
 "coverageThreshold": {
   "global": {
-    "branches": 83,        // Current honest coverage: 84.19%
-    "functions": 82,       // Current honest coverage: 83.09%
-    "lines": 92,           // Current honest coverage: 93.14%
-    "statements": 92       // Current honest coverage: 92.80%
+    "branches": 86.56,     // Current honest coverage: 87.75%
+    "functions": 85.03,    // Current honest coverage: 86.12%
+    "lines": 94.31,        // Current honest coverage: 95.45%
+    "statements": 94.47    // Current honest coverage: 95.27%
   }
 }
 ```
 
-**Policy**: Ratcheted gate — thresholds sit just below current honest coverage and are raised as coverage grows. This approach transforms the gate from an always-red distraction into an effective regression detector. Thresholds are never lowered except by explicit owner decision (data-backed exception). Coverage improvements raise the gate in lockstep to maintain the buffer.
+**Policy**: Ratcheted gate. Thresholds sit just below current honest coverage and are raised as coverage grows. This turns the gate from an always-red distraction into an effective regression detector. Thresholds are never lowered except by explicit owner decision (data-backed exception). Coverage improvements raise the gate in lockstep to maintain the buffer.
 
 ### Defensive Programming Rule
 **If code cannot be tested, it must be removed.** Every defensive pattern (like `|| ''` fallbacks) must have corresponding test cases that trigger those code paths.
@@ -133,7 +133,7 @@ tests/
 ```
 
 ### Mock Strategy
-- **External Dependencies**: All node-vikunja API calls mocked
+- **External Dependencies**: All Vikunja REST calls (`vikunjaRestRequest`/`fetch`) mocked
 - **Edge Cases**: Test malformed API responses, auth failures, network errors
 - **Race Conditions**: Dedicated test files for concurrent operations
 
@@ -150,7 +150,6 @@ For manual testing with Claude, see `docs/MCP-TEST-CHECKLIST.md`.
 
 ### Core Dependencies
 - **@modelcontextprotocol/sdk**: MCP server framework and transport layer
-- **node-vikunja**: Vikunja API client (dynamically imported for testability)
 - **zod**: Runtime validation for MCP tool arguments and responses
 - **jest + ts-jest**: Testing with TypeScript support and coverage
 - **opossum**: Battle-tested circuit breaker for production resilience
@@ -163,8 +162,8 @@ For manual testing with Claude, see `docs/MCP-TEST-CHECKLIST.md`.
 - **Security Layer**: Credential masking in logs, secure session management with `src/auth/AuthManager.ts`
 
 ### Security Architecture
-- **Zod Validation**: `src/utils/filters-zod.ts` - Enterprise-grade input validation with DoS protection
-- **Rate Limiting**: `src/middleware/rate-limiting.ts` - Configurable DoS protection
+- **Zod Validation**: `src/utils/filters.ts` - Enterprise-grade input validation with DoS protection
+- **Rate Limiting**: `src/middleware/simplified-rate-limit.ts` - Configurable DoS protection
 - **Input Validation**: `src/utils/security.ts` - Sanitization and allowlist validation
 - **Memory Protection**: `src/utils/memory.ts` - Enhanced V8-specific memory estimation with risk analysis and 93%+ test coverage
 - **Thread Safety**: `src/storage/SimpleFilterStorage.ts` - Concurrent access protection with AsyncMutex
@@ -214,7 +213,6 @@ try {
 
 1. **Vikunja API Limitations**: 
    - Hybrid filtering implemented to handle server-side inconsistencies
-   - Team operations incomplete in node-vikunja library
    - Some user endpoints have authentication issues
 
 2. **MCP Protocol Constraints**:
@@ -233,9 +231,9 @@ try {
 
 ## Version Requirements
 
-- **Node.js**: 22+ LTS only (no EOL versions — Node 20 reached EOL April 2026)
+- **Node.js**: 22+ LTS only (no EOL versions; Node 20 reached EOL April 2026)
 - **TypeScript**: Strict mode enabled
-- **Vikunja**: Compatible with v0.22.1+ (with known API filter limitation)
+- **Vikunja**: this project supports and tests the trailing THREE released versions (policy since 2026-09-02, decision 29) — currently **2.4.0** (floor), **2.5.0**, **2.6.0** (aligned/tested default) — so `npm run test:matrix` covers six targets (three versions × two DB backends). When a new version ships, the window shifts: drop the oldest, add the new one. The single source of truth is `SUPPORTED_VERSIONS` (`scripts/lib/e2e-target.ts`), which `DEFAULT_TARGET` and `FLOOR_VERSION` both derive from — not the compose file.
 
 ## Repository Configuration
 

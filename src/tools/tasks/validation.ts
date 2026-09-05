@@ -26,14 +26,31 @@ export function validateDateString(date: string, fieldName: string): void {
  * Coerce a date-only `YYYY-MM-DD` string to a full RFC3339 timestamp
  * (`YYYY-MM-DDT00:00:00Z`) before it is sent to Vikunja.
  *
- * Vikunja's API expects `due_date`/`start_date`/`end_date` as RFC3339 and
- * SILENTLY DROPS a bare date-only value — everything else in the same
- * payload persists, so a caller passing e.g. `dueDate: '2026-07-24'` loses
- * the due date with no error surfaced anywhere (issue #164). This helper
+ * Vikunja's API expects `due_date`/`start_date`/`end_date` as RFC3339. A bare
+ * date-only value on these create-family paths does NOT silently vanish:
+ * verified live against 2.4.0, it is rejected outright with **HTTP 400,
+ * code 2004** ("Invalid model provided") — the whole request fails, nothing
+ * is persisted. This repo's own issue history contains both
+ * characterizations (#164/#165 originally reported a silent drop; #167/#163
+ * pinned it down as the 400) — the 400 is what actually applies to the
+ * paths this helper normalizes for, and the "silently drops" wording above
+ * is the stale one. See docs/VIKUNJA_API_ISSUES.md #19 for the full
+ * writeup; don't re-flip this back without re-reading that. This helper
  * is the single normalization point for that coercion; already-full
  * timestamps (anything containing a `T`) are passed through unchanged, and
  * empty/undefined input is passed through as-is (validation of malformed
  * strings is `validateDateString`'s job, not this function's).
+ *
+ * It ALSO coerces the SQL-ish space-separated form `YYYY-MM-DD HH:MM[:SS]`
+ * to `YYYY-MM-DDTHH:MM:SSZ` (issue #225). That spelling is what an agent
+ * naturally writes inside a filter string — `created >= '2026-08-16
+ * 00:00:00'` — and Vikunja rejects it outright with HTTP 400 code 4019
+ * ("The task filter value '2026-08-16 00:00:00' for field 'created' is
+ * invalid.", verified against 2.4.0). Because it is rejected rather than
+ * accepted-and-ignored, the whole filtered call failed and silently dropped
+ * into a fallback path. Coercing here keeps ONE date normalizer for both
+ * task fields and filter literals (see `conditionToString` in
+ * src/utils/filters.ts, the filter-string call site).
  */
 export function normalizeDateForApi(date: string | undefined): string | undefined {
   if (!date) return date;
@@ -45,9 +62,43 @@ export function normalizeDateForApi(date: string | undefined): string | undefine
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
     return `${trimmed}T00:00:00Z`;
   }
+  // SQL-ish space-separated form, e.g. '2026-08-16 00:00:00' or
+  // '2026-08-16 09:30'. Seconds are optional; anything already carrying an
+  // explicit zone/offset is left for the branch above (it contains a 'T').
+  const spaceSeparated = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})(:\d{2})?$/.exec(trimmed);
+  if (spaceSeparated) {
+    return `${spaceSeparated[1]}T${spaceSeparated[2]}${spaceSeparated[3] ?? ':00'}Z`;
+  }
   // Anything else (malformed, or a format we don't recognize) - leave
   // untouched; validateDateString is responsible for rejecting it.
   return date;
+}
+
+/**
+ * Validates a task `hexColor` (`models.Task.hex_color`).
+ *
+ * Accepts `#RRGGBB` — the same spelling `vikunja_projects` and
+ * `vikunja_labels` already require — and, additionally, the empty string,
+ * which is the ONLY way to clear a colour: Vikunja's task update explicitly
+ * maps an empty `hex_color` back onto the stored task (`if t.HexColor == ""
+ * { ot.HexColor = "" }`, pkg/models/tasks.go), so `hexColor: ''` is a real
+ * caller intent and must not be mistaken for "not supplied". Everything on
+ * this path therefore tests `!== undefined`, never truthiness.
+ *
+ * The server itself is laxer (`utils.NormalizeHex` just strips a leading `#`
+ * and truncates to 6 chars, so `zzzzzz` would be stored verbatim); this
+ * rejects malformed input up front rather than writing a colour no client can
+ * render.
+ */
+export function validateHexColor(hexColor: string, fieldName = 'hexColor'): void {
+  if (hexColor === '') return;
+  if (!/^#[0-9A-Fa-f]{6}$/.test(hexColor)) {
+    throw new MCPError(
+      ErrorCode.VALIDATION_ERROR,
+      `Invalid ${fieldName} format. Expected #RRGGBB (e.g. #4287f5, #FF0000), ` +
+        `or '' to clear the color.`,
+    );
+  }
 }
 
 /**
@@ -138,6 +189,16 @@ export function applyFieldUpdate(task: Task, field: string | undefined, value: u
       break;
     case 'priority':
       task.priority = value as number;
+      break;
+    // Already the 0-1 wire fraction by the time it gets here. The tool
+    // surface's scale is a whole percentage 0-100; the single conversion for
+    // the bulk-update path happens upstream in `resolveBulkUpdateValue`
+    // (./bulk-operations-simplified.ts), because that same resolved value
+    // also goes straight into the native POST /tasks/bulk payload. Converting
+    // again here would halve it a second time — see src/utils/percent-done.ts.
+    case 'percent_done':
+    case 'percentDone':
+      task.percent_done = value as number;
       break;
     case 'due_date':
       task.due_date = value as string;

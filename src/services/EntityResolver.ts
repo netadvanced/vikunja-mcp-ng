@@ -27,6 +27,18 @@ export interface EntityResolutionResult {
   userMap: Map<string, number>;
   /** Whether user fetch failed due to known authentication issues */
   userFetchFailedDueToAuth: boolean;
+  /**
+   * True once at least one `GET /users?s=...` search call itself failed
+   * (network/5xx/etc, not an auth error — those set
+   * `userFetchFailedDueToAuth` instead). Lets callers distinguish "the
+   * search call broke" from "the search succeeded and legitimately found
+   * nobody", which used to be indistinguishable (both left `projectUsers`
+   * empty), forcing `TaskCreationService.handleUserAssignment` to always
+   * blame "possible API authentication issue" even for a plain typo'd
+   * username a successful search correctly reported as not found
+   * (issue #283 HIGH-12).
+   */
+  userSearchFailed: boolean;
   /** Raw labels array for reference */
   projectLabels: VikunjaLabel[];
   /** Raw users array for reference */
@@ -67,6 +79,7 @@ export class EntityResolver {
       labelMap: new Map(),
       userMap: new Map(),
       userFetchFailedDueToAuth: false,
+      userSearchFailed: false,
       projectLabels: [],
       projectUsers: [],
     };
@@ -88,6 +101,18 @@ export class EntityResolver {
   }
 
   /**
+   * Number of labels requested per `GET /labels` page while paginating. The
+   * loop stops once a page comes back with fewer than this many items (or
+   * empty), which is the standard "last page" signal for this API — there's
+   * no total-count header exposed through `vikunjaRestRequest` to check
+   * instead (it returns only the parsed body).
+   */
+  private static readonly LABELS_PAGE_SIZE = 50;
+
+  /** Hard cap on pages fetched, guarding against an API that never signals "last page". */
+  private static readonly LABELS_MAX_PAGES = 100;
+
+  /**
    * Fetch labels from the API with robust error handling
    *
    * Handles multiple edge cases:
@@ -96,51 +121,74 @@ export class EntityResolver {
    * - Network errors
    * - Auth errors (less common for labels than users)
    *
+   * Paginates through every page of `GET /labels` (MED-10 from #294):
+   * previously only the first page was ever read, so a project with more
+   * labels than fit on one page had its later labels silently misreported
+   * as "not found" during import, even though they exist.
+   *
    * @param authManager - Active auth manager holding the session credentials
    * @param result - The result object to update with fetched labels
    */
   private async fetchLabels(
     authManager: AuthManager,
-    result: EntityResolutionResult
+    result: EntityResolutionResult,
   ): Promise<void> {
+    const allLabels: VikunjaLabel[] = [];
     try {
-      // GET /labels per the OpenAPI spec (models.Label[]).
-      const labelsResponse = await vikunjaRestRequest<VikunjaLabel[]>(
-        authManager,
-        'GET',
-        '/labels',
-      );
+      for (let page = 1; page <= EntityResolver.LABELS_MAX_PAGES; page++) {
+        // GET /labels per the OpenAPI spec (models.Label[]), paginated via
+        // its documented page/per_page query params.
+        const labelsResponse = await vikunjaRestRequest<VikunjaLabel[]>(
+          authManager,
+          'GET',
+          `/labels?page=${page}&per_page=${EntityResolver.LABELS_PAGE_SIZE}`,
+        );
 
-      // Handle potential null/undefined response
-      if (!labelsResponse) {
-        logger.warn('Labels response is null/undefined');
-        result.projectLabels = [];
-        return;
+        // Handle potential null/undefined response
+        if (!labelsResponse) {
+          if (page === 1) {
+            logger.warn('Labels response is null/undefined');
+          }
+          break;
+        }
+
+        // Handle non-array responses
+        if (!Array.isArray(labelsResponse)) {
+          if (page === 1) {
+            logger.warn('Labels response is not an array', {
+              responseType: typeof labelsResponse,
+              response: labelsResponse,
+            });
+          }
+          break;
+        }
+
+        allLabels.push(...labelsResponse);
+
+        // Fewer items than requested (including zero) means this was the
+        // last page.
+        if (labelsResponse.length < EntityResolver.LABELS_PAGE_SIZE) {
+          break;
+        }
       }
 
-      // Handle non-array responses
-      if (!Array.isArray(labelsResponse)) {
-        logger.warn('Labels response is not an array', {
-          responseType: typeof labelsResponse,
-          response: labelsResponse,
-        });
-        result.projectLabels = [];
-        return;
-      }
-
-      // Valid response
-      result.projectLabels = labelsResponse;
+      result.projectLabels = allLabels;
       logger.debug('Labels fetched', {
         count: result.projectLabels.length,
-        labels: result.projectLabels.map((l): { id: number; title: string } => ({ id: l.id ?? 0, title: l.title ?? '' })),
+        labels: result.projectLabels.map((l): { id: number; title: string } => ({
+          id: l.id ?? 0,
+          title: l.title ?? '',
+        })),
       });
     } catch (error) {
       logger.error('Failed to fetch labels', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
-      result.projectLabels = [];
-      // Continue without labels mapping
+      // Preserve whatever labels were successfully paged in before the
+      // failing request — partial results are still useful, matching the
+      // "continue, best-effort" behavior fetchUsers already follows.
+      result.projectLabels = allLabels;
     }
   }
 
@@ -173,17 +221,26 @@ export class EntityResolver {
   private async fetchUsers(
     authManager: AuthManager,
     assigneeUsernames: string[],
-    result: EntityResolutionResult
+    result: EntityResolutionResult,
   ): Promise<void> {
     if (assigneeUsernames.length === 0) {
       result.projectUsers = [];
-      logger.debug('No assignee usernames referenced by this batch; skipping /users search entirely');
+      logger.debug(
+        'No assignee usernames referenced by this batch; skipping /users search entirely',
+      );
       return;
     }
 
     const usersById = new Map<number, VikunjaUser>();
-    try {
-      for (const username of assigneeUsernames) {
+    let failedDueToAuth = false;
+    let searchFailed = false;
+
+    // One try/catch per username rather than around the whole loop: a
+    // single search failing (auth or otherwise) used to abort every
+    // remaining username's search too, which is strictly worse than just
+    // best-effort skipping the one that failed.
+    for (const username of assigneeUsernames) {
+      try {
         const usersResponse = await vikunjaRestRequest<VikunjaUser[]>(
           authManager,
           'GET',
@@ -194,41 +251,48 @@ export class EntityResolver {
             usersById.set(user.id, user);
           }
         }
+      } catch (error) {
+        // This is a known limitation with Vikunja API authentication. Checked
+        // directly via `details.statusCode` (set by `vikunjaRestRequest` on
+        // every non-2xx response) alongside the shared message-pattern
+        // classifier: `isAuthenticationError`'s structured checks look for
+        // `.status`/`.response.status`, properties the legacy client's HTTP errors
+        // carried but a plain `MCPError` from the REST helper does not — so a
+        // bare 401/403 with a response body that doesn't happen to match one
+        // of the message-pattern fallbacks would otherwise stop being
+        // classified as an auth failure after this transport migration.
+        const statusCode = error instanceof MCPError ? error.details?.statusCode : undefined;
+        if (statusCode === 401 || statusCode === 403 || isAuthenticationError(error)) {
+          logger.warn(
+            'Cannot fetch users due to known Vikunja API authentication issue. Assignees will be skipped.',
+            {
+              username,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+          failedDueToAuth = true;
+          // Continue without user mapping - assignees will be ignored
+        } else {
+          // Some other error - log but continue. Distinct from an empty
+          // (but successful) search result: `userSearchFailed` tells
+          // TaskCreationService the search itself broke, rather than ran
+          // and correctly found nobody (issue #283 HIGH-12 — see
+          // `UserSearchOutcome`'s doc comment).
+          logger.warn('Failed to fetch users', { username, error });
+          searchFailed = true;
+        }
       }
-      result.projectUsers = Array.from(usersById.values());
-      logger.debug('Users fetched', {
-        searchCount: assigneeUsernames.length,
-        count: result.projectUsers.length,
-      });
-    } catch (error) {
-      // This is a known limitation with Vikunja API authentication. Checked
-      // directly via `details.statusCode` (set by `vikunjaRestRequest` on
-      // every non-2xx response) alongside the shared message-pattern
-      // classifier: `isAuthenticationError`'s structured checks look for
-      // `.status`/`.response.status`, properties the legacy client's HTTP errors
-      // carried but a plain `MCPError` from the REST helper does not — so a
-      // bare 401/403 with a response body that doesn't happen to match one
-      // of the message-pattern fallbacks would otherwise stop being
-      // classified as an auth failure after this transport migration.
-      const statusCode = error instanceof MCPError ? error.details?.statusCode : undefined;
-      if (statusCode === 401 || statusCode === 403 || isAuthenticationError(error)) {
-        logger.warn(
-          'Cannot fetch users due to known Vikunja API authentication issue. Assignees will be skipped.',
-          {
-            error: error instanceof Error ? error.message : String(error),
-          },
-        );
-        result.userFetchFailedDueToAuth = true;
-        // Continue without user mapping - assignees will be ignored
-      } else {
-        // Some other error - log but continue
-        logger.warn('Failed to fetch users', { error });
-      }
-      // Preserve whatever users were successfully resolved before the
-      // failing search (partial results are still useful), matching the
-      // "continue, best-effort" behavior of the rest of this method.
-      result.projectUsers = Array.from(usersById.values());
     }
+
+    result.projectUsers = Array.from(usersById.values());
+    result.userFetchFailedDueToAuth = failedDueToAuth;
+    result.userSearchFailed = searchFailed;
+    logger.debug('Users fetched', {
+      searchCount: assigneeUsernames.length,
+      count: result.projectUsers.length,
+      failedDueToAuth,
+      searchFailed,
+    });
   }
 
   /**
@@ -244,7 +308,10 @@ export class EntityResolver {
     // Create case-insensitive label name to ID map
     result.labelMap = new Map(
       (result.projectLabels || [])
-        .filter((label): label is VikunjaLabel & { id: number } => label !== null && label.id !== null && label.id !== undefined)
+        .filter(
+          (label): label is VikunjaLabel & { id: number } =>
+            label !== null && label.id !== null && label.id !== undefined,
+        )
         .map((label) => {
           let key: string;
           if (!('title' in label)) {
@@ -257,13 +324,16 @@ export class EntityResolver {
             key = String(label.title).toLowerCase();
           }
           return [key, label.id];
-        })
+        }),
     );
 
     // Create case-insensitive username to ID map
     result.userMap = new Map(
       (result.projectUsers || [])
-        .filter((user): user is VikunjaUser & { id: number } => user !== null && user.id !== null && user.id !== undefined)
+        .filter(
+          (user): user is VikunjaUser & { id: number } =>
+            user !== null && user.id !== null && user.id !== undefined,
+        )
         .map((user) => {
           let key: string;
           if (!('username' in user)) {
@@ -276,7 +346,7 @@ export class EntityResolver {
             key = String(user.username).toLowerCase();
           }
           return [key, user.id];
-        })
+        }),
     );
   }
 }

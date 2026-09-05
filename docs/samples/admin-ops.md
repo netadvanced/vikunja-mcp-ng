@@ -36,7 +36,7 @@ vikunja_admin({ subcommand: "overview" })
 **Resulting Vikunja UI state:**
 No change — this is a read. The numbers match Vikunja's own admin panel (Settings → Admin Panel → Overview, if the instance's frontend exposes one) exactly, since both read the same endpoint.
 
-_Screenshot unavailable: the pinned local e2e stack (`vikunja/vikunja:2.3.0`, see [docs/LOCAL-TESTING.md](../LOCAL-TESTING.md#version-pinning-and-refresh)) does not yet implement the admin panel API or UI on this version -- `GET /admin/overview` 404s and no `admin` group appears in `GET /routes` at all. This is the documented spec/pinned-version gap (the vendored OpenAPI spec is ~1000 commits ahead of the pinned stable image), not a bug in the capture script. Re-run `scripts/capture-sample-screenshots.ts` once the stack is re-pinned to a release that ships the admin panel._
+_Screenshot unavailable: this capture has not been re-run since the e2e stack was pinned to `vikunja/vikunja:2.3.0`, a version that did not implement the admin panel API or UI at all -- `GET /admin/overview` 404d and no `admin` group appeared in `GET /routes`. The pin has since moved to `2.4.0`, which is now also the minimum supported Vikunja (see [docs/LOCAL-TESTING.md](../LOCAL-TESTING.md#version-pinning-and-refresh)) and which does ship these operations. Re-run `scripts/capture-sample-screenshots.ts` against the current stack to fill this in._
 
 
 ---
@@ -55,7 +55,7 @@ vikunja_admin({ subcommand: "list-users" })
 **Resulting Vikunja UI state:**
 No change — this is a read, matching the admin panel's user list including accounts that have never shared a project with the connected account.
 
-_Screenshot unavailable: the pinned local e2e stack (`vikunja/vikunja:2.3.0`, see [docs/LOCAL-TESTING.md](../LOCAL-TESTING.md#version-pinning-and-refresh)) does not yet implement the admin panel API or UI on this version -- `GET /admin/overview` 404s and no `admin` group appears in `GET /routes` at all. This is the documented spec/pinned-version gap (the vendored OpenAPI spec is ~1000 commits ahead of the pinned stable image), not a bug in the capture script. Re-run `scripts/capture-sample-screenshots.ts` once the stack is re-pinned to a release that ships the admin panel._
+_Screenshot unavailable: this capture has not been re-run since the e2e stack was pinned to `vikunja/vikunja:2.3.0`, a version that did not implement the admin panel API or UI at all -- `GET /admin/overview` 404d and no `admin` group appeared in `GET /routes`. The pin has since moved to `2.4.0`, which is now also the minimum supported Vikunja (see [docs/LOCAL-TESTING.md](../LOCAL-TESTING.md#version-pinning-and-refresh)) and which does ship these operations. Re-run `scripts/capture-sample-screenshots.ts` against the current stack to fill this in._
 
 
 ---
@@ -74,7 +74,7 @@ Deliberately **not** a one-shot "delete-user" call without friction: the tool th
 **Resulting Vikunja UI state:**
 The user disappears from the admin panel's user list; any projects they solely owned become orphaned or inaccessible per Vikunja's own deletion semantics (not something this tool can compensate for — no undelete exists).
 
-_Screenshot unavailable: the pinned local e2e stack (`vikunja/vikunja:2.3.0`, see [docs/LOCAL-TESTING.md](../LOCAL-TESTING.md#version-pinning-and-refresh)) does not yet implement the admin panel API or UI on this version -- `GET /admin/overview` 404s and no `admin` group appears in `GET /routes` at all. This is the documented spec/pinned-version gap (the vendored OpenAPI spec is ~1000 commits ahead of the pinned stable image), not a bug in the capture script. Re-run `scripts/capture-sample-screenshots.ts` once the stack is re-pinned to a release that ships the admin panel._
+_Screenshot unavailable: this capture has not been re-run since the e2e stack was pinned to `vikunja/vikunja:2.3.0`, a version that did not implement the admin panel API or UI at all -- `GET /admin/overview` 404d and no `admin` group appeared in `GET /routes`. The pin has since moved to `2.4.0`, which is now also the minimum supported Vikunja (see [docs/LOCAL-TESTING.md](../LOCAL-TESTING.md#version-pinning-and-refresh)) and which does ship these operations. Re-run `scripts/capture-sample-screenshots.ts` against the current stack to fill this in._
 
 
 ---

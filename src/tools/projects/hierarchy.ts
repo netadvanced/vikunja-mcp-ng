@@ -16,7 +16,11 @@ import { vikunjaRestRequest } from '../../utils/vikunja-rest';
 import type { AuthManager } from '../../auth/AuthManager';
 import { transformApiError } from '../../utils/error-handler';
 import { validateId, validateMoveConstraints } from './validation';
-import { createProjectResponse, createProjectTreeResponse, createBreadcrumbResponse } from './response-formatter';
+import {
+  createProjectResponse,
+  createProjectTreeResponse,
+  createBreadcrumbResponse,
+} from './response-formatter';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
 import { buildProjectUpdatePayload, fetchAllProjects, type VikunjaProject } from './crud';
 
@@ -112,7 +116,7 @@ export async function getProjectChildren(
       { parentId: id, count: children.length },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -120,8 +124,8 @@ export async function getProjectChildren(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(response.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError) {
@@ -139,7 +143,14 @@ export async function getProjectTree(
   _context: unknown,
   authManager: AuthManager,
 ): Promise<McpResponse> {
-  const { id, maxDepth = 10, includeArchived = false, verbosity, useOptimizedFormat, useAorp } = args;
+  const {
+    id,
+    maxDepth = 10,
+    includeArchived = false,
+    verbosity,
+    useOptimizedFormat,
+    useAorp,
+  } = args;
 
   // Validate that project ID is provided for tree operations
   if (id === undefined || id === null) {
@@ -158,6 +169,11 @@ export async function getProjectTree(
     let treeData: ProjectTreeNode[];
     let totalNodes = 0;
     let actualDepth = 0;
+    // Collects the ids of any project dropped purely because its own depth
+    // hit `maxDepth` (issue #291, LOW-2) — see buildProjectTree's doc
+    // comment. A non-empty array means the tree below is INCOMPLETE, not
+    // exhaustive.
+    const truncatedIds: number[] = [];
 
     if (id) {
       validateId(id, 'project id');
@@ -166,7 +182,14 @@ export async function getProjectTree(
         throw new MCPError(ErrorCode.NOT_FOUND, `Project with ID ${id} not found`);
       }
 
-      rootNode = buildProjectTree(rootProject, allProjects, 0, maxDepth, includeArchived);
+      rootNode = buildProjectTree(
+        rootProject,
+        allProjects,
+        0,
+        maxDepth,
+        includeArchived,
+        truncatedIds,
+      );
       if (rootNode) {
         treeData = [rootNode];
         totalNodes = countTreeNodes(rootNode);
@@ -179,7 +202,9 @@ export async function getProjectTree(
     } else {
       // Build forest of all root projects
       treeData = rootProjects
-        .map((project: VikunjaProject) => buildProjectTree(project, allProjects, 0, maxDepth, includeArchived))
+        .map((project: VikunjaProject) =>
+          buildProjectTree(project, allProjects, 0, maxDepth, includeArchived, truncatedIds),
+        )
         .filter(Boolean) as ProjectTreeNode[];
 
       totalNodes = treeData.reduce((sum, node) => sum + countTreeNodes(node), 0);
@@ -201,20 +226,19 @@ export async function getProjectTree(
       options1.useAorp = useAorp;
     }
 
-    const result = createProjectTreeResponse(
-      treeData,
-      actualDepth,
-      totalNodes,
-      options1
-    );
+    const result = createProjectTreeResponse(treeData, actualDepth, totalNodes, options1, {
+      maxDepth,
+      truncated: truncatedIds.length > 0,
+      truncatedCount: truncatedIds.length,
+    });
 
     return {
       content: [
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError) {
@@ -262,18 +286,15 @@ export async function getProjectBreadcrumb(
       options2.useAorp = useAorp;
     }
 
-    const result = createBreadcrumbResponse(
-      breadcrumb,
-      options2
-    );
+    const result = createBreadcrumbResponse(breadcrumb, options2);
 
     return {
       content: [
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     if (error instanceof MCPError) {
@@ -318,7 +339,10 @@ export async function moveProject(
     if (parentProjectId) {
       const parentProject = allProjects.find((p: VikunjaProject) => p.id === parentProjectId);
       if (!parentProject) {
-        throw new MCPError(ErrorCode.NOT_FOUND, `Parent project with ID ${parentProjectId} not found`);
+        throw new MCPError(
+          ErrorCode.NOT_FOUND,
+          `Parent project with ID ${parentProjectId} not found`,
+        );
       }
     }
 
@@ -338,9 +362,7 @@ export async function moveProject(
       updateData,
     );
 
-    const parentInfo = parentProjectId
-      ? ` to parent project ${parentProjectId}`
-      : ' to root level';
+    const parentInfo = parentProjectId ? ` to parent project ${parentProjectId}` : ' to root level';
 
     const result = createProjectResponse(
       'move_project',
@@ -349,11 +371,11 @@ export async function moveProject(
       {
         oldParentProjectId: currentProject.parent_project_id,
         newParentProjectId: parentProjectId,
-        movedProjectId: id
+        movedProjectId: id,
       },
       verbosity,
       useOptimizedFormat,
-      useAorp
+      useAorp,
     );
 
     return {
@@ -361,8 +383,8 @@ export async function moveProject(
         {
           type: 'text' as const,
           text: formatAorpAsMarkdown(result.response),
-        }
-      ]
+        },
+      ],
     };
   } catch (error) {
     // `vikunjaRestRequest` throws MCPError with the HTTP status under
@@ -383,16 +405,29 @@ export async function moveProject(
 }
 
 /**
- * Builds a project tree recursively
+ * Builds a project tree recursively.
+ *
+ * `truncatedIds` (issue #291, LOW-2) is an OUT parameter: whenever a project
+ * is dropped because its own depth already reached `maxDepth`, its id is
+ * pushed onto this array before returning `null`. Without this, a subtree
+ * beyond `maxDepth` vanished from the result with no signal at all — the
+ * caller could not tell "this project genuinely has no children that deep"
+ * from "children exist but were silently pruned by the depth cap". The
+ * caller (`getProjectTree`) surfaces a non-empty `truncatedIds` as
+ * `truncated: true` (plus the count) in the response metadata.
  */
 function buildProjectTree(
   project: VikunjaProject,
   allProjects: VikunjaProject[],
   currentDepth: number,
   maxDepth: number,
-  includeArchived: boolean = false
+  includeArchived: boolean = false,
+  truncatedIds?: number[],
 ): ProjectTreeNode | null {
   if (currentDepth >= maxDepth) {
+    if (typeof project.id === 'number') {
+      truncatedIds?.push(project.id);
+    }
     return null;
   }
 
@@ -400,7 +435,7 @@ function buildProjectTree(
     .filter((p: VikunjaProject) => p.parent_project_id === project.id)
     .filter((p: VikunjaProject) => includeArchived || !p.is_archived)
     .map((child: VikunjaProject) =>
-      buildProjectTree(child, allProjects, currentDepth + 1, maxDepth, includeArchived)
+      buildProjectTree(child, allProjects, currentDepth + 1, maxDepth, includeArchived, truncatedIds),
     )
     .filter(Boolean) as ProjectTreeNode[];
 
@@ -425,7 +460,7 @@ function getTreeDepth(node: ProjectTreeNode): number {
   if (node.children.length === 0) {
     return node.depth;
   }
-  return Math.max(...node.children.map(child => getTreeDepth(child)));
+  return Math.max(...node.children.map((child) => getTreeDepth(child)));
 }
 
 /**
@@ -440,7 +475,7 @@ function buildBreadcrumb(targetId: number, allProjects: VikunjaProject[]): Vikun
     if (visited.has(currentId)) {
       throw new MCPError(
         ErrorCode.INTERNAL_ERROR,
-        'Circular reference detected in project hierarchy while building breadcrumb'
+        'Circular reference detected in project hierarchy while building breadcrumb',
       );
     }
 

@@ -96,6 +96,11 @@ export interface User {
   timezone?: string;
   week_start?: number;
   frontend_settings?: Record<string, unknown>;
+  // Discoverability + default-project settings (models.UserGeneralSettings).
+  // Surfaced so `update-settings` can read back what it just wrote.
+  discoverable_by_email?: boolean;
+  discoverable_by_name?: boolean;
+  default_project_id?: number;
 }
 
 // Extended UserSettings interface with notification preferences
@@ -293,6 +298,13 @@ export interface Webhook {
   target_url: string;
   events: string[];
   secret?: string;
+  // Create-only, per models.Webhook (go-vikunja pkg/models/webhooks.go): if
+  // provided, outgoing webhook requests are sent with an HTTP Basic Auth
+  // header. `Webhook.Update` is a hard-coded `Cols("events")` write, so
+  // neither field can ever be changed after creation - see webhooks.ts's
+  // `update` rejection for basicAuthUser/basicAuthPassword.
+  basic_auth_user?: string;
+  basic_auth_password?: string;
   created?: string;
   updated?: string;
   created_by?: User;
@@ -353,6 +365,13 @@ export interface TaskCreationData {
   hex_color?: string;
   repeat_after?: number;
   repeat_mode?: string;
+  /**
+   * Absolute reminders (`models.TaskReminder[]`, wire field `reminders`) to
+   * create the task with directly. `PUT /projects/{id}/tasks` accepts a full
+   * task body per the OpenAPI spec, so reminders supplied at import time
+   * don't need a separate post-creation call — see issue #284.
+   */
+  reminders?: Array<{ reminder: string }>;
 }
 
 export interface TaskUpdateData extends Partial<TaskCreationData> {

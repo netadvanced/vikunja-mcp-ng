@@ -9,7 +9,11 @@ import { registerExportTool } from '../../src/tools/export';
 import { MCPError, ErrorCode } from '../../src/types/index';
 import type { Project, Task, Label } from 'node-vikunja';
 import type { MockVikunjaClient, MockAuthManager, MockServer } from '../types/mocks';
-import { getClientFromContext } from '../../src/client';
+import {
+  getAuthManagerFromContext,
+  getClientFromContext,
+  hasRequestContext,
+} from '../../src/client';
 import { parseMarkdown } from '../utils/markdown';
 import { circuitBreakerRegistry } from '../../src/utils/retry';
 import { ConfigurationManager } from '../../src/config';
@@ -40,6 +44,8 @@ jest.mock('../../src/client', () => ({
       getLabel: jest.fn(),
     },
   }),
+  getAuthManagerFromContext: jest.fn(),
+  hasRequestContext: jest.fn(() => false),
 }));
 
 // Mock fetch for the direct-REST project/task calls and the user export endpoints
@@ -89,9 +95,9 @@ describe('Export Tool', () => {
         mockServer.tool.mockClear();
         registerExportTool(mockServer, mockAuthManagerNoAuth);
 
-        const handler = mockServer.tool.mock.calls.find(
-          (call) => call[0] === 'vikunja_export_project',
-        )?.at(-1);
+        const handler = mockServer.tool.mock.calls
+          .find((call) => call[0] === 'vikunja_export_project')
+          ?.at(-1);
 
         await expect(handler?.({ projectId: 1 })).rejects.toThrow(
           'Authentication required. Please use vikunja_auth.connect first.',
@@ -107,9 +113,9 @@ describe('Export Tool', () => {
         mockServer.tool.mockClear();
         registerExportTool(mockServer, mockAuthManagerApiToken);
 
-        const handler = mockServer.tool.mock.calls.find(
-          (call) => call[0] === 'vikunja_export_project',
-        )?.at(-1);
+        const handler = mockServer.tool.mock.calls
+          .find((call) => call[0] === 'vikunja_export_project')
+          ?.at(-1);
 
         await expect(handler?.({ projectId: 1 })).rejects.toThrow(
           'Export operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',
@@ -143,9 +149,9 @@ describe('Export Tool', () => {
         fetchOkOnce(mockProject);
         fetchOkOnce([]);
 
-        const handler = mockServer.tool.mock.calls.find(
-          (call) => call[0] === 'vikunja_export_project',
-        )?.at(-1);
+        const handler = mockServer.tool.mock.calls
+          .find((call) => call[0] === 'vikunja_export_project')
+          ?.at(-1);
 
         const result = await handler?.({ projectId: 1, includeChildren: false });
 
@@ -211,9 +217,9 @@ describe('Export Tool', () => {
         .mockResolvedValueOnce(mockLabels[0])
         .mockResolvedValueOnce(mockLabels[1]);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       const result = await handler?.({ projectId: 1, includeChildren: false });
 
@@ -273,9 +279,9 @@ describe('Export Tool', () => {
       fetchOkOnce(mockChildProject);
       fetchOkOnce([]);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       const result = await handler?.({ projectId: 1, includeChildren: true });
 
@@ -320,9 +326,9 @@ describe('Export Tool', () => {
       fetchOkOnce([]);
       fetchOkOnce([mockProject]);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       await expect(handler?.({ projectId: 1, includeChildren: true })).rejects.toThrow(
         'Circular reference detected in project hierarchy',
@@ -330,9 +336,9 @@ describe('Export Tool', () => {
     });
 
     it('should validate project ID', async () => {
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       await expect(handler?.({ projectId: 0 })).rejects.toThrow(
         'projectId must be a positive integer',
@@ -353,9 +359,9 @@ describe('Export Tool', () => {
       // `getProject.mockResolvedValue(null)` scenario.
       fetchOkOnce(null);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       await expect(handler?.({ projectId: 999 })).rejects.toThrow('Project with ID 999 not found');
     });
@@ -390,9 +396,9 @@ describe('Export Tool', () => {
       fetchOkOnce(mockTasks);
       jest.mocked(mockClient.labels.getLabel).mockRejectedValue(new Error('Label not found'));
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_export_project',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_export_project')
+        ?.at(-1);
 
       const result = await handler?.({ projectId: 1 });
 
@@ -431,9 +437,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -474,9 +480,9 @@ describe('Export Tool', () => {
         statusText: 'Unauthorized',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'wrong-password' })).rejects.toThrow('Invalid password');
     });
@@ -488,9 +494,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -505,9 +511,9 @@ describe('Export Tool', () => {
         apiToken: null,
       });
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'No authentication token available',
@@ -541,9 +547,9 @@ describe('Export Tool', () => {
         statusText: 'Bad Gateway',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'HTTP 502 Bad Gateway',
@@ -555,9 +561,9 @@ describe('Export Tool', () => {
       // policy, so every retry attempt must see the same rejection.
       jest.mocked(global.fetch).mockRejectedValue(new Error('Request timeout'));
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_request_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_request_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow('Request timeout');
     });
@@ -584,9 +590,9 @@ describe('Export Tool', () => {
         apiToken: null,
       });
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'No authentication token available',
@@ -601,9 +607,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -645,9 +651,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       const result = await handler?.({ password: 'test-password' });
 
@@ -664,9 +670,9 @@ describe('Export Tool', () => {
         statusText: 'Not Found',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow('Export not ready');
     });
@@ -681,9 +687,9 @@ describe('Export Tool', () => {
         statusText: 'Server Error',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'HTTP 500 Server Error',
@@ -695,9 +701,9 @@ describe('Export Tool', () => {
       // policy, so every retry attempt must see the same rejection.
       jest.mocked(global.fetch).mockRejectedValue(new Error('Network request failed'));
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_download_user_export',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_download_user_export')
+        ?.at(-1);
 
       await expect(handler?.({ password: 'test-password' })).rejects.toThrow(
         'Network request failed',
@@ -729,9 +735,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       const result = await handler?.({});
 
@@ -770,9 +776,9 @@ describe('Export Tool', () => {
         statusText: 'OK',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       const result = await handler?.({});
 
@@ -787,9 +793,9 @@ describe('Export Tool', () => {
         apiToken: null,
       });
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       await expect(handler?.({})).rejects.toThrow('No authentication token available');
       expect(global.fetch).not.toHaveBeenCalled();
@@ -803,9 +809,9 @@ describe('Export Tool', () => {
         statusText: 'Not Found',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       await expect(handler?.({})).rejects.toThrow('Not found');
     });
@@ -820,9 +826,9 @@ describe('Export Tool', () => {
         statusText: 'Server Error',
       } as Response);
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       await expect(handler?.({})).rejects.toThrow('HTTP 500 Server Error');
     });
@@ -832,11 +838,205 @@ describe('Export Tool', () => {
       // policy, so every retry attempt must see the same rejection.
       jest.mocked(global.fetch).mockRejectedValue(new Error('Network request failed'));
 
-      const handler = mockServer.tool.mock.calls.find(
-        (call) => call[0] === 'vikunja_user_export_status',
-      )?.at(-1);
+      const handler = mockServer.tool.mock.calls
+        .find((call) => call[0] === 'vikunja_user_export_status')
+        ?.at(-1);
 
       await expect(handler?.({})).rejects.toThrow('Network request failed');
+    });
+  });
+
+  // Regression suite for #329: three of the four export tools gated on the
+  // process-global closure `authManager` (`authManager.getSession().apiToken`)
+  // instead of the per-request one. In oidc-http mode that closure manager is
+  // never `.connect()`-ed, so `getSession()` threw AUTH_REQUIRED for every
+  // caller — the tools were unconditionally non-functional there. Only
+  // `vikunja_export_project` had the #282 closure-gate precedence fix.
+  describe('closure-gate precedence fix (oidc-http mode, #329)', () => {
+    const mockHasRequestContext = jest.mocked(hasRequestContext);
+    const mockGetAuthManagerFromContext = jest.mocked(getAuthManagerFromContext);
+
+    /** The oidc-http closure manager: never connected, so every accessor throws. */
+    function makeUnconnectedClosureManager(): MockAuthManager {
+      const unconnected = (): never => {
+        throw new MCPError(
+          ErrorCode.AUTH_REQUIRED,
+          'Authentication required. Please use vikunja_auth.connect first.',
+        );
+      };
+      return {
+        isAuthenticated: jest.fn().mockReturnValue(false),
+        getAuthType: jest.fn(unconnected),
+        getSession: jest.fn(unconnected),
+      } as unknown as MockAuthManager;
+    }
+
+    /** The per-identity manager the ALS request context resolves to. */
+    function makeIdentityAuthManager(apiToken: unknown = 'identity-jwt-token'): MockAuthManager {
+      return {
+        isAuthenticated: jest.fn().mockReturnValue(true),
+        getAuthType: jest.fn().mockReturnValue('jwt'),
+        getSession: jest.fn().mockReturnValue({
+          apiUrl: 'https://vikunja.example.com',
+          apiToken,
+        }),
+      } as unknown as MockAuthManager;
+    }
+
+    function getHandler(toolName: string): (args: Record<string, unknown>) => Promise<any> {
+      const handler = mockServer.tool.mock.calls.find((call) => call[0] === toolName)?.at(-1);
+      if (!handler) {
+        throw new Error(`handler for ${toolName} not found`);
+      }
+      return handler as (args: Record<string, unknown>) => Promise<any>;
+    }
+
+    let closureManager: MockAuthManager;
+    let identityAuthManager: MockAuthManager;
+
+    /** Re-registers the tools against the given closure manager. */
+    function register(closure: MockAuthManager): void {
+      mockServer.tool.mockClear();
+      registerExportTool(mockServer, closure);
+    }
+
+    beforeEach(() => {
+      closureManager = makeUnconnectedClosureManager();
+      identityAuthManager = makeIdentityAuthManager();
+      mockHasRequestContext.mockReturnValue(true);
+      mockGetAuthManagerFromContext.mockResolvedValue(
+        identityAuthManager as unknown as AuthManager,
+      );
+      register(closureManager);
+    });
+
+    afterEach(() => {
+      mockHasRequestContext.mockReturnValue(false);
+    });
+
+    const userExportCalls: Array<{
+      tool: string;
+      args: Record<string, unknown>;
+      method: string;
+      url: string;
+      body: unknown;
+    }> = [
+      {
+        tool: 'vikunja_request_user_export',
+        args: { password: 'test-password' },
+        method: 'POST',
+        url: 'https://vikunja.example.com/api/v1/user/export/request',
+        body: { message: 'Export requested' },
+      },
+      {
+        tool: 'vikunja_download_user_export',
+        args: { password: 'test-password' },
+        method: 'POST',
+        url: 'https://vikunja.example.com/api/v1/user/export/download',
+        body: { message: 'Export is ready for download' },
+      },
+      {
+        tool: 'vikunja_user_export_status',
+        args: {},
+        method: 'GET',
+        url: 'https://vikunja.example.com/api/v1/user/export',
+        body: { id: 7, created: '2026-07-01T00:00:00Z', expires: '2026-08-01T00:00:00Z', size: 1 },
+      },
+    ];
+
+    for (const call of userExportCalls) {
+      it(`${call.tool} serves a per-request identity instead of throwing AUTH_REQUIRED`, async () => {
+        fetchOkOnce(call.body);
+
+        const result = await getHandler(call.tool)(call.args);
+
+        expect(mockGetAuthManagerFromContext).toHaveBeenCalled();
+        // The unconnected closure manager must never be consulted at all —
+        // touching it is exactly what made these tools throw in oidc-http.
+        expect(closureManager.getSession).not.toHaveBeenCalled();
+        expect(result.content[0].text).toContain('## ✅ Success');
+        // ...and the request itself carries the calling identity's credential.
+        expect(global.fetch).toHaveBeenCalledWith(
+          call.url,
+          expect.objectContaining({
+            method: call.method,
+            headers: expect.objectContaining({
+              Authorization: 'Bearer identity-jwt-token',
+            }),
+          }),
+        );
+      });
+
+      it(`${call.tool} propagates the identity-scoped provisioning prompt, not the generic message`, async () => {
+        const provisionPrompt = new MCPError(
+          ErrorCode.AUTH_REQUIRED,
+          "You're authenticated as abcd... but haven't linked a Vikunja API token yet. " +
+            'Run vikunja_auth provision with a token you create in Vikunja → Settings → API Tokens.',
+        );
+        mockGetAuthManagerFromContext.mockRejectedValue(provisionPrompt);
+
+        const handler = getHandler(call.tool);
+        await expect(handler(call.args)).rejects.toThrow('vikunja_auth provision');
+        await expect(handler(call.args)).rejects.not.toThrow('No authentication token available');
+        expect(global.fetch).not.toHaveBeenCalled();
+      });
+
+      it(`${call.tool} still rejects when the resolved identity holds no token`, async () => {
+        mockGetAuthManagerFromContext.mockResolvedValue(
+          makeIdentityAuthManager(null) as unknown as AuthManager,
+        );
+
+        await expect(getHandler(call.tool)(call.args)).rejects.toThrow(
+          'No authentication token available',
+        );
+        expect(global.fetch).not.toHaveBeenCalled();
+      });
+
+      it(`${call.tool} keeps stdio behavior: no context, closure manager decides`, async () => {
+        mockHasRequestContext.mockReturnValue(false);
+        register(closureManager);
+
+        await expect(getHandler(call.tool)(call.args)).rejects.toThrow(
+          'Authentication required. Please use vikunja_auth.connect first.',
+        );
+        expect(mockGetAuthManagerFromContext).not.toHaveBeenCalled();
+        expect(closureManager.getSession).toHaveBeenCalled();
+        expect(global.fetch).not.toHaveBeenCalled();
+      });
+    }
+
+    it('vikunja_export_project routes its REST calls through the per-request identity too', async () => {
+      // GET /projects/1 then GET /projects/1/tasks — both must be issued with
+      // the calling identity's credential, not the closure manager's (which
+      // has none at all and would throw).
+      fetchOkOnce({ id: 1, title: 'Test Project' });
+      fetchOkOnce([]);
+
+      const result = await getHandler('vikunja_export_project')({ projectId: 1 });
+
+      expect(result.content[0].text).toContain('## ✅ Success');
+      expect(closureManager.getSession).not.toHaveBeenCalled();
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://vikunja.example.com/api/v1/projects/1',
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: 'Bearer identity-jwt-token' }),
+        }),
+      );
+    });
+
+    it('vikunja_export_project still enforces the JWT gate against the CALLING identity', async () => {
+      mockGetAuthManagerFromContext.mockResolvedValue({
+        isAuthenticated: jest.fn().mockReturnValue(true),
+        getAuthType: jest.fn().mockReturnValue('api-token'),
+        getSession: jest.fn().mockReturnValue({
+          apiUrl: 'https://vikunja.example.com',
+          apiToken: 'tk_scoped',
+        }),
+      } as unknown as AuthManager);
+
+      await expect(getHandler('vikunja_export_project')({ projectId: 1 })).rejects.toThrow(
+        'Export operations require JWT authentication',
+      );
     });
   });
 
@@ -858,7 +1058,9 @@ describe('Export Tool', () => {
       ConfigurationManager.getInstance({ sources: { readOnly: true } });
 
       expect(
-        isReadOnlyRejection(await callAndCatch(getHandler('vikunja_export_project'), { projectId: 1 })),
+        isReadOnlyRejection(
+          await callAndCatch(getHandler('vikunja_export_project'), { projectId: 1 }),
+        ),
       ).toBe(false);
     });
 

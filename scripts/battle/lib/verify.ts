@@ -12,7 +12,12 @@
  */
 
 import type { CheckVerdict, Scenario, VerifyCheck, VerificationVerdict } from '../types';
-import type { VikunjaProject, VikunjaRestClient, VikunjaTask } from './rest-client';
+import type {
+  VikunjaProject,
+  VikunjaRestClient,
+  VikunjaTask,
+  VikunjaTeam,
+} from './rest-client';
 
 const NO_DUE_DATE_SENTINEL = '0001-01-01T00:00:00Z';
 
@@ -23,6 +28,15 @@ function hasRealDueDate(task: VikunjaTask): boolean {
 async function findProject(client: VikunjaRestClient, titleContains: string): Promise<VikunjaProject | undefined> {
   const projects = await client.listProjects();
   return projects.find((p) => p.title.includes(titleContains));
+}
+
+/** Teams are matched on `name` -- `models.Team` has no `title` field. */
+async function findTeam(
+  client: VikunjaRestClient,
+  nameContains: string,
+): Promise<VikunjaTeam | undefined> {
+  const teams = await client.listTeams();
+  return teams.find((t) => t.name.includes(nameContains));
 }
 
 function fieldMatches(
@@ -169,12 +183,14 @@ async function runCheck(client: VikunjaRestClient, check: VerifyCheck): Promise<
         const labels = await client.requestOrEmpty<{ id: number; title: string }>(`/tasks/${task.id}/labels`);
         if (labels.some((l) => l.title.includes(check.labelTitleContains))) matching += 1;
       }
+      const withinMax = check.max === undefined || matching <= check.max;
       return {
         check,
-        passed: matching >= check.min,
+        passed: matching >= check.min && withinMax,
         detail:
           `${matching}/${tasks.length} task(s) in "${project.title}" carry a label containing ` +
-          `"${check.labelTitleContains}", need >= ${check.min}`,
+          `"${check.labelTitleContains}", need >= ${check.min}` +
+          (check.max !== undefined ? ` and <= ${check.max}` : ''),
       };
     }
 
@@ -198,6 +214,105 @@ async function runCheck(client: VikunjaRestClient, check: VerifyCheck): Promise<
         check,
         passed: subtasks.length >= check.min,
         detail: `task "${parent.title}" (id ${parent.id}) has ${subtasks.length} subtask(s), need >= ${check.min}`,
+      };
+    }
+
+    case 'task-absent-from-project': {
+      const project = await findProject(client, check.projectTitleContains);
+      if (!project) {
+        // No project at all means no task inside it either -- the asserted
+        // absence holds, and failing here would only mask the separate
+        // project-exists check that is the real diagnostic.
+        return {
+          check,
+          passed: true,
+          detail:
+            `no project with title containing "${check.projectTitleContains}" ` +
+            `(absence holds vacuously)`,
+        };
+      }
+      const tasks = await client.listTasksInProject(project.id);
+      const offenders = tasks.filter((t) => t.title.includes(check.titleContains));
+      return {
+        check,
+        passed: offenders.length === 0,
+        detail:
+          offenders.length === 0
+            ? `no task in "${project.title}" has a title containing "${check.titleContains}"`
+            : `${offenders.length} task(s) in "${project.title}" match "${check.titleContains}": ` +
+              offenders.map((t) => `"${t.title}" (id ${t.id})`).join(', '),
+      };
+    }
+
+    case 'task-first-in-list-view': {
+      const project = await findProject(client, check.projectTitleContains);
+      if (!project) {
+        return {
+          check,
+          passed: false,
+          detail: `no project with title containing "${check.projectTitleContains}"`,
+        };
+      }
+      const tasks = await client.listListViewTasks(project.id);
+      const first = tasks[0];
+      const observed = tasks.map((t) => `${t.title}@${t.position ?? '?'}`).join(', ');
+      return {
+        check,
+        passed: Boolean(first?.title.includes(check.titleContains)),
+        detail:
+          `list-view order in "${project.title}": [${observed || 'none'}], ` +
+          `expected the first entry to contain "${check.titleContains}"`,
+      };
+    }
+
+    case 'team-exists': {
+      const team = await findTeam(client, check.nameContains);
+      if (!team) {
+        return {
+          check,
+          passed: false,
+          detail: `no team with name containing "${check.nameContains}"`,
+        };
+      }
+      const details: string[] = [
+        `found team "${team.name}" (id ${team.id}, is_public ${String(team.is_public)})`,
+      ];
+      let passed = true;
+
+      if (check.isPublic !== undefined) {
+        // Compared against the RAW `is_public` the server stores: this is the
+        // assertion that fails if a partial team update ever stops merging
+        // over the current model (src/tools/teams.ts).
+        const actual = team.is_public === true;
+        if (actual !== check.isPublic) passed = false;
+        details.push(`is_public is ${String(actual)}, expected ${String(check.isPublic)}`);
+      }
+
+      if (check.hasMemberUsername !== undefined) {
+        const members = team.members ?? [];
+        const member = members.find((m) => m.username === check.hasMemberUsername);
+        if (!member) passed = false;
+        const roster = members.map((m) => `${m.username}${m.admin ? ' (admin)' : ''}`).join(', ');
+        details.push(`members [${roster || 'none'}], expected "${check.hasMemberUsername}"`);
+        if (check.memberIsAdmin !== undefined) {
+          const isAdmin = member?.admin === true;
+          if (isAdmin !== check.memberIsAdmin) passed = false;
+          details.push(`admin flag is ${String(isAdmin)}, expected ${String(check.memberIsAdmin)}`);
+        }
+      }
+
+      return { check, passed, detail: details.join('; ') };
+    }
+
+    case 'team-absent': {
+      const team = await findTeam(client, check.nameContains);
+      return {
+        check,
+        passed: !team,
+        detail: team
+          ? `team "${team.name}" (id ${team.id}) still exists, expected none matching ` +
+            `"${check.nameContains}"`
+          : `no team with name containing "${check.nameContains}"`,
       };
     }
 

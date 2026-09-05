@@ -1,0 +1,58 @@
+# OPT-IN OpenID overlay for the e2e stack (issue #220 — one-click SSO
+# enrollment lane, scripts/oidc-e2e.ts).
+#
+# Applied ONLY when bootstrap.sh runs with VIKUNJA_E2E_OIDC=1:
+#
+#   VIKUNJA_E2E_OIDC=1 npm run e2e:up
+#
+# It configures the pinned Vikunja with one OpenID provider ("mockidp")
+# pointing at the harness's mock IdP on the HOST (scripts/lib/mock-oidc-idp.ts),
+# reached from inside the container as host.docker.internal (mapped to the
+# host gateway below so this also works on Linux, not just Docker Desktop).
+# Provider config via plain env vars is a 2.x capability (verified against
+# the v2.4.0 source: pkg/config/config.go setConfigFromEnv builds the
+# auth.openid.providers map from VIKUNJA_AUTH_OPENID_PROVIDERS_<KEY>_*).
+#
+# Existing lanes are unaffected: without the flag this file is never passed
+# to compose, and the enrollment lane restores the plain stack (re-runs
+# bootstrap without the flag) when it finishes, so /info never ends up
+# advertising a provider whose issuer is gone.
+#
+# The IdP port is derived by bootstrap.sh as E2E_PORT + 4000 (2.4.0-postgres:
+# 8240 -> 12240) unless E2E_OIDC_IDP_PORT overrides it. The client id/secret
+# are throwaway constants shared with scripts/oidc-e2e.ts.
+services:
+  vikunja:
+    profiles: [postgres]
+    environment:
+      VIKUNJA_AUTH_OPENID_ENABLED: 'true'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_NAME: 'mockidp'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_AUTHURL: 'http://host.docker.internal:${E2E_OIDC_IDP_PORT:-12240}'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_CLIENTID: 'vikunja-e2e'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_CLIENTSECRET: 'vikunja-e2e-oidc-secret'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+
+  # Shared-Postgres variant (docker-compose.shared-db.yml). Only ever merged
+  # when that overlay is also passed, i.e. for a shared target.
+  vikunja-shared:
+    profiles: [postgres-shared]
+    environment:
+      VIKUNJA_AUTH_OPENID_ENABLED: 'true'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_NAME: 'mockidp'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_AUTHURL: 'http://host.docker.internal:${E2E_OIDC_IDP_PORT:-12240}'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_CLIENTID: 'vikunja-e2e'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_CLIENTSECRET: 'vikunja-e2e-oidc-secret'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+
+  vikunja-sqlite:
+    profiles: [sqlite]
+    environment:
+      VIKUNJA_AUTH_OPENID_ENABLED: 'true'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_NAME: 'mockidp'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_AUTHURL: 'http://host.docker.internal:${E2E_OIDC_IDP_PORT:-12240}'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_CLIENTID: 'vikunja-e2e'
+      VIKUNJA_AUTH_OPENID_PROVIDERS_MOCKIDP_CLIENTSECRET: 'vikunja-e2e-oidc-secret'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'

@@ -11,7 +11,8 @@ type Task = components['schemas']['models.Task'];
 /**
  * Supported filter operators
  */
-export type FilterOperator = '=' | '!=' | '>' | '>=' | '<' | '<=' | 'like' | 'LIKE' | 'in' | 'not in';
+export type FilterOperator =
+  '=' | '!=' | '>' | '>=' | '<' | '<=' | 'like' | 'LIKE' | 'in' | 'not in';
 
 /**
  * Logical operators for combining conditions
@@ -40,22 +41,23 @@ export type FilterField =
 /**
  * Valid field types for validation
  */
-export const FIELD_TYPES: Record<FilterField, 'boolean' | 'number' | 'date' | 'string' | 'array'> = {
-  done: 'boolean',
-  priority: 'number',
-  percentDone: 'number',
-  dueDate: 'date',
-  startDate: 'date',
-  endDate: 'date',
-  doneAt: 'date',
-  project: 'number',
-  assignees: 'array',
-  labels: 'array',
-  created: 'date',
-  updated: 'date',
-  title: 'string',
-  description: 'string',
-};
+export const FIELD_TYPES: Record<FilterField, 'boolean' | 'number' | 'date' | 'string' | 'array'> =
+  {
+    done: 'boolean',
+    priority: 'number',
+    percentDone: 'number',
+    dueDate: 'date',
+    startDate: 'date',
+    endDate: 'date',
+    doneAt: 'date',
+    project: 'number',
+    assignees: 'array',
+    labels: 'array',
+    created: 'date',
+    updated: 'date',
+    title: 'string',
+    description: 'string',
+  };
 
 /**
  * Represents a single filter condition
@@ -95,6 +97,16 @@ export interface SavedFilter {
   updated: Date;
   projectId?: number;
   isGlobal: boolean;
+  /**
+   * Which feature owns this record in the shared per-session
+   * `SimpleFilterStorage` bucket. Optional and unset for ordinary saved
+   * filters; `vikunja_templates` stamps `'template'` on every record it
+   * creates and filters strictly on this field (rather than the old
+   * `template_` name-prefix convention) so a saved filter a caller happens
+   * to name with that prefix can never be persisted/hydrated as a template
+   * — see #293 (LOW-12).
+   */
+  namespace?: 'template';
 }
 
 /**

@@ -57,7 +57,8 @@ export function calculateProjectDepth(projectId: number, allProjects: Project[])
       break;
     }
 
-    currentId = typeof project.parent_project_id === 'number' ? project.parent_project_id : undefined;
+    currentId =
+      typeof project.parent_project_id === 'number' ? project.parent_project_id : undefined;
     depth++;
   }
 
@@ -118,13 +119,10 @@ export function getMaxSubtreeDepth(projectId: number, allProjects: Project[]): n
 export function validateMoveConstraints(
   projectId: number,
   newParentId: number | undefined,
-  allProjects: Project[]
+  allProjects: Project[],
 ): void {
   if (newParentId === projectId) {
-    throw new MCPError(
-      ErrorCode.VALIDATION_ERROR,
-      'Cannot move a project to be its own parent',
-    );
+    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Cannot move a project to be its own parent');
   }
 
   // Check if moving would create a circular reference. Reassigning
@@ -134,7 +132,7 @@ export function validateMoveConstraints(
   // project's own (updated) record shows up as "a child of" whichever node
   // in its old subtree it would now be parented under.
   const updatedProjects = allProjects.map((p) =>
-    p.id === projectId ? { ...p, parent_project_id: newParentId } : p
+    p.id === projectId ? { ...p, parent_project_id: newParentId } : p,
   ) as Project[];
 
   let subtreeDepth: number;
@@ -171,17 +169,26 @@ export function validateMoveConstraints(
 /**
  * Validates project create/update data
  */
-export function validateProjectData(data: {
-  title?: string;
-  hexColor?: string;
-  parentProjectId?: number;
-}, allProjects?: Project[]): void {
+export function validateProjectData(
+  data: {
+    title?: string;
+    hexColor?: string;
+    parentProjectId?: number;
+  },
+  // `undefined` means "no reliable project list available" (either the
+  // caller never needed one, or the underlying fetch FAILED) and skips the
+  // existence check below entirely. An empty array (`[]`) is a claim that
+  // the list was fetched successfully and is genuinely empty — callers must
+  // never pass `[]` merely because a fetch failed (LOW-1, issue #291): that
+  // would make this report "Parent project not found" for a parent that may
+  // well exist, just because its existence couldn't be confirmed. See the
+  // call sites in crud.ts (createProject/updateProject) for how they
+  // distinguish the two.
+  allProjects?: Project[],
+): void {
   if (data.title !== undefined) {
     if (typeof data.title !== 'string' || data.title.trim().length === 0) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        'Project title must be a non-empty string',
-      );
+      throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Project title must be a non-empty string');
     }
 
     if (data.title.length > 250) {

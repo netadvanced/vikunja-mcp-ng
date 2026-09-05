@@ -42,12 +42,18 @@ import { MCPError, ErrorCode } from '../../types';
 import { vikunjaRestRequest } from '../../utils/vikunja-rest';
 import { getTaskViaRest } from '../../utils/task-rest-transport';
 import { validateId, sanitizeString } from '../../utils/validation';
-import { validateDateString } from './validation';
+import {
+  convertRepeatConfiguration,
+  validateDateString,
+  validateHexColor,
+  normalizeDateForApi,
+} from './validation';
 import { transformApiError } from '../../utils/error-handler';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
 import { CompositeOperation } from '../../utils/composite-operation';
 import { setTaskBucket } from './buckets';
 import { MAX_BULK_OPERATION_TASKS } from './constants';
+import { assertValidPercentDone, percentDoneToFraction } from '../../utils/percent-done';
 import type { components } from '../../types/generated/vikunja-openapi';
 
 /** `models.Task` per the OpenAPI spec. */
@@ -87,6 +93,46 @@ export interface CreateSubtaskArgs {
   description?: string;
   dueDate?: string;
   priority?: number;
+  /**
+   * Completion progress as a whole percentage, **0-100** (50 = 50%), the tool
+   * surface's scale — the same `percentDone` `create`/`update`/`bulk-create`
+   * take. Converted to Vikunja's 0-1 wire fraction by the shared
+   * `percentDoneToFraction` (src/utils/percent-done.ts). `vikunja_tasks`
+   * has always DECLARED `percentDone`/`startDate`/`endDate` at the top level
+   * of its schema, so a caller creating a subtask that is already partly done
+   * could send them and get no error — this composite simply never read them
+   * and the values were dropped between the MCP boundary and the API call.
+   */
+  percentDone?: number;
+  /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD'. */
+  startDate?: string;
+  /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD'. */
+  endDate?: string;
+  /**
+   * Repeat interval, in the unit named by `repeatMode` (seconds when no mode
+   * is given) — the same pair `create` takes, converted by the shared
+   * `convertRepeatConfiguration`.
+   *
+   * `vikunja_tasks` DECLARES `repeatAfter`/`repeatMode` at the top level of
+   * its flat schema, so a caller creating a recurring subtask could always
+   * send them and get a success response — this composite simply never read
+   * them, and the recurrence was lost between the MCP boundary and the API
+   * call. A subtask is a plain `models.Task`, and `PUT /projects/{id}/tasks`
+   * validates and stores `repeat_after`/`repeat_mode` like any other task, so
+   * the fix is to forward them rather than reject them.
+   */
+  repeatAfter?: number;
+  /** Unit for `repeatAfter` — see that field. */
+  repeatMode?: 'day' | 'week' | 'month' | 'year';
+  /**
+   * Create the subtask already marked done. Same server behaviour (and same
+   * empty-`done_at` caveat) as `create` — see `CreateTaskArgs.done`.
+   * Declared on the flat tool schema, so it has to be honoured here or it
+   * would be a silent drop.
+   */
+  done?: boolean;
+  /** Subtask colour, `#RRGGBB` or `''` — see `CreateTaskArgs.hexColor`. */
+  hexColor?: string;
   labels?: number[];
   assignees?: number[];
   /** Optional Kanban bucket to place the new subtask into, via the existing `set-bucket` path. */
@@ -112,7 +158,16 @@ interface SubtaskCoreSpec {
   title: string;
   description?: string;
   dueDate?: string;
+  startDate?: string;
+  endDate?: string;
   priority?: number;
+  /** Whole percentage 0-100 — converted to the 0-1 wire fraction on send. */
+  percentDone?: number;
+  /** Repeat interval in `repeatMode` units — see CreateSubtaskArgs.repeatAfter. */
+  repeatAfter?: number;
+  repeatMode?: 'day' | 'week' | 'month' | 'year';
+  done?: boolean;
+  hexColor?: string;
   labels?: number[];
   assignees?: number[];
   bucketId?: number;
@@ -149,8 +204,36 @@ function addSubtaskCreationSteps(
       const projectId = getParentProjectId();
       const newTask: VikunjaTask = { title: spec.title, project_id: projectId };
       if (spec.description !== undefined) newTask.description = spec.description;
-      if (spec.dueDate !== undefined) newTask.due_date = spec.dueDate;
+      // Coerce date-only values (e.g. '2026-09-01') to RFC3339 before
+      // sending — verified live against Vikunja 2.4.0: this exact endpoint
+      // (PUT /projects/{id}/tasks) rejects a bare date-only due_date with
+      // HTTP 400 code 2004 "Invalid model provided" (issues #167/#163). Full
+      // timestamps and empty/undefined values pass through unchanged. Same
+      // shared helper `createTask` uses (TaskCreationService.ts) — never a
+      // second hand-rolled coercion.
+      if (spec.dueDate !== undefined)
+        newTask.due_date = normalizeDateForApi(spec.dueDate) ?? spec.dueDate;
+      if (spec.startDate !== undefined)
+        newTask.start_date = normalizeDateForApi(spec.startDate) ?? spec.startDate;
+      if (spec.endDate !== undefined)
+        newTask.end_date = normalizeDateForApi(spec.endDate) ?? spec.endDate;
       if (spec.priority !== undefined) newTask.priority = spec.priority;
+      // 0-100 in, 0-1 wire fraction out — the ONE shared conversion
+      // (src/utils/percent-done.ts); never hand-rolled here.
+      if (spec.percentDone !== undefined)
+        newTask.percent_done = percentDoneToFraction(spec.percentDone);
+      // Explicit-undefined: `done: false` and `hexColor: ''` are real values.
+      if (spec.done !== undefined) newTask.done = spec.done;
+      if (spec.hexColor !== undefined) newTask.hex_color = spec.hexColor;
+      // Same conversion `create` uses (unit -> seconds, mode -> the numeric
+      // enum): never a second hand-rolled copy of it.
+      if (spec.repeatAfter !== undefined || spec.repeatMode !== undefined) {
+        const repeatConfig = convertRepeatConfiguration(spec.repeatAfter, spec.repeatMode);
+        if (repeatConfig.repeat_after !== undefined)
+          newTask.repeat_after = repeatConfig.repeat_after;
+        if (repeatConfig.repeat_mode !== undefined)
+          newTask.repeat_mode = repeatConfig.repeat_mode as 0 | 1 | 2;
+      }
 
       let created: VikunjaTask;
       try {
@@ -197,6 +280,34 @@ function addSubtaskCreationSteps(
         }
       },
     });
+    op.addStep<undefined, undefined>({
+      name: 'verify-labels',
+      execute: async () => {
+        // HTTP 200 on the attach PUT above is not proof the label actually
+        // persisted — the sibling assignee path already works around a live
+        // Vikunja quirk (see AssigneeOperationsService's verifyAssignees /
+        // "known Vikunja API limitation with API token auth") where a write
+        // that reports success silently doesn't stick. Re-read the task and
+        // confirm every requested label actually landed rather than trusting
+        // the PUT's status code alone.
+        const taskId = createdTaskId as number;
+        let created: VikunjaTask;
+        try {
+          created = await getTaskViaRest(authManager, taskId);
+        } catch (error) {
+          rethrow(error, undefined, 'Failed to verify subtask labels');
+        }
+        const actualIds = new Set((created.labels ?? []).map((l) => l.id));
+        const missing = labelIds.filter((id) => !actualIds.has(id));
+        if (missing.length > 0) {
+          throw new MCPError(
+            ErrorCode.INTERNAL_ERROR,
+            `Subtask ${taskId} was created but label(s) [${missing.join(', ')}] did not appear ` +
+              `on the task after the attach PUT reported success — the attach may not have persisted.`,
+          );
+        }
+      },
+    });
   }
 
   if (spec.assignees && spec.assignees.length > 0) {
@@ -215,6 +326,31 @@ function addSubtaskCreationSteps(
           await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
             user_id: userId,
           });
+        }
+      },
+    });
+    op.addStep<undefined, undefined>({
+      name: 'verify-assignees',
+      execute: async () => {
+        // Same silent-failure mode assignUsers already guards against
+        // (verifyAssignees in AssigneeOperationsService.ts) — an HTTP 200 on
+        // PUT /tasks/{taskID}/assignees is not proof the assignment
+        // persisted. Re-read the task rather than trusting the status code.
+        const taskId = createdTaskId as number;
+        let created: VikunjaTask;
+        try {
+          created = await getTaskViaRest(authManager, taskId);
+        } catch (error) {
+          rethrow(error, undefined, 'Failed to verify subtask assignees');
+        }
+        const actualIds = new Set((created.assignees ?? []).map((a) => a.id));
+        const missing = assigneeIds.filter((id) => !actualIds.has(id));
+        if (missing.length > 0) {
+          throw new MCPError(
+            ErrorCode.INTERNAL_ERROR,
+            `Subtask ${taskId} was created but assignee(s) [${missing.join(', ')}] did not appear ` +
+              `on the task after the attach PUT reported success — the attach may not have persisted.`,
+          );
         }
       },
     });
@@ -307,13 +443,23 @@ export async function createSubtask(
   if (!args.title) {
     throw new MCPError(ErrorCode.VALIDATION_ERROR, 'title is required to create a subtask');
   }
-  const sanitizedTitle = sanitizeString(args.title);
+  const sanitizedTitle = sanitizeString(args.title, 'title');
   const sanitizedDescription =
-    args.description !== undefined ? sanitizeString(args.description) : undefined;
+    args.description !== undefined ? sanitizeString(args.description, 'description') : undefined;
 
   if (args.dueDate) {
     validateDateString(args.dueDate, 'dueDate');
   }
+  if (args.startDate) {
+    validateDateString(args.startDate, 'startDate');
+  }
+  if (args.endDate) {
+    validateDateString(args.endDate, 'endDate');
+  }
+  // Whole percentage 0-100. Checked here as well as in the Zod schema
+  // because createSubtask is exported and reachable without it.
+  if (args.percentDone !== undefined) assertValidPercentDone(args.percentDone, 'percentDone');
+  if (args.hexColor !== undefined) validateHexColor(args.hexColor);
   if (args.labels && args.labels.length > 0) {
     args.labels.forEach((id) => validateId(id, 'label ID'));
   }
@@ -358,7 +504,14 @@ export async function createSubtask(
       title: sanitizedTitle,
       ...(sanitizedDescription !== undefined ? { description: sanitizedDescription } : {}),
       ...(args.dueDate !== undefined ? { dueDate: args.dueDate } : {}),
+      ...(args.startDate !== undefined ? { startDate: args.startDate } : {}),
+      ...(args.endDate !== undefined ? { endDate: args.endDate } : {}),
       ...(args.priority !== undefined ? { priority: args.priority } : {}),
+      ...(args.percentDone !== undefined ? { percentDone: args.percentDone } : {}),
+      ...(args.repeatAfter !== undefined ? { repeatAfter: args.repeatAfter } : {}),
+      ...(args.repeatMode !== undefined ? { repeatMode: args.repeatMode } : {}),
+      ...(args.done !== undefined ? { done: args.done } : {}),
+      ...(args.hexColor !== undefined ? { hexColor: args.hexColor } : {}),
       ...(args.labels !== undefined ? { labels: args.labels } : {}),
       ...(args.assignees !== undefined ? { assignees: args.assignees } : {}),
       ...(args.bucketId !== undefined ? { bucketId: args.bucketId } : {}),
@@ -400,7 +553,13 @@ export interface BulkCreateSubtaskSpec {
   title?: string;
   description?: string;
   dueDate?: string;
+  /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD'. */
+  startDate?: string;
+  /** RFC3339/ISO 8601, or a date-only 'YYYY-MM-DD'. */
+  endDate?: string;
   priority?: number;
+  /** Whole percentage 0-100 — see CreateSubtaskArgs.percentDone. */
+  percentDone?: number;
   labels?: number[];
   assignees?: number[];
   bucketId?: number;
@@ -454,17 +613,19 @@ export interface BulkCreateSubtaskResult {
  * reported success count derived from confirmed per-subtask successes
  * (PR #95's honest partial-reporting shape). `atomic` (per-subtask) rolls
  * back only that subtask's own created task on failure — it never reaches
- * across subtasks.
+ * across subtasks. Per-item validation/sanitization (title/description
+ * content, dates, ids, ...) is also caught individually, not just API-step
+ * failures: a bad item at index N is recorded as a failed result rather than
+ * throwing out of the pre-flight pass and aborting the whole batch (issue
+ * #226 — that used to fail every item whenever any one item's description
+ * tripped the dangerous-content check).
  */
 export async function bulkCreateSubtasks(
   args: BulkCreateSubtasksArgs,
   authManager: AuthManager,
 ): Promise<McpResponse> {
   if (!args.parentTaskId) {
-    throw new MCPError(
-      ErrorCode.VALIDATION_ERROR,
-      'parentTaskId is required to create subtasks',
-    );
+    throw new MCPError(ErrorCode.VALIDATION_ERROR, 'parentTaskId is required to create subtasks');
   }
   validateId(args.parentTaskId, 'parentTaskId');
 
@@ -481,36 +642,62 @@ export async function bulkCreateSubtasks(
     );
   }
 
-  // Validate + sanitize every spec up-front, before making any request —
-  // mirrors create-subtask's own pre-flight validation.
-  const specs: SubtaskCoreSpec[] = args.subtasks.map((s, index) => {
-    if (!s.title) {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        `subtasks[${index}].title is required to create a subtask`,
-      );
+  // Validate + sanitize every spec up-front, before making any request — mirrors
+  // create-subtask's own pre-flight validation. Each item's validation is caught
+  // individually rather than left to throw out of the `.map()`: a throw there would abort
+  // the whole batch before any subtask was even attempted, which contradicts this
+  // function's own partial-success contract (see doc comment above) — one bad item (e.g.
+  // a title/description that trips sanitizeString) must not prevent the other, valid
+  // items in the same batch from being created. See issue #226.
+  const specResults: Array<
+    { ok: true; spec: SubtaskCoreSpec } | { ok: false; title: string | undefined; error: string }
+  > = args.subtasks.map((s, index) => {
+    try {
+      if (!s.title) {
+        throw new MCPError(
+          ErrorCode.VALIDATION_ERROR,
+          `subtasks[${index}].title is required to create a subtask`,
+        );
+      }
+      if (s.dueDate) {
+        validateDateString(s.dueDate, `subtasks[${index}].dueDate`);
+      }
+      if (s.startDate) {
+        validateDateString(s.startDate, `subtasks[${index}].startDate`);
+      }
+      if (s.endDate) {
+        validateDateString(s.endDate, `subtasks[${index}].endDate`);
+      }
+      if (s.percentDone !== undefined)
+        assertValidPercentDone(s.percentDone, `subtasks[${index}].percentDone`);
+      if (s.labels && s.labels.length > 0) {
+        s.labels.forEach((id) => validateId(id, `subtasks[${index}].label ID`));
+      }
+      if (s.assignees && s.assignees.length > 0) {
+        s.assignees.forEach((id) => validateId(id, `subtasks[${index}].assignee ID`));
+      }
+      if (s.bucketId !== undefined) {
+        validateId(s.bucketId, `subtasks[${index}].bucketId`);
+      }
+      const spec: SubtaskCoreSpec = {
+        title: sanitizeString(s.title, `subtasks[${index}].title`),
+        ...(s.description !== undefined
+          ? { description: sanitizeString(s.description, `subtasks[${index}].description`) }
+          : {}),
+        ...(s.dueDate !== undefined ? { dueDate: s.dueDate } : {}),
+        ...(s.startDate !== undefined ? { startDate: s.startDate } : {}),
+        ...(s.endDate !== undefined ? { endDate: s.endDate } : {}),
+        ...(s.priority !== undefined ? { priority: s.priority } : {}),
+        ...(s.percentDone !== undefined ? { percentDone: s.percentDone } : {}),
+        ...(s.labels !== undefined ? { labels: s.labels } : {}),
+        ...(s.assignees !== undefined ? { assignees: s.assignees } : {}),
+        ...(s.bucketId !== undefined ? { bucketId: s.bucketId } : {}),
+      };
+      return { ok: true, spec };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, title: s.title, error: message };
     }
-    if (s.dueDate) {
-      validateDateString(s.dueDate, `subtasks[${index}].dueDate`);
-    }
-    if (s.labels && s.labels.length > 0) {
-      s.labels.forEach((id) => validateId(id, `subtasks[${index}].label ID`));
-    }
-    if (s.assignees && s.assignees.length > 0) {
-      s.assignees.forEach((id) => validateId(id, `subtasks[${index}].assignee ID`));
-    }
-    if (s.bucketId !== undefined) {
-      validateId(s.bucketId, `subtasks[${index}].bucketId`);
-    }
-    return {
-      title: sanitizeString(s.title),
-      ...(s.description !== undefined ? { description: sanitizeString(s.description) } : {}),
-      ...(s.dueDate !== undefined ? { dueDate: s.dueDate } : {}),
-      ...(s.priority !== undefined ? { priority: s.priority } : {}),
-      ...(s.labels !== undefined ? { labels: s.labels } : {}),
-      ...(s.assignees !== undefined ? { assignees: s.assignees } : {}),
-      ...(s.bucketId !== undefined ? { bucketId: s.bucketId } : {}),
-    };
   });
 
   const parentTaskId = args.parentTaskId;
@@ -536,7 +723,20 @@ export async function bulkCreateSubtasks(
   const results: BulkCreateSubtaskResult[] = [];
 
   // Sequential on purpose — see the function doc comment above.
-  for (const [index, spec] of specs.entries()) {
+  for (const [index, specResult] of specResults.entries()) {
+    if (!specResult.ok) {
+      // Validation/sanitization failed for this item alone — record it as a failed
+      // result and move on to the next subtask, rather than aborting the batch.
+      results.push({
+        index,
+        title: specResult.title ?? '(missing title)',
+        created: false,
+        related: false,
+        error: specResult.error,
+      });
+      continue;
+    }
+    const spec = specResult.spec;
     const op = new CompositeOperation();
     const { getCreatedTaskId } = addSubtaskCreationSteps(
       op,
@@ -588,7 +788,7 @@ export async function bulkCreateSubtasks(
   const response = createStandardResponse(
     'bulk-create-subtasks',
     partial
-      ? `Bulk create-subtasks partially completed under parent ${parentTaskId}. Successfully created and related ${succeeded.length} of ${specs.length} subtask(s). Failed indexes: ${failedIndexes.join(', ')}`
+      ? `Bulk create-subtasks partially completed under parent ${parentTaskId}. Successfully created and related ${succeeded.length} of ${specResults.length} subtask(s). Failed indexes: ${failedIndexes.join(', ')}`
       : `Successfully created and related ${succeeded.length} subtask(s) under parent ${parentTaskId}`,
     {
       parentTaskId,
@@ -600,7 +800,17 @@ export async function bulkCreateSubtasks(
     {
       timestamp: new Date().toISOString(),
       count: succeeded.length,
-      ...(partial ? { failedCount: failed.length, success: false } : {}),
+      // `failures` is the same shape bulk-operations-simplified.ts/labels.ts use — the error
+      // response renderer (formatErrorMessage) prints it as JSON, so a caller actually sees
+      // which index failed and why instead of only the aggregate `Failed indexes: ...` count
+      // (issue #226: a rejected item's field name + matched rule need to be reportable).
+      ...(partial
+        ? {
+            failedCount: failed.length,
+            success: false,
+            failures: failed.map((f) => ({ index: f.index, title: f.title, error: f.error })),
+          }
+        : {}),
     },
     args.sessionId,
   );
@@ -627,7 +837,10 @@ interface SubtaskSummary {
  * slice of `GET /tasks/{id}`'s `related_tasks` map, summarized to
  * id/title/done/assignees rather than the full related `Task` objects.
  */
-export async function listSubtasks(args: ListSubtasksArgs, authManager: AuthManager): Promise<McpResponse> {
+export async function listSubtasks(
+  args: ListSubtasksArgs,
+  authManager: AuthManager,
+): Promise<McpResponse> {
   if (!args.id) {
     throw new MCPError(ErrorCode.VALIDATION_ERROR, 'Task ID is required');
   }

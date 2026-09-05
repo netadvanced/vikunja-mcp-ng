@@ -4,16 +4,21 @@
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import type { AuthManager } from '../auth/AuthManager';
+import { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import type { VikunjaCapabilities } from '../types/vikunja';
 import { MCPError, ErrorCode } from '../types/errors';
-import { clearGlobalClientFactory } from '../client';
+import { clearGlobalClientFactory, getAuthManagerFromContext, hasRequestContext } from '../client';
+import { getCurrentIdentity, type Identity } from '../context/requestContext';
+import { getActiveVaultStore } from '../storage/vaultFileStore';
+import { getActiveEnrollmentService } from '../transport/enrollment';
 import { logger } from '../utils/logger';
 import { applyRateLimiting } from '../middleware/direct-middleware';
-import { createSecureConnectionMessage } from '../utils/security';
+import { createSecureConnectionMessage, maskCredential } from '../utils/security';
 import { wrapAuthError } from '../utils/error-handler';
+import { ConfigurationManager } from '../config/ConfigurationManager';
 import { createStandardResponse } from '../utils/response-factory';
 import { formatMcpResponse } from '../utils/simple-response';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
@@ -22,9 +27,71 @@ import { resolveApiVersion } from '../utils/api-version';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 
 interface AuthArgs {
-  subcommand: 'connect' | 'status' | 'refresh' | 'disconnect' | 'info';
+  subcommand:
+    'connect' | 'status' | 'refresh' | 'disconnect' | 'info' | 'provision' | 'deprovision';
   apiUrl?: string | undefined;
   apiToken?: string | undefined;
+  vikunjaUrl?: string | undefined;
+}
+
+/**
+ * The oidc-http-mode-only error for a provisioning subcommand called outside
+ * an ALS request context (i.e. `stdio` mode, or somehow a non-oidc `http`
+ * request — structurally shouldn't happen, but defensive either way).
+ * Provisioning is meaningless in `stdio` mode: there is only ever one
+ * process-wide credential, set via `connect`, and no per-identity vault to
+ * link one into (docs/OIDC-RESOURCE-SERVER.md §3c, D7).
+ */
+function createStdioModeProvisioningError(subcommand: string): MCPError {
+  return new MCPError(
+    ErrorCode.NOT_IMPLEMENTED,
+    `vikunja_auth ${subcommand} is an oidc-http mode feature — it links your validated ` +
+      `OIDC identity to a Vikunja API token in the server's credential vault. This server ` +
+      `is running in stdio mode, which has only one process-wide credential; use ` +
+      `vikunja_auth connect instead.`,
+  );
+}
+
+/**
+ * Length-safe, constant-time comparison of a stored session token against a
+ * caller-supplied one (#276's reconnect check). `timingSafeEqual` throws on
+ * unequal lengths, so length is compared first — that leaks only the length,
+ * which the caller supplied half of anyway, while the byte comparison itself
+ * stays constant-time rather than short-circuiting on the first differing
+ * character like `===` does.
+ */
+function tokensMatch(storedToken: string, incomingToken: string): boolean {
+  const stored = Buffer.from(storedToken, 'utf8');
+  const incoming = Buffer.from(incomingToken, 'utf8');
+  if (stored.length !== incoming.length) {
+    return false;
+  }
+  return timingSafeEqual(stored, incoming);
+}
+
+/** The current request's validated identity, or throws if somehow called outside an ALS scope. */
+function requireCurrentIdentity(): Identity {
+  const identity = getCurrentIdentity();
+  if (!identity) {
+    throw new MCPError(
+      ErrorCode.INTERNAL_ERROR,
+      'No validated identity is available for this request (expected an oidc-http ALS request context).',
+    );
+  }
+  return identity;
+}
+
+/** The active vault store, or throws a clear internal error if oidc-http mode somehow has none registered. */
+function requireActiveVault(): NonNullable<ReturnType<typeof getActiveVaultStore>> {
+  const vault = getActiveVaultStore();
+  if (!vault) {
+    throw new MCPError(
+      ErrorCode.INTERNAL_ERROR,
+      'The credential vault is not initialized. This is a server configuration bug — ' +
+        'oidc-http mode should refuse to start without one (see setupOidcHttpAuth).',
+    );
+  }
+  return vault;
 }
 
 /**
@@ -74,9 +141,23 @@ async function verifyConnection(
   apiUrl: string,
   authType: 'api-token' | 'jwt',
 ): Promise<VikunjaCapabilities> {
+  // `verifyConnection` always probes with the EXPLICITLY-passed manager — the
+  // stdio `connect` session, or `provision`'s throwaway holding the candidate
+  // token being validated before it is stored. In oidc-http mode an ALS
+  // RequestContext is bound during `provision`, but the central
+  // credential-threading resolver (src/utils/vikunja-rest.ts) would otherwise
+  // substitute the calling identity's still-unprovisioned ALS manager here,
+  // defeating the whole point of the probe — so opt out via ignoreRequestContext.
+  const verifyOptions = { ignoreRequestContext: true } as const;
   let info: VikunjaInfoResponse;
   try {
-    info = await vikunjaRestRequest<VikunjaInfoResponse>(authManager, 'GET', '/info');
+    info = await vikunjaRestRequest<VikunjaInfoResponse>(
+      authManager,
+      'GET',
+      '/info',
+      undefined,
+      verifyOptions,
+    );
   } catch (error) {
     authManager.disconnect();
     throw new MCPError(
@@ -89,9 +170,15 @@ async function verifyConnection(
 
   try {
     if (authType === 'jwt') {
-      await vikunjaRestRequest(authManager, 'GET', '/user');
+      await vikunjaRestRequest(authManager, 'GET', '/user', undefined, verifyOptions);
     } else {
-      await vikunjaRestRequest(authManager, 'GET', '/projects?per_page=1');
+      await vikunjaRestRequest(
+        authManager,
+        'GET',
+        '/projects?per_page=1',
+        undefined,
+        verifyOptions,
+      );
     }
   } catch (error) {
     authManager.disconnect();
@@ -99,26 +186,50 @@ async function verifyConnection(
       ErrorCode.AUTH_REQUIRED,
       `Vikunja server at ${apiUrl} was reachable, but the provided ${
         authType === 'jwt' ? 'JWT' : 'API'
-      } token was rejected: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      } token was rejected: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
   return getOrDetectCapabilities(authManager, info);
 }
 
-export function registerAuthTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+export function registerAuthTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_auth',
     withReadOnlyNote(
       'vikunja_auth',
-      'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info)',
+      'Manage authentication with Vikunja API (connect, status, refresh, disconnect, info). ' +
+        'In oidc-http mode, self-service credential provisioning (provision, status, ' +
+        'deprovision) additionally links your validated OIDC identity to a Vikunja API ' +
+        "token in the server's encrypted credential vault — connect is not available in " +
+        'that mode (provision replaces it), and disconnect acts as an alias of deprovision. ' +
+        'When SSO enrollment is enabled, calling provision WITHOUT a token returns a ' +
+        'one-click enrollment link instead.',
     ),
     {
-      subcommand: z.enum(['connect', 'status', 'refresh', 'disconnect', 'info']),
+      subcommand: z.enum([
+        'connect',
+        'status',
+        'refresh',
+        'disconnect',
+        'info',
+        'provision',
+        'deprovision',
+      ]),
       apiUrl: z.string().url().optional(),
       apiToken: z.string().optional(),
+      vikunjaUrl: z
+        .string()
+        .url()
+        .optional()
+        .describe(
+          'oidc-http mode only (provision): the Vikunja base URL to associate with the ' +
+            "linked token. Defaults to the server's configured shared VIKUNJA_URL when omitted.",
+        ),
     },
     getToolAnnotations('vikunja_auth'),
     applyRateLimiting('vikunja_auth', async (args: AuthArgs) => {
@@ -126,6 +237,14 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
         assertWriteAllowed('vikunja_auth', args.subcommand);
         switch (args.subcommand) {
           case 'connect': {
+            if (hasRequestContext()) {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'vikunja_auth connect is not available in oidc-http mode — there is no ' +
+                  'single server-wide token to connect. Use vikunja_auth provision instead ' +
+                  'to link your own Vikunja API token to your authenticated identity.',
+              );
+            }
             if (!args.apiUrl || !args.apiToken) {
               throw new MCPError(
                 ErrorCode.VALIDATION_ERROR,
@@ -136,9 +255,20 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
             const secureMessage = createSecureConnectionMessage(args.apiUrl, args.apiToken);
             logger.debug('Auth connect attempt: %s', secureMessage);
 
-            // Check if already authenticated
+            // Check if already authenticated with the SAME credential. URL
+            // equality alone is not enough (#276): the tool's own 'refresh'
+            // guidance tells a user whose JWT expired to call connect again,
+            // with a NEW token, against the same URL. Short-circuiting on the
+            // URL silently discarded that token and reported success while
+            // the expired one stayed in the session — so the token is
+            // compared too, and any difference falls through to a real
+            // connect + verifyConnection round trip.
             const currentStatus = authManager.getStatus();
-            if (currentStatus.authenticated && currentStatus.apiUrl === args.apiUrl) {
+            if (
+              currentStatus.authenticated &&
+              currentStatus.apiUrl === args.apiUrl &&
+              tokensMatch(authManager.getSession().apiToken, args.apiToken)
+            ) {
               const response = createStandardResponse(
                 'auth-connect',
                 'Already connected to Vikunja',
@@ -184,6 +314,43 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
           }
 
           case 'status': {
+            // oidc-http mode: report the CALLING identity's own vault status
+            // — never another identity's, never the process-global session
+            // (there isn't a meaningful one in this mode). `stdio` mode
+            // (no ALS context) falls through to the pre-existing
+            // connect-based session status, unchanged.
+            if (hasRequestContext()) {
+              const identity = requireCurrentIdentity();
+              const vault = getActiveVaultStore();
+              const vaultStatus = vault?.getStatus(identity) ?? { provisioned: false };
+              // `provisioned` reflects whether the stored credential can
+              // actually be decrypted and used, not merely whether a record
+              // exists (issue #278) — so when the vault reports a specific
+              // `issue`, say that instead of the generic "not linked yet".
+              // A linked-but-outdated record (legacy pre-binding format, or a
+              // JWT vaulted before that was refused) still works, so it is
+              // reported as linked — but the notice rides along in the
+              // message, not just in the response data, because that is the
+              // line a human actually reads (issue #322 finding 2).
+              const statusMessage =
+                vaultStatus.provisioned === true
+                  ? typeof vaultStatus.migrationNotice === 'string'
+                    ? `Vikunja API token linked — action recommended: ${vaultStatus.migrationNotice}`
+                    : 'Vikunja API token linked'
+                  : typeof vaultStatus.issue === 'string'
+                    ? vaultStatus.issue
+                    : 'No Vikunja API token linked yet — run vikunja_auth provision';
+              const response = createStandardResponse(
+                'auth-status',
+                statusMessage,
+                vaultStatus,
+                vaultStatus.provisioned ? { apiUrl: vaultStatus.vikunjaUrl } : undefined,
+              );
+              return {
+                content: formatMcpResponse(response),
+              };
+            }
+
             const status = authManager.getStatus();
             const response = createStandardResponse(
               'auth-status',
@@ -202,10 +369,21 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
           }
 
           case 'refresh': {
-            // authManager.getAuthType() throws AUTH_REQUIRED when there is
-            // no active session, which wrapAuthError below turns into a
-            // clear "not authenticated" error.
-            const authType = authManager.getAuthType();
+            // The CALLING identity's auth type (#282): in oidc-http mode the
+            // answer ("your JWT expired, get a new one" vs "API tokens don't
+            // expire") depends on the credential this caller actually holds
+            // in the vault, not on whatever legacy env credential the
+            // process-global manager may carry. An unprovisioned identity
+            // gets the structured provisioning prompt from
+            // getAuthManagerFromContext rather than the operator's status.
+            //
+            // stdio (no ALS scope): unchanged — authManager.getAuthType()
+            // throws AUTH_REQUIRED when there is no active session, which
+            // wrapAuthError below turns into a clear "not authenticated" error.
+            const refreshAuthManager = hasRequestContext()
+              ? await getAuthManagerFromContext()
+              : authManager;
+            const authType = refreshAuthManager.getAuthType();
 
             if (authType === 'jwt') {
               // Vikunja JWTs are short-lived (unlike API tokens) and the
@@ -222,7 +400,7 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
               // needed.
               const response = createStandardResponse(
                 'auth-refresh',
-                'JWT tokens expire and this server cannot refresh them automatically. Vikunja\'s POST /user/token/refresh endpoint requires a refresh-token cookie issued at login, but this server authenticates with a static Bearer token and holds no such cookie. When your JWT expires, obtain a new one (e.g. by logging in to Vikunja again) and call vikunja_auth connect with the new token.',
+                "JWT tokens expire and this server cannot refresh them automatically. Vikunja's POST /user/token/refresh endpoint requires a refresh-token cookie issued at login, but this server authenticates with a static Bearer token and holds no such cookie. When your JWT expires, obtain a new one (e.g. by logging in to Vikunja again) and call vikunja_auth connect with the new token.",
                 { refreshed: false, authType: 'jwt', tokenExpires: true },
                 {
                   reason:
@@ -248,6 +426,25 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
           }
 
           case 'disconnect': {
+            // oidc-http mode: 'disconnect' aliases 'deprovision' — there is
+            // no process-global session to disconnect in this mode (D7).
+            if (hasRequestContext()) {
+              const identity = requireCurrentIdentity();
+              const vault = requireActiveVault();
+              const existed = await vault.deprovision(identity);
+              const response = createStandardResponse(
+                'auth-disconnect',
+                existed
+                  ? 'Deprovisioned your linked Vikunja API token'
+                  : 'No linked Vikunja API token to remove',
+                { authenticated: false },
+                { previouslyProvisioned: existed },
+              );
+              return {
+                content: formatMcpResponse(response),
+              };
+            }
+
             authManager.disconnect();
             await clearGlobalClientFactory();
             const response = createStandardResponse(
@@ -264,15 +461,20 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
           case 'info': {
             // GET /info needs no auth server-side, but this subcommand
             // still requires an active session (like 'refresh') so it has a
-            // server URL to ask.
-            if (!authManager.isAuthenticated()) {
+            // server URL to ask. Closure-gate precedence fix: defer to the
+            // per-request context when bound (see hasRequestContext's doc
+            // comment, src/client.ts).
+            let infoAuthManager = authManager;
+            if (hasRequestContext()) {
+              infoAuthManager = await getAuthManagerFromContext();
+            } else if (!authManager.isAuthenticated()) {
               throw new MCPError(
                 ErrorCode.AUTH_REQUIRED,
                 'Authentication required. Please use vikunja_auth.connect first.',
               );
             }
             const info = await vikunjaRestRequest<VikunjaInfoResponse>(
-              authManager,
+              infoAuthManager,
               'GET',
               '/info',
             );
@@ -282,7 +484,16 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
             // (or, for a session that never went through 'connect's
             // detection, running it once now) — see
             // `getOrDetectCapabilities` in `src/utils/capabilities.ts`.
-            const capabilities = await getOrDetectCapabilities(authManager, info);
+            //
+            // Keyed to the CALLING identity's session (#282): the snapshot is
+            // both READ and WRITTEN on the manager passed here, and in
+            // oidc-http mode two identities can point at different Vikunja
+            // servers. Caching on the process-global manager would serve one
+            // identity's server version (and v2 probe result) to another —
+            // and, when that manager holds no session at all, would throw
+            // AUTH_REQUIRED out of `getSession()` for a fully provisioned
+            // caller.
+            const capabilities = await getOrDetectCapabilities(infoAuthManager, info);
 
             const response = createStandardResponse(
               'auth-info',
@@ -301,6 +512,148 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
             };
           }
 
+          case 'provision': {
+            if (!hasRequestContext()) {
+              throw createStdioModeProvisioningError('provision');
+            }
+            if (!args.apiToken) {
+              // One-click SSO enrollment (issue #220, docs/OIDC-SETUP.md
+              // §9a): when the operator enabled enrollment, a token-less
+              // provision call is the intended entry point — hand back a
+              // short-lived enrollment URL bound to the caller's validated
+              // identity instead of an error. The browser flow behind that
+              // URL mints and vaults the token; nothing is stored here.
+              const enrollment = getActiveEnrollmentService();
+              if (enrollment) {
+                const enrollIdentity = requireCurrentIdentity();
+
+                // Finding #9: an already-provisioned identity re-running a
+                // token-less provision should not silently mint ANOTHER
+                // full-permission Vikunja token (the old one would be
+                // orphaned server-side). Point at deprovision-then-re-enroll
+                // for deliberate rotation instead.
+                const vaultStatus = getActiveVaultStore()?.getStatus(enrollIdentity);
+                if (vaultStatus?.provisioned) {
+                  const response = createStandardResponse(
+                    'auth-provision',
+                    'Your Vikunja account is already linked — nothing to enroll. To rotate ' +
+                      'the credential, run vikunja_auth deprovision first, then provision again.',
+                    { linked: true, alreadyProvisioned: true },
+                    { apiUrl: vaultStatus.vikunjaUrl },
+                  );
+                  return {
+                    content: formatMcpResponse(response),
+                  };
+                }
+
+                // Finding #3: enrollment always targets the server-configured
+                // Vikunja instance. An explicit, DIFFERENT vikunjaUrl must be
+                // an error, never silently substituted.
+                if (args.vikunjaUrl !== undefined && args.vikunjaUrl !== enrollment.vikunjaUrl) {
+                  throw new MCPError(
+                    ErrorCode.VALIDATION_ERROR,
+                    `SSO enrollment on this server always targets ${enrollment.vikunjaUrl}; it ` +
+                      `cannot enroll against ${args.vikunjaUrl}. Omit vikunjaUrl to enroll, or ` +
+                      'provision a token for that other instance manually (provision with apiToken).',
+                  );
+                }
+
+                const enrollmentUrl = enrollment.createEnrollmentUrl(enrollIdentity);
+                const response = createStandardResponse(
+                  'auth-provision',
+                  'Open this link to connect your Vikunja account — you will be signed in ' +
+                    'through your organization login and linked automatically, no token ' +
+                    `needed: ${enrollmentUrl}`,
+                  { linked: false, enrollmentUrl },
+                  {
+                    apiUrl: enrollment.vikunjaUrl,
+                    expiresNote: 'The link is single-use and expires after a few minutes.',
+                  },
+                );
+                return {
+                  content: formatMcpResponse(response),
+                };
+              }
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'apiToken is required for provision — create one in Vikunja → Settings → API Tokens.',
+              );
+            }
+            const identity = requireCurrentIdentity();
+            const vikunjaUrl =
+              args.vikunjaUrl ??
+              ConfigurationManager.getInstance().loadConfiguration().auth.vikunjaUrl;
+            if (!vikunjaUrl) {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'No Vikunja URL is configured for this server. Pass vikunjaUrl explicitly, ' +
+                  'or have the operator set VIKUNJA_URL.',
+              );
+            }
+
+            // The vault is an API-token store (issue #322). Refuse a
+            // JWT-shaped token HERE, before the network round-trip below, so
+            // the caller gets an actionable validation error rather than a
+            // confusing failure deeper in — `VaultFileStore.provision`
+            // enforces the same invariant as the last line of defense for
+            // every other write path.
+            if (AuthManager.detectAuthType(args.apiToken) === 'jwt') {
+              throw new MCPError(
+                ErrorCode.VALIDATION_ERROR,
+                'That looks like a JWT (eyJ...), and this mode links Vikunja API tokens ' +
+                  'only. Create one in Vikunja → Settings → API Tokens — it starts with ' +
+                  '"tk_" — and provision that instead. A Vikunja JWT comes from an ' +
+                  'interactive login, expires within hours, and this server has no way to ' +
+                  'refresh it on your behalf.',
+              );
+            }
+
+            // Validate the token BEFORE storing it — sub/issuer always come
+            // from the validated identity above, NEVER from args (D7). This
+            // reuses the exact same round-trip 'connect' already performs
+            // (GET /info, then a cheap authenticated probe).
+            const throwaway = new AuthManager();
+            throwaway.connect(vikunjaUrl, args.apiToken);
+            const { serverVersion } = await verifyConnection(throwaway, vikunjaUrl, 'api-token');
+
+            const vault = requireActiveVault();
+            await vault.provision(identity, vikunjaUrl, args.apiToken);
+
+            const response = createStandardResponse(
+              'auth-provision',
+              'Linked your Vikunja API token',
+              { linked: true },
+              {
+                apiUrl: vikunjaUrl,
+                maskedToken: maskCredential(args.apiToken),
+                ...(serverVersion !== undefined ? { serverVersion } : {}),
+              },
+            );
+            return {
+              content: formatMcpResponse(response),
+            };
+          }
+
+          case 'deprovision': {
+            if (!hasRequestContext()) {
+              throw createStdioModeProvisioningError('deprovision');
+            }
+            const identity = requireCurrentIdentity();
+            const vault = requireActiveVault();
+            const existed = await vault.deprovision(identity);
+            const response = createStandardResponse(
+              'auth-deprovision',
+              existed
+                ? 'Deprovisioned your linked Vikunja API token'
+                : 'No linked Vikunja API token to remove',
+              { deprovisioned: true },
+              { previouslyProvisioned: existed },
+            );
+            return {
+              content: formatMcpResponse(response),
+            };
+          }
+
           default:
             throw new MCPError(
               ErrorCode.VALIDATION_ERROR,
@@ -310,6 +663,6 @@ export function registerAuthTool(server: McpServer, authManager: AuthManager, _c
       } catch (error) {
         throw wrapAuthError(error, args.subcommand);
       }
-    })
+    }),
   );
 }

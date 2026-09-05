@@ -29,6 +29,7 @@ import {
 } from '../../../src/tools/projects/sharing-access';
 import { MCPError } from '../../../src/types';
 import { circuitBreakerRegistry } from '../../../src/utils/retry';
+import * as responseFactory from '../../../src/utils/response-factory';
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
@@ -190,7 +191,9 @@ describe('direct project sharing (users & teams)', () => {
 
   describe('remove-project-user', () => {
     it('DELETEs /projects/{id}/users/{userId}', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ message: 'removed' }) }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ message: 'removed' }) }),
+      );
 
       const result = await removeProjectUser({ projectId: 1, userId: 10 }, authManager);
 
@@ -265,7 +268,9 @@ describe('direct project sharing (users & teams)', () => {
 
   describe('remove-project-team', () => {
     it('DELETEs /projects/{id}/teams/{teamId}', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ message: 'removed' }) }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify({ message: 'removed' }) }),
+      );
 
       const result = await removeProjectTeam({ projectId: 1, teamId: 3 }, authManager);
 
@@ -293,7 +298,9 @@ describe('direct project sharing (users & teams)', () => {
           }),
         )
         // 2) add-user: PUT /projects/1/users
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }),
+        )
         // 3) verify-membership: GET /projects/1/users
         .mockResolvedValueOnce(
           mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice', permission: 1 }]) }),
@@ -311,7 +318,7 @@ describe('direct project sharing (users & teams)', () => {
       expect(calls[1][1]?.method).toBe('PUT');
       // Exact-match resolution: username "alice" must not be confused with "alice2".
       expect(JSON.parse(calls[1][1]?.body as string)).toEqual({ username: 'alice', permission: 1 });
-      expect(calls[2][0]).toBe('https://vikunja.test/api/v1/projects/1/users');
+      expect(calls[2][0]).toBe('https://vikunja.test/api/v1/projects/1/users?per_page=200&page=1');
       expect(calls[2][1]?.method ?? 'GET').toBe('GET');
 
       expect(result.content[0].text).toContain('Shared project 1 with user "alice" (permission 1)');
@@ -319,9 +326,15 @@ describe('direct project sharing (users & teams)', () => {
 
     it('matches the username case-insensitively', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 1, username: 'Alice' }]) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ username: 'Alice', permission: 0 }) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 1, username: 'Alice' }]) }));
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 1, username: 'Alice' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'Alice', permission: 0 }) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 1, username: 'Alice' }]) }),
+        );
 
       await expect(
         shareProjectWithUser({ projectId: 1, username: 'alice', right: 'read' }, authManager),
@@ -341,8 +354,12 @@ describe('direct project sharing (users & teams)', () => {
 
     it('best-effort (default): leaves the grant in place when verification fails, and reports it in guidance', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice' }]) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }),
+        )
         // verify-membership finds nobody -> triggers failure
         .mockResolvedValueOnce(mockResponse({ text: '[]' }));
 
@@ -357,14 +374,21 @@ describe('direct project sharing (users & teams)', () => {
 
     it('atomic:true removes the grant when verification fails', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice' }]) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }),
+        )
         .mockResolvedValueOnce(mockResponse({ text: '[]' }))
         // compensation: DELETE /projects/1/users/42
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ message: 'removed' }) }));
 
       await expect(
-        shareProjectWithUser({ projectId: 1, username: 'alice', right: 'write', atomic: true }, authManager),
+        shareProjectWithUser(
+          { projectId: 1, username: 'alice', right: 'write', atomic: true },
+          authManager,
+        ),
       ).rejects.toThrow(MCPError);
 
       expect(mockFetch).toHaveBeenCalledTimes(4);
@@ -373,13 +397,48 @@ describe('direct project sharing (users & teams)', () => {
       expect(compensateCall[1].method).toBe('DELETE');
     });
 
+    it('atomic:true does NOT revoke a grant that landed on a later verification page (audit #291 MED-3)', async () => {
+      const page1 = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, username: `user${i + 1}` }));
+      mockFetch
+        // 1) resolve-user
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice' }]) }),
+        )
+        // 2) add-user
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ username: 'alice', permission: 1 }) }),
+        )
+        // 3) verify-membership page 1: full page, alice not on it
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(page1) }))
+        // 4) verify-membership page 2: short page, alice IS on it
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 42, username: 'alice', permission: 1 }]) }),
+        );
+
+      const result = await shareProjectWithUser(
+        { projectId: 1, username: 'alice', right: 'write', atomic: true },
+        authManager,
+      );
+
+      // Exactly 4 calls: resolve, add, verify page 1, verify page 2 — no
+      // DELETE compensation call, because the grant did in fact succeed.
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      expect(mockFetch.mock.calls[3][0]).toBe(
+        'https://vikunja.test/api/v1/projects/1/users?per_page=200&page=2',
+      );
+      expect(result.content[0].text).toContain('Shared project 1 with user "alice"');
+    });
+
     it('requires a non-empty username and a permission level', async () => {
       await expect(
         shareProjectWithUser({ projectId: 1, username: '', right: 'read' }, authManager),
       ).rejects.toThrow('username is required');
 
       await expect(
-        shareProjectWithUser({ projectId: 1, username: 'alice', right: undefined as never }, authManager),
+        shareProjectWithUser(
+          { projectId: 1, username: 'alice', right: undefined as never },
+          authManager,
+        ),
       ).rejects.toThrow('Share right is required');
 
       expect(mockFetch).not.toHaveBeenCalled();
@@ -396,7 +455,9 @@ describe('direct project sharing (users & teams)', () => {
         .mockResolvedValueOnce(
           mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering' }]) }),
         )
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ team_id: 7, permission: 2 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ team_id: 7, permission: 2 }) }),
+        )
         .mockResolvedValueOnce(
           mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering', permission: 2 }]) }),
         );
@@ -410,13 +471,17 @@ describe('direct project sharing (users & teams)', () => {
       expect(calls[0][0]).toBe('https://vikunja.test/api/v1/teams?s=Engineering');
       expect(calls[1][0]).toBe('https://vikunja.test/api/v1/projects/1/teams');
       expect(JSON.parse(calls[1][1]?.body as string)).toEqual({ team_id: 7, permission: 2 });
-      expect(calls[2][0]).toBe('https://vikunja.test/api/v1/projects/1/teams');
+      expect(calls[2][0]).toBe('https://vikunja.test/api/v1/projects/1/teams?per_page=200&page=1');
 
-      expect(result.content[0].text).toContain('Shared project 1 with team "Engineering" (permission 2)');
+      expect(result.content[0].text).toContain(
+        'Shared project 1 with team "Engineering" (permission 2)',
+      );
     });
 
     it('throws NOT_FOUND when no exact team name match exists', async () => {
-      mockFetch.mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 1, name: 'Marketing' }]) }));
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ text: JSON.stringify([{ id: 1, name: 'Marketing' }]) }),
+      );
 
       await expect(
         shareProjectWithTeam({ projectId: 1, teamName: 'Engineering', right: 'read' }, authManager),
@@ -426,8 +491,12 @@ describe('direct project sharing (users & teams)', () => {
 
     it('atomic:true removes the grant when verification fails', async () => {
       mockFetch
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering' }]) }))
-        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ team_id: 7, permission: 1 }) }))
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ team_id: 7, permission: 1 }) }),
+        )
         .mockResolvedValueOnce(mockResponse({ text: '[]' }))
         .mockResolvedValueOnce(mockResponse({ text: JSON.stringify({ message: 'removed' }) }));
 
@@ -441,6 +510,34 @@ describe('direct project sharing (users & teams)', () => {
       const compensateCall = mockFetch.mock.calls[3] as [string, RequestInit];
       expect(compensateCall[0]).toBe('https://vikunja.test/api/v1/projects/1/teams/7');
       expect(compensateCall[1].method).toBe('DELETE');
+    });
+
+    it('atomic:true does NOT revoke a grant that landed on a later verification page (audit #291 MED-3)', async () => {
+      const page1 = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, name: `Team ${i + 1}` }));
+      mockFetch
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering' }]) }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ team_id: 7, permission: 1 }) }),
+        )
+        // verify-membership page 1: full page, Engineering not on it
+        .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(page1) }))
+        // verify-membership page 2: short page, Engineering IS on it
+        .mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify([{ id: 7, name: 'Engineering', permission: 1 }]) }),
+        );
+
+      const result = await shareProjectWithTeam(
+        { projectId: 1, teamName: 'Engineering', right: 'write', atomic: true },
+        authManager,
+      );
+
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      expect(mockFetch.mock.calls[3][0]).toBe(
+        'https://vikunja.test/api/v1/projects/1/teams?per_page=200&page=2',
+      );
+      expect(result.content[0].text).toContain('Shared project 1 with team "Engineering"');
     });
 
     it('requires a non-empty team name', async () => {
@@ -504,10 +601,56 @@ describe('direct project sharing (users & teams)', () => {
       );
     });
 
+    it('surfaces the teams-read failure honestly (audit #279), same as link-shares already does', async () => {
+      // Regression: a rejected teams read used to be silently coerced to an
+      // empty array with no error field, while a rejected link-shares read
+      // already carried an explicit `error`. Assert on the actual data
+      // object passed to `createStandardResponse` — the markdown renderer
+      // only surfaces the `users` collection in its text output, so the
+      // `teamsError`/`linkShares.error` fields are otherwise invisible from
+      // `result.content[0].text` alone.
+      const spy = jest.spyOn(responseFactory, 'createStandardResponse');
+      try {
+        mockFetch.mockImplementation((url: string) => {
+          if (url.endsWith('/projects/1/users')) {
+            return Promise.resolve(
+              mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice' }]) }),
+            );
+          }
+          if (url.endsWith('/projects/1/teams')) {
+            return Promise.resolve(mockResponse({ ok: false, status: 500, text: 'teams boom' }));
+          }
+          if (url.includes('/projects/1/shares')) {
+            return Promise.resolve(
+              mockResponse({ text: JSON.stringify([{ id: 1, hash: 'abc', permission: 0 }]) }),
+            );
+          }
+          if (url.endsWith('/projects/1')) {
+            return Promise.resolve(mockResponse({ text: JSON.stringify({ id: 1 }) }));
+          }
+          throw new Error(`Unexpected fetch call to ${url}`);
+        });
+
+        await listProjectMembers({ projectId: 1 }, authManager);
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        const data = spy.mock.calls[0][2] as Record<string, unknown>;
+        expect(data.teamsError).toEqual(expect.stringContaining('teams boom'));
+        expect(data.teams).toEqual([]);
+        // Parity check: link-shares' existing error-surfacing shape is
+        // untouched by this fix.
+        expect(data.linkShares).toEqual({ available: true, summary: expect.any(String) });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('degrades gracefully when the link-share sub-call fails, still reporting users/teams', async () => {
       mockFetch.mockImplementation((url: string) => {
         if (url.endsWith('/projects/1/users')) {
-          return Promise.resolve(mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice' }]) }));
+          return Promise.resolve(
+            mockResponse({ text: JSON.stringify([{ id: 1, username: 'alice' }]) }),
+          );
         }
         if (url.endsWith('/projects/1/teams')) {
           return Promise.resolve(mockResponse({ text: '[]' }));

@@ -10,12 +10,18 @@ endpoint-touching code.
 must be verified against `docs/vikunja-openapi.json`, never against
 node-vikunja's bundled types.**
 
-node-vikunja is end-of-life in this project and has confirmed drift from the
-real API (see `docs/VIKUNJA_API_ISSUES.md` items #3, #7, and `docs/API_NOTES.md`
-for concrete examples: task reminder shape, team member endpoints, the
-`is_done_bucket`/`done_bucket_id` split, etc.). When node-vikunja's types and
-the spec disagree, the spec wins — node-vikunja's types are not evidence of
-anything.
+`node-vikunja` has since been **removed entirely** (PR #73, Wave D): all HTTP
+goes through `vikunjaRestRequest` / `vikunjaRestMultipartRequest`, and the
+dependency is gone from `package.json` / `package-lock.json`. The rule outlives
+the removal because that client's drift is still quoted in source comments and
+older docs: it had confirmed divergence from the real API (see
+[docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) items #3, #7, and
+[docs/API_NOTES.md](API_NOTES.md) for concrete
+examples: task reminder shape, team member endpoints, the
+`is_done_bucket`/`done_bucket_id` split, etc.). Comments phrased in terms of
+"the legacy client" (e.g. `src/tools/teams.ts`, `src/tools/users.ts`,
+`src/tools/filters.ts`) describe that removed dependency historically, not a
+live code path — they are not evidence of anything. The spec wins, always.
 
 The generated TypeScript types under `src/types/generated/vikunja-openapi.d.ts`
 (see below) are derived mechanically from this same spec file, so importing
@@ -28,15 +34,29 @@ version-matrix report that motivated the Vikunja 2.4.0 alignment confirmed
 that a running container's own `/api/v1/docs.json` reports an `info.version`
 that matches its image tag *exactly* (e.g. `v2.4.0`, byte-for-byte, no
 ahead-of-tag drift) — unlike `try.vikunja.io` (see below). Bring up the
-pinned stack (`npm run e2e:up`, see `docs/LOCAL-TESTING.md`) and fetch
-straight from it:
+pinned stack (`npm run e2e:up`, see [docs/LOCAL-TESTING.md](LOCAL-TESTING.md))
+and fetch straight from it:
 
 ```bash
 npm run fetch:api-spec:container
 ```
 
-(equivalent to `curl -sS http://localhost:33456/api/v1/docs.json -o
-docs/vikunja-openapi.json && jq -e . docs/vikunja-openapi.json`)
+Which stack it reads is **resolved, never hard-coded** — the script
+(`scripts/fetch-api-spec.sh`) asks `scripts/lib/e2e-target.ts` for the port,
+honouring `VIKUNJA_E2E_TARGET` exactly like every other harness:
+
+```bash
+VIKUNJA_E2E_TARGET=2.6.0-postgres npm run fetch:api-spec:container
+```
+
+It refuses to write the file if nothing answers on that port, or if what
+answers reports a different version than the target's — so a spec can never
+be vendored from the wrong server.
+
+That guard exists because the port used to be the literal `8240` in
+`package.json` (issue #254, item C1). `8240` is the *current* default target's
+port, so re-vendoring against a newer stack silently re-captured the old
+version's spec and looked perfectly green.
 
 This gives an exactly-reproducible spec/behavior pairing tied to the pinned
 tag in `docker/e2e/docker-compose.yml` — the spec documents precisely what
@@ -162,6 +182,12 @@ imports from the generated v2 types yet, and no runtime behavior depends on
 this vendoring. Treat the sections below as infrastructure for future v2
 work, not a live integration.
 
+(One runtime touchpoint exists but is unrelated to the vendored file: since
+PR #149, `vikunja_auth connect` runs a best-effort `GET /api/v2/openapi.json`
+probe and caches `hasV2Api` on the session — see `src/utils/capabilities.ts`.
+It reads the live server, not `docs/vikunja-openapi-v2.json`, and no tool
+branches on the result yet.)
+
 ### Where the v2 spec comes from
 
 Same pinned local e2e container as v1, but the `/api/v2/openapi.json`
@@ -171,8 +197,8 @@ endpoint:
 npm run fetch:api-spec:v2:container
 ```
 
-(equivalent to `curl -sS http://localhost:33456/api/v2/openapi.json -o
-docs/vikunja-openapi-v2.json && jq -e . docs/vikunja-openapi-v2.json`)
+(the same resolved-port script as the v1 fetch above, so
+`VIKUNJA_E2E_TARGET` selects the stack and the version guard applies here too)
 
 This gives the same exactly-reproducible spec/behavior pairing as the v1
 fetch, tied to the pinned tag in `docker/e2e/docker-compose.yml`. There is no
@@ -216,9 +242,14 @@ v1 refresh procedure above.
 ## Scope of this migration
 
 Wiring the spec into the build (this document, the vendored file, generated
-types, and the npm scripts) is Wave C infrastructure work. It intentionally
-converts only **one** existing call site
+types, and the npm scripts) was Wave C infrastructure work, and it
+intentionally converted only **one** existing call site
 (`src/tools/projects/buckets.ts`) as a demonstration of the pattern.
-Migrating the rest of `src/utils/vikunja-rest.ts`'s consumers to generated
-types is out of scope here and tracked as Wave D follow-up in issue #28 —
-do not mass-migrate call sites as a side effect of unrelated work.
+
+That is no longer the state of the tree: the Wave D domain migration has since
+landed, and **43 modules under `src/`** (outside `src/types/generated/`) now
+import from `src/types/generated/vikunja-openapi` — verify with
+``grep -rlE "from '[^']*generated/vikunja-openapi'" src --include="*.ts"``.
+New or modified endpoint code is therefore expected to type its
+request/response shapes from the generated types rather than hand-rolled
+interfaces; the remaining hand-rolled shapes are the leftovers, not the norm.

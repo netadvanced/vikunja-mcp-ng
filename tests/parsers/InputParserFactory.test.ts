@@ -33,7 +33,7 @@ Task with labels,label1;label2,user1;user2`;
           data: validJsonData,
         };
 
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
 
         expect(result).toHaveLength(2);
         expect(result[0]).toEqual({
@@ -56,7 +56,7 @@ Task with labels,label1;label2,user1;user2`;
           data: '[]',
         };
 
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
 
         expect(result).toHaveLength(0);
       });
@@ -87,7 +87,7 @@ Task with labels,label1;label2,user1;user2`;
           data: JSON.stringify({ title: 'Single task' }),
         };
 
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
 
         expect(result).toHaveLength(1);
         expect(result[0]).toEqual({
@@ -103,7 +103,7 @@ Task with labels,label1;label2,user1;user2`;
           data: validCsvData,
         };
 
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
 
         expect(result).toHaveLength(2);
         expect(result[0]).toEqual({
@@ -126,7 +126,7 @@ Task with labels,label1;label2,user1;user2`;
           data: csvWithLabels,
         };
 
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
 
         expect(result).toHaveLength(1);
         expect(result[0]).toEqual({
@@ -153,7 +153,9 @@ Task with labels,label1;label2,user1;user2`;
         };
 
         expect(() => parseInputData(options)).toThrow(MCPError);
-        expect(() => parseInputData(options)).toThrow('CSV must have at least a header row and one data row');
+        expect(() => parseInputData(options)).toThrow(
+          'CSV must have at least a header row and one data row',
+        );
       });
 
       it('should throw MCPError for CSV with empty lines only', () => {
@@ -172,7 +174,7 @@ Task with labels,label1;label2,user1;user2`;
           data: '  title  ,  description  \n  Task 1  ,  Description 1  ',
         };
 
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
 
         expect(result).toHaveLength(1);
         expect(result[0]).toEqual({
@@ -190,7 +192,7 @@ Task with labels,label1;label2,user1;user2`;
           data: csvData,
         };
 
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
 
         expect(result).toHaveLength(1);
         expect(result[0]).toEqual({
@@ -219,12 +221,64 @@ Task 2,2`;
         };
 
         // Should not throw and should return valid tasks only
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
         expect(result).toHaveLength(1);
         expect(result[0]).toEqual({
           title: 'Task 2',
           priority: 2,
         });
+      });
+
+      // #323: the dropped row must be recorded, not just silently missing
+      // from the tasks array.
+      it('should record a dropped CSV row in `skipped` with its index and error', () => {
+        const csvWithInvalidData = `title,priority
+Task 1,invalid_priority
+Task 2,2`;
+
+        const { tasks, skipped } = parseInputData({
+          format: 'csv',
+          data: csvWithInvalidData,
+          skipErrors: true,
+        });
+
+        expect(tasks).toHaveLength(1);
+        expect(skipped).toHaveLength(1);
+        expect(skipped[0]?.index).toBe(0);
+        // The raw validation cause only — no baked-in row number here. The
+        // formatter (BatchImportResponseFormatter) is what prefixes "Input
+        // row N" using `index`; stacking a second, differently-numbered "row
+        // X" from the parser inside the same message was confusing.
+        expect(skipped[0]?.error).not.toContain('row');
+        expect(skipped[0]?.error?.length).toBeGreaterThan(0);
+      });
+
+      it('should record every dropped CSV row when the whole batch is invalid, with correct indices', () => {
+        const csvAllInvalid = `title,priority
+Task 1,invalid_priority
+Task 2,also_invalid`;
+
+        const { tasks, skipped } = parseInputData({
+          format: 'csv',
+          data: csvAllInvalid,
+          skipErrors: true,
+        });
+
+        expect(tasks).toHaveLength(0);
+        expect(skipped).toHaveLength(2);
+        expect(skipped.map((s) => s.index)).toEqual([0, 1]);
+        expect(skipped[0]?.error).not.toContain('row');
+        expect(skipped[1]?.error).not.toContain('row');
+      });
+
+      it('should return an empty `skipped` array for CSV when nothing was dropped', () => {
+        const { skipped } = parseInputData({
+          format: 'csv',
+          data: validCsvData,
+          skipErrors: true,
+        });
+
+        expect(skipped).toEqual([]);
       });
 
       it('should throw MCPError for CSV validation errors with skipErrors=false', () => {
@@ -239,6 +293,57 @@ Task 1,invalid_priority`;
 
         expect(() => parseInputData(options)).toThrow(MCPError);
         expect(() => parseInputData(options)).toThrow('Invalid task data at row 2');
+      });
+
+      describe('RFC 4180 multiline quoted fields (issue #275)', () => {
+        it('should keep an embedded newline inside a quoted field as part of that one row, not a new row', () => {
+          // A quoted `description` spanning two physical lines is one CSV
+          // record with two lines of text in one field — NOT two records.
+          // Before the fix, splitting on '\n' before quote-aware parsing
+          // tore this into a spurious extra (invalid) task.
+          const csvData =
+            'title,description\n' +
+            '"Multi-line task","line1\nline2"\n' +
+            'Second task,Normal desc';
+
+          const options: ParseInputOptions = {
+            format: 'csv',
+            data: csvData,
+          };
+
+          const { tasks: result } = parseInputData(options);
+
+          expect(result).toHaveLength(2);
+          expect(result[0]).toEqual({
+            title: 'Multi-line task',
+            description: 'line1\nline2',
+          });
+          expect(result[1]).toEqual({
+            title: 'Second task',
+            description: 'Normal desc',
+          });
+        });
+
+        it('should handle a quoted field spanning three or more physical lines', () => {
+          const csvData = 'title,description\n' + '"Task A","one\ntwo\nthree"\n' + 'Task B,short';
+
+          const { tasks: result } = parseInputData({ format: 'csv', data: csvData });
+
+          expect(result).toHaveLength(2);
+          expect(result[0]?.description).toBe('one\ntwo\nthree');
+          expect(result[1]?.title).toBe('Task B');
+        });
+
+        it('should handle multiple rows each with their own multiline quoted field', () => {
+          const csvData =
+            'title,description\n' + '"Task A","first\nsecond"\n' + '"Task B","third\nfourth"';
+
+          const { tasks: result } = parseInputData({ format: 'csv', data: csvData });
+
+          expect(result).toHaveLength(2);
+          expect(result[0]).toEqual({ title: 'Task A', description: 'first\nsecond' });
+          expect(result[1]).toEqual({ title: 'Task B', description: 'third\nfourth' });
+        });
       });
     });
 
@@ -275,7 +380,7 @@ Task 3,Description 3`;
           data: csvWithEmptyRows,
         };
 
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
         expect(result).toHaveLength(2); // Should skip empty row
       });
     });
@@ -293,13 +398,67 @@ Task 4,fAlSe,4`;
           data: csvData,
         };
 
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
 
         expect(result).toHaveLength(4);
         expect(result[0].done).toBe(true);
         expect(result[1].done).toBe(false);
         expect(result[2].done).toBe(true);
         expect(result[3].done).toBe(false);
+      });
+
+      it('should recognize common truthy/falsy string forms for done, not just literal true/false (LOW-8)', () => {
+        const csvData = `title,done
+Task 1,yes
+Task 2,no
+Task 3,1
+Task 4,0
+Task 5,y
+Task 6,n`;
+
+        const { tasks: result } = parseInputData({ format: 'csv', data: csvData });
+
+        expect(result).toHaveLength(6);
+        expect(result[0].done).toBe(true);
+        expect(result[1].done).toBe(false);
+        expect(result[2].done).toBe(true);
+        expect(result[3].done).toBe(false);
+        expect(result[4].done).toBe(true);
+        expect(result[5].done).toBe(false);
+      });
+
+      it('should default an unrecognized done value to false rather than silently guessing', () => {
+        const csvData = `title,done
+Task 1,maybe`;
+
+        const { tasks: result } = parseInputData({ format: 'csv', data: csvData });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].done).toBe(false);
+      });
+
+      it('should reject (not truncate) a non-integer decimal in a CSV numeric column (LOW-7)', () => {
+        // '3.9' used to silently truncate to 3 via parseInt — a different,
+        // wrong value with no error and no warning. It must now fail
+        // validation instead, the same way non-numeric garbage already did.
+        const csvData = `title,priority
+Task 1,3.9`;
+
+        expect(() => parseInputData({ format: 'csv', data: csvData })).toThrow(MCPError);
+        expect(() => parseInputData({ format: 'csv', data: csvData })).toThrow(
+          'Invalid task data at row 2',
+        );
+      });
+
+      it('should skip (not truncate) a non-integer decimal numeric column when skipErrors is set', () => {
+        const csvData = `title,priority
+Task 1,3.9
+Task 2,4`;
+
+        const { tasks: result } = parseInputData({ format: 'csv', data: csvData, skipErrors: true });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toEqual({ title: 'Task 2', priority: 4 });
       });
 
       it('should convert numeric fields correctly', () => {
@@ -312,7 +471,7 @@ Task 2,0,100,7200,0`;
           data: csvData,
         };
 
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
 
         expect(result).toHaveLength(2);
         expect(result[0].priority).toBe(1);
@@ -336,7 +495,7 @@ Task 3,"label with spaces","user with spaces"`;
           data: csvData,
         };
 
-        const result = parseInputData(options);
+        const { tasks: result } = parseInputData(options);
 
         expect(result).toHaveLength(3);
         expect(result[0].labels).toEqual(['label1', 'label2', 'label3']);

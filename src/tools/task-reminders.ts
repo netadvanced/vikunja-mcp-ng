@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { MCPError, ErrorCode } from '../types';
-import { getAuthManagerFromContext, setGlobalClientFactory } from '../client';
+import { getAuthManagerFromContext, hasRequestContext, setGlobalClientFactory } from '../client';
 import { logger } from '../utils/logger';
 import { createAuthRequiredError } from '../utils/error-handler';
 import { addReminder, removeReminder, listReminders } from '../tools/tasks/reminders';
@@ -21,11 +21,14 @@ import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../uti
 export function registerTaskRemindersTool(
   server: McpServer,
   authManager: AuthManager,
-  clientFactory?: VikunjaClientFactory
+  clientFactory?: VikunjaClientFactory,
 ): void {
   server.tool(
     'vikunja_task_reminders',
-    withReadOnlyNote('vikunja_task_reminders', 'Manage task reminders: add, remove, list reminders'),
+    withReadOnlyNote(
+      'vikunja_task_reminders',
+      'Manage task reminders: add, remove, list reminders',
+    ),
     {
       operation: z.enum(['add-reminder', 'remove-reminder', 'list-reminders']),
       // Task and reminder identification
@@ -39,10 +42,18 @@ export function registerTaskRemindersTool(
     getToolAnnotations('vikunja_task_reminders'),
     async (args) => {
       try {
-        logger.debug('Executing task reminders tool', { operation: args.operation, taskId: args.id, reminderIndex: args.reminderIndex });
+        logger.debug('Executing task reminders tool', {
+          operation: args.operation,
+          taskId: args.id,
+          reminderIndex: args.reminderIndex,
+        });
 
-        // Check authentication
-        if (!authManager.isAuthenticated()) {
+        // Check authentication (closure-gate precedence fix: defer to the
+        // per-request context when bound — see hasRequestContext's doc
+        // comment, src/client.ts)
+        if (hasRequestContext()) {
+          await getAuthManagerFromContext();
+        } else if (!authManager.isAuthenticated()) {
           throw createAuthRequiredError('access task reminder operations');
         }
 
@@ -61,7 +72,7 @@ export function registerTaskRemindersTool(
             return addReminder(
               {
                 id: args.id,
-                reminderDate: args.reminderDate || ''
+                reminderDate: args.reminderDate || '',
               },
               authManager,
             );
@@ -71,7 +82,7 @@ export function registerTaskRemindersTool(
               {
                 id: args.id,
                 reminderDate: args.reminderDate,
-                reminderIndex: args.reminderIndex
+                reminderIndex: args.reminderIndex,
               },
               authManager,
             );

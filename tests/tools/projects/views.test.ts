@@ -154,9 +154,9 @@ describe('project views', () => {
 
   describe('createView', () => {
     it('throws a VALIDATION_ERROR when the project id is missing', async () => {
-      await expect(createView({ title: 'New View', viewKind: 'list' }, authManager)).rejects.toThrow(
-        'Project id is required for create-view operation',
-      );
+      await expect(
+        createView({ title: 'New View', viewKind: 'list' }, authManager),
+      ).rejects.toThrow('Project id is required for create-view operation');
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
@@ -208,7 +208,11 @@ describe('project views', () => {
 
       const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
       expect(init.body).toBe(
-        JSON.stringify({ title: 'Board', view_kind: 'kanban', bucket_configuration_mode: 'manual' }),
+        JSON.stringify({
+          title: 'Board',
+          view_kind: 'kanban',
+          bucket_configuration_mode: 'manual',
+        }),
       );
     });
   });
@@ -244,9 +248,9 @@ describe('project views', () => {
     });
 
     it('throws when doneBucketId is not a positive integer', async () => {
-      await expect(
-        updateView({ id: 5, viewId: 11, doneBucketId: 0 }, authManager),
-      ).rejects.toThrow('doneBucketId must be a positive integer');
+      await expect(updateView({ id: 5, viewId: 11, doneBucketId: 0 }, authManager)).rejects.toThrow(
+        'doneBucketId must be a positive integer',
+      );
     });
 
     it('fetches the current view, merges the change, and POSTs the full model', async () => {
@@ -284,6 +288,288 @@ describe('project views', () => {
 
       const [, postInit] = mockFetch.mock.calls[1] as [string, RequestInit];
       expect(postInit.body).toBe(JSON.stringify({ ...kanbanView, title: 'Renamed' }));
+    });
+  });
+
+  /**
+   * Silent field-drop regression guards for the view write paths.
+   *
+   * `position`, `filter`, and `bucket_configuration` are all real
+   * `models.ProjectView` fields (vendored spec + go-vikunja
+   * `pkg/models/project_view.go`) that this tool used to accept and throw
+   * away. `position` was the worst of the three: `viewSummary` echoed the
+   * SERVER's position straight back, so a caller reordering views got a
+   * no-op plus a response that looked like it had worked.
+   *
+   * Every test here asserts the outgoing WIRE body, and the falsy values
+   * (`position: 0`) are covered explicitly — a naive `if (args.position)`
+   * guard drops exactly those.
+   */
+  describe('silently-dropped view fields', () => {
+    describe('createView', () => {
+      it('sends position on the wire', async () => {
+        mockFetch.mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({ id: 22, title: 'Second', view_kind: 'list', position: 250 }),
+          }),
+        );
+
+        await createView({ id: 5, title: 'Second', viewKind: 'list', position: 250 }, authManager);
+
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(init.body).toBe(
+          JSON.stringify({ title: 'Second', view_kind: 'list', position: 250 }),
+        );
+      });
+
+      it('sends position 0 rather than dropping it as falsy', async () => {
+        mockFetch.mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({ id: 23, title: 'First', view_kind: 'list', position: 1507328 }),
+          }),
+        );
+
+        await createView({ id: 5, title: 'First', viewKind: 'list', position: 0 }, authManager);
+
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(JSON.parse(String(init.body))).toHaveProperty('position', 0);
+      });
+
+      it('sends filter as the nested TaskCollection the model actually uses', async () => {
+        mockFetch.mockResolvedValueOnce(
+          mockResponse({
+            text: JSON.stringify({ id: 24, title: 'Open', view_kind: 'list' }),
+          }),
+        );
+
+        await createView(
+          { id: 5, title: 'Open', viewKind: 'list', filter: 'done = false' },
+          authManager,
+        );
+
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(JSON.parse(String(init.body))).toEqual({
+          title: 'Open',
+          view_kind: 'list',
+          filter: { filter: 'done = false' },
+        });
+      });
+
+      it('translates DSL field names to the API field names Vikunja expects', async () => {
+        mockFetch.mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ id: 25, title: 'Soon', view_kind: 'list' }) }),
+        );
+
+        await createView(
+          { id: 5, title: 'Soon', viewKind: 'list', filter: 'dueDate < now' },
+          authManager,
+        );
+
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(
+          (JSON.parse(String(init.body)) as { filter: { filter: string } }).filter.filter,
+        ).toContain('due_date');
+      });
+
+      it('rejects an unparseable filter before any API call', async () => {
+        await expect(
+          createView(
+            { id: 5, title: 'Bad', viewKind: 'list', filter: 'done ?? nope' },
+            authManager,
+          ),
+        ).rejects.toThrow(/Invalid filter/);
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('sends bucket_configuration so a filter-mode board has columns', async () => {
+        mockFetch.mockResolvedValueOnce(
+          mockResponse({ text: JSON.stringify({ id: 26, title: 'Board', view_kind: 'kanban' }) }),
+        );
+
+        await createView(
+          {
+            id: 5,
+            title: 'Board',
+            viewKind: 'kanban',
+            bucketConfigurationMode: 'filter',
+            bucketConfiguration: [
+              { title: 'Urgent', filter: 'priority >= 4' },
+              { title: 'Everything else' },
+            ],
+          },
+          authManager,
+        );
+
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(JSON.parse(String(init.body))).toEqual({
+          title: 'Board',
+          view_kind: 'kanban',
+          bucket_configuration_mode: 'filter',
+          bucket_configuration: [
+            { title: 'Urgent', filter: { filter: 'priority >= 4' } },
+            { title: 'Everything else' },
+          ],
+        });
+      });
+
+      it('rejects a bucketConfiguration entry with a blank title, naming the index', async () => {
+        await expect(
+          createView(
+            {
+              id: 5,
+              title: 'Board',
+              viewKind: 'kanban',
+              bucketConfiguration: [{ title: 'ok' }, { title: '  ' }],
+            },
+            authManager,
+          ),
+        ).rejects.toThrow('bucketConfiguration[1].title is required');
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('REJECTS doneBucketId with a pointer to the tools that can set it', async () => {
+        await expect(
+          createView({ id: 5, title: 'Board', viewKind: 'kanban', doneBucketId: 101 }, authManager),
+        ).rejects.toThrow(MCPError);
+        await expect(
+          createView({ id: 5, title: 'Board', viewKind: 'kanban', doneBucketId: 101 }, authManager),
+        ).rejects.toThrow(/doneBucketId cannot be set by create-view[\s\S]*update-view/);
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('REJECTS defaultBucketId, and names both fields when both are given', async () => {
+        await expect(
+          createView(
+            {
+              id: 5,
+              title: 'Board',
+              viewKind: 'kanban',
+              doneBucketId: 101,
+              defaultBucketId: 100,
+            },
+            authManager,
+          ),
+        ).rejects.toThrow(/doneBucketId and defaultBucketId cannot be set by create-view/);
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('updateView', () => {
+      it('accepts position alone as an update field and sends it merged', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(kanbanView) }))
+          .mockResolvedValueOnce(
+            mockResponse({ text: JSON.stringify({ ...kanbanView, position: 999 }) }),
+          );
+
+        await updateView({ id: 5, viewId: 11, position: 999 }, authManager);
+
+        const [, postInit] = mockFetch.mock.calls[1] as [string, RequestInit];
+        expect(postInit.body).toBe(JSON.stringify({ ...kanbanView, position: 999 }));
+      });
+
+      it('sends position 0 rather than dropping it as falsy', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(kanbanView) }))
+          .mockResolvedValueOnce(
+            mockResponse({ text: JSON.stringify({ ...kanbanView, position: 0 }) }),
+          );
+
+        await updateView({ id: 5, viewId: 11, position: 0 }, authManager);
+
+        const [, postInit] = mockFetch.mock.calls[1] as [string, RequestInit];
+        expect(JSON.parse(String(postInit.body))).toHaveProperty('position', 0);
+      });
+
+      it("preserves the view's position when the caller only renames it", async () => {
+        // go-vikunja's ProjectView.Update names "position" in its explicit
+        // Cols(...) list, so a partial body would write 0 and reshuffle the
+        // whole view order. The fetch-merge-POST is what stops that.
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(kanbanView) }))
+          .mockResolvedValueOnce(
+            mockResponse({ text: JSON.stringify({ ...kanbanView, title: 'Renamed' }) }),
+          );
+
+        await updateView({ id: 5, viewId: 11, title: 'Renamed' }, authManager);
+
+        const [, postInit] = mockFetch.mock.calls[1] as [string, RequestInit];
+        expect(JSON.parse(String(postInit.body))).toHaveProperty('position', kanbanView.position);
+      });
+
+      it('merges a new filter query onto the existing TaskCollection', async () => {
+        const filteredView = {
+          ...kanbanView,
+          filter: { filter: 'done = false', sort_by: ['priority'] },
+        };
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(filteredView) }))
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(filteredView) }));
+
+        await updateView({ id: 5, viewId: 11, filter: 'priority >= 4' }, authManager);
+
+        const [, postInit] = mockFetch.mock.calls[1] as [string, RequestInit];
+        expect(JSON.parse(String(postInit.body)).filter).toEqual({
+          filter: 'priority >= 4',
+          sort_by: ['priority'],
+        });
+      });
+
+      it('sends bucket_configuration when it changes', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(kanbanView) }))
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(kanbanView) }));
+
+        await updateView(
+          {
+            id: 5,
+            viewId: 11,
+            bucketConfigurationMode: 'filter',
+            bucketConfiguration: [{ title: 'Urgent', filter: 'priority >= 4' }],
+          },
+          authManager,
+        );
+
+        const [, postInit] = mockFetch.mock.calls[1] as [string, RequestInit];
+        expect(JSON.parse(String(postInit.body))).toMatchObject({
+          bucket_configuration_mode: 'filter',
+          bucket_configuration: [{ title: 'Urgent', filter: { filter: 'priority >= 4' } }],
+        });
+      });
+
+      it('reports position and filter as affected fields', async () => {
+        mockFetch
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(kanbanView) }))
+          .mockResolvedValueOnce(mockResponse({ text: JSON.stringify(kanbanView) }));
+
+        const result = await updateView(
+          { id: 5, viewId: 11, position: 42, filter: 'done = false' },
+          authManager,
+        );
+
+        expect(result.content[0].text).toContain('position');
+        expect(result.content[0].text).toContain('filter');
+      });
+    });
+
+    describe('buildViewUpdatePayload', () => {
+      it('overlays position 0 instead of treating it as absent', () => {
+        expect(buildViewUpdatePayload(kanbanView, { position: 0 })).toEqual({
+          ...kanbanView,
+          position: 0,
+        });
+      });
+
+      it('keeps the rest of an existing filter collection when only the query changes', () => {
+        const withFilter = {
+          ...kanbanView,
+          filter: { filter: 'done = false', order_by: ['desc'] },
+        };
+        expect(buildViewUpdatePayload(withFilter, { filter: 'done = true' }).filter).toEqual({
+          filter: 'done = true',
+          order_by: ['desc'],
+        });
+      });
     });
   });
 

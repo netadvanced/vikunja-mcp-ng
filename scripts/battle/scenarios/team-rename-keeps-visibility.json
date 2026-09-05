@@ -1,0 +1,13 @@
+{
+  "id": "team-rename-keeps-visibility",
+  "title": "Renaming a team must not un-publish it",
+  "description": "First scenario in this library to touch teams at all. Regression guard for the bug fixed in PR #230: `POST /teams/{id}` is a FULL-MODEL REPLACE and go-vikunja writes `is_public` unconditionally (`pkg/models/teams.go`'s `s.ID(t.ID).UseBool(\"is_public\").Update(t)`), so ANY update body that omits the field silently flipped a publicly-discoverable team to private. Confirmed live against the 2.4.0 e2e stack while writing this scenario: a raw `POST /teams/{id}` carrying only `{id, name}` left the team renamed AND `is_public: false`. `src/tools/teams.ts` now reads the team first and merges the caller's deltas over it (`buildTeamUpdatePayload`), so the `team-exists` check's `isPublic: true` assertion reads the RAW stored `is_public` and fails the moment that read-then-merge is removed. The prompt deliberately says nothing about keeping the team discoverable: hinting at it would let the agent pass by explicitly re-sending isPublic, which is exactly the memorized-gotcha compensation the fix exists to make unnecessary. The team is SEEDED via `setup` rather than created by the agent, for the same reason existing-label-reuse.json seeds its label: a create-then-rename prompt can always be solved by creating the team under its final name in one call, which passes verification while never exercising the update path this scenario is about. The `team-absent` check on the old name is what proves a rename happened rather than a second team being created beside the first. optimalCallCount derived from the CURRENT tool schemas: the agent is given a team NAME, not an id, and every write subcommand of `vikunja_teams` is keyed by id, so it must resolve the id first -- `vikunja_teams list` (optionally with `search`) (1) + `vikunja_teams update` with `id` + `name` (1) = 2. There is no lower route: no subcommand accepts a team by name, and no composite merges lookup with update.",
+  "setup": [{ "type": "create-team", "name": "{{prefix}}Design Guild", "isPublic": true }],
+  "promptTemplate": "Our design folks have a team in Vikunja called \"{{prefix}}Design Guild\". They have rebranded, so please change that team's name to \"{{prefix}}Design Chapter\".",
+  "optimalCallCount": 2,
+  "verify": [
+    { "type": "team-exists", "nameContains": "{{prefix}}Design Chapter" },
+    { "type": "team-exists", "nameContains": "{{prefix}}Design Chapter", "isPublic": true },
+    { "type": "team-absent", "nameContains": "{{prefix}}Design Guild" }
+  ]
+}

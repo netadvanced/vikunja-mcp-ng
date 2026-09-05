@@ -137,7 +137,7 @@ describe('BatchProcessor', () => {
       mockProcessor.mockImplementation(async (item) => {
         activeCount++;
         maxActiveCount = Math.max(maxActiveCount, activeCount);
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
         activeCount--;
         return `processed-${item}`;
       });
@@ -146,7 +146,7 @@ describe('BatchProcessor', () => {
 
       await processor.processBatches(items, mockProcessor, {
         maxConcurrency: 3,
-        batchSize: 5
+        batchSize: 5,
       });
 
       expect(maxActiveCount).toBeLessThanOrEqual(3);
@@ -157,7 +157,7 @@ describe('BatchProcessor', () => {
       const processingTime = 50;
 
       mockProcessor.mockImplementation(async (item) => {
-        await new Promise(resolve => setTimeout(resolve, processingTime));
+        await new Promise((resolve) => setTimeout(resolve, processingTime));
         return `processed-${item}`;
       });
 
@@ -165,7 +165,7 @@ describe('BatchProcessor', () => {
 
       const result = await processor.processBatches(items, mockProcessor, {
         maxConcurrency: 5,
-        batchSize: 10
+        batchSize: 10,
       });
 
       const endTime = Date.now();
@@ -187,7 +187,7 @@ describe('BatchProcessor', () => {
 
       const processPromise = processor.processBatches(items, mockProcessor, {
         batchSize: 5,
-        batchDelay: 100
+        batchDelay: 100,
       });
 
       // Advance timers past all processing and delays
@@ -208,7 +208,7 @@ describe('BatchProcessor', () => {
 
       const processPromise = processor.processBatches(items, mockProcessor, {
         batchSize: 5,
-        batchDelay: 100
+        batchDelay: 100,
       });
 
       // Should only have one delay (between batch 1 and 2)
@@ -231,7 +231,7 @@ describe('BatchProcessor', () => {
 
       const processPromise = processor.processBatches(items, mockProcessor, {
         batchSize: 5,
-        batchDelay: 0
+        batchDelay: 0,
       });
 
       // Should complete immediately without delays
@@ -248,7 +248,7 @@ describe('BatchProcessor', () => {
     it('should calculate correct metrics for successful processing', async () => {
       // Add some delay to ensure non-zero duration
       mockProcessor.mockImplementation(async (item) => {
-        await new Promise(resolve => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, 1));
         return item;
       });
 
@@ -256,7 +256,7 @@ describe('BatchProcessor', () => {
 
       const result = await processor.processBatches(items, mockProcessor, {
         batchSize: 10,
-        enableMetrics: true
+        enableMetrics: true,
       });
 
       expect(result.metrics.totalItems).toBe(25);
@@ -273,14 +273,14 @@ describe('BatchProcessor', () => {
     it('should calculate correct metrics for mixed success/failure', async () => {
       mockProcessor.mockImplementation(async (item, index) => {
         if (index % 3 === 0) throw new Error(`Failed at ${index}`);
-        await new Promise(resolve => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, 1));
         return `success-${index}`;
       });
 
       const items = Array.from({ length: 15 }, (_, i) => `item${i}`);
 
       const result = await processor.processBatches(items, mockProcessor, {
-        enableMetrics: true
+        enableMetrics: true,
       });
 
       expect(result.metrics.successfulOperations).toBe(10); // 15 - 5 failures
@@ -293,7 +293,7 @@ describe('BatchProcessor', () => {
       const items = ['item1', 'item2'];
 
       const result = await processor.processBatches(items, mockProcessor, {
-        enableMetrics: false
+        enableMetrics: false,
       });
 
       // Metrics should still be calculated but without detailed tracking
@@ -305,14 +305,14 @@ describe('BatchProcessor', () => {
 
     it('should calculate average batch duration correctly', async () => {
       mockProcessor.mockImplementation(async (item) => {
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
         return `result-${item}`;
       });
 
       const items = Array.from({ length: 20 }, (_, i) => `item${i}`);
 
       const result = await processor.processBatches(items, mockProcessor, {
-        batchSize: 5
+        batchSize: 5,
       });
 
       expect(result.metrics.averageBatchDuration).toBeGreaterThan(0);
@@ -339,7 +339,7 @@ describe('BatchProcessor', () => {
       mockProcessor.mockImplementation(async (item) => {
         activeOperations++;
         maxConcurrent = Math.max(maxConcurrent, activeOperations);
-        await new Promise(resolve => setTimeout(resolve, 20));
+        await new Promise((resolve) => setTimeout(resolve, 20));
         activeOperations--;
         return item;
       });
@@ -348,7 +348,7 @@ describe('BatchProcessor', () => {
 
       await processor.processBatches(items, mockProcessor, {
         maxConcurrency: 2,
-        batchSize: 10
+        batchSize: 10,
       });
 
       expect(maxConcurrent).toBeLessThanOrEqual(2);
@@ -360,7 +360,7 @@ describe('BatchProcessor', () => {
 
       mockProcessor.mockImplementation(async (item) => {
         startTimes.push(Date.now());
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 50));
         return item;
       });
 
@@ -369,7 +369,7 @@ describe('BatchProcessor', () => {
       const startTime = Date.now();
       await processor.processBatches(items, mockProcessor, {
         maxConcurrency: 2,
-        batchSize: 5
+        batchSize: 5,
       });
 
       // Due to semaphore queuing, operations should be staggered
@@ -390,7 +390,7 @@ describe('BatchProcessor', () => {
 
       const result = await processor.processBatches(items, mockProcessor, {
         maxConcurrency: 1,
-        batchSize: 1
+        batchSize: 1,
       });
 
       expect(result.successful).toEqual(['result']);
@@ -422,7 +422,7 @@ describe('BatchProcessor', () => {
       const items = Array.from({ length: 100 }, (_, i) => `item${i}`);
 
       const result = await processor.processBatches(items, mockProcessor, {
-        batchSize: 100
+        batchSize: 100,
       });
 
       expect(result.successful).toHaveLength(100);
@@ -434,7 +434,7 @@ describe('BatchProcessor', () => {
       const items = ['item1', 'item2', 'item3'];
 
       const result = await processor.processBatches(items, mockProcessor, {
-        batchSize: 100
+        batchSize: 100,
       });
 
       expect(result.successful).toHaveLength(3);
@@ -446,7 +446,7 @@ describe('BatchProcessor', () => {
       const items = ['item1', 'item2', 'item3'];
 
       const result = await processor.processBatches(items, mockProcessor, {
-        batchSize: 1
+        batchSize: 1,
       });
 
       expect(result.successful).toHaveLength(3);
@@ -458,7 +458,7 @@ describe('BatchProcessor', () => {
       const items = ['item1', 'item2', 'item3'];
 
       const result = await processor.processBatches(items, mockProcessor, {
-        maxConcurrency: 1
+        maxConcurrency: 1,
       });
 
       expect(result.successful).toHaveLength(3);
@@ -470,7 +470,7 @@ describe('BatchProcessor', () => {
       const items = ['item1', 'item2', 'item3'];
 
       const result = await processor.processBatches(items, mockProcessor, {
-        maxConcurrency: 3
+        maxConcurrency: 3,
       });
 
       expect(result.successful).toHaveLength(3);
@@ -480,14 +480,14 @@ describe('BatchProcessor', () => {
   describe('Concurrency Utilization Calculation', () => {
     it('should calculate utilization correctly for fast operations', async () => {
       mockProcessor.mockImplementation(async (item) => {
-        await new Promise(resolve => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, 1));
         return item;
       });
       const items = Array.from({ length: 10 }, (_, i) => `item${i}`);
 
       const result = await processor.processBatches(items, mockProcessor, {
         maxConcurrency: 5,
-        batchSize: 10
+        batchSize: 10,
       });
 
       // Utilization should be a valid number between 0 and 1
@@ -497,33 +497,35 @@ describe('BatchProcessor', () => {
       expect(isNaN(result.metrics.concurrencyUtilization)).toBe(false);
     });
 
-    it('should return 0 utilization for empty batch durations', async () => {
-      // This tests the edge case in calculateConcurrencyUtilization
-      const processor = new BatchProcessor();
+    it('should return 0 utilization when nothing was processed', async () => {
+      // Edge case in calculateConcurrencyUtilization: no operations means no
+      // busy time and (usually) no measurable wall clock, so neither term can
+      // produce a NaN or an inflated value. Exercised through the public API
+      // now that the calculation is a module-level function rather than a
+      // private method reached at through `as any` (issue #296 / LOW-17).
+      const processor = new BatchProcessor({ maxConcurrency: 5 });
 
-      // Access private method through prototype for testing
-      const calculateUtilization = (processor as any).calculateConcurrencyUtilization.bind(processor);
+      const result = await processor.processBatches([], jest.fn());
 
-      const utilization = calculateUtilization([], 5);
-      expect(utilization).toBe(0);
+      expect(result.metrics.concurrencyUtilization).toBe(0);
     });
   });
 
   describe('Instance Methods and State', () => {
     it('should provide current metrics during processing', async () => {
       mockProcessor.mockImplementation(async (item) => {
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
         return `processed-${item}`;
       });
 
       const items = ['item1', 'item2', 'item3'];
 
       const processPromise = processor.processBatches(items, mockProcessor, {
-        maxConcurrency: 1
+        maxConcurrency: 1,
       });
 
       // Wait a bit then check metrics
-      await new Promise(resolve => setTimeout(resolve, 5));
+      await new Promise((resolve) => setTimeout(resolve, 5));
       const currentMetrics = processor.getMetrics();
       expect(currentMetrics.activeOperations).toBeGreaterThanOrEqual(0);
       expect(typeof currentMetrics.totalItems).toBe('number');
@@ -547,7 +549,7 @@ describe('BatchProcessor', () => {
 
       const [result1, result2] = await Promise.all([
         processor1.processBatches(items1, mockProcessor),
-        processor2.processBatches(items2, mockProcessor)
+        processor2.processBatches(items2, mockProcessor),
       ]);
 
       expect(result1.successful).toHaveLength(2);
@@ -570,7 +572,7 @@ describe('BatchProcessor Convenience Functions', () => {
       const options: Partial<BatchOptions> = {
         maxConcurrency: 10,
         batchSize: 20,
-        batchDelay: 50
+        batchDelay: 50,
       };
 
       const processor = createOptimizedBatchProcessor(options);
@@ -618,7 +620,7 @@ describe('Predefined Configurations', () => {
     const [highResult, rateResult, memResult] = await Promise.all([
       highThroughputProcessor.processBatches(items, mockProcessor),
       rateLimitedProcessor.processBatches(items.slice(0, 5), mockProcessor),
-      memoryOptimizedProcessor.processBatches(items.slice(0, 8), mockProcessor)
+      memoryOptimizedProcessor.processBatches(items.slice(0, 8), mockProcessor),
     ]);
 
     expect(highResult.successful).toHaveLength(10);
@@ -631,7 +633,7 @@ describe('BatchProcessor Integration Tests', () => {
   it('should handle real-world async processing scenario', async () => {
     // Simulate API calls with realistic timing and failures
     const apiCall = async (data: string, index: number): Promise<string> => {
-      await new Promise(resolve => setTimeout(resolve, Math.random() * 50 + 10));
+      await new Promise((resolve) => setTimeout(resolve, Math.random() * 50 + 10));
 
       // Simulate occasional failures
       if (index % 7 === 0) {
@@ -645,7 +647,7 @@ describe('BatchProcessor Integration Tests', () => {
       maxConcurrency: 3,
       batchSize: 5,
       batchDelay: 25,
-      enableMetrics: true
+      enableMetrics: true,
     });
 
     const items = Array.from({ length: 20 }, (_, i) => `data-${i}`);
@@ -664,12 +666,12 @@ describe('BatchProcessor Integration Tests', () => {
     const processor = new BatchProcessor({
       maxConcurrency: 10,
       batchSize: 50,
-      enableMetrics: true
+      enableMetrics: true,
     });
 
     const fastProcessor = async (item: string): Promise<string> => {
       // Add minimal delay to ensure measurable timing
-      await new Promise(resolve => setTimeout(resolve, 1));
+      await new Promise((resolve) => setTimeout(resolve, 1));
       return item;
     };
 

@@ -9,12 +9,10 @@
  *      e2e:down` + `npm run e2e:up`) if a running stack reports a different
  *      version via GET /api/v1/info or a different DB backend (detected via
  *      `docker compose ps`, see `getRunningBackend`), or bringing it up
- *      fresh if it isn't running at all. The stack's own version pin
- *      defaults to 2.4.0 (the aligned/tested default -- 2.3.0 is the
- *      documented v1-floor minimum, see docker/e2e/docker-compose.yml's pin
- *      comment) but is env-driven (see docker/e2e/docker-compose.yml's
- *      `VIKUNJA_VERSION` interpolation) — this script drives that the same
- *      way a human would: `VIKUNJA_VERSION=X.Y.Z npm run e2e:up`. The DB
+ *      fresh if it isn't running at all. The version defaults to
+ *      `DEFAULT_TARGET`'s (scripts/lib/e2e-target.ts — the newest of the
+ *      three `SUPPORTED_VERSIONS`) and is env-driven — this script drives it
+ *      the same way a human would: `VIKUNJA_VERSION=X.Y.Z npm run e2e:up`. The DB
  *      backend (item F2, tracking issue #28 — added so SQLite-only failure
  *      classes like #116's lock-storm-under-circuit-breaker aren't invisible
  *      to every run) works the same way: `VIKUNJA_DB=sqlite npm run e2e:up`,
@@ -33,10 +31,17 @@
  *      full per-check list.
  *
  * Usage:
- *   npm run test:matrix                                          # 2.4.0 / postgres (defaults)
- *   VIKUNJA_VERSION=2.3.0 npm run test:matrix                     # the v1-floor regression check
- *   VIKUNJA_DB=sqlite npm run test:matrix                         # default version, sqlite backend
- *   VIKUNJA_VERSION=2.3.0 VIKUNJA_DB=sqlite npm run test:matrix   # both dimensions
+ *   npm run test:matrix                                          # aligned (newest) / postgres
+ *   VIKUNJA_DB=sqlite npm run test:matrix                         # aligned, sqlite backend
+ *   VIKUNJA_VERSION=2.5.0 npm run test:matrix                     # the middle lane
+ *   VIKUNJA_VERSION=2.5.0 VIKUNJA_DB=sqlite npm run test:matrix   # middle, sqlite
+ *   VIKUNJA_VERSION=2.4.0 npm run test:matrix                     # the floor lane
+ *   VIKUNJA_VERSION=2.4.0 VIKUNJA_DB=sqlite npm run test:matrix   # floor, sqlite
+ *
+ * All six are the standard set (`standardTargets()`, `SUPPORTED_VERSIONS` — the trailing three
+ * released versions, policy since 2026-09-02 decision 29), and a pre-tag run covers all six.
+ * VIKUNJA_VERSION still accepts any tag, supported or not, because the resolver's port
+ * arithmetic is version-agnostic — but only the versions in `SUPPORTED_VERSIONS` are lanes.
  *
  * See docs/LOCAL-TESTING.md's "Version-matrix testing" section for the full
  * writeup, including what to do when a new Vikunja release ships.
@@ -57,6 +62,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_TARGET, resolveTarget } from './lib/e2e-target';
 
 // ============================================================================
 // Configuration
@@ -66,8 +72,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 
-const LOCAL_API_URL = 'http://localhost:33456/api/v1';
-const ENV_FILE = path.join(REPO_ROOT, 'docker', 'e2e', '.env');
+// Per-target stacks own their own ports now (issue #205); the URL comes from
+// the resolver, never from a constant here — and so does the credentials
+// file. This used to be a bare `docker/e2e/.env`, which #205 replaced with
+// `.env.<target>` and this runner was never updated to follow: it read
+// whatever a pre-#205 run had left behind (in one checkout, a 2026-07-28
+// file pointing at long-dead port 33456) and handed those credentials to
+// `test:mcp`, so a matrix run could test a completely different server than
+// the one it had just brought up, or nothing at all.
 const VERDICT_DIR = path.join(REPO_ROOT, 'e2e-verdicts');
 
 const OUR_VERSION = (
@@ -147,9 +159,9 @@ interface VikunjaInfo {
 
 type DbBackend = 'postgres' | 'sqlite';
 
-async function getRunningServerVersion(): Promise<string | null> {
+async function getRunningServerVersion(apiUrl: string): Promise<string | null> {
   try {
-    const res = await fetch(`${LOCAL_API_URL}/info`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${apiUrl}/info`, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const body = (await res.json()) as VikunjaInfo;
     return body.version ?? null;
@@ -202,55 +214,49 @@ function normalizeVersion(v: string): string {
 }
 
 /**
- * Brings the local e2e stack up on `desiredVersion`/`desiredDb`, recreating
- * it (down -v, then up) if it's currently running a different version or a
- * different DB backend, and returns the *actual* server-reported version
- * string (from GET /info) once confirmed healthy.
+ * Ensures the persistent stack for this target is up, and returns the
+ * *actual* server-reported version from GET /info.
+ *
+ * NEVER TEARS ANYTHING DOWN (issue #205). Each `<version>-<db>` target is its
+ * own Compose project on its own port, so running the matrix no longer
+ * re-pins a shared stack to a different version — which is precisely what
+ * broke a concurrent worktree's v2 work on 2026-07-28 (2.3.0 has no v2 API).
+ * `bootstrap.sh` is idempotent and reuses the target's stable token, so
+ * calling it on an already-running stack is a cheap no-op.
  */
 async function ensureStack(desiredVersion: string, desiredDb: DbBackend): Promise<string> {
-  log(`Desired Vikunja version: ${desiredVersion} (db backend: ${desiredDb})`);
-  const running = await getRunningServerVersion();
-  const runningDb = running ? await getRunningBackend() : null;
+  const target = resolveTarget(`${desiredVersion}-${desiredDb}`);
+  log(`Target: ${target.id} (API ${target.apiUrl})`);
 
-  if (running && normalizeVersion(running) === desiredVersion && runningDb === desiredDb) {
-    log(`Stack already up reporting ${running} on ${runningDb} (matches ${desiredVersion}/${desiredDb}) -- reusing it.`);
-  } else if (running) {
-    log(
-      `Stack is up but reports ${running} on ${runningDb ?? 'an undetected backend'}, not ` +
-        `${desiredVersion}/${desiredDb} -- recreating it.`,
-    );
-    const down = await runCapture('npm', ['run', 'e2e:down'], safeBaseEnv());
-    if (down.code !== 0) {
-      throw new Error('npm run e2e:down failed while switching Vikunja versions/backends -- see output above.');
-    }
+  const running = await getRunningServerVersion(target.apiUrl);
+  if (running && normalizeVersion(running) === desiredVersion) {
+    log(`Already up reporting ${running} -- reusing it (no teardown, ever).`);
   } else {
-    log(`Stack not reachable at ${LOCAL_API_URL} -- bringing it up fresh.`);
+    log(`Bringing up ${target.id}...`);
   }
 
-  // Always run e2e:up (idempotent, and mints a fresh docker/e2e/.env token
-  // in *this* worktree) even when the stack was already on the right
-  // version/backend and didn't need recreating.
   const up = await runCapture('npm', ['run', 'e2e:up'], {
     ...safeBaseEnv(),
-    VIKUNJA_VERSION: desiredVersion,
-    VIKUNJA_DB: desiredDb,
+    VIKUNJA_E2E_TARGET: target.id,
   });
   if (up.code !== 0) {
-    throw new Error('npm run e2e:up failed -- see output above.');
+    throw new Error(`npm run e2e:up failed for ${target.id} -- see output above.`);
   }
 
-  const finalVersion = await getRunningServerVersion();
+  const finalVersion = await getRunningServerVersion(target.apiUrl);
   if (!finalVersion) {
-    throw new Error('Stack came up but GET /api/v1/info did not respond -- cannot confirm server version.');
+    throw new Error(
+      `${target.id} came up but GET ${target.apiUrl}/info did not respond -- cannot confirm server version.`,
+    );
   }
   if (normalizeVersion(finalVersion) !== desiredVersion) {
     throw new Error(
-      `Stack is up but GET /api/v1/info reports "${finalVersion}", not the requested ` +
-        `"${desiredVersion}". Check that vikunja/vikunja:${desiredVersion} exists on Docker Hub ` +
+      `${target.id} reports "${finalVersion}", not the requested "${desiredVersion}". ` +
+        `Check that vikunja/vikunja:${desiredVersion} exists on Docker Hub ` +
         '(https://hub.docker.com/r/vikunja/vikunja/tags).',
     );
   }
-  log(`Confirmed via GET /api/v1/info: server is running ${finalVersion}.`);
+  log(`Confirmed via GET /info: ${target.id} is running ${finalVersion}.`);
   return finalVersion;
 }
 
@@ -284,19 +290,19 @@ function parseHarnessOutput(output: string): CheckResult[] {
     let m: RegExpMatchArray | null;
 
     if ((m = line.match(/^\s*✓\s+(.+)$/))) {
-      out.push({ name: m[1].trim(), status: 'pass' });
+      out.push({ name: (m[1] ?? '').trim(), status: 'pass' });
       continue;
     }
     if ((m = line.match(/^\s*⚠\s+(.+?)\s*\(server-drift,\s*tolerated:\s*(.*)\)\s*$/))) {
-      out.push({ name: m[1].trim(), status: 'server-drift', detail: m[2].trim() });
+      out.push({ name: (m[1] ?? '').trim(), status: 'server-drift', detail: (m[2] ?? '').trim() });
       continue;
     }
     if ((m = line.match(/^\s*⊘\s+(.+?)\s*\(skipped:\s*(.*)\)\s*$/))) {
-      out.push({ name: m[1].trim(), status: 'skip', detail: m[2].trim() });
+      out.push({ name: (m[1] ?? '').trim(), status: 'skip', detail: (m[2] ?? '').trim() });
       continue;
     }
     if ((m = line.match(/^\s*✗\s+(.+?)\s*\((.*)\)\s*$/))) {
-      out.push({ name: m[1].trim(), status: 'fail', detail: m[2].trim() });
+      out.push({ name: (m[1] ?? '').trim(), status: 'fail', detail: (m[2] ?? '').trim() });
       continue;
     }
   }
@@ -419,7 +425,12 @@ function renderVerdict(params: {
 // ============================================================================
 
 async function main(): Promise<void> {
-  const requestedVersion = (process.env.VIKUNJA_VERSION || '2.4.0').trim();
+  // Default from the resolver, never a literal: a hard-coded version here
+  // would silently keep running the OLD aligned version after DEFAULT_TARGET
+  // moved, and report PASS for it.
+  const requestedVersion = (
+    process.env.VIKUNJA_VERSION || resolveTarget(DEFAULT_TARGET).version
+  ).trim();
   const requestedDb = (process.env.VIKUNJA_DB || 'postgres').trim();
   if (requestedDb !== 'postgres' && requestedDb !== 'sqlite') {
     throw new Error(`VIKUNJA_DB must be 'postgres' or 'sqlite', got '${requestedDb}'.`);
@@ -428,23 +439,39 @@ async function main(): Promise<void> {
 
   log(`vikunja-mcp-ng ${OUR_VERSION} -- version-matrix run against Vikunja ${requestedVersion} (db: ${db})`);
 
+  const target = resolveTarget(`${requestedVersion}-${db}`);
   const serverVersion = await ensureStack(requestedVersion, db);
 
-  if (!fs.existsSync(ENV_FILE)) {
-    throw new Error(`Expected ${ENV_FILE} to exist after npm run e2e:up -- bootstrap did not write it.`);
+  const envFile = path.join(REPO_ROOT, target.envFile);
+  if (!fs.existsSync(envFile)) {
+    throw new Error(`Expected ${envFile} to exist after npm run e2e:up -- bootstrap did not write it.`);
   }
-  const localCreds = readEnvFile(ENV_FILE);
+  const localCreds = readEnvFile(envFile);
   const localUrl = localCreds.VIKUNJA_URL;
   const localToken = localCreds.VIKUNJA_API_TOKEN;
   if (!localUrl || !localToken) {
-    throw new Error(`${ENV_FILE} is missing VIKUNJA_URL/VIKUNJA_API_TOKEN -- re-run npm run e2e:up.`);
+    throw new Error(`${envFile} is missing VIKUNJA_URL/VIKUNJA_API_TOKEN -- re-run npm run e2e:up.`);
   }
   assertLocalUrl(localUrl);
 
   const runs: HarnessRun[] = [];
 
   log('\n=== Running: npm run test:mcp (REST layer) ===\n');
-  const restEnv = { ...safeBaseEnv(), VIKUNJA_URL: localUrl, VIKUNJA_API_TOKEN: localToken };
+  // Must be told WHICH target, same reason as the test:e2e:mcp invocation
+  // below. scripts/test-mcp.ts does NOT read a plain VIKUNJA_URL/
+  // VIKUNJA_API_TOKEN pair at all -- its own priority order is
+  // MCP_E2E_VIKUNJA_URL/MCP_E2E_VIKUNJA_API_TOKEN, then its OWN reading of
+  // `docker/e2e/.env.<target>` for whatever target VIKUNJA_E2E_TARGET names
+  // (defaulting to DEFAULT_TARGET when unset). Passing VIKUNJA_URL/
+  // VIKUNJA_API_TOKEN here (as this used to) was dead weight test-mcp.ts
+  // never reads: without VIKUNJA_E2E_TARGET it silently resolved
+  // DEFAULT_TARGET instead of the target this run just brought up --
+  // erroring outright when that target's env file doesn't happen to exist
+  // in this checkout, or worse, silently testing the WRONG stack when one
+  // does. Found live while adding the 2.5.0 lane (decision 29): every
+  // non-default `VIKUNJA_VERSION=... npm run test:matrix` run's REST-layer
+  // half has been affected by this since the per-target env files landed.
+  const restEnv = { ...safeBaseEnv(), VIKUNJA_E2E_TARGET: target.id };
   const restRun = await runCapture('npm', ['run', 'test:mcp'], restEnv);
   runs.push({
     label: 'REST layer',
@@ -455,7 +482,9 @@ async function main(): Promise<void> {
   });
 
   log('\n=== Running: npm run test:e2e:mcp (MCP tool layer) ===\n');
-  const e2eEnv = safeBaseEnv();
+  // Must be told WHICH target, or it silently resolves DEFAULT_TARGET and
+  // tests the default stack no matter which version this run is about.
+  const e2eEnv = { ...safeBaseEnv(), VIKUNJA_E2E_TARGET: target.id };
   const e2eRun = await runCapture('npm', ['run', 'test:e2e:mcp'], e2eEnv);
   runs.push({
     label: 'MCP tool layer',
@@ -482,7 +511,7 @@ function readEnvFile(file: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const line of content.split('\n')) {
     const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
-    if (m) out[m[1]] = m[2];
+    if (m && m[1]) out[m[1]] = m[2] ?? '';
   }
   return out;
 }

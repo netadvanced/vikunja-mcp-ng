@@ -3,7 +3,14 @@
 # release-prepare.sh — start a release: bump the version, draft the changelog, open a branch.
 #
 # Usage:
-#   scripts/release-prepare.sh patch|minor
+#   scripts/release-prepare.sh patch|minor|preminor|prerelease [--preid=<id>]
+#
+# The `pre*` scopes cut a prerelease (`--preid` defaults to `beta`):
+#   preminor   0.6.2        -> 0.7.0-beta.0    start a beta line for the next minor
+#   prerelease 0.7.0-beta.0 -> 0.7.0-beta.1    advance an existing beta line
+#   minor      0.7.0-beta.3 -> 0.7.0           promote the beta line to stable
+# The release workflow reads the channel back off the tag, so publishing to the `beta`
+# dist-tag instead of `latest` needs no further decision — see docs/RELEASING.md.
 #
 # What it does (see docs/RELEASING.md for the full policy):
 #   1. Verifies the working tree is clean and we're on an up-to-date `main`.
@@ -25,22 +32,52 @@ cd "$REPO_ROOT"
 
 # shellcheck source=./lib/changelog-draft.sh
 source "$REPO_ROOT/scripts/lib/changelog-draft.sh"
+# shellcheck source=./lib/sync-server-json.sh
+source "$REPO_ROOT/scripts/lib/sync-server-json.sh"
 
 # ---------------------------------------------------------------------------
 # 0. Args
 # ---------------------------------------------------------------------------
 
 BUMP="${1:-}"
-if [[ "$BUMP" != "patch" && "$BUMP" != "minor" ]]; then
-  echo "Usage: $0 patch|minor" >&2
-  echo "" >&2
-  echo "This project is pre-1.0 (see docs/RELEASING.md §1) — releases are patch or minor." >&2
-  echo "A major (1.0.0) bump is a deliberate, hand-run 'npm version major' as part of a" >&2
-  echo "declared-stable release, not something this script automates." >&2
-  exit 1
+PREID="beta"
+
+if [[ -n "${2:-}" ]]; then
+  case "$2" in
+    --preid=*)
+      PREID="${2#--preid=}"
+      if [[ -z "$PREID" || "$PREID" =~ [^a-zA-Z0-9-] ]]; then
+        echo "ERROR: --preid must be a non-empty alphanumeric identifier (got '${2#--preid=}')." >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "ERROR: unexpected argument '$2' (expected --preid=<id>)." >&2
+      exit 1
+      ;;
+  esac
 fi
 
-echo "==> Release scope: $BUMP"
+case "$BUMP" in
+  patch | minor | preminor | prerelease) ;;
+  *)
+    echo "Usage: $0 patch|minor|preminor|prerelease [--preid=<id>]" >&2
+    echo "" >&2
+    echo "This project is pre-1.0 (see docs/RELEASING.md §1) — stable releases are patch or minor." >&2
+    echo "A major (1.0.0) bump is a deliberate, hand-run 'npm version major' as part of a" >&2
+    echo "declared-stable release, not something this script automates." >&2
+    echo "" >&2
+    echo "Prereleases: 'preminor' starts a beta line (0.6.2 -> 0.7.0-beta.0), 'prerelease'" >&2
+    echo "advances it (-> beta.1), and a later 'minor' promotes it to stable (-> 0.7.0)." >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$BUMP" == pre* ]]; then
+  echo "==> Release scope: $BUMP (prerelease identifier: $PREID)"
+else
+  echo "==> Release scope: $BUMP"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Preconditions: clean tree, on main, up to date with origin/main
@@ -79,11 +116,22 @@ echo "==> main is up to date with origin/main ($LOCAL_SHA)"
 CURRENT_VERSION="$(node -pe "require('./package.json').version")"
 echo "==> Current version: $CURRENT_VERSION"
 
-IFS='.' read -r CUR_MAJOR CUR_MINOR CUR_PATCH <<<"$CURRENT_VERSION"
-if [[ "$BUMP" == "patch" ]]; then
-  TARGET_VERSION="${CUR_MAJOR}.${CUR_MINOR}.$((CUR_PATCH + 1))"
-else
-  TARGET_VERSION="${CUR_MAJOR}.$((CUR_MINOR + 1)).0"
+# The target version is computed by npm itself, against a throwaway copy of package.json,
+# rather than by arithmetic here. Hand-rolled semver gets the prerelease transitions subtly
+# wrong — `minor` on 0.7.0-beta.3 yields 0.7.0, not 0.8.0, and `patch` on a prerelease drops
+# the suffix instead of incrementing — and a predictor that disagrees with npm would block a
+# legitimate release at the assertion in step 5. Same engine, same answer, by construction.
+VERSION_PROBE_DIR="$(mktemp -d)"
+trap 'rm -rf "$VERSION_PROBE_DIR"' EXIT
+cp package.json "$VERSION_PROBE_DIR/package.json"
+TARGET_VERSION="$(
+  cd "$VERSION_PROBE_DIR"
+  npm version "$BUMP" --preid "$PREID" --no-git-tag-version >/dev/null 2>&1
+  node -pe "require('./package.json').version"
+)"
+if [[ -z "$TARGET_VERSION" ]]; then
+  echo "ERROR: could not compute the target version for bump '$BUMP'." >&2
+  exit 1
 fi
 echo "==> Target version:  $TARGET_VERSION"
 
@@ -129,7 +177,7 @@ echo "==> All gates passed"
 # ---------------------------------------------------------------------------
 
 echo "==> Bumping version ($BUMP)"
-NPM_VERSION_OUTPUT="$(npm version "$BUMP" --no-git-tag-version)"
+NPM_VERSION_OUTPUT="$(npm version "$BUMP" --preid "$PREID" --no-git-tag-version)"
 # npm prints the new version prefixed with 'v', e.g. "v0.3.1"
 BUMPED_VERSION="${NPM_VERSION_OUTPUT#v}"
 
@@ -139,6 +187,20 @@ if [[ "$BUMPED_VERSION" != "$TARGET_VERSION" ]]; then
   exit 1
 fi
 echo "==> package.json now at $BUMPED_VERSION"
+
+# ---------------------------------------------------------------------------
+# 5b. Sync server.json's two version fields to match (netadvanced/vikunja-mcp-ng#186:
+#     the MCP registry manifest is static, not runtime state, so nothing derives it
+#     automatically — the release process is the single place that keeps it aligned).
+# ---------------------------------------------------------------------------
+
+echo "==> Syncing server.json version fields to $BUMPED_VERSION"
+sync_server_json_version "$REPO_ROOT/server.json" "$BUMPED_VERSION"
+if ! assert_server_json_version_matches "$REPO_ROOT/server.json" "$BUMPED_VERSION"; then
+  echo "ERROR: server.json version fields do not match package.json ($BUMPED_VERSION) after sync." >&2
+  exit 1
+fi
+echo "==> server.json now at $BUMPED_VERSION"
 
 # ---------------------------------------------------------------------------
 # 6. Generate a draft changelog section from conventional commits since the last tag
@@ -156,7 +218,9 @@ else
 fi
 
 DRAFT_FILE="$(mktemp)"
-trap 'rm -f "$DRAFT_FILE"' EXIT
+# Replaces the earlier trap, so it has to clean up the version probe directory too —
+# a bare `rm -f "$DRAFT_FILE"` here would silently leak it.
+trap 'rm -f "$DRAFT_FILE"; rm -rf "$VERSION_PROBE_DIR"' EXIT
 
 {
   echo ""
@@ -239,7 +303,7 @@ echo "==> CHANGELOG.md updated with draft section for ${TARGET_VERSION}"
 # 7. Commit
 # ---------------------------------------------------------------------------
 
-git add package.json package-lock.json CHANGELOG.md
+git add package.json package-lock.json server.json CHANGELOG.md
 git commit -m "release: v${TARGET_VERSION}"
 
 echo ""

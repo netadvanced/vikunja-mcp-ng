@@ -7,6 +7,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
+import { getAuthManagerFromContext, hasRequestContext } from '../client';
 import { MCPError, ErrorCode, createStandardResponse } from '../types';
 import { wrapToolError } from '../utils/error-handler';
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
@@ -14,6 +15,11 @@ import { validateAndConvertId } from '../utils/validation';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
+import {
+  DEFAULT_SERVER_PAGE_CAP,
+  describePossibleTruncation,
+  readServerPageCap,
+} from '../utils/filtering/pagination';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
 // docs/API-SPEC.md, replacing the legacy client's `Team` type (Wave D domain
@@ -71,7 +77,39 @@ interface VikunjaMessage {
   message: string;
 }
 
-export function registerTeamsTool(server: McpServer, authManager: AuthManager, _clientFactory?: VikunjaClientFactory): void {
+/**
+ * Builds a team update payload by merging the team's current server-side state
+ * with the caller's requested changes.
+ *
+ * `POST /teams/{id}` is a full-model replace with no server-side merge (see the
+ * call-site comment in the `update` subcommand for the go-vikunja references),
+ * and `is_public` in particular is written unconditionally — so anything the
+ * body omits is lost. Spreading the whole fetched team, rather than copying a
+ * hand-maintained allow-list of fields, is deliberate: an allow-list silently
+ * drops fields the server adds in later versions. Mirrors
+ * `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`).
+ */
+export function buildTeamUpdatePayload(
+  currentTeam: TeamWithMembers,
+  updates: {
+    name?: string;
+    description?: string;
+    isPublic?: boolean;
+  },
+): TeamWithMembers {
+  return {
+    ...currentTeam,
+    ...(updates.name !== undefined && { name: updates.name }),
+    ...(updates.description !== undefined && { description: updates.description }),
+    ...(updates.isPublic !== undefined && { is_public: updates.isPublic }),
+  };
+}
+
+export function registerTeamsTool(
+  server: McpServer,
+  authManager: AuthManager,
+  _clientFactory?: VikunjaClientFactory,
+): void {
   server.tool(
     'vikunja_teams',
     withReadOnlyNote(
@@ -91,6 +129,19 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
       id: z.union([z.string(), z.number()]).optional(),
       name: z.string().optional(),
       description: z.string().optional(),
+      // models.Team.is_public — "Defines whether the team should be publicly
+      // discoverable when sharing a project". Present in the vendored 2.4.0
+      // spec but previously unsettable here (reads passed it through, writes
+      // never sent it).
+      isPublic: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether the team is publicly discoverable when sharing a project. On update, ' +
+            'omitting this leaves the stored value untouched: the tool reads the team first ' +
+            'and merges your changes over it, so pass isPublic only when you actually want ' +
+            'to change it (see docs/VIKUNJA_API_ISSUES.md).',
+        ),
 
       // Member operations
       // 'toggleAdmin' matches the real API: POST /teams/{id}/members/{username}/admin
@@ -104,7 +155,11 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
     },
     getToolAnnotations('vikunja_teams'),
     async (args) => {
-      if (!authManager.isAuthenticated()) {
+      // Closure-gate precedence fix: defer to the per-request context when
+      // bound (see hasRequestContext's doc comment, src/client.ts).
+      if (hasRequestContext()) {
+        await getAuthManagerFromContext();
+      } else if (!authManager.isAuthenticated()) {
         throw new MCPError(
           ErrorCode.AUTH_REQUIRED,
           'Authentication required. Please use vikunja_auth.connect first.',
@@ -121,7 +176,6 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
       }
 
       try {
-
         switch (subcommand) {
           case 'list': {
             const params: TeamListParams = {};
@@ -142,11 +196,22 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
             );
             const teams = teamsResult ?? [];
 
+            // "At minimum" half of the CRIT-7 pattern (issue #289 / HIGH-18
+            // spot-check) — see `describePossibleTruncation`'s doc comment.
+            const truncation = describePossibleTruncation(teams.length, {
+              autoPaginate: args.page === undefined && args.perPage === undefined,
+              cap: readServerPageCap(authManager) ?? DEFAULT_SERVER_PAGE_CAP,
+              resourceLabel: 'GET /teams',
+            });
+
             const response = createStandardResponse(
               'list-teams',
-              `Retrieved ${teams.length} team${teams.length !== 1 ? 's' : ''}`,
+              `Retrieved ${teams.length} team${teams.length !== 1 ? 's' : ''}` +
+                (truncation.resultComplete === false
+                  ? ` — INCOMPLETE RESULT: ${truncation.warnings?.join(' ')}`
+                  : ''),
               { teams },
-              { count: teams.length, params },
+              { count: teams.length, params, ...truncation },
             );
 
             return {
@@ -170,6 +235,9 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
             if (args.description !== undefined) {
               teamData.description = args.description;
             }
+            if (args.isPublic !== undefined) {
+              teamData.is_public = args.isPublic;
+            }
 
             const team = await vikunjaRestRequest<Team>(authManager, 'PUT', '/teams', teamData);
 
@@ -177,7 +245,7 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
               'create-team',
               `Team "${team.name}" created successfully`,
               { team },
-              { affectedFields: Object.keys(teamData).filter(key => typeof key === 'string') },
+              { affectedFields: Object.keys(teamData).filter((key) => typeof key === 'string') },
             );
 
             return {
@@ -197,11 +265,7 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
 
             const teamId = validateAndConvertId(args.id, 'id');
 
-            const team = await vikunjaRestRequest<Team>(
-              authManager,
-              'GET',
-              `/teams/${teamId}`,
-            );
+            const team = await vikunjaRestRequest<Team>(authManager, 'GET', `/teams/${teamId}`);
 
             const standardResponse = createStandardResponse(
               'get-team',
@@ -227,16 +291,49 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
 
             const teamId = validateAndConvertId(args.id, 'id');
 
-            if (!args.name && !args.description) {
+            if (!args.name && !args.description && args.isPublic === undefined) {
               throw new MCPError(
                 ErrorCode.VALIDATION_ERROR,
                 'At least one field to update is required',
               );
             }
 
-            const updateData: Partial<Team> = {};
-            if (args.name !== undefined) updateData.name = args.name;
-            if (args.description !== undefined) updateData.description = args.description;
+            // `POST /teams/{id}` is a FULL-MODEL REPLACE, so we read-then-merge —
+            // the same pattern `buildTeamUpdatePayload`'s sibling
+            // `buildProjectUpdatePayload` (src/tools/projects/crud.ts) applies to
+            // projects, and the one docs/ENDPOINT-PLAYBOOK.md §4 prescribes.
+            // Verified in go-vikunja source (v2.3.0):
+            //  - `pkg/web/handler/update.go:37` binds the request body into an
+            //    EMPTY struct (`c.EmptyStruct()`); nothing is merged from the
+            //    stored row, so the body we send is the whole model the server sees.
+            //  - `pkg/models/teams.go:388` writes with
+            //    `s.ID(t.ID).UseBool("is_public").Update(t)`. xorm skips zero-valued
+            //    columns on a struct update, but `UseBool` forces `is_public` to be
+            //    written EVEN WHEN FALSE — so a partial body that omitted it
+            //    silently flipped a public team to private.
+            //  - `pkg/models/teams.go:37` marks `Name` `valid:"required,..."` and
+            //    `Team.Update` (`teams.go:378`) returns `ErrTeamNameCannotBeEmpty`
+            //    when it is empty — so a description-only partial body 400d.
+            // Merging the caller's deltas over the current model fixes all three.
+            const currentTeam = await vikunjaRestRequest<TeamWithMembers>(
+              authManager,
+              'GET',
+              `/teams/${teamId}`,
+            );
+
+            const updateData = buildTeamUpdatePayload(currentTeam, {
+              ...(args.name !== undefined && { name: args.name }),
+              ...(args.description !== undefined && { description: args.description }),
+              ...(args.isPublic !== undefined && { isPublic: args.isPublic }),
+            });
+
+            // Report the caller's explicit deltas, not every field the merged
+            // payload happens to carry.
+            const affectedFields = [
+              ...(args.name !== undefined ? ['name'] : []),
+              ...(args.description !== undefined ? ['description'] : []),
+              ...(args.isPublic !== undefined ? ['is_public'] : []),
+            ];
 
             // The API only routes team updates through POST /teams/{id};
             // PUT is reserved for team creation (PUT /teams) and is not a
@@ -252,7 +349,7 @@ export function registerTeamsTool(server: McpServer, authManager: AuthManager, _
               'update-team',
               `Team "${team.name}" updated successfully`,
               { team },
-              { teamId, affectedFields: Object.keys(updateData) },
+              { teamId, affectedFields },
             );
 
             return {

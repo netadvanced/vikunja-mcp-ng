@@ -36,7 +36,10 @@ interface RecordedCall {
   body: unknown;
 }
 
-function jsonResponse(body: unknown, opts: { ok?: boolean; status?: number; statusText?: string } = {}): Response {
+function jsonResponse(
+  body: unknown,
+  opts: { ok?: boolean; status?: number; statusText?: string } = {},
+): Response {
   const { ok = true, status = 200, statusText = 'OK' } = opts;
   const text = body === undefined ? '' : JSON.stringify(body);
   return {
@@ -99,15 +102,9 @@ describe('setupKanban', () => {
   });
 
   describe('validation', () => {
-    it('throws when columns is missing', async () => {
-      await expect(setupKanban({ title: 'Board' }, authManager)).rejects.toThrow(
-        'columns is required for setup-kanban operation',
-      );
-    });
-
-    it('throws when columns is empty', async () => {
+    it('throws when columns is an explicitly empty array (issue #185: omit it entirely instead)', async () => {
       await expect(setupKanban({ title: 'Board', columns: [] }, authManager)).rejects.toThrow(
-        'columns is required for setup-kanban operation',
+        'When columns is provided it must be a non-empty array',
       );
     });
 
@@ -125,10 +122,7 @@ describe('setupKanban', () => {
 
     it('throws when a task has a blank title', async () => {
       await expect(
-        setupKanban(
-          { title: 'Board', columns: ['To Do'], tasks: [{ title: '  ' }] },
-          authManager,
-        ),
+        setupKanban({ title: 'Board', columns: ['To Do'], tasks: [{ title: '  ' }] }, authManager),
       ).rejects.toThrow('tasks[0].title is required');
     });
 
@@ -137,6 +131,129 @@ describe('setupKanban', () => {
       await expect(
         setupKanban({ title: 'Board', columns: ['To Do'], tasks }, authManager),
       ).rejects.toThrow('Too many tasks for setup-kanban');
+    });
+  });
+
+  describe('columns-less path (issue #185: project+tasks, no Kanban board)', () => {
+    it('creates the project and its tasks without resolving a Kanban view or any bucket', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      router.on('PUT', '/projects', () => ({ id: 601, title: 'Plain Project' }));
+      const createdTasks = new Map<number, Record<string, unknown>>();
+      let taskCounter = 9000;
+      router.on('PUT', '/projects/601/tasks', (_p, body) => {
+        taskCounter += 1;
+        const task = { id: taskCounter, project_id: 601, ...(body as Record<string, unknown>) };
+        createdTasks.set(taskCounter, task);
+        return task;
+      });
+      router.on('GET', /^\/tasks\/\d+$/, (path) => createdTasks.get(Number(path.split('/')[2])));
+
+      // NOTE: no /views or /buckets routes are registered at all — if
+      // setupKanban called resolveKanbanView or touched any bucket, the
+      // router would throw "Unmocked request in test", failing this test.
+      // This is what proves the columns-less path costs strictly fewer API
+      // calls, not merely that it produces the same observable outcome.
+      const result = await setupKanban(
+        {
+          title: 'Plain Project',
+          tasks: [{ title: 'Task A' }, { title: 'Task B', priority: 2 }],
+        },
+        authManager,
+      );
+
+      const text = result.content[0]?.text ?? '';
+      expect(text).toContain('Kanban setup completed');
+      expect(text).toContain('project 601 created (ID: 601)');
+      expect(text).toContain('2/2 tasks created');
+      // No board was requested, so no "columns ready" segment is fabricated.
+      expect(text).not.toContain('columns ready');
+      expect(text).not.toContain('**viewId:**');
+      expect(text).not.toContain('**columns:**');
+
+      const viewCalls = router.calls.filter((c) => /\/views/.test(c.path));
+      const bucketCalls = router.calls.filter((c) => /\/buckets/.test(c.path));
+      expect(viewCalls).toHaveLength(0);
+      expect(bucketCalls).toHaveLength(0);
+    });
+
+    it('reuses an existing project (via id) and creates its tasks with no view/bucket calls', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      const createdTasks = new Map<number, Record<string, unknown>>();
+      router.on('PUT', '/projects/602/tasks', (_p, body) => {
+        const task = { id: 9500, project_id: 602, ...(body as Record<string, unknown>) };
+        createdTasks.set(9500, task);
+        return task;
+      });
+      router.on('GET', /^\/tasks\/\d+$/, (path) => createdTasks.get(Number(path.split('/')[2])));
+
+      const result = await setupKanban(
+        { id: 602, tasks: [{ title: 'Reused-project task' }] },
+        authManager,
+      );
+
+      const text = result.content[0]?.text ?? '';
+      expect(text).toContain('project 602 reused (ID: 602)');
+      expect(text).toContain('1/1 tasks created');
+      expect(router.calls.some((c) => /\/views|\/buckets/.test(c.path))).toBe(false);
+      // No project was created either — pure reuse.
+      expect(router.calls.some((c) => c.method === 'PUT' && c.path === '/projects')).toBe(false);
+    });
+
+    it('allows a project with no tasks at all (project-only call)', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('PUT', '/projects', () => ({ id: 603, title: 'Empty Project' }));
+
+      const result = await setupKanban({ title: 'Empty Project' }, authManager);
+      const text = result.content[0]?.text ?? '';
+      expect(text).toContain('project 603 created (ID: 603)');
+      expect(router.calls.some((c) => /\/views|\/buckets/.test(c.path))).toBe(false);
+    });
+
+    it('rejects up front when a task carries a column but columns was never provided', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      let caught: unknown;
+      try {
+        await setupKanban(
+          { title: 'Board', tasks: [{ title: 'Misplaced task', column: 'To Do' }] },
+          authManager,
+        );
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(MCPError);
+      expect((caught as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+      const message = (caught as MCPError).message;
+      expect(message).toContain('Misplaced task');
+      expect(message).toContain('"To Do"');
+      expect(message).toContain('no columns were');
+
+      // Zero API calls — nothing created before the rejection.
+      expect(router.calls).toHaveLength(0);
+    });
+
+    it('still rejects up front even when other tasks in the same call have no column', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      await expect(
+        setupKanban(
+          {
+            title: 'Board',
+            tasks: [{ title: 'Fine task' }, { title: 'Misplaced task', column: 'Doing' }],
+          },
+          authManager,
+        ),
+      ).rejects.toThrow('no columns were');
+
+      expect(router.calls).toHaveLength(0);
     });
   });
 
@@ -204,18 +321,28 @@ describe('setupKanban', () => {
         (c) => c.method === 'PUT' && c.path === '/projects/501/views/11/buckets',
       );
       expect(bucketCreateCalls).toHaveLength(3);
-      expect((bucketCreateCalls[0]?.body as { title: string; position: number }).title).toBe('To Do');
-      expect((bucketCreateCalls[0]?.body as { title: string; position: number }).position).toBe(65536);
-      expect((bucketCreateCalls[1]?.body as { title: string; position: number }).title).toBe('Doing');
-      expect((bucketCreateCalls[1]?.body as { title: string; position: number }).position).toBe(131072);
-      expect((bucketCreateCalls[2]?.body as { title: string; position: number }).title).toBe('Done');
-      expect((bucketCreateCalls[2]?.body as { title: string; position: number }).position).toBe(196608);
+      expect((bucketCreateCalls[0]?.body as { title: string; position: number }).title).toBe(
+        'To Do',
+      );
+      expect((bucketCreateCalls[0]?.body as { title: string; position: number }).position).toBe(
+        65536,
+      );
+      expect((bucketCreateCalls[1]?.body as { title: string; position: number }).title).toBe(
+        'Doing',
+      );
+      expect((bucketCreateCalls[1]?.body as { title: string; position: number }).position).toBe(
+        131072,
+      );
+      expect((bucketCreateCalls[2]?.body as { title: string; position: number }).title).toBe(
+        'Done',
+      );
+      expect((bucketCreateCalls[2]?.body as { title: string; position: number }).position).toBe(
+        196608,
+      );
 
       // Every requested position is non-zero and strictly increasing in
       // requested-column order — the actual regression this item fixes.
-      const sentPositions = bucketCreateCalls.map(
-        (c) => (c.body as { position: number }).position,
-      );
+      const sentPositions = bucketCreateCalls.map((c) => (c.body as { position: number }).position);
       expect(sentPositions.every((p) => p !== 0 && p > 0)).toBe(true);
       expect(sentPositions).toEqual([...sentPositions].sort((a, b) => a - b));
       for (let i = 1; i < sentPositions.length; i++) {
@@ -223,7 +350,9 @@ describe('setupKanban', () => {
       }
 
       // Every task got placed via the move endpoint.
-      const moveCalls = router.calls.filter((c) => /\/buckets\/\d+\/tasks$/.test(c.path) && c.method === 'POST');
+      const moveCalls = router.calls.filter(
+        (c) => /\/buckets\/\d+\/tasks$/.test(c.path) && c.method === 'POST',
+      );
       expect(moveCalls).toHaveLength(3);
     });
   });
@@ -288,7 +417,9 @@ describe('setupKanban', () => {
       expect((backlogRename?.body as { position?: number }).position).not.toBe(0);
 
       // Only ONE brand-new bucket was created ("Doing" — no existing bucket left to reuse).
-      const created = router.calls.filter((c) => c.method === 'PUT' && c.path === '/projects/77/views/20/buckets');
+      const created = router.calls.filter(
+        (c) => c.method === 'PUT' && c.path === '/projects/77/views/20/buckets',
+      );
       expect(created).toHaveLength(1);
       expect((created[0]?.body as { title: string }).title).toBe('Doing');
       // "Doing" is requested column index 1.
@@ -307,6 +438,361 @@ describe('setupKanban', () => {
       for (let i = 1; i < sentPositions.length; i++) {
         expect((sentPositions[i] as number) > (sentPositions[i - 1] as number)).toBe(true);
       }
+    });
+  });
+
+  /**
+   * Issue #273 (HIGH-2): a fresh Vikunja project auto-creates To-Do/Doing/
+   * Done buckets, with Done set as the view's `done_bucket_id`. Requesting
+   * columns that don't exactly title-match the existing buckets used to let
+   * the leftover-repurpose fallback claim the done-bucket purely by
+   * position, silently turning "Done" into whatever unmatched column landed
+   * last (here "QA") — every task later placed there would then be
+   * auto-completed by Vikunja's own done-bucket behavior, reported as a
+   * clean success. The done-bucket must now be excluded from that fallback
+   * pool entirely and survive untouched.
+   */
+  describe('done-bucket protection on a fresh project (#273)', () => {
+    it('never repurposes the view done-bucket via the leftover fallback, even when no column title matches it', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      // Kanban view reports done_bucket_id: 302 ("Done").
+      router.on('GET', '/projects/88/views', () => [
+        {
+          id: 21,
+          title: 'Kanban',
+          project_id: 88,
+          view_kind: 'kanban',
+          done_bucket_id: 302,
+        },
+      ]);
+      // Vikunja's auto-created defaults for a fresh project.
+      router.on('GET', '/projects/88/views/21/buckets', () => [
+        { id: 300, title: 'To-Do', position: 0 },
+        { id: 301, title: 'Doing', position: 1 },
+        { id: 302, title: 'Done', position: 2 },
+      ]);
+
+      router.on('POST', /^\/projects\/88\/views\/21\/buckets\/\d+$/, (path, body) => {
+        const id = Number(path.split('/').pop());
+        return { id, ...(body as Record<string, unknown>) };
+      });
+      let bucketCounter = 900;
+      router.on('PUT', '/projects/88/views/21/buckets', (_p, body) => {
+        bucketCounter += 1;
+        const b = body as { title: string; position?: number };
+        return { id: bucketCounter, title: b.title, position: b.position };
+      });
+
+      // None of these exactly title-match "To-Do"/"Doing"/"Done".
+      const result = await setupKanban(
+        { id: 88, columns: ['Todo', 'In Progress', 'QA'] },
+        authManager,
+      );
+
+      const text = result.content[0]?.text ?? '';
+      expect(text).toContain('3/3 columns ready');
+      // The response says so explicitly.
+      expect(text).toContain('done-bucket was left untouched');
+      expect(text).toContain('doneBucketPreserved');
+
+      // The done-bucket (302) was NEVER written to at all — not renamed,
+      // not repositioned. This is the load-bearing assertion: previously it
+      // would have been claimed as the leftover for "QA".
+      const doneBucketWrite = router.calls.find(
+        (c) => c.method === 'POST' && c.path === '/projects/88/views/21/buckets/302',
+      );
+      expect(doneBucketWrite).toBeUndefined();
+
+      // "Todo" and "In Progress" claimed the two non-done leftovers
+      // (300/301); "QA" had nothing left to repurpose and was created new.
+      const created = router.calls.filter(
+        (c) => c.method === 'PUT' && c.path === '/projects/88/views/21/buckets',
+      );
+      expect(created).toHaveLength(1);
+      expect((created[0]?.body as { title: string }).title).toBe('QA');
+
+      const renamedIds = router.calls
+        .filter((c) => c.method === 'POST' && /\/buckets\/\d+$/.test(c.path))
+        .map((c) => Number(c.path.split('/').pop()));
+      expect(renamedIds.sort()).toEqual([300, 301]);
+      expect(renamedIds).not.toContain(302);
+    });
+
+    it('still allows an exact-title match against the done-bucket (deliberate reuse, not a blind repurpose)', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      router.on('GET', '/projects/89/views', () => [
+        {
+          id: 22,
+          title: 'Kanban',
+          project_id: 89,
+          view_kind: 'kanban',
+          done_bucket_id: 402,
+        },
+      ]);
+      router.on('GET', '/projects/89/views/22/buckets', () => [
+        { id: 400, title: 'To Do', position: 0 },
+        { id: 401, title: 'Doing', position: 1 },
+        { id: 402, title: 'Done', position: 2 },
+      ]);
+      router.on('POST', /^\/projects\/89\/views\/22\/buckets\/\d+$/, (path, body) => {
+        const id = Number(path.split('/').pop());
+        return { id, ...(body as Record<string, unknown>) };
+      });
+
+      // Exact match on every column, including "Done" itself.
+      const result = await setupKanban(
+        { id: 89, columns: ['To Do', 'Doing', 'Done'] },
+        authManager,
+      );
+
+      const text = result.content[0]?.text ?? '';
+      expect(text).toContain('3/3 columns ready');
+      // Exact-match reuse is not a "repurpose" — no preservation note.
+      expect(text).not.toContain('done-bucket was left untouched');
+
+      const doneUpdate = router.calls.find(
+        (c) => c.method === 'POST' && c.path === '/projects/89/views/22/buckets/402',
+      );
+      expect(doneUpdate).toBeDefined();
+      // Exact-title reuse: the request carries the bucket's own unchanged
+      // title (updateBucketRaw echoes `current` merged with the requested
+      // fields) — never a DIFFERENT title, which would signal a rename.
+      expect((doneUpdate?.body as { title?: string }).title).toBe('Done');
+    });
+  });
+
+  /**
+   * `setup-kanban` reuses an existing project (`id`) as-is and never writes
+   * to it. `title`/`description`/`parentProjectId` supplied alongside `id`
+   * used to be silently ignored - the owner-approved fix: let a value
+   * through when it already matches the project's current value (a
+   * harmless no-op re-assertion), reject loudly (naming current vs
+   * requested, pointing at `vikunja_projects update`) only when it would
+   * actually change something.
+   */
+  describe('existing project reuse — title/description/parentProjectId equality guard', () => {
+    it('does not fetch the project at all when none of title/description/parentProjectId is supplied', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      const result = await setupKanban({ id: 900 }, authManager);
+
+      expect(result.content[0]?.text ?? '').toContain('project 900 reused (ID: 900)');
+      // No routes registered at all — if setupKanban made ANY request, the
+      // router would throw "Unmocked request in test".
+      expect(router.calls).toHaveLength(0);
+    });
+
+    it('lets a matching description through silently (no-op)', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/901', () => ({
+        id: 901,
+        title: 'Existing',
+        description: 'Same description',
+      }));
+
+      const result = await setupKanban(
+        { id: 901, description: 'Same description' },
+        authManager,
+      );
+
+      expect(result.content[0]?.text ?? '').toContain('project 901 reused (ID: 901)');
+    });
+
+    it('treats a whitespace-only description difference as a no-op', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/902', () => ({
+        id: 902,
+        title: 'Existing',
+        description: 'Same description',
+      }));
+
+      const result = await setupKanban(
+        { id: 902, description: '  Same description  ' },
+        authManager,
+      );
+
+      expect(result.content[0]?.text ?? '').toContain('project 902 reused (ID: 902)');
+    });
+
+    it('treats an absent current description as equal to an empty requested one', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      // No `description` field at all on the fetched project.
+      router.on('GET', '/projects/912', () => ({ id: 912, title: 'Existing' }));
+
+      const result = await setupKanban({ id: 912, description: '   ' }, authManager);
+
+      expect(result.content[0]?.text ?? '').toContain('project 912 reused (ID: 912)');
+    });
+
+    it('rejects a description that actually differs, naming current vs requested and pointing at vikunja_projects update', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/903', () => ({
+        id: 903,
+        title: 'Existing',
+        description: 'Old description',
+      }));
+
+      const error = await setupKanban(
+        { id: 903, description: 'New description' },
+        authManager,
+      ).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(MCPError);
+      expect((error as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+      const message = (error as MCPError).message;
+      expect(message).toContain('description');
+      expect(message).toContain('Old description');
+      expect(message).toContain('New description');
+      expect(message).toContain('vikunja_projects update');
+      expect(message).toContain('903');
+      // Only the GET fetch happened — nothing else was touched.
+      expect(router.calls).toHaveLength(1);
+      expect(router.calls[0]).toMatchObject({ method: 'GET', path: '/projects/903' });
+    });
+
+    it('rejects a title that differs from the existing project', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/904', () => ({ id: 904, title: 'Old Title' }));
+
+      const error = await setupKanban({ id: 904, title: 'New Title' }, authManager).catch(
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(MCPError);
+      expect((error as MCPError).code).toBe(ErrorCode.VALIDATION_ERROR);
+      const message = (error as MCPError).message;
+      expect(message).toContain('title');
+      expect(message).toContain('Old Title');
+      expect(message).toContain('New Title');
+    });
+
+    it('lets a matching title through silently (trimmed comparison)', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/905', () => ({ id: 905, title: 'Exact Title' }));
+
+      const result = await setupKanban({ id: 905, title: '  Exact Title  ' }, authManager);
+
+      expect(result.content[0]?.text ?? '').toContain('project 905 reused (ID: 905)');
+    });
+
+    it('lets a matching parentProjectId through silently', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/906', () => ({
+        id: 906,
+        title: 'Child',
+        parent_project_id: 10,
+      }));
+
+      const result = await setupKanban({ id: 906, parentProjectId: 10 }, authManager);
+
+      expect(result.content[0]?.text ?? '').toContain('project 906 reused (ID: 906)');
+    });
+
+    it('rejects a parentProjectId that differs from the existing parent', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/907', () => ({
+        id: 907,
+        title: 'Child',
+        parent_project_id: 10,
+      }));
+
+      const error = await setupKanban({ id: 907, parentProjectId: 11 }, authManager).catch(
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(MCPError);
+      const message = (error as MCPError).message;
+      expect(message).toContain('parentProjectId');
+      expect(message).toContain('current: 10');
+      expect(message).toContain('requested: 11');
+    });
+
+    it('rejects a parentProjectId when the existing project has none, describing current as "none (no parent)"', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      // No `parent_project_id` field at all on the fetched project.
+      router.on('GET', '/projects/908', () => ({ id: 908, title: 'Top-level' }));
+
+      const error = await setupKanban({ id: 908, parentProjectId: 12 }, authManager).catch(
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(MCPError);
+      const message = (error as MCPError).message;
+      expect(message).toContain('none (no parent)');
+      expect(message).toContain('requested: 12');
+    });
+
+    it('treats an explicit current parent_project_id of 0 the same as "no parent"', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/909', () => ({
+        id: 909,
+        title: 'Top-level',
+        parent_project_id: 0,
+      }));
+
+      const error = await setupKanban({ id: 909, parentProjectId: 12 }, authManager).catch(
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(MCPError);
+      expect((error as MCPError).message).toContain('none (no parent)');
+    });
+
+    it('names multiple mismatched fields in one rejection', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/910', () => ({
+        id: 910,
+        title: 'Old',
+        description: 'Old desc',
+      }));
+
+      const error = await setupKanban(
+        { id: 910, title: 'New', description: 'New desc' },
+        authManager,
+      ).catch((e: unknown) => e);
+
+      const message = (error as MCPError).message;
+      expect(message).toContain('title');
+      expect(message).toContain('description');
+    });
+
+    it('fetches the project exactly once even when checking all three fields together', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('GET', '/projects/911', () => ({
+        id: 911,
+        title: 'Same',
+        description: 'Same desc',
+        parent_project_id: 3,
+      }));
+
+      const result = await setupKanban(
+        { id: 911, title: 'Same', description: 'Same desc', parentProjectId: 3 },
+        authManager,
+      );
+
+      expect(result.content[0]?.text ?? '').toContain('project 911 reused (ID: 911)');
+      const getCalls = router.calls.filter(
+        (c) => c.method === 'GET' && c.path === '/projects/911',
+      );
+      expect(getCalls).toHaveLength(1);
+      expect(router.calls).toHaveLength(1);
     });
   });
 
@@ -469,7 +955,10 @@ describe('setupKanban', () => {
         { id: 14, title: 'Kanban', project_id: 88, view_kind: 'kanban' },
       ]);
       router.on('GET', '/projects/88/views/14/buckets', () => []);
-      router.on('PUT', '/projects/88/views/14/buckets', (_p, body) => ({ id: 901, ...(body as Record<string, unknown>) }));
+      router.on('PUT', '/projects/88/views/14/buckets', (_p, body) => ({
+        id: 901,
+        ...(body as Record<string, unknown>),
+      }));
 
       const createdTasks = new Map<number, Record<string, unknown>>();
       router.on('PUT', '/projects/88/tasks', (_p, body) => {
@@ -489,7 +978,9 @@ describe('setupKanban', () => {
         authManager,
       );
 
-      const createCall = router.calls.find((c) => c.method === 'PUT' && c.path === '/projects/88/tasks');
+      const createCall = router.calls.find(
+        (c) => c.method === 'PUT' && c.path === '/projects/88/tasks',
+      );
       expect((createCall?.body as { due_date?: string }).due_date).toBe('2026-09-01T00:00:00Z');
     });
   });
@@ -617,9 +1108,13 @@ describe('setupKanban', () => {
       expect(text).toContain('1/1 tasks created');
 
       // Label was resolved (reused, not created) and attached.
-      const labelSearch = router.calls.find((c) => c.method === 'GET' && /^\/labels\?s=/.test(c.path));
+      const labelSearch = router.calls.find(
+        (c) => c.method === 'GET' && /^\/labels\?s=/.test(c.path),
+      );
       expect(labelSearch).toBeDefined();
-      const labelAttach = router.calls.find((c) => c.method === 'POST' && c.path === '/tasks/6001/labels/bulk');
+      const labelAttach = router.calls.find(
+        (c) => c.method === 'POST' && c.path === '/tasks/6001/labels/bulk',
+      );
       expect(labelAttach).toBeDefined();
       expect((labelAttach?.body as { labels: Array<{ id: number }> }).labels).toEqual([{ id: 77 }]);
 
@@ -764,7 +1259,9 @@ describe('setupKanban', () => {
         id: 980,
         ...(body as Record<string, unknown>),
       }));
-      router.on('PUT', '/projects/240/tasks', (_p, body) => ({ ...(body as Record<string, unknown>) }));
+      router.on('PUT', '/projects/240/tasks', (_p, body) => ({
+        ...(body as Record<string, unknown>),
+      }));
 
       const result = await setupKanban(
         { title: 'Board', columns: ['To Do'], tasks: [{ title: 'No id task' }] },
@@ -825,6 +1322,146 @@ describe('setupKanban', () => {
 
       const text = result.content[0]?.text ?? '';
       expect(text).toContain('was requested but its bucket could not be resolved');
+    });
+  });
+  /**
+   * `hexColor` silent-drop guard.
+   *
+   * `hexColor` is declared on the `vikunja_projects` shape and honored by
+   * `create`/`update`, but setup-kanban's new-project body only ever carried
+   * title/description/parent_project_id — so "create a red project with
+   * these tasks" reported success with a colorless project.
+   */
+  describe('new-project hexColor', () => {
+    it('forwards hex_color (lowercased) on the create call', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('PUT', '/projects', () => ({ id: 77, title: 'Red' }));
+
+      await setupKanban({ title: 'Red', hexColor: '#FF0000' }, authManager);
+
+      const body = router.calls.find((c) => c.method === 'PUT' && c.path === '/projects')?.body;
+      expect(body).toEqual({ title: 'Red', hex_color: '#ff0000' });
+    });
+
+    it('omits hex_color when the caller did not ask for a color', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      router.on('PUT', '/projects', () => ({ id: 78, title: 'Plain' }));
+
+      await setupKanban({ title: 'Plain' }, authManager);
+
+      const body = router.calls.find((c) => c.method === 'PUT' && c.path === '/projects')?.body;
+      expect(body).not.toHaveProperty('hex_color');
+    });
+
+    it('rejects a malformed hex color before any API call', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      await expect(setupKanban({ title: 'Bad', hexColor: 'red' }, authManager)).rejects.toThrow(
+        'Invalid hex color format',
+      );
+      expect(router.calls).toHaveLength(0);
+    });
+
+    it('REJECTS hexColor alongside an existing id, pointing at vikunja_projects update', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      await expect(setupKanban({ id: 42, hexColor: '#00ff00' }, authManager)).rejects.toThrow(
+        /hexColor only applies when setup-kanban CREATES a project[\s\S]*vikunja_projects update/,
+      );
+      expect(router.calls).toHaveLength(0);
+    });
+  });
+
+  /**
+   * Regression guard for the silently-dropped-field bug class.
+   *
+   * A battle run asked for a project + task and "record that the task is 75%
+   * done". The model made ONE `setup-kanban` call carrying
+   * `tasks: [{ title: …, percentDone: 75 }]` — the natural, correct thing.
+   * `percentDone` was not declared on the per-task shape, Zod stripped it, the
+   * task was created at 0%, and the tool reported success. These tests assert
+   * the WIRE payload (`percent_done`, Vikunja's 0-1 fraction), not the return
+   * value, because that is where the loss actually happened.
+   */
+  describe('per-task percentDone', () => {
+    /** Wires up a minimal one-column board and returns the create-task body. */
+    async function createTaskBodyFor(task: Record<string, unknown>): Promise<unknown> {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+
+      router.on('PUT', '/projects', () => ({ id: 91, title: 'Board' }));
+      router.on('GET', '/projects/91/views', () => [
+        { id: 15, title: 'Kanban', project_id: 91, view_kind: 'kanban' },
+      ]);
+      router.on('GET', '/projects/91/views/15/buckets', () => []);
+      router.on('PUT', '/projects/91/views/15/buckets', (_p, body) => ({
+        id: 902,
+        ...(body as Record<string, unknown>),
+      }));
+
+      const createdTasks = new Map<number, Record<string, unknown>>();
+      router.on('PUT', '/projects/91/tasks', (_p, body) => {
+        const created = { id: 6001, project_id: 91, ...(body as Record<string, unknown>) };
+        createdTasks.set(6001, created);
+        return created;
+      });
+      router.on('GET', /^\/tasks\/\d+$/, (path) => createdTasks.get(Number(path.split('/')[2])));
+      router.on('POST', /^\/projects\/91\/views\/15\/buckets\/\d+\/tasks$/, () => ({}));
+
+      await setupKanban(
+        { title: 'Board', columns: ['To Do'], tasks: [{ title: 'Ship it', ...task } as never] },
+        authManager,
+      );
+
+      return router.calls.find((c) => c.method === 'PUT' && c.path === '/projects/91/tasks')?.body;
+    }
+
+    it('sends the 0-1 wire fraction for a 75% task (the battle-run case)', async () => {
+      const body = await createTaskBodyFor({ column: 'To Do', percentDone: 75 });
+      expect((body as { percent_done?: number }).percent_done).toBe(0.75);
+    });
+
+    it('sends 0 for the 0 boundary (explicitly requested, not omitted)', async () => {
+      const body = await createTaskBodyFor({ percentDone: 0 });
+      expect(body).toHaveProperty('percent_done', 0);
+    });
+
+    it('sends 1 for the 100 boundary', async () => {
+      const body = await createTaskBodyFor({ percentDone: 100 });
+      expect((body as { percent_done?: number }).percent_done).toBe(1);
+    });
+
+    it('omits percent_done entirely when the caller did not ask for it', async () => {
+      const body = await createTaskBodyFor({});
+      expect(body).not.toHaveProperty('percent_done');
+    });
+
+    it('rejects a 0-1 fraction with the shared teaching message, before any API call', async () => {
+      const router = createRouter();
+      global.fetch = router.fetchImpl as unknown as typeof fetch;
+      await expect(
+        setupKanban(
+          { title: 'Board', tasks: [{ title: 'Half done', percentDone: 0.5 } as never] },
+          authManager,
+        ),
+      ).rejects.toThrow('tasks[0].percentDone must be a whole number between 0 and 100');
+      expect(router.calls).toHaveLength(0);
+    });
+
+    it('rejects an out-of-range percentage and names the offending index', async () => {
+      await expect(
+        setupKanban(
+          {
+            title: 'Board',
+            tasks: [{ title: 'ok' }, { title: 'too much', percentDone: 101 } as never],
+          },
+          authManager,
+        ),
+      ).rejects.toThrow('tasks[1].percentDone must be a whole number between 0 and 100');
     });
   });
 });

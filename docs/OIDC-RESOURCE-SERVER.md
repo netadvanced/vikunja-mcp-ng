@@ -1,8 +1,8 @@
 # Design: OIDC resource-server mode (behind IBM MCP Context Forge + Keycloak)
 
-**Status:** DECIDED — design locked 2026-07-20 (owner review complete). Not implemented yet; this document is the spec the wave workers build against. Target release **0.6.0**.
+**Status:** IMPLEMENTED (2026-07-21) — waves H1 + H2 landed on `feat/oidc-mode` and are feature-complete (see the Wave plan, §7, for the per-item DONE marks); field-tested in a production-cluster PoC (real Keycloak + IBM Context Forge, per-user isolation verified, 2026-08); merged to main 2026-08-14. Design was locked 2026-07-20 (owner review complete). Target release **0.7.0-beta.1** (originally slated 0.6.0). Where this document's design prose and the shipped code diverge, see the as-shipped amendment in §2.1 — the operator-facing truth lives in [`docs/OIDC-SETUP.md`](OIDC-SETUP.md).
 **Author:** coordinator (design pass, 2026-07-19); decisions locked by the owner, 2026-07-20.
-**Companion docs:** [docs/ROADMAP.md](../ROADMAP.md) (decision-log tone this doc follows; see its §3 for the append-only entry recording this epic's approval), [docs/CONFIGURATION.md](../CONFIGURATION.md), [docs/ARCHITECTURE.md](../ARCHITECTURE.md).
+**Companion docs:** [docs/ROADMAP.md](ROADMAP.md) (decision-log tone this doc follows; see its §3 for the append-only entry recording this epic's approval), [docs/CONFIGURATION.md](CONFIGURATION.md), [docs/ARCHITECTURE.md](ARCHITECTURE.md).
 
 This document proposes making `vikunja-mcp-ng` deployable as a **multi-user HTTP MCP server** sitting behind IBM MCP Context Forge, where Context Forge runs per-user OAuth against Keycloak and injects a per-user OIDC access token on every request. It is written to be **generic across OIDC providers** — Keycloak is the reference deployment, nothing org-specific lands in code.
 
@@ -116,15 +116,55 @@ The existing config engine (`src/config/ConfigurationManager.ts`) already does l
 | Port | `VIKUNJA_MCP_HTTP_PORT` | `http.port` | default `8765` |
 | Allowed Host headers | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` | `http.allowedHosts` | comma list → SDK `allowedHosts` |
 | Path | `VIKUNJA_MCP_HTTP_PATH` | `http.path` | default `/mcp` |
+| Public URL (opt) | `VIKUNJA_MCP_HTTP_PUBLIC_URL` | `http.publicUrl` | canonical public MCP URL, e.g. `https://mcp-vikunja.example.ch/mcp` — the RFC 9728 `resource` value (§3e); recommended behind a reverse proxy, derived from the request `Host` header when unset |
 | OIDC issuer | `VIKUNJA_MCP_OIDC_ISSUER` | `oidc.issuer` | e.g. `https://iam.example.org/realms/foo` — **generic**; single-issuer scalar (D11) |
 | OIDC audience | `VIKUNJA_MCP_OIDC_AUDIENCE` | `oidc.audience` | required `aud` value(s); comma list allowed |
-| JWKS URI (override) | `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | optional; default discovered from issuer `/.well-known/openid-configuration` |
+| JWKS URI | `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | **required as shipped** — issuer-discovery was designed but not implemented; see the as-shipped amendment below |
 | Allowed algs | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | `oidc.allowedAlgs` | default `RS256` (allowlist; see §3b) |
-| Clock skew (s) | `VIKUNJA_MCP_OIDC_CLOCK_SKEW` | `oidc.clockSkewSec` | default `60` |
+| Clock skew (s) | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | `oidc.clockSkewSec` | default `60`. (An earlier draft of this table named the env var without the `_SEC` suffix — that name was never implemented and is silently ignored) |
 | Required scope (opt) | `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` | `oidc.requiredScope` | optional coarse gate |
 | Vault file path | `VIKUNJA_MCP_VAULT_PATH` | `vault.path` | path to the encrypted JSON vault file (D1); path is **not** secret, the key is |
 | **Vault master key** | `VIKUNJA_MCP_VAULT_KEY` **/ `VIKUNJA_MCP_VAULT_KEY_FILE`** | *(never in file)* | **add to `SENSITIVE_ENV_VARS`**; 32-byte key, base64 (D4) |
 | Shared Vikunja URL | `VIKUNJA_URL` (existing) | `auth.vikunjaUrl` | one shared Vikunja base URL for all users |
+
+> **Amendment (2026-08-11, beta documentation audit) — design intent vs. what shipped.**
+> Four details in this document describe the *design* and diverge from the implementation;
+> the code is authoritative, and the operator docs (`docs/OIDC-SETUP.md`,
+> `docs/CONFIGURATION.md`) describe shipped behavior. Recorded here so this document
+> doesn't over-promise:
+>
+> 1. **`oidc.jwksUri` is required.** No issuer-discovery
+>    (`/.well-known/openid-configuration`) was implemented — `OidcConfigSchema`
+>    (`src/config/types.ts`) requires an explicit JWKS URL. The §2 selection rule's short
+>    list should therefore be read as: **all** of `transport=http`, `oidc.issuer`,
+>    `oidc.audience`, `oidc.jwksUri`, `vault.path`, and a vault master key, any one
+>    missing being a hard startup error.
+> 2. **`/readyz` shipped as a stub.** §3a describes it checking JWKS reachability and
+>    vault-file openability, and §3c describes a malformed vault surfacing there as
+>    not-ready; none of that is implemented. It returns `{"status":"ok"}` unconditionally
+>    (`TODO(H2)` in `src/transport/httpTransport.ts`) — today it is `/healthz` under
+>    another name.
+> 3. **D8's optional global rate ceiling was not built.** Per-identity buckets shipped
+>    (`src/middleware/simplified-rate-limit.ts`); there is no aggregate cross-user
+>    ceiling protecting the shared Vikunja instance beyond the shared circuit breakers.
+> 4. **No startup warning for `VIKUNJA_API_TOKEN` in `http` mode.** The "should be a
+>    startup warning" below was not implemented; the variable is silently unused on the
+>    wire in `oidc-http` mode (every request resolves its credential through the ALS
+>    context instead).
+>
+> **Addendum (2026-09-01, #263): D8's per-identity buckets shipped keyed correctly but
+> were not actually enforcing anything.** The bucketing this document describes (state #2,
+> `getSessionId()` reading the ALS identity) was implemented as written and its isolation
+> test passed — but the middleware holding those buckets was wrapped around exactly one
+> tool handler (`vikunja_auth`), so every other tool ran unmetered per identity; and the
+> buckets never expired, because the underlying `MemoryStore` was constructed without
+> `init()` and so had no window length (an unrotating window makes "60 per minute" mean 60
+> per process lifetime, with a permanent 429 after it). The hourly counter was also
+> written to one store and read from another, so it could never trip. Both the fairness
+> guarantee in §4 and D3's justification for keeping circuit breakers shared depended on
+> this working; it now does — `src/middleware/tool-rate-limit.ts` wraps the whole tool
+> surface at registration time. The optional global ceiling (item 3 above) is still not
+> built.
 
 **Interaction with existing config:**
 - Module gating (`ModulesConfigSchema`, `DANGEROUS_MODULE_KEYS`) is **unchanged** and still applies — it gates *tool registration*, which is process-wide, in both modes. `oidc-http` layers per-user *credential* isolation *underneath* the same module gates. Config can still only narrow, never widen.
@@ -191,17 +231,20 @@ The vault maps `(issuer, sub) → encrypted Vikunja tk_ token`.
 
 **Atomicity — write-temp-then-rename, mirroring `templateFileStore.ts`'s `writeTemplatesFileAtomic`.** The vault's write path (a new `src/storage/vaultFileStore.ts`) creates the parent directory if missing, serializes the *entire* current record map, writes it to a temp file in the same directory (`.${basename}.${pid}.${timestamp}.tmp`), then `fs.renameSync`s it over the target path. Rename is atomic on the same filesystem (POSIX and Windows both guarantee this), so a reader never observes a partially-written vault file, and a crash mid-write leaves the previous good file intact. Reads tolerate a missing file (fresh deployment → empty vault, not an error) and log-and-empty on malformed JSON, matching the templates loader's defensive posture — except unlike templates, a malformed vault is also surfaced at `/readyz` as not-ready, since silently treating a corrupt credential store as "everyone must re-provision" deserves operator visibility.
 
+**Concurrency scope — one process per vault file (audit MED-16, issue #292).** The vault serializes its read-modify-write cycle through an in-process `async-mutex` `Mutex`, which makes concurrent *requests* safe. It does nothing across *processes*: two servers sharing one vault file would each hold a full in-memory map and each rewrite the whole file, so the later write silently erases the earlier one's provisioning. No file locking is added, because a second process is out of scope by design rather than an accident of this module — enrollment tickets, per-identity rate-limit counters, circuit-breaker state and cached clients are all process-local too, so a second replica breaks one-click SSO and the rate-limit ceiling before it ever reaches the vault. Horizontal scaling is a design change (shared credential store, shared ticket store, shared rate-limit backend), not a deployment flag; `docs/CONFIGURATION.md` states the single-process requirement for operators. Revisit if multi-replica deployment is ever actually wanted.
+
 **Encryption (D4) — AES-256-GCM using Node's built-in `crypto` (no new dependency).** A single operator-supplied 32-byte master key (`VIKUNJA_MCP_VAULT_KEY[_FILE]`), random 12-byte IV per record, authenticated (GCM tag). `keyVersion` is stored per record so a future key rotation can decrypt-old/encrypt-new lazily on `lastUsedAt`. The master key is **never** written to the config file (enforced by `_FILE` machinery) and **never** logged. A wrong key or tampered record fails GCM tag verification loudly (decrypt throws) rather than silently returning garbage.
 
-**Provisioning flow — exact `vikunja_auth` tool-surface changes (D7).** `vikunja_auth` (`src/tools/auth.ts`) gains OIDC-mode subcommands. The enum today is `['connect','status','refresh','disconnect','info']`; in `oidc-http` mode we register a variant enum:
+**Provisioning flow — exact `vikunja_auth` tool-surface changes (D7).** `vikunja_auth` (`src/tools/auth.ts`) has one unconditional subcommand enum, `['connect', 'status', 'refresh', 'disconnect', 'info', 'provision', 'deprovision']` — `provision`/`deprovision` are always in the schema, not registered only in `oidc-http` mode; it's the *behavior* that's mode-gated (`provision`/`deprovision` are refused with a clear error in `stdio` mode, and `connect` is refused in `oidc-http` mode instead):
 
-- **`provision`** (new) — args `{ apiToken: string }` (the user's own Vikunja `tk_` token, created by them in Vikunja's UI). The server:
+- **`provision`** — args `{ apiToken: string, vikunjaUrl?: string }` (the user's own Vikunja `tk_` token, created by them in Vikunja's UI; `vikunjaUrl` optionally overrides the server's configured instance for that record, but must match the enrollment target if SSO enrollment is enabled). The server:
   1. Reads `sub`/`issuer` from the request context (§3d) — **always**, **never** from an argument.
   2. Builds a throwaway `AuthManager` bound to `VIKUNJA_URL` + the supplied `tk_`, and runs the **existing** `verifyConnection()` logic (`GET /info` then `GET /projects?per_page=1`) to prove the token actually works before storing it. This reuses code already in `auth.ts`.
   3. On success, encrypts and upserts the `"<issuer>|<sub>"` record. Response is masked (`maskCredential`) and states "linked", never echoes the token.
   This is the **one-time-per-user** step. It replaces `connect` for this mode (you cannot "connect" a shared server to one URL/token).
-- **`status`** — reports, for the calling `sub`: `linked: true/false`, masked token prefix, `provisionedAt`, `lastUsedAt`. Never reveals another user's status.
-- **`deprovision`** (new, alias `unlink`) — deletes the calling `sub`'s vault record. Idempotent. This is the **deprovisioning** path; also the remedy when a user's Vikunja token is rotated/revoked (they `deprovision` then `provision` the new one).
+  **API tokens only (issue #322).** A JWT-shaped token (`eyJ...`) is rejected with an explanatory error, both here and in `VaultFileStore.provision` (the single write path, so the SSO enrollment flow is covered too). This is the enforcement behind H1-6's "uniform `api-token` assumption": `getCredential` labels every resolved credential `authType: 'api-token'`, `oidcHttpAuth` feeds that into `authManager.connect`, and the JWT-only registration gate (#270) reads it — so the label has to be true by construction. A Vikunja JWT is also the wrong thing to vault: it comes from Vikunja's own login, expires in hours, and this server has no refresh path (§5, "Token refresh — the gateway's job"). Consequence, documented in CONFIGURATION.md and OIDC-SETUP.md: `vikunja_users`/export/`vikunja_caldav_tokens`/`vikunja_admin`/`vikunja_user_deletion` do not register in `oidc-http` mode at all.
+- **`status`** — reports, for the calling `sub`: `provisioned: true/false` (renders as `linked` in the tool's own status *message* text, but the `VaultStatus` field is `provisioned`), masked token prefix, `createdAt`, `lastUsedAt`, and the record's `keyVersion`. Never reveals another user's status, and never a vault-wide count (that is the operator's boot-time summary, below). When the caller's own record is usable but outdated — the pre-AAD `keyVersion: 1` shape (#262), or a JWT stored before #322's guard existed — it also carries `needsMigration: true` plus a `migrationNotice` telling that user to re-provision. Vault-wide, the operator gets a one-line count of unmigrated records at startup (`VaultFileStore.getMigrationSummary`, logged by `setupOidcHttpAuth`) — but that startup count only tallies `keyVersion: 1` records, not a legacy vaulted JWT (which still surfaces `needsMigration` on *that user's own* `status`, just not in the operator's aggregate) — instead of relying on a per-identity warning that only fires when that identity happens to make a request (#322 finding 2).
+- **`deprovision`** — deletes the calling `sub`'s vault record. Idempotent. This is the **deprovisioning** path; also the remedy when a user's Vikunja token is rotated/revoked (they `deprovision` then `provision` the new one). (There is no separate `unlink` subcommand — `disconnect` is the alias that maps onto `deprovision`, per the next bullet.)
 - **`connect` / `disconnect`** — in `oidc-http` mode, `connect` returns a structured error pointing the user at `provision`; `disconnect` aliases `deprovision`. In `stdio` mode they behave exactly as today.
 - **`info` / `refresh`** — unchanged semantics (`refresh` for `tk_` is still "not required"; §refresh scope note in §5).
 
@@ -219,13 +262,45 @@ Today essentially all session state is **process-global**, built on the assumpti
 |---|---|---|---|
 | 1 | Single `AuthManager` / `ClientContext.clientFactory` (one `AuthSession`) | `src/client.ts`, `src/index.ts` | **Per-`(issuer,sub)`** `AuthManager` via ALS `RequestContext`; global singleton retained only for `stdio` mode. **Primary leak risk.** |
 | 2 | Rate-limiter bucket keyed `session_${process.pid}` | `src/middleware/simplified-rate-limit.ts` `getSessionId()` | **Per-`(issuer,sub)`** bucket, plus an optional global ceiling (D8). `getSessionId()` reads the ALS context; process-pid fallback only in `stdio`. (§4 fairness.) |
-| 3 | Filter storage session id | `src/tools/filters.ts` → `storageManager.getStorage(sessionId,...)` | Session id = `(issuer,sub)` (via ALS), not the current credential-derived string. |
+| 3 | Tasks-tool session storage id | `src/tools/tasks/index.ts` `getSessionStorage()` → `storageManager.getStorage(sessionId,...)` | Session id = `(issuer,sub)` (via ALS, `getEffectiveSessionId`), not the credential-derived `${apiUrl}:${apiToken.substring(0,8)}` string. |
 | 4 | Templates storage session id (`${apiUrl}:${apiToken.substring(0,8)}` or `anonymous`) | `src/tools/templates.ts` | Session id = `(issuer,sub)`. Persistence key becomes `${persistPath}:${issuer}:${sub}` (already `${persistPath}:${sessionId}` shaped). |
 | 5 | `FilterStorageManager` instance map + 1h cleanup | `src/storage/SimpleFilterStorage.ts` | Unchanged mechanism; correctness follows automatically once the **key** is `(issuer,sub)` (#3/#4). Cleanup TTL now also bounds idle-user memory. |
-| 6 | Circuit-breaker registry (per-endpoint-path, process-global) | `src/utils/retry.ts` `circuitBreakerRegistry`, `deriveRestBreakerName` | **Kept shared (D3)** — breakers track the *shared upstream Vikunja's* health, not a user. This is a deliberate, accepted cross-user coupling: one user's pathological requests can trip a breaker for all (§4). Per-sub rate limits (#2) are the mitigation for noisy neighbors; breaker isolation is out of scope unless D3's revisit condition (multi-Vikunja-instance support) fires. |
+| 6 | Circuit-breaker registry (per-endpoint-path, process-global) | `circuitBreakerRegistry` (`src/utils/retry.ts`), `deriveRestBreakerName` (`src/utils/vikunja-rest.ts`) | **Kept shared (D3)** — breakers track the *shared upstream Vikunja's* health, not a user. This is a deliberate, accepted cross-user coupling: one user's pathological requests can trip a breaker for all (§4). Per-sub rate limits (#2) are the mitigation for noisy neighbors; breaker isolation is out of scope unless D3's revisit condition (multi-Vikunja-instance support) fires. |
 | 7 | `ConfigurationManager` singleton | `src/config/*` | Shared and correct — it is server config, identical for all users. No change. |
 | 8 | `normalizedKeyCache` (masking) | `src/utils/security.ts` | Shared and safe — caches normalized *key names*, not secret values. No change. |
 | 9 | The vault itself | new | Shared JSON file, **record-scoped by `"<issuer>|<sub>"` key** (§3c); every lookup MUST use the ALS `sub`, never an argument. |
+
+> **Amendment (2026-07-21, wave H1 integration).** Row #3 originally named
+> `src/tools/filters.ts` as the session-keyed filter storage. That was correct
+> at design-grounding time but is now stale: `vikunja_filters` migrated to
+> real server-side Vikunja *saved filters* and no longer touches
+> `SimpleFilterStorage` at all (see that file's own top-of-file comment). The
+> session-scoped `SimpleFilterStorage` state row #3 actually protects today
+> lives in the **tasks tool's** own session storage
+> (`src/tools/tasks/index.ts` `getSessionStorage()`); row #4
+> (`src/tools/templates.ts`) is the other consumer. Both were re-keyed via the
+> shared `getEffectiveSessionId` helper (`src/context/requestContext.ts`) and
+> are exercised by `tests/oidc/isolation.test.ts`. The row above has been
+> corrected accordingly; the keying decision (`(issuer,sub)` via ALS) is
+> unchanged.
+
+> **Amendment (2026-07-21, wave H2 integration) — row #1 "Primary leak risk" CLOSED.**
+> Row #1's per-`(issuer,sub)` `AuthManager` was re-keyed in H1, but the H2b
+> e2e lane surfaced that the resolved per-identity manager never reached the
+> wire: tool handlers captured the process-global closure `AuthManager` at
+> `registerTools()` time and passed *that* into `vikunjaRestRequest()`, so a
+> provisioned identity's real REST calls went out under the process global,
+> not their own vaulted token (the "Primary leak risk" made concrete — a
+> reproducible cross-user credential leak, not a hypothetical). Fixed
+> centrally: `resolveEffectiveAuthManager` (`src/utils/vikunja-rest.ts`)
+> substitutes the ALS `RequestContext`'s per-identity manager for the passed
+> closure manager at request time (opt-out `ignoreRequestContext` for
+> `provision`'s throwaway-token probe only; `stdio`, which never opens an ALS
+> scope, is byte-for-byte unchanged). Guarded end-to-end by the
+> **"Credential threading: a real tool sends each identity its OWN vaulted
+> token"** test class in `tests/oidc/isolation.test.ts` (drives a real
+> registered tool under two ALS identities and asserts the `Authorization`
+> header on the wire), and proven live by `scripts/oidc-e2e.ts` step (d).
 
 **Cross-user-leak test matrix** (new test suite, `tests/oidc/isolation.test.ts` + battle scenarios):
 
@@ -243,6 +318,28 @@ Today essentially all session state is **process-global**, built on the assumpti
 | Log masking under multi-user | Force errors for A and B | No raw token for either in logs; `sub` masked |
 
 The **ALS context-integrity** test is the load-bearing one: it must run genuinely concurrent, interleaved requests and assert no bleed — the classic failure mode of an ALS/global-singleton hybrid.
+
+### 3(e). Authorization-server discovery (RFC 9728 protected-resource metadata)
+
+Implements the discovery half of the **MCP authorization spec (2025-06-18 revision)**: browser-based MCP clients that connect *directly* to vikunja-mcp — **this is what claude.ai custom connectors use to find the IdP** — fetch a well-known document instead of being hand-configured with the issuer.
+
+**Endpoint** (`src/transport/httpTransport.ts`, helpers in `src/transport/resourceMetadata.ts`): `GET /.well-known/oauth-protected-resource`, plus the path-suffixed variant `GET /.well-known/oauth-protected-resource/mcp` for path-aware clients (our MCP endpoint lives at `http.path`, default `/mcp`). Unauthenticated (a client fetches it precisely because it has no token yet), GET-only (`405` otherwise), read-only and side-effect-free — same stance as `/healthz`. Served only when an OIDC issuer is configured (`404` otherwise — nothing truthful to advertise). Response:
+
+```json
+{
+  "resource": "https://mcp-vikunja.example.ch/mcp",
+  "authorization_servers": ["https://iam.example.org/realms/foo"],
+  "bearer_methods_supported": ["header"]
+}
+```
+
+`authorization_servers` is the configured `oidc.issuer` (`VIKUNJA_MCP_OIDC_ISSUER`); the client continues discovery at the issuer's own `/.well-known/openid-configuration`.
+
+**Canonical resource URL — `VIKUNJA_MCP_HTTP_PUBLIC_URL` / `http.publicUrl` (optional).** When set (e.g. `https://mcp-vikunja.example.ch/mcp`), it is served verbatim as `resource`. When unset, the URL is derived per-request from the `Host` header (scheme from `X-Forwarded-Proto`, default `http`) plus `http.path`. **Setting it explicitly is recommended behind a reverse proxy** — the bind host/port say nothing about the public origin, and a derived value is only as good as the proxy's forwarded headers.
+
+**401 challenge pointer (RFC 9728 §5.1).** Every `401`/`403` from the OIDC middleware (`src/transport/oidcHttpAuth.ts`) appends `resource_metadata="<origin>/.well-known/oauth-protected-resource"` to the existing `WWW-Authenticate: Bearer error=..., error_description=...` challenge, so a client that hits the MCP endpoint first (no token) is redirected into the discovery flow. The origin comes from `http.publicUrl` when configured, otherwise from the failing request's own `Host` header; if no valid URL can be formed, the parameter is omitted rather than advertising garbage.
+
+Covered by `tests/transport/resourceMetadata.test.ts`, the discovery cases in `tests/transport/httpTransport.test.ts` / `tests/transport/oidcHttpAuth.test.ts`, and live in the e2e lane (`scripts/oidc-e2e.ts`, steps a0/a2).
 
 ---
 
@@ -294,6 +391,12 @@ Sizes: **S** ≈ ≤0.5 day, **M** ≈ 1–2 days, **L** ≈ 3–5 days, each la
 
 ### Wave H1 — transport + identity plumbing
 
+**Status: DONE (2026-07-21).** All H1 items landed and merged into
+`feat/oidc-mode` (PRs up to and including the H1 integration commit `ac5d8b4`).
+The transport, JWT resource-server middleware, ALS request context, re-keyed
+global state, and oidc-mode registration are all in place with the isolation
+matrix (§3d) green.
+
 | Item | Size | Scope | Acceptance criteria |
 |---|---|---|---|
 | H1-1 Config surface | M | Add `transport`, `http.*`, `oidc.*`, `vault.*` to `types.ts`/`ConfigurationManager`; add `VIKUNJA_MCP_VAULT_KEY` to `SENSITIVE_ENV_VARS`; mode-selection + fail-loud validation | `transport=http` w/o required oidc/vault keys → startup error; `stdio` path unchanged; config tests green |
@@ -306,6 +409,16 @@ Sizes: **S** ≈ ≤0.5 day, **M** ≈ 1–2 days, **L** ≈ 3–5 days, each la
 **H1 exit:** a multi-user HTTP server that validates Keycloak tokens, isolates all per-user state, and drives Vikunja — using a dev-only stub credential source (single shared `tk_` for all subs). Not production-secure yet; the vault is H2.
 
 ### Wave H2 — vault + provisioning + hardening
+
+**Status: DONE (2026-07-21).** H2a (canonical vault + provisioning, PR #136)
+and H2b (e2e lane + threat model + perf + Context Forge doc, PR #135) landed and
+were reconciled to ONE canonical vault (`src/storage/vaultFileStore.ts`) during
+integration. The blocking credential-threading bug H2b's e2e lane surfaced (§3d
+row #1, "Primary leak risk") is fixed centrally and guarded — see the row #1
+amendment in §3d and the "Credential threading" test class in
+`tests/oidc/isolation.test.ts`. Full loop proven live against Vikunja 2.4.0 via
+`npm run test:e2e:oidc` (steps a–e all pass, including a real tool call as the
+provisioned identity and deprovision).
 
 | Item | Size | Scope | Acceptance criteria |
 |---|---|---|---|

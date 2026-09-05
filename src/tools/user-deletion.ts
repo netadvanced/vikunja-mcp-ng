@@ -39,6 +39,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
+import { getAuthManagerFromContext, hasRequestContext } from '../client';
 import { MCPError, ErrorCode } from '../types';
 import { logger } from '../utils/logger';
 import { createAorpResponse } from '../utils/response-factory';
@@ -87,13 +88,21 @@ export function registerUserDeletionTool(
     },
     getToolAnnotations('vikunja_user_deletion'),
     async (args) => {
-      if (!authManager.isAuthenticated()) {
+      // Closure-gate precedence fix: defer to the per-request context when
+      // bound (see hasRequestContext's doc comment, src/client.ts).
+      let effectiveAuthManager = authManager;
+      if (hasRequestContext()) {
+        effectiveAuthManager = await getAuthManagerFromContext();
+      } else if (!authManager.isAuthenticated()) {
         throw new MCPError(
           ErrorCode.AUTH_REQUIRED,
           'Authentication required. Please use vikunja_auth.connect first.',
         );
       }
-      if (authManager.getAuthType() !== 'jwt') {
+      // JWT of the CALLING identity (#282): this tool schedules deletion of
+      // the *session owner's* account, so gating it on anything but the
+      // caller's own resolved credential is a deny-by-default violation.
+      if (effectiveAuthManager.getAuthType() !== 'jwt') {
         throw new MCPError(
           ErrorCode.PERMISSION_DENIED,
           'User deletion operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',
@@ -211,7 +220,10 @@ export function registerUserDeletionTool(
           throw error;
         }
         if (error instanceof Error) {
-          throw new MCPError(ErrorCode.API_ERROR, `User deletion operation failed: ${error.message}`);
+          throw new MCPError(
+            ErrorCode.API_ERROR,
+            `User deletion operation failed: ${error.message}`,
+          );
         }
         throw new MCPError(
           ErrorCode.INTERNAL_ERROR,

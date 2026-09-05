@@ -1,30 +1,60 @@
-# Persistent Storage Architecture
+# Filter Storage Architecture
 
-This document describes the persistent storage implementation for the Vikunja MCP Server's filter storage system.
+**Naming note — this predates a later migration and is no longer accurate for `vikunja_filters`.**
+`vikunja_filters` ("saved filters") is **not** backed by `SimpleFilterStorage` — it's wired
+directly to Vikunja's real server-side `PUT/GET/POST/DELETE /filters*` endpoints (see
+[TOOLS.md § Filter Management](TOOLS.md#filter-management) and
+[OIDC-RESOURCE-SERVER.md](OIDC-RESOURCE-SERVER.md)); a saved filter persists on the Vikunja
+server, survives an MCP restart, and is visible to other Vikunja clients, none of which is
+true of anything in `SimpleFilterStorage`. This file's "Saved filters... live in
+`SimpleFilterStorage`" framing below describes the *pre-migration* architecture. What
+`SimpleFilterStorage` (`src/storage/SimpleFilterStorage.ts`) actually backs today: the
+task-listing tool's own session-scoped filter caching (unrelated to the `vikunja_filters`
+feature), and `vikunja_templates`, whose "Templates are the one durable exception" bullet
+below (opt-in file persistence) is still accurate. The class is still named
+`SimpleFilterStorage` for historical reasons even though it no longer stores saved filters.
 
-> **Current state (post v0.2.0 simplification):** the SQLite/PostgreSQL/Redis backend
-> and adapter machinery described below was the pre-refactoring design and is **not**
-> what ships today. Saved filters are backed by `SimpleFilterStorage`
-> (`src/storage/SimpleFilterStorage.ts`) — in-memory, session-scoped, no persistent
-> backend — see root `CLAUDE.md`'s "Simplified Storage Architecture" section. The one
-> exception is **templates** (`vikunja_templates`): as of the N3-templates-persistence
-> work item, templates support opt-in file-backed JSON persistence layered on top of
-> that same in-memory storage — write-through on every mutation, reload at startup. See
-> `docs/CONFIGURATION.md`'s "Templates Persistence" section for the actual, current
-> mechanism (config key, env var, Docker volume story) and
-> `src/storage/templateFileStore.ts` for the implementation. SQLite itself was
-> evaluated for this work item and parked (native-dependency cost outweighs the need for
-> a single opt-in JSON file) — see `docs/ROADMAP.md`. The rest of this document
-> describes the older, more ambitious multi-backend design that predates the
-> simplification and is retained here for historical/design-reference context only.
+In-memory, session-scoped, mutex-guarded, with no persistent backend (except templates,
+below). **The SQLite/PostgreSQL/Redis adapter design described further
+down is not what ships**: it is the pre-v0.2.0 plan, retained here as design reference
+only. Read "What Ships Today" first; treat everything under "Historical Design" as
+history.
 
-## Overview
+## What Ships Today
 
-The storage system has been enhanced from in-memory only to support multiple persistent backends while maintaining full API compatibility and providing graceful fallback mechanisms.
+- **In-memory, per session.** Each session gets its own `SimpleFilterStorage` instance
+  holding a plain `Map` of filters. Nothing is written to disk and nothing survives a
+  server restart. `getStats()` reports `storageType: 'memory'`; `healthCheck()` is a
+  constant `healthy: true` (there is no backend that could be unhealthy).
+- **Thread safety via `async-mutex`.** Every public operation — `list`, `get`, `create`,
+  `update`, `delete`, `findByName`, `getByProject`, `getStats`, `clear`, `close` —
+  acquires a single per-instance `Mutex` and releases it in a `finally` block, so
+  concurrent tool calls are serialized rather than interleaved.
+- **Session isolation and cleanup.** `FilterStorageManager` (same file) owns one storage
+  instance per session ID behind its own mutex. A timer runs every 60 minutes and evicts
+  any session untouched for 60 minutes; the interval is `unref()`ed so it never keeps the
+  process (or a Jest worker) alive, and `destroy()` runs on `exit`/`SIGINT`/`SIGTERM`.
+  Note that `getAllStats()` reports `memoryUsageKb: 0` for every session — per-session
+  memory accounting was dropped in the simplification and was never reinstated.
+- **Templates are the one durable exception.** `vikunja_templates` uses the same
+  in-memory storage but adds opt-in file-backed JSON persistence: write-through on every
+  mutation, reload at startup, atomic temp-file-plus-rename writes. The config key, env
+  var and Docker volume story are in
+  [CONFIGURATION.md § Templates Persistence](CONFIGURATION.md); the implementation is
+  `src/storage/templateFileStore.ts`. SQLite was evaluated for that work item and parked
+  — the native-dependency cost outweighed the need for a single opt-in JSON file, see
+  [ROADMAP.md](ROADMAP.md).
 
-## Architecture
+## Historical Design: Multi-Backend Storage (pre-v0.2.0)
 
-### Storage Adapter Pattern
+Everything below this line describes the older, more ambitious multi-backend design that
+predates the v0.2.0 simplification. Its environment variables, adapters, SQL schema and
+package subpath imports (`vikunja-mcp-ng/storage`) do **not** exist in the shipped
+codebase. It is kept for context on why the current storage is deliberately small.
+
+### Architecture
+
+#### Storage Adapter Pattern
 
 The storage system uses the Adapter pattern to support multiple backends:
 
@@ -45,35 +75,35 @@ interface StorageAdapter {
 }
 ```
 
-### Supported Storage Backends
+#### Supported Storage Backends
 
-#### 1. In-Memory Storage (Default)
+##### 1. In-Memory Storage (Default)
 - **Type**: `memory`
 - **Use Case**: Development, testing, or when persistence is not required
 - **Features**: Fast, no external dependencies, data lost on restart
 - **Configuration**: No additional configuration required
 
-#### 2. SQLite Storage
+##### 2. SQLite Storage
 - **Type**: `sqlite`
 - **Use Case**: Production deployments with embedded database needs
 - **Features**: Persistent, ACID transactions, no external server required
 - **Configuration**: Requires database file path
 
-#### 3. PostgreSQL Storage (Planned)
+##### 3. PostgreSQL Storage (Planned)
 - **Type**: `postgresql`
 - **Use Case**: Production deployments with external database
 - **Features**: Scalable, concurrent access, enterprise features
 - **Status**: Not yet implemented
 
-#### 4. Redis Storage (Planned)
+##### 4. Redis Storage (Planned)
 - **Type**: `redis`
 - **Use Case**: High-performance caching with persistence
 - **Features**: In-memory performance with optional persistence
 - **Status**: Not yet implemented
 
-## Configuration
+### Configuration
 
-### Environment Variables
+#### Environment Variables
 
 Configure storage using environment variables:
 
@@ -97,14 +127,14 @@ export VIKUNJA_MCP_STORAGE_TIMEOUT=5000
 export VIKUNJA_MCP_STORAGE_DEBUG=true
 ```
 
-### Default Paths
+#### Default Paths
 
 If no database path is specified for SQLite, the following default locations are used:
 
 - **Linux/macOS**: `$XDG_DATA_HOME/vikunja-mcp/filters.db` or `~/.local/share/vikunja-mcp/filters.db`
 - **Windows**: `%APPDATA%/vikunja-mcp/filters.db`
 
-### Programmatic Configuration
+#### Programmatic Configuration
 
 ```typescript
 import { createStorageConfig, createFilterStorage } from 'vikunja-mcp-ng/storage';
@@ -121,9 +151,9 @@ const config = createStorageConfig({
 const storage = await createFilterStorage('session-id', 'user-id', 'api-url');
 ```
 
-## Features
+### Features
 
-### Session Isolation
+#### Session Isolation
 
 Each storage session is completely isolated from others:
 
@@ -138,7 +168,7 @@ await storage2.create({ name: 'Filter 1', filter: 'priority = 1', isGlobal: fals
 // Both operations succeed - names can be duplicated across sessions
 ```
 
-### Thread Safety
+#### Thread Safety
 
 All storage operations are thread-safe using mutex locks:
 
@@ -156,19 +186,19 @@ const results = await Promise.all(promises);
 // All 10 filters are created successfully
 ```
 
-### Error Handling and Recovery
+#### Error Handling and Recovery
 
-#### Automatic Recovery
+##### Automatic Recovery
 - **Database Corruption**: Automatic integrity checks and repair attempts
 - **Connection Loss**: Automatic reconnection with exponential backoff
 - **Backup Creation**: Automatic backups before recovery operations
 
-#### Graceful Degradation
+##### Graceful Degradation
 - **Persistent Storage Failure**: Automatic fallback to in-memory storage
 - **Configuration Errors**: Default to memory storage with warnings
 - **Partial Failures**: Continue operating with reduced functionality
 
-### Health Monitoring
+#### Health Monitoring
 
 ```typescript
 const healthCheck = await storage.healthCheck();
@@ -188,9 +218,9 @@ if (healthCheck.healthy) {
 }
 ```
 
-## Database Schema
+### Database Schema
 
-### SQLite Schema
+#### SQLite Schema
 
 ```sql
 -- Schema version tracking
@@ -222,7 +252,7 @@ CREATE INDEX idx_saved_filters_project ON saved_filters(session_id, project_id);
 CREATE INDEX idx_saved_filters_updated ON saved_filters(session_id, updated DESC);
 ```
 
-### Schema Migrations
+#### Schema Migrations
 
 The system supports automatic schema migrations:
 
@@ -242,9 +272,9 @@ const status = migrationRunner.getStatus();
 console.log(`Current: ${status.currentVersion}, Latest: ${status.latestVersion}`);
 ```
 
-## Usage Examples
+### Usage Examples
 
-### Basic Usage
+#### Basic Usage
 
 ```typescript
 import { createFilterStorage } from 'vikunja-mcp-ng/storage';
@@ -282,7 +312,7 @@ const projectFilters = await storage.getByProject(123);
 await storage.delete(filter.id);
 ```
 
-### Advanced Usage
+#### Advanced Usage
 
 ```typescript
 import { 
@@ -311,7 +341,7 @@ if (migration.success) {
 }
 ```
 
-### Custom Storage Adapter
+#### Custom Storage Adapter
 
 ```typescript
 import { StorageAdapter, StorageSession, SavedFilter } from 'vikunja-mcp-ng/storage';
@@ -333,32 +363,32 @@ import { storageAdapterFactory } from 'vikunja-mcp-ng/storage';
 // Custom registration would require extending the factory
 ```
 
-## Performance Considerations
+### Performance Considerations
 
-### SQLite Optimizations
+#### SQLite Optimizations
 
 - **WAL Mode**: Enabled by default for better concurrency
 - **Prepared Statements**: All queries use prepared statements for performance
 - **Connection Pooling**: Reuse connections across operations
 - **Indexes**: Optimized indexes for common query patterns
 
-### Memory Usage
+#### Memory Usage
 
 - **Automatic Cleanup**: Inactive sessions are cleaned up after 1 hour
 - **Memory Monitoring**: Track memory usage with statistics
 - **Lazy Loading**: Initialize storage only when needed
 
-### Scaling
+#### Scaling
 
 - **Session Isolation**: Each session operates independently
 - **Concurrent Operations**: Thread-safe operations with mutex locks
 - **Batch Operations**: Efficient bulk operations where possible
 
-## Troubleshooting
+### Troubleshooting
 
-### Common Issues
+#### Common Issues
 
-#### Database Locked Errors
+##### Database Locked Errors
 ```bash
 # Check for other processes using the database
 lsof /path/to/database.db
@@ -367,7 +397,7 @@ lsof /path/to/database.db
 export VIKUNJA_MCP_STORAGE_DEBUG=true
 ```
 
-#### Permission Errors
+##### Permission Errors
 ```bash
 # Ensure directory exists and is writable
 mkdir -p ~/.local/share/vikunja-mcp
@@ -377,7 +407,7 @@ chmod 755 ~/.local/share/vikunja-mcp
 ls -la ~/.local/share/vikunja-mcp/filters.db
 ```
 
-#### Memory Storage Fallback
+##### Memory Storage Fallback
 ```bash
 # Check logs for storage initialization errors
 export VIKUNJA_MCP_STORAGE_DEBUG=true
@@ -386,7 +416,7 @@ export VIKUNJA_MCP_STORAGE_DEBUG=true
 env | grep VIKUNJA_MCP_STORAGE
 ```
 
-### Debug Logging
+#### Debug Logging
 
 Enable debug logging to troubleshoot issues:
 
@@ -401,9 +431,9 @@ Debug logs include:
 - Recovery attempts
 - Performance metrics
 
-## Migration Guide
+### Migration Guide
 
-### From In-Memory to Persistent Storage
+#### From In-Memory to Persistent Storage
 
 1. **Stop the MCP server**
 2. **Configure persistent storage**:
@@ -417,9 +447,9 @@ Debug logs include:
    const result = await migrateMemoryToPersistent();
    ```
 
-### Backup and Restore
+#### Backup and Restore
 
-#### Create Backup
+##### Create Backup
 ```bash
 # SQLite backup
 cp /path/to/filters.db /path/to/backup/filters.db.backup
@@ -428,7 +458,7 @@ cp /path/to/filters.db /path/to/backup/filters.db.backup
 sqlite3 /path/to/filters.db ".backup /path/to/backup/filters.db.backup"
 ```
 
-#### Restore from Backup
+##### Restore from Backup
 ```bash
 # Stop the server
 # Replace database file
@@ -436,26 +466,26 @@ cp /path/to/backup/filters.db.backup /path/to/filters.db
 # Start the server
 ```
 
-## Security Considerations
+### Security Considerations
 
-### File Permissions
+#### File Permissions
 - Database files should have restricted permissions (600 or 640)
 - Database directory should be owned by the service user
 - Backup files should be stored securely
 
-### Data Encryption
+#### Data Encryption
 - Consider filesystem-level encryption for sensitive data
 - SQLite databases are stored as plain files
 - Network connections (PostgreSQL/Redis) should use TLS
 
-### Access Control
+#### Access Control
 - Session isolation prevents cross-session data access
 - No built-in user authentication (handled by MCP layer)
 - Consider network-level access controls for external databases
 
-## Future Enhancements
+### Future Enhancements
 
-### Planned Features
+#### Planned Features
 - **PostgreSQL Support**: Full implementation with connection pooling
 - **Redis Support**: High-performance caching with optional persistence
 - **Encryption at Rest**: Built-in database encryption
@@ -463,15 +493,15 @@ cp /path/to/backup/filters.db.backup /path/to/filters.db
 - **Metrics**: Prometheus metrics for monitoring
 - **Compression**: Optional compression for large filter expressions
 
-### Performance Improvements
+#### Performance Improvements
 - **Query Optimization**: Advanced indexing strategies
 - **Caching Layer**: Multi-level caching for frequently accessed data
 - **Bulk Operations**: Efficient batch insert/update operations
 - **Connection Pooling**: Advanced connection management
 
-## Contributing
+### Contributing
 
-### Adding New Storage Backends
+#### Adding New Storage Backends
 
 1. **Implement StorageAdapter interface**
 2. **Add configuration support**
@@ -479,20 +509,21 @@ cp /path/to/backup/filters.db.backup /path/to/filters.db
 4. **Update factory**
 5. **Add documentation**
 
-### Testing
+#### Testing
 
 ```bash
 # Run storage tests
 npm test tests/storage/
 
-# Run specific test file
-npm test tests/storage/persistent-storage.test.ts
+# Run specific test file (current suites: FilterSerializer, storage-integration,
+# templateFileStore — there is no persistent-storage suite, per the note at the top)
+npm test tests/storage/storage-integration.test.ts
 
 # Run with coverage
 npm run test:coverage
 ```
 
-### Debugging
+#### Debugging
 
 Use the debug utilities:
 

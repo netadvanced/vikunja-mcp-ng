@@ -25,6 +25,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
+import { getAuthManagerFromContext, hasRequestContext } from '../client';
 import { MCPError, ErrorCode } from '../types';
 import { logger } from '../utils/logger';
 import { validateAndConvertId } from '../utils/validation';
@@ -117,20 +118,30 @@ export function registerAdminTool(
       confirm: z
         .boolean()
         .optional()
-        .describe('Must be true to perform delete-user — this operation is irreversible in "now" mode.'),
+        .describe(
+          'Must be true to perform delete-user — this operation is irreversible in "now" mode.',
+        ),
       status: z
         .enum(['active', 'email-confirmation-required', 'disabled', 'account-locked'])
         .optional(),
     },
     getToolAnnotations('vikunja_admin'),
     async (args) => {
-      if (!authManager.isAuthenticated()) {
+      // Closure-gate precedence fix: defer to the per-request context when
+      // bound (see hasRequestContext's doc comment, src/client.ts).
+      let effectiveAuthManager = authManager;
+      if (hasRequestContext()) {
+        effectiveAuthManager = await getAuthManagerFromContext();
+      } else if (!authManager.isAuthenticated()) {
         throw new MCPError(
           ErrorCode.AUTH_REQUIRED,
           'Authentication required. Please use vikunja_auth.connect first.',
         );
       }
-      if (authManager.getAuthType() !== 'jwt') {
+      // JWT of the CALLING identity (#282), not of the process-global
+      // closure manager — which in oidc-http mode may carry an unrelated
+      // legacy env credential.
+      if (effectiveAuthManager.getAuthType() !== 'jwt') {
         throw new MCPError(
           ErrorCode.PERMISSION_DENIED,
           'Admin operations require JWT authentication. Please reconnect using vikunja_auth.connect with JWT authentication.',
@@ -251,9 +262,15 @@ export function registerAdminTool(
             if (args.name !== undefined) body.name = args.name;
             if (args.language !== undefined) body.language = args.language;
             if (args.isAdmin !== undefined) body.is_admin = args.isAdmin;
-            if (args.skipEmailConfirm !== undefined) body.skip_email_confirm = args.skipEmailConfirm;
+            if (args.skipEmailConfirm !== undefined)
+              body.skip_email_confirm = args.skipEmailConfirm;
 
-            const user = await vikunjaRestRequest<AdminUser>(authManager, 'POST', '/admin/users', body);
+            const user = await vikunjaRestRequest<AdminUser>(
+              authManager,
+              'POST',
+              '/admin/users',
+              body,
+            );
 
             logger.info('Created user (admin)', { userId: user.id, username: user.username });
 
@@ -280,7 +297,11 @@ export function registerAdminTool(
             if (args.mode !== undefined) query.set('mode', args.mode);
             const qs = query.toString();
 
-            await vikunjaRestRequest(authManager, 'DELETE', `/admin/users/${userId}${qs ? `?${qs}` : ''}`);
+            await vikunjaRestRequest(
+              authManager,
+              'DELETE',
+              `/admin/users/${userId}${qs ? `?${qs}` : ''}`,
+            );
 
             logger.info('Deleted user (admin)', { userId, mode: args.mode ?? 'scheduled' });
 
@@ -362,7 +383,10 @@ export function registerAdminTool(
         if (error instanceof Error) {
           throw new MCPError(ErrorCode.API_ERROR, `Admin operation failed: ${error.message}`);
         }
-        throw new MCPError(ErrorCode.INTERNAL_ERROR, 'An unexpected error occurred during admin operation');
+        throw new MCPError(
+          ErrorCode.INTERNAL_ERROR,
+          'An unexpected error occurred during admin operation',
+        );
       }
     },
   );

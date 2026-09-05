@@ -88,9 +88,6 @@ describe('add-reminder persists the `reminder` API field', () => {
     const body = JSON.parse((postCalls[0]?.[1] as RequestInit).body as string) as {
       reminders: Array<Record<string, unknown>>;
     };
-    expect(body.reminders).toEqual([
-      { reminder: '2027-01-01T00:00:00Z' },
-      { reminder: NEW_DATE },
-    ]);
+    expect(body.reminders).toEqual([{ reminder: '2027-01-01T00:00:00Z' }, { reminder: NEW_DATE }]);
   });
 });

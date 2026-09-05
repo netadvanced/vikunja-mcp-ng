@@ -152,7 +152,9 @@ describe('Label operations', () => {
         if (init?.method === 'PUT') {
           putCalls += 1;
           if (putCalls === 1) {
-            return Promise.resolve(restError(400, 'Bad Request', 'This label already exists on the task'));
+            return Promise.resolve(
+              restError(400, 'Bad Request', 'This label already exists on the task'),
+            );
           }
           return Promise.resolve(restOk({}));
         }
@@ -252,7 +254,11 @@ describe('Label operations', () => {
         const parsed = new URL(url);
 
         // Label title search: GET /labels?s=<title>
-        if (method === 'GET' && parsed.pathname.endsWith('/labels') && parsed.searchParams.has('s')) {
+        if (
+          method === 'GET' &&
+          parsed.pathname.endsWith('/labels') &&
+          parsed.searchParams.has('s')
+        ) {
           const searched = parsed.searchParams.get('s') ?? '';
           const match = Object.values(existingLabelsByTitle).find(
             (label) => label.title.toLowerCase() === searched.toLowerCase(),
@@ -292,7 +298,8 @@ describe('Label operations', () => {
       // No PUT /labels (create) call — only the apply PUT.
       const createCalls = fetchMock.mock.calls.filter(
         ([url, init]) =>
-          (init as RequestInit)?.method === 'PUT' && new URL(url as string).pathname === '/api/v1/labels',
+          (init as RequestInit)?.method === 'PUT' &&
+          new URL(url as string).pathname === '/api/v1/labels',
       );
       expect(createCalls).toHaveLength(0);
       const applyCalls = fetchMock.mock.calls.filter(
@@ -300,7 +307,9 @@ describe('Label operations', () => {
           (init as RequestInit)?.method === 'PUT' && /\/tasks\/1\/labels$/.test(url as string),
       );
       expect(applyCalls).toHaveLength(1);
-      expect(JSON.parse((applyCalls[0]?.[1] as RequestInit).body as string)).toEqual({ label_id: 7 });
+      expect(JSON.parse((applyCalls[0]?.[1] as RequestInit).body as string)).toEqual({
+        label_id: 7,
+      });
       expect(result.content[0].text).toContain('Label applied to task successfully');
       expect(result.content[0].text).toContain('reused');
       expect(result.content[0].text).toContain('Bug');
@@ -314,7 +323,8 @@ describe('Label operations', () => {
 
       const createCalls = fetchMock.mock.calls.filter(
         ([url, init]) =>
-          (init as RequestInit)?.method === 'PUT' && new URL(url as string).pathname === '/api/v1/labels',
+          (init as RequestInit)?.method === 'PUT' &&
+          new URL(url as string).pathname === '/api/v1/labels',
       );
       expect(createCalls).toHaveLength(1);
       const applyCalls = fetchMock.mock.calls.filter(
@@ -322,7 +332,9 @@ describe('Label operations', () => {
           (init as RequestInit)?.method === 'PUT' && /\/tasks\/1\/labels$/.test(url as string),
       );
       expect(applyCalls).toHaveLength(1);
-      expect(JSON.parse((applyCalls[0]?.[1] as RequestInit).body as string)).toEqual({ label_id: 55 });
+      expect(JSON.parse((applyCalls[0]?.[1] as RequestInit).body as string)).toEqual({
+        label_id: 55,
+      });
       expect(result.content[0].text).toContain('created');
       expect(result.content[0].text).toContain('Urgent');
     });
@@ -333,7 +345,10 @@ describe('Label operations', () => {
       });
       globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-      const result = await applyLabels({ id: 1, labels: [9], labelTitles: ['research'] }, authManager);
+      const result = await applyLabels(
+        { id: 1, labels: [9], labelTitles: ['research'] },
+        authManager,
+      );
 
       const applyCalls = fetchMock.mock.calls.filter(
         ([url, init]) =>
@@ -353,7 +368,10 @@ describe('Label operations', () => {
       });
       globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-      const result = await applyLabels({ id: 1, labels: [9], labelTitles: ['research'] }, authManager);
+      const result = await applyLabels(
+        { id: 1, labels: [9], labelTitles: ['research'] },
+        authManager,
+      );
 
       // id 9 appears both directly and via the resolved title — must only be
       // applied once.
@@ -362,15 +380,17 @@ describe('Label operations', () => {
           (init as RequestInit)?.method === 'PUT' && /\/tasks\/1\/labels$/.test(url as string),
       );
       expect(applyCalls).toHaveLength(1);
-      expect(JSON.parse((applyCalls[0]?.[1] as RequestInit).body as string)).toEqual({ label_id: 9 });
+      expect(JSON.parse((applyCalls[0]?.[1] as RequestInit).body as string)).toEqual({
+        label_id: 9,
+      });
       expect(result.content[0].text).toContain('Label applied to task successfully');
     });
 
     it('throws a validation error when neither labels nor labelTitles is provided', async () => {
       await expect(applyLabels({ id: 1 }, authManager)).rejects.toThrow(MCPError);
-      await expect(applyLabels({ id: 1, labels: [], labelTitles: [] }, authManager)).rejects.toThrow(
-        /label id.*label title|At least one/i,
-      );
+      await expect(
+        applyLabels({ id: 1, labels: [], labelTitles: [] }, authManager),
+      ).rejects.toThrow(/label id.*label title|At least one/i);
     });
   });
 
@@ -410,7 +430,11 @@ describe('Label operations', () => {
       fetchMock.mockImplementation((url: string, init?: RequestInit) => {
         const method = init?.method;
         const parsed = new URL(url);
-        if (method === 'GET' && parsed.pathname.endsWith('/labels') && parsed.searchParams.has('s')) {
+        if (
+          method === 'GET' &&
+          parsed.pathname.endsWith('/labels') &&
+          parsed.searchParams.has('s')
+        ) {
           searchCalls += 1;
           return Promise.resolve(restOk([]));
         }
@@ -687,6 +711,20 @@ describe('Label operations', () => {
         expect.objectContaining({ method: 'GET' }),
       );
       expect(result.content[0].text).toContain('Task has 1 label(s)');
+    });
+
+    // Regression for issue #289 / HIGH-18 spot-check: this call site never
+    // exposed page/perPage to its caller at all, so a full page could never
+    // be told apart from "that's every label on the task" without this
+    // signal.
+    it('warns when the labels page comes back exactly at the server page cap', async () => {
+      fetchMock.mockResolvedValue(
+        restOk(Array.from({ length: 50 }, (_, i) => ({ id: i + 1, title: `label${i + 1}` }))),
+      );
+      const result = await listTaskLabels({ id: 1 }, authManager);
+
+      expect(result.content[0].text).toContain('INCOMPLETE RESULT');
+      expect(result.content[0].text).toContain('Task has 50 label(s)');
     });
 
     it('should throw error if task id is missing', async () => {

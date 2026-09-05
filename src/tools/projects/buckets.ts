@@ -20,7 +20,11 @@ import type { AuthManager } from '../../auth/AuthManager';
 import { MCPError, ErrorCode } from '../../types';
 import { validateId } from '../../utils/validation';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
-import { vikunjaRestRequest, resolveKanbanView, resolveKanbanViewId } from '../../utils/vikunja-rest';
+import {
+  vikunjaRestRequest,
+  resolveKanbanView,
+  resolveKanbanViewId,
+} from '../../utils/vikunja-rest';
 import type { components } from '../../types/generated/vikunja-openapi';
 
 export interface ListBucketsArgs {
@@ -341,7 +345,9 @@ export async function createBucket(
   const viewId =
     args.viewId !== undefined ? args.viewId : await resolveKanbanViewId(authManager, args.id);
 
-  const bucketFields: { title: string; limit?: number; position?: number } = { title: args.title.trim() };
+  const bucketFields: { title: string; limit?: number; position?: number } = {
+    title: args.title.trim(),
+  };
   if (args.limit !== undefined) bucketFields.limit = args.limit;
   if (args.position !== undefined) bucketFields.position = args.position;
 
@@ -357,7 +363,12 @@ export async function createBucket(
     {
       projectId: args.id,
       viewId,
-      bucket: { id: bucket.id, title: bucket.title, position: bucket.position, limit: bucket.limit },
+      bucket: {
+        id: bucket.id,
+        title: bucket.title,
+        position: bucket.position,
+        limit: bucket.limit,
+      },
     },
     {
       timestamp: new Date().toISOString(),

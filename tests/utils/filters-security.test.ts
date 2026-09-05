@@ -11,7 +11,7 @@ describe('Filter Security Tests', () => {
     it('should reject extremely long filter strings', () => {
       const longString = 'done = false'.repeat(100); // > 1000 chars
       const result = parseFilterString(longString);
-      
+
       expect(result.expression).toBeNull();
       expect(result.error).toBeDefined();
       expect(result.error?.message).toContain('Filter string too long');
@@ -23,18 +23,19 @@ describe('Filter Security Tests', () => {
       const conditions = [];
       let totalLength = 0;
       let i = 0;
-      
-      while (totalLength < 950) { // Leave room for the final condition
+
+      while (totalLength < 950) {
+        // Leave room for the final condition
         const condition = `priority = ${i}`;
         if (totalLength + condition.length + 4 > 950) break; // +4 for " || "
         conditions.push(condition);
         totalLength += condition.length + 4;
         i++;
       }
-      
+
       const filterStr = conditions.join(' || ');
       expect(filterStr.length).toBeLessThanOrEqual(1000);
-      
+
       const result = parseFilterString(filterStr);
       expect(result.error).toBeUndefined();
       expect(result.expression).not.toBeNull();
@@ -44,9 +45,9 @@ describe('Filter Security Tests', () => {
       // Create a string just over 1000 characters
       const baseCondition = 'done = false && priority >= 3 && ';
       const longString = baseCondition.repeat(35); // Should be over 1000 chars
-      
+
       expect(longString.length).toBeGreaterThan(1000);
-      
+
       const result = parseFilterString(longString);
       expect(result.expression).toBeNull();
       expect(result.error).toBeDefined();
@@ -62,12 +63,14 @@ describe('Filter Security Tests', () => {
         'priority >= 3[injection]',
       ];
 
-      maliciousInputs.forEach(input => {
+      maliciousInputs.forEach((input) => {
         const result = parseFilterString(input);
         expect(result.expression).toBeNull();
         expect(result.error).toBeDefined();
         // Security is working - dangerous inputs are rejected at different validation stages
-        expect(result.error?.message).toMatch(/Invalid number|Unexpected token|Invalid filter syntax/);
+        expect(result.error?.message).toMatch(
+          /Invalid number|Unexpected token|Invalid filter syntax/,
+        );
       });
     });
 
@@ -76,16 +79,18 @@ describe('Filter Security Tests', () => {
         'done = false; DROP TABLE tasks;',
         'title = "test"; DELETE FROM users;',
         'done = false UNION SELECT * FROM passwords',
-        "assignees in (SELECT * FROM secrets)",
+        'assignees in (SELECT * FROM secrets)',
         'priority = 3; --comment',
       ];
 
-      sqlInjectionInputs.forEach(input => {
+      sqlInjectionInputs.forEach((input) => {
         const result = parseFilterString(input);
         expect(result.expression).toBeNull();
         expect(result.error).toBeDefined();
         // Security is working - dangerous inputs are rejected at different validation stages
-        expect(result.error?.message).toMatch(/Unexpected token|Invalid number|Invalid filter syntax|Expected condition after logical operator|invalid characters|Expected value/);
+        expect(result.error?.message).toMatch(
+          /Unexpected token|Invalid number|Invalid filter syntax|Expected condition after logical operator|invalid characters|Expected value/,
+        );
       });
     });
 
@@ -97,12 +102,14 @@ describe('Filter Security Tests', () => {
         'priority >= 3 && echo[pwned]',
       ];
 
-      commandInjectionInputs.forEach(input => {
+      commandInjectionInputs.forEach((input) => {
         const result = parseFilterString(input);
         expect(result.expression).toBeNull();
         expect(result.error).toBeDefined();
         // May fail at different validation stages
-        expect(result.error?.message).toMatch(/Unexpected token|Invalid number|Invalid filter syntax|Expected condition after logical operator|invalid characters|Expected value/);
+        expect(result.error?.message).toMatch(
+          /Unexpected token|Invalid number|Invalid filter syntax|Expected condition after logical operator|invalid characters|Expected value/,
+        );
       });
     });
 
@@ -113,25 +120,27 @@ describe('Filter Security Tests', () => {
         'priority = <%=injection%>',
       ];
 
-      templateInjectionInputs.forEach(input => {
+      templateInjectionInputs.forEach((input) => {
         const result = parseFilterString(input);
         expect(result.expression).toBeNull();
         expect(result.error).toBeDefined();
         // May fail at different validation stages
-        expect(result.error?.message).toMatch(/invalid characters|Expected value|Invalid filter syntax|Invalid number|Expected condition after logical operator/);
+        expect(result.error?.message).toMatch(
+          /invalid characters|Expected value|Invalid filter syntax|Invalid number|Expected condition after logical operator/,
+        );
       });
     });
 
     it('should reject control characters and unusual Unicode', () => {
       const controlCharInputs = [
-        'done = false' + String.fromCharCode(0x007F), // DEL character
-        'priority = 3' + String.fromCharCode(0x202E), // Unicode direction override
-        'title = "test' + String.fromCharCode(0x200B) + '"', // Zero-width space
-        'done = false' + String.fromCharCode(0xFEFF), // Byte order mark 
-        'priority = 3' + String.fromCharCode(0x001F), // Unit separator
+        'done = false' + String.fromCharCode(0x007f), // DEL character
+        'priority = 3' + String.fromCharCode(0x202e), // Unicode direction override
+        'title = "test' + String.fromCharCode(0x200b) + '"', // Zero-width space
+        'done = false' + String.fromCharCode(0xfeff), // Byte order mark
+        'priority = 3' + String.fromCharCode(0x001f), // Unit separator
       ];
 
-      controlCharInputs.forEach(input => {
+      controlCharInputs.forEach((input) => {
         const result = parseFilterString(input);
         expect(result.expression).toBeNull();
         expect(result.error).toBeDefined();
@@ -148,7 +157,7 @@ describe('Filter Security Tests', () => {
         'title = "测试"', // Chinese characters
       ];
 
-      validInternationalInputs.forEach(input => {
+      validInternationalInputs.forEach((input) => {
         const result = parseFilterString(input);
         // These should parse successfully without security errors
         // (though they may have other parsing errors depending on syntax)
@@ -186,7 +195,7 @@ describe('Filter Security Tests', () => {
       // Create a long but acceptable value
       const longValue = 'a'.repeat(100);
       const filterStr = `title = "${longValue}"`;
-      
+
       const result = parseFilterString(filterStr);
       expect(result.error).toBeUndefined();
       expect(result.expression).not.toBeNull();
@@ -206,7 +215,7 @@ describe('Filter Security Tests', () => {
         'assignees in "user1", "user2{evil}"',
       ];
 
-      mixedInputs.forEach(input => {
+      mixedInputs.forEach((input) => {
         const result = parseFilterString(input);
         expect(result.error).toBeUndefined();
         expect(result.expression).not.toBeNull();
@@ -225,7 +234,7 @@ describe('Filter Security Tests', () => {
         '"', // Just quote
       ];
 
-      edgeCases.forEach(input => {
+      edgeCases.forEach((input) => {
         const result = parseFilterString(input);
         // These should either parse successfully or fail for syntax reasons,
         // but not for character validation reasons
@@ -238,26 +247,20 @@ describe('Filter Security Tests', () => {
     it('should handle null and undefined inputs safely', () => {
       expect(() => parseFilterString(null as any)).not.toThrow();
       expect(() => parseFilterString(undefined as any)).not.toThrow();
-      
+
       const nullResult = parseFilterString(null as any);
       expect(nullResult.expression).toBeNull();
       expect(nullResult.error).toBeDefined();
-      
+
       const undefinedResult = parseFilterString(undefined as any);
       expect(undefinedResult.expression).toBeNull();
       expect(undefinedResult.error).toBeDefined();
     });
 
     it('should handle non-string inputs gracefully', () => {
-      const nonStringInputs = [
-        123,
-        {},
-        [],
-        true,
-        false,
-      ];
+      const nonStringInputs = [123, {}, [], true, false];
 
-      nonStringInputs.forEach(input => {
+      nonStringInputs.forEach((input) => {
         expect(() => parseFilterString(input as any)).not.toThrow();
         const result = parseFilterString(input as any);
         expect(result.expression).toBeNull();
@@ -274,7 +277,7 @@ describe('Filter Security Tests', () => {
         'title = "test＜script＞"', // Fullwidth characters
       ];
 
-      unicodeBypassInputs.forEach(input => {
+      unicodeBypassInputs.forEach((input) => {
         const result = parseFilterString(input);
         expect(result.expression).toBeNull();
         expect(result.error).toBeDefined();
@@ -289,7 +292,7 @@ describe('Filter Security Tests', () => {
         'priority = 3{injection}', // same - `{injection}` gets swept into the numeric token and fails Number()
       ];
 
-      rejectedInputs.forEach(input => {
+      rejectedInputs.forEach((input) => {
         const result = parseFilterString(input);
         expect(result.expression).toBeNull();
         expect(result.error).toBeDefined();
@@ -309,7 +312,7 @@ describe('Filter Security Tests', () => {
         'done = false`injection`', // boolean field: non-"true" string coerces to `false`
       ];
 
-      acceptedInputs.forEach(input => {
+      acceptedInputs.forEach((input) => {
         const result = parseFilterString(input);
         expect(result.error).toBeUndefined();
         expect(result.expression).not.toBeNull();
@@ -323,12 +326,14 @@ describe('Filter Security Tests', () => {
         'title = "test"<!-- comment -->{script}',
       ];
 
-      commentBypassInputs.forEach(input => {
+      commentBypassInputs.forEach((input) => {
         const result = parseFilterString(input);
         expect(result.expression).toBeNull();
         expect(result.error).toBeDefined();
         // Security is working - dangerous characters are blocked
-        expect(result.error?.message).toMatch(/Unexpected token|Invalid number|Invalid filter syntax|Expected condition after logical operator|invalid characters|Expected value/);
+        expect(result.error?.message).toMatch(
+          /Unexpected token|Invalid number|Invalid filter syntax|Expected condition after logical operator|invalid characters|Expected value/,
+        );
       });
     });
   });
@@ -339,14 +344,14 @@ describe('Filter Security Tests', () => {
       const openParens = '('.repeat(50);
       const closeParens = ')'.repeat(50);
       const filterStr = `${openParens}done = false${closeParens}`;
-      
+
       const startTime = Date.now();
       const result = parseFilterString(filterStr);
       const parseTime = Date.now() - startTime;
-      
+
       // Should complete quickly even if it fails parsing
       expect(parseTime).toBeLessThan(100);
-      
+
       // May succeed or fail, but shouldn't hang
       expect(result).toBeDefined();
     });
@@ -356,11 +361,11 @@ describe('Filter Security Tests', () => {
       const pattern = 'done = false || ';
       const repeatedPattern = pattern.repeat(50);
       const filterStr = repeatedPattern + 'priority = 3';
-      
+
       const startTime = Date.now();
       const result = parseFilterString(filterStr);
       const parseTime = Date.now() - startTime;
-      
+
       // Should complete quickly (increased from 100ms to 200ms for CI stability)
       expect(parseTime).toBeLessThan(200);
       expect(result).toBeDefined();
@@ -374,11 +379,11 @@ describe('Filter Security Tests', () => {
         'priority' + '='.repeat(100) + '3',
       ];
 
-      regexDoSInputs.forEach(input => {
+      regexDoSInputs.forEach((input) => {
         const startTime = Date.now();
         const result = parseFilterString(input);
         const parseTime = Date.now() - startTime;
-        
+
         // Should complete quickly even if rejected
         expect(parseTime).toBeLessThan(100);
         expect(result).toBeDefined();

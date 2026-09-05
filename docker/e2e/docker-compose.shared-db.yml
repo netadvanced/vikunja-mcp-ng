@@ -1,0 +1,69 @@
+# PER-TARGET OVERLAY for the shared-Postgres lanes (issue #254).
+#
+# Passed as a second `-f` by docker/e2e/bootstrap.sh only when the resolved
+# target's `dbMode` is `shared` (see scripts/lib/e2e-target.ts). Without it
+# this file is never read, so the dedicated-Postgres lanes (2.3.0, 2.4.0) and
+# every sqlite lane are byte-for-byte unaffected — the same opt-in idiom as
+# docker-compose.oidc.yml.
+#
+# WHY A THIRD SERVICE BLOCK rather than re-pointing `vikunja`. The base file's
+# `vikunja` service declares `depends_on: {db: {condition: service_healthy}}`.
+# Compose merges `depends_on` maps by key, so an overlay can add entries but
+# cannot delete one — re-pointing `vikunja` would still drag its dedicated
+# `db` container up. That is the same constraint that already forced two
+# service blocks for the sqlite variant (see the base file's comment); this is
+# the third arm of it.
+#
+# The shared server lives in another Compose project, so `depends_on` cannot
+# reach it at all. bootstrap.sh brings that project up with `--wait` (its own
+# healthcheck) and creates this target's database before touching this stack.
+services:
+  # The base file gates the files-volume chown helper on the two original
+  # profiles; extend it to this one. (Compose replaces, rather than merges,
+  # a `profiles` list — so this must repeat the base values.)
+  files-init:
+    profiles: [postgres, sqlite, postgres-shared]
+
+  # Postgres-backed variant using the SHARED server: same image, ports and
+  # files volume as the base `vikunja` service, but no dedicated `db`
+  # dependency and a per-target database name inside one server.
+  vikunja-shared:
+    image: vikunja/vikunja:${VIKUNJA_VERSION:-2.6.0}
+    restart: unless-stopped
+    profiles: [postgres-shared]
+    depends_on:
+      files-init:
+        condition: service_completed_successfully
+    environment:
+      VIKUNJA_DATABASE_TYPE: postgres
+      # Resolved over the shared external network below; `shared-db` is the
+      # service name in docker-compose.shared-db-server.yml.
+      VIKUNJA_DATABASE_HOST: shared-db
+      VIKUNJA_DATABASE_USER: vikunja
+      VIKUNJA_DATABASE_PASSWORD: vikunja
+      VIKUNJA_DATABASE_DATABASE: ${E2E_DB_NAME:-vikunja_shared}
+      # Local-only, throwaway secret — identical to the base file's, see the
+      # comment there.
+      VIKUNJA_SERVICE_SECRET: 'e2e-local-only-not-for-production-use'
+      VIKUNJA_SERVICE_PUBLICURL: 'http://localhost:${E2E_PORT:-8260}'
+      VIKUNJA_SERVICE_ENABLEREGISTRATION: 'false'
+    ports:
+      - '${E2E_PORT:-8260}:3456'
+    volumes:
+      - vikunja-mcp-e2e-files:/app/vikunja/files
+    networks:
+      - default
+      - shared-db
+    healthcheck:
+      test: ['CMD', '/app/vikunja/vikunja', 'healthcheck']
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+networks:
+  # Created by the shared-db server project; bootstrap.sh always brings that
+  # project up first, so by the time this stack starts the network exists.
+  shared-db:
+    name: vikunja-e2e-shared-db-net
+    external: true
