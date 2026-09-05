@@ -173,8 +173,8 @@ full v2 equivalents.
 
 | MCP function | v1 call(s) | v2 call(s) | Planned | Notes |
 |---|---|---|---|---|
-| `vikunja_projects update` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH /projects/{id}` | **v2 →v1** | **SHIPPED.** PATCH removes the merge, not the fetch: the read is still needed for hierarchy validation. No `minVersion` floor, project PATCH works on 2.4.0 |
-| `vikunja_projects archive` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | **SHIPPED.** One-field patch; the read still answers "already archived" |
+| `vikunja_projects update` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH /projects/{id}` | **v2 →v1** | **SHIPPED.** PATCH removes the merge, not the fetch: the read is still needed for hierarchy validation. No `minVersion` floor, project PATCH works on 2.4.0. `max_permission` is stripped on **both** strategies, not just the v2 one: unlike task/team/filter it is not a v2-only field, and the two APIs disagree on the value (v1 `0`, v2 `PATCH` `null` on 2.4.0/2.5.0), so stripping only v2 would have swapped one caller-visible divergence for another. See `src/tools/projects/update/canonical.ts` |
+| `vikunja_projects archive` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | **SHIPPED.** One-field patch; the read still answers "already archived". Shares `ProjectUpdateContext` with `update`, so it inherits the same `max_permission` stripping on both paths |
 | `vikunja_projects unarchive` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | **SHIPPED.** As archive |
 | `vikunja_projects move` | `GET /projects` (fetch-all); `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | **SHIPPED.** `parent_project_id` is always sent, `0` for root, because an omitted parent here means move-to-root |
 | `vikunja_projects update-view` | `GET .../views/{view}`; `POST .../views/{view}` | `PATCH .../views/{view}` | **v2 →v1** | **SHIPPED.** One `PATCH`, no read: the v1 `GET` exists only to survive `ProjectView.Update`'s `Cols(...)` allowlist (`VIKUNJA_API_ISSUES.md` #15), and v2 merges server-side, which also retires the read-modify-write race. No `minVersion` floor — a partial `PATCH` applied, left untouched fields alone and merged nested `filter` keys identically on 2.4.0, 2.5.0 and 2.6.0 (probed live 2026-09-05). A patch that changes nothing answers `304`, which the strategy resolves with a v1 read. `?format=markdown` is not sent: v2 ignores it on `PATCH`, see the read/write asymmetry note at the top. See `src/tools/projects/view-update/` |
@@ -340,7 +340,7 @@ These affect many rows and are handled centrally rather than per-function:
 | Errors are `application/problem+json` | Adapted to `MCPError`, preserving Vikunja's numeric `code` and per-field `errors[]` |
 | `ETag` on most single-entity `GET`s | Not yet used. `If-Match` is **not** enforced by the server (verified), so it provides no lost-update protection |
 | `?format=markdown` available for rich text | **Shipped for task reads** (`vikunja_tasks get`/`list`). Honoured on `GET` and ignored on `PATCH`, so update responses stay HTML — see the asymmetry note at the top. Other rich-text reads (projects, labels, teams, comments) adopt it in later P3 steps |
-| `max_permission` on v2 single-entity reads | Dropped at the read boundary. The spec keeps it off P3's tool surface, and surfacing it would be a caller-visible schema change |
+| `max_permission` on v2 single-entity reads | Dropped at the read boundary. The spec keeps it off P3's tool surface, and surfacing it would be a caller-visible schema change. **Projects are the exception to "v2-only":** v1 returns the field too, with a different value, so project writes strip it on the v1 path as well |
 
 ## Maintenance rule
 

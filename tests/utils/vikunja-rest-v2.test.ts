@@ -415,6 +415,92 @@ describe('vikunja-rest-v2 helper', () => {
         { value: 'extra' },
       ]);
     });
+
+    /**
+     * `details.vikunjaError` is a second, independent way upstream text
+     * leaves this transport: `MCPError.toJSON()` includes `details`, and
+     * `wrapIfRestOrigin` copies it through. The composed MESSAGE has always
+     * been capped, but the `errors[]` list attached to `details` was not, so
+     * an echoed value matching no redaction rule survived at full length on a
+     * channel v1 never had. Every echoed string now goes through the same
+     * 500-character `redactUpstreamText` cap v1 applies to error bodies.
+     */
+    it('caps an oversized echoed value on details.vikunjaError', () => {
+      const error = parseVikunjaV2Error(
+        'POST',
+        '/projects',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          title: 'Validation failed',
+          errors: [{ location: 'body.title', value: 'y'.repeat(900) }],
+        }),
+      );
+
+      const [entry] = error.details?.vikunjaError?.errors as [{ value: string }];
+      expect(entry.value).toBe('y'.repeat(500));
+    });
+
+    it('caps an oversized location and message on details.vikunjaError', () => {
+      const error = parseVikunjaV2Error(
+        'POST',
+        '/projects',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          errors: [{ location: `body.${'a'.repeat(900)}`, message: 'b'.repeat(900) }],
+        }),
+      );
+
+      const [entry] = error.details?.vikunjaError?.errors as [
+        { location: string; message: string },
+      ];
+      expect(entry.location).toHaveLength(500);
+      expect(entry.message).toBe('b'.repeat(500));
+    });
+
+    // A structured value is redacted in its serialized form, so capping it
+    // usually leaves text that no longer parses as JSON. The bounded string
+    // is the intended answer there: the entry's `location` still says which
+    // field it came from, and an unbounded faithful echo is the thing being
+    // fixed.
+    it('degrades an oversized structured value to bounded text', () => {
+      const error = parseVikunjaV2Error(
+        'POST',
+        '/projects',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          errors: [{ location: 'body.description', value: { nested: 'z'.repeat(900) } }],
+        }),
+      );
+
+      const [entry] = error.details?.vikunjaError?.errors as [{ value: unknown }];
+      expect(typeof entry.value).toBe('string');
+      expect(entry.value as string).toHaveLength(500);
+    });
+
+    // The cap must not change what a normal-sized structured value looks
+    // like: it still round-trips back to an object.
+    it('leaves a short structured value as an object', () => {
+      const error = parseVikunjaV2Error(
+        'POST',
+        '/projects',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          errors: [{ location: 'body.description', value: { nested: 'short' } }],
+        }),
+      );
+
+      expect(error.details?.vikunjaError?.errors).toEqual([
+        { location: 'body.description', value: { nested: 'short' } },
+      ]);
+    });
   });
 
   describe('vikunjaRestV2Request', () => {

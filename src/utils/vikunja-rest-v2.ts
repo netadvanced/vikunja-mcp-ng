@@ -35,7 +35,6 @@ import {
   describeRequestError,
   redactUpstreamText,
 } from './vikunja-rest-shared';
-import { redactSecretsInText } from './security';
 import { getExecutionAbortSignal } from '../context/executionContext';
 
 /**
@@ -128,16 +127,32 @@ function readString(value: unknown): string | undefined {
  * got before. Redaction can occasionally leave text that is no longer valid
  * JSON, when replacing a `name: "value` run consumes the opening quote; in
  * that case the redacted TEXT is returned. Never the original value.
+ *
+ * Redaction is not the only thing this text needs. `redactUpstreamText` is
+ * used rather than a bare `redactSecretsInText` so the result is also bounded
+ * to `ERROR_BODY_DISPLAY_LIMIT`, the same 500 characters v1 has always
+ * applied to upstream error text. Without that, an echoed value that matches
+ * no redaction rule survives at full length on `details.vikunjaError`, a
+ * channel v1 never had. Scanning further than it keeps is exactly why the cap
+ * lives in that helper: a secret straddling the cut cannot be left as a
+ * half-redacted fragment.
+ *
+ * Truncating a serialized object usually makes it unparseable, so a long
+ * structured value comes back as capped TEXT rather than as its original
+ * shape. That is the intended trade: a bounded, redacted string beats an
+ * unbounded faithful echo, and the entry's `location` still says which field
+ * it belonged to.
  */
 function redactErrorValue(value: unknown): unknown {
   if (typeof value === 'string') {
-    return redactSecretsInText(value);
+    return redactUpstreamText(value);
   }
   if (typeof value !== 'object' || value === null) {
-    // Numbers, booleans, null and an absent field carry no text to redact.
+    // Numbers, booleans, null and an absent field carry no text to redact,
+    // and none of them can be long enough to need bounding.
     return value;
   }
-  const redacted = redactSecretsInText(JSON.stringify(value));
+  const redacted = redactUpstreamText(JSON.stringify(value));
   try {
     return JSON.parse(redacted) as unknown;
   } catch {
@@ -150,12 +165,15 @@ function redactErrorValue(value: unknown): unknown {
  * objects. Always returns an array so callers never have to distinguish
  * "absent" from "empty".
  *
- * Every string that survives is redacted, because this list leaves the
- * transport twice over: `location`/`message` are composed into the
+ * Every string that survives is redacted AND bounded, because this list
+ * leaves the transport twice over: `location`/`message` are composed into the
  * `MCPError` message, and the whole list is attached to
- * `details.vikunjaError`. The message is redacted again once composed (see
- * `parseVikunjaV2Error`), which is what catches a credential split across two
- * fields, e.g. `location: "body.password"` with the secret in `message`.
+ * `details.vikunjaError`. The composed message is redacted and capped again
+ * in `parseVikunjaV2Error`, which is what catches a credential split across
+ * two fields, e.g. `location: "body.password"` with the secret in `message`.
+ * `details.vikunjaError` gets no second pass, so the per-field cap here is
+ * the only thing bounding it, and without it a long echoed field reached
+ * callers at full length on a channel v1 never had.
  */
 function readErrorDetails(value: unknown): ParsedErrorDetail[] {
   if (!Array.isArray(value)) {
@@ -170,10 +188,10 @@ function readErrorDetails(value: unknown): ParsedErrorDetail[] {
       const message = readString(entry.message);
       const detail: ParsedErrorDetail = { value: redactErrorValue(entry.value) };
       if (location !== undefined) {
-        detail.location = redactSecretsInText(location);
+        detail.location = redactUpstreamText(location);
       }
       if (message !== undefined) {
-        detail.message = redactSecretsInText(message);
+        detail.message = redactUpstreamText(message);
       }
       return detail;
     });
@@ -464,10 +482,11 @@ async function vikunjaRestV2RequestRaw(
  * `$schema` key survives. Pass `normalize: false` to get the raw v2 body,
  * envelope included.
  *
- * Everything the error carries out of the transport — the message, and the
- * `errors[]` list on `details.vikunjaError` — has been through
- * `redactSecretsInText`, because a v2 error echoes the caller's own request
- * values back (see `redactErrorValue`).
+ * Everything the error carries out of the transport, the message and the
+ * `errors[]` list on `details.vikunjaError` alike, has been through
+ * `redactUpstreamText`: redacted, because a v2 error echoes the caller's own
+ * request values back, and capped at v1's 500-character display limit, so
+ * neither channel is an unbounded echo (see `redactErrorValue`).
  *
  * @throws MCPError with `details.statusCode` set from the final attempt;
  *         for problem+json responses `details.vikunjaError` also carries

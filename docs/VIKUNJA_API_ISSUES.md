@@ -1021,10 +1021,23 @@ returns `null` for every item on all three. So `max_permission` is populated on
 v2 single-entity reads only. A caller cannot list projects and read permissions
 in one call; that still needs a per-project read.
 
-No impact on this project today: nothing in `src/` reads `max_permission`, and
-the generated type already marks it optional. Recorded so a future reader who
-starts consuming the field knows it is nullable on the v1 path and on v2 lists,
-regardless of what the vendored spec says.
+Nothing in `src/` reads `max_permission`, and the generated type already marks
+it optional. It is, however, actively removed rather than merely ignored: the
+project update strategies (`src/tools/projects/update/canonical.ts`) delete it
+on **both** the v1 and the v2 path. A v1 `POST /projects/{id}` answers `0` on
+2.4.0/2.5.0 and `null` on 2.6.0 while a v2 `PATCH` answers `null` on all three,
+so leaving it in place would have made the same logical update render
+differently depending on which API served it. Probed 2026-09-06, one owned
+project per version:
+
+| version | v1 `GET` | v1 `POST` | v2 `GET` | v2 `PATCH` |
+|---------|----------|-----------|----------|------------|
+| 2.4.0   | `0`      | `0`       | `2`      | `null`     |
+| 2.5.0   | `0`      | `0`       | `2`      | `null`     |
+| 2.6.0   | `null`   | `null`    | `2`      | `null`     |
+
+Recorded so a future reader who starts consuming the field knows it is nullable
+on the v1 path and on v2 lists, regardless of what the vendored spec says.
 
 ## 24. `DELETE /projects/{projectID}/users/{userID}` Wants a Username
 

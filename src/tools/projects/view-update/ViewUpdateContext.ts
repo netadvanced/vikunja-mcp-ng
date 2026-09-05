@@ -17,9 +17,16 @@
  * apply here, so copying the floor would keep 2.4.0 on the slower path for no
  * reason.
  *
- * `resolveApiVersion` encodes the rest of the policy: the kill switch means v1
- * on every version, and an undetected server version means v1 rather than an
- * optimistic guess.
+ * `resolveApiVersion` already encodes the rest of the policy: the `forceV1Api`
+ * kill switch means v1 on every version, a session that never went through
+ * capability detection means v1, and a probe that found no v2 API means v1.
+ *
+ * An undetected *server version* is deliberately not on that list. With no
+ * `minVersion` to compare it against, the version is never read, so a session
+ * whose `GET /info` yielded no version string still resolves to v2 as long as
+ * the probe found a v2 API. That is what `resolveApiVersion` does and what
+ * `tests/utils/api-version.test.ts` pins. Only the floored operations, task
+ * update being the one today, treat "version unknown" as "not new enough".
  */
 
 import type { AuthManager } from '../../../auth/AuthManager';
