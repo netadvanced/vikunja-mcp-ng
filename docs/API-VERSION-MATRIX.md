@@ -2,8 +2,10 @@
 
 > **Status: P3 in progress.** Rows whose **Notes** begin with **SHIPPED** route through v2 today:
 > P3 step 3 routed the task read paths (`vikunja_tasks get`, `vikunja_tasks list`) through v2 for
-> `?format=markdown`, and P3 step 4 routed `vikunja_tasks update` through v2 `PATCH` on servers from
-> 2.5.0. Every other row still describes the P3 target rather than current behaviour: the v2
+> `?format=markdown`, P3 step 4 routed `vikunja_tasks update` through v2 `PATCH` on servers from
+> 2.5.0, and P3 step 6 routed the four project update-shaped writes (`update`, `archive`,
+> `unarchive`, `move`) through v2 `PATCH` on every supported version. Every other row still
+> describes the P3 target rather than current behaviour: the v2
 > transport, error adapter, routing decision and kill switch exist (0.7.0 P1+P2), and the remaining
 > functions are still wired only to `vikunja_auth`'s reporting. Rows flip as P3 lands, per the
 > maintenance rule at the bottom. The **Planned path** cell keeps its wording when a row ships, so
@@ -169,10 +171,10 @@ full v2 equivalents.
 
 | MCP function | v1 call(s) | v2 call(s) | Planned | Notes |
 |---|---|---|---|---|
-| `vikunja_projects update` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH /projects/{id}` | **v2 →v1** | PATCH removes the fetch-merge |
-| `vikunja_projects archive` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | |
-| `vikunja_projects unarchive` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | |
-| `vikunja_projects move` | `GET /projects` (fetch-all); `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | |
+| `vikunja_projects update` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH /projects/{id}` | **v2 →v1** | **SHIPPED.** PATCH removes the merge, not the fetch: the read is still needed for hierarchy validation. No `minVersion` floor, project PATCH works on 2.4.0 |
+| `vikunja_projects archive` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | **SHIPPED.** One-field patch; the read still answers "already archived" |
+| `vikunja_projects unarchive` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | **SHIPPED.** As archive |
+| `vikunja_projects move` | `GET /projects` (fetch-all); `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | **SHIPPED.** `parent_project_id` is always sent, `0` for root, because an omitted parent here means move-to-root |
 | `vikunja_projects update-view` | `GET .../views/{view}`; `POST .../views/{view}` | `GET`; `PATCH .../views/{view}` | **v2 →v1** | |
 | `vikunja_projects set-done-bucket` | `[GET views]`; `GET .../views/{view}`; `POST .../views/{view}` | `GET`; `GET`; `PATCH` | **v2 →v1** | |
 | `vikunja_projects get` | `GET /projects/{id}` | same | **v2 →v1** | |
