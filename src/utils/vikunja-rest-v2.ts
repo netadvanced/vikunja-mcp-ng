@@ -7,9 +7,10 @@
  * operation on v1 is that v2 lacks the route, offers nothing over v1, or is
  * broken below some release (see `./api-version`). So v2 support must not
  * put new logic on the code path v1 executes. Shared machinery — the retry loop, the named
- * circuit breaker registry, the retry predicate — is imported, not copied;
- * only URL resolution, breaker naming, request content type, and error
- * parsing differ.
+ * circuit breaker registry, the retry predicate, and the protections in
+ * `./vikunja-rest-shared` (upstream-text redaction, the tool-execution
+ * deadline's cancellation error) — is imported, not copied; only URL
+ * resolution, breaker naming, request content type, and error parsing differ.
  *
  * See docs/superpowers/specs/2026-07-27-vikunja-v2-transport-design.md.
  */
@@ -29,6 +30,13 @@ import {
 } from './retry';
 import { resolveV2BaseUrl } from './vikunja-v2-url';
 import { normalizeV2Response } from './vikunja-v2-normalize';
+import {
+  buildCancelledRequestError,
+  describeRequestError,
+  redactUpstreamText,
+} from './vikunja-rest-shared';
+import { redactSecretsInText } from './security';
+import { getExecutionAbortSignal } from '../context/executionContext';
 
 /**
  * Resolves the v2 API base URL for a session, normalizing whether or not
@@ -72,9 +80,6 @@ export function deriveRestV2BreakerName(path: string): string {
 
 export type HttpMethodV2 = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
-/** Matches how much of a non-problem+json error body v1 keeps. */
-const MAX_FALLBACK_BODY_LENGTH = 500;
-
 /**
  * The subset of v2's `VikunjaErrorModel` this adapter consumes. Declared
  * locally rather than imported from the generated OpenAPI types because
@@ -103,9 +108,54 @@ function readString(value: unknown): string | undefined {
 }
 
 /**
+ * Redacts the `value` an `errors[]` entry echoes back.
+ *
+ * This is the field of a v2 error most likely to carry the CALLER's own
+ * secret. The spec describes it as "the value at the given location", and
+ * measured against a live 2.6.0 server that is literal: a `POST /projects`
+ * with `{"title": 12345, "description": {"nested": "..."}}` answers
+ * `422 application/problem+json` whose `errors[]` echo `"value": 12345` and
+ * `"value": {"nested": "..."}` back verbatim. So anything a caller put in a
+ * request body — a token pasted into the wrong field, a webhook URL with its
+ * shared secret in the path — can reappear here, and this list is carried on
+ * `details.vikunjaError` rather than being dropped.
+ *
+ * A structured value is redacted in its SERIALIZED form rather than walked
+ * key by key, because the name-based rules in `redactSecretsInText`
+ * (`"password": "..."`, `api_key=...`) have to see the key and the value in
+ * one string; walking the tree would hand them a bare `"hunter2"` that
+ * matches nothing. It is parsed back afterwards so callers get the shape they
+ * got before. Redaction can occasionally leave text that is no longer valid
+ * JSON, when replacing a `name: "value` run consumes the opening quote; in
+ * that case the redacted TEXT is returned. Never the original value.
+ */
+function redactErrorValue(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return redactSecretsInText(value);
+  }
+  if (typeof value !== 'object' || value === null) {
+    // Numbers, booleans, null and an absent field carry no text to redact.
+    return value;
+  }
+  const redacted = redactSecretsInText(JSON.stringify(value));
+  try {
+    return JSON.parse(redacted) as unknown;
+  } catch {
+    return redacted;
+  }
+}
+
+/**
  * Normalizes the model's `errors[]` list, dropping entries that are not
  * objects. Always returns an array so callers never have to distinguish
  * "absent" from "empty".
+ *
+ * Every string that survives is redacted, because this list leaves the
+ * transport twice over: `location`/`message` are composed into the
+ * `MCPError` message, and the whole list is attached to
+ * `details.vikunjaError`. The message is redacted again once composed (see
+ * `parseVikunjaV2Error`), which is what catches a credential split across two
+ * fields, e.g. `location: "body.password"` with the secret in `message`.
  */
 function readErrorDetails(value: unknown): ParsedErrorDetail[] {
   if (!Array.isArray(value)) {
@@ -118,12 +168,12 @@ function readErrorDetails(value: unknown): ParsedErrorDetail[] {
     .map((entry) => {
       const location = readString(entry.location);
       const message = readString(entry.message);
-      const detail: ParsedErrorDetail = { value: entry.value };
+      const detail: ParsedErrorDetail = { value: redactErrorValue(entry.value) };
       if (location !== undefined) {
-        detail.location = location;
+        detail.location = redactSecretsInText(location);
       }
       if (message !== undefined) {
-        detail.message = message;
+        detail.message = redactSecretsInText(message);
       }
       return detail;
     });
@@ -141,6 +191,17 @@ function buildBaseMessage(
   return `Vikunja REST request failed (${method} ${path}): HTTP ${status} ${statusText}`;
 }
 
+/**
+ * The degraded path: a body we could not read as problem+json, kept as text.
+ *
+ * `redactUpstreamText` is what v1 applies to every error body it renders, and
+ * it is not optional here just because the shape is unusual — this branch
+ * carries the LEAST structured, most attacker-influenced text of the two. A
+ * reverse proxy or WAF sitting in front of Vikunja routinely echoes the
+ * request back, `Authorization` header included, and it is also the branch a
+ * real v2 auth failure takes: measured on a live 2.6.0 server, a 401 answers
+ * with `Content-Type: application/json`, not problem+json.
+ */
 function buildFallbackError(
   method: HttpMethodV2,
   path: string,
@@ -148,7 +209,7 @@ function buildFallbackError(
   statusText: string,
   rawBody: string,
 ): MCPError {
-  const detail = rawBody.slice(0, MAX_FALLBACK_BODY_LENGTH);
+  const detail = redactUpstreamText(rawBody);
   const base = buildBaseMessage(method, path, status, statusText);
   return new MCPError(ErrorCode.API_ERROR, detail ? `${base} — ${detail}` : base, {
     statusCode: status,
@@ -201,11 +262,22 @@ export function parseVikunjaV2Error(
         .filter((entry) => entry.length > 0);
       const fieldSuffix = fields.length > 0 ? `[${fields.join('; ')}]` : '';
       const rawSuffix = [summary, fieldSuffix].filter((part) => part.length > 0).join(' ');
-      // Bounds the composed suffix the same way buildFallbackError bounds its
-      // raw body: a server or proxy can return an oversized `detail` or an
-      // `errors[]` list with thousands of entries, and without this cap that
-      // would produce an unbounded MCP error message.
-      const suffix = rawSuffix.slice(0, MAX_FALLBACK_BODY_LENGTH);
+      // Redacts and bounds the composed suffix exactly the way
+      // buildFallbackError treats its raw body. Both halves matter.
+      //
+      // Redaction: `title` and `detail` are free-form server text and a
+      // gateway can author either, so they carry the same risk as any other
+      // upstream body. Running it over the COMPOSED string rather than field
+      // by field is deliberate — it is the only way the name-based rules see
+      // a credential whose name and value landed in different fields, e.g.
+      // `location: "body.api_key"` with the key itself in `message`.
+      //
+      // Bounding: a server or proxy can return an oversized `detail` or an
+      // `errors[]` list with thousands of entries, and without the cap that
+      // would produce an unbounded MCP error message. `redactUpstreamText`
+      // scans further than it keeps so a secret straddling the cut cannot
+      // survive as a half-redacted fragment.
+      const suffix = redactUpstreamText(rawSuffix);
       const base = buildBaseMessage(method, path, status, statusText);
 
       error = new MCPError(ErrorCode.API_ERROR, suffix ? `${base} — ${suffix}` : base, {
@@ -313,6 +385,14 @@ async function vikunjaRestV2RequestRaw(
   const session = authManager.getSession();
   const url = `${resolveV2BaseUrl(session.apiUrl)}${path}`;
 
+  // The tool-execution deadline, when one applies (see
+  // `src/context/executionContext.ts`). Handled exactly as `./vikunja-rest`
+  // handles it, deliberately: a v2 request must not outlive a deadline that
+  // would have bounded the same operation on v1 (LOW-20, #296). The key is
+  // omitted entirely when there is no deadline, so calls made outside a
+  // rate-limited tool execution send byte-for-byte the previous request.
+  const signal = getExecutionAbortSignal();
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -322,13 +402,20 @@ async function vikunjaRestV2RequestRaw(
         'Content-Type': resolveContentType(method, patchFormat),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      ...(signal ? { signal } : {}),
     });
   } catch (error) {
+    // An abort is not a network failure: it is retried by nobody and counts
+    // against no breaker (`details.cancelled` is what
+    // `isClientErrorExcludedFromBreaker` reads). Checking the signal rather
+    // than the rejection's name matches v1 and avoids depending on how the
+    // runtime words an AbortError.
+    if (signal?.aborted) {
+      throw buildCancelledRequestError(method, path);
+    }
     throw new MCPError(
       ErrorCode.API_ERROR,
-      `Vikunja REST request failed (${method} ${path}): ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Vikunja REST request failed (${method} ${path}): ${describeRequestError(error)}`,
       { transient: isTransientNetworkError(error) },
     );
   }
@@ -377,9 +464,17 @@ async function vikunjaRestV2RequestRaw(
  * `$schema` key survives. Pass `normalize: false` to get the raw v2 body,
  * envelope included.
  *
+ * Everything the error carries out of the transport — the message, and the
+ * `errors[]` list on `details.vikunjaError` — has been through
+ * `redactSecretsInText`, because a v2 error echoes the caller's own request
+ * values back (see `redactErrorValue`).
+ *
  * @throws MCPError with `details.statusCode` set from the final attempt;
  *         for problem+json responses `details.vikunjaError` also carries
- *         Vikunja's numeric code and the per-field `errors[]` list.
+ *         Vikunja's numeric code and the per-field `errors[]` list. When the
+ *         tool-execution deadline aborts the request the error is instead a
+ *         `TIMEOUT_ERROR` carrying `details.cancelled`, which is neither
+ *         retried nor counted against the circuit breaker.
  */
 export async function vikunjaRestV2Request<T = unknown>(
   authManager: AuthManager,
