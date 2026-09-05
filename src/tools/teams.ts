@@ -14,17 +14,13 @@ import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { validateAndConvertId } from '../utils/validation';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
-import type { components } from '../types/generated/vikunja-openapi';
+import type { Team, TeamWithMembers } from './teams/types';
+import { TeamUpdateContext } from './teams/update';
 import {
   DEFAULT_SERVER_PAGE_CAP,
   describePossibleTruncation,
   readServerPageCap,
 } from '../utils/filtering/pagination';
-
-// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
-// docs/API-SPEC.md, replacing the legacy client's `Team` type (Wave D domain
-// migration, tracking issue #28).
-type Team = components['schemas']['models.Team'];
 
 interface TeamListParams {
   page?: number;
@@ -33,31 +29,6 @@ interface TeamListParams {
 }
 
 // Use shared validateAndConvertId from utils/validation
-
-/**
- * A team member as embedded in the `members` array of a `GET /teams/{id}`
- * response (server-side `models.TeamUser`): the member's public user fields
- * plus their team-admin flag. `team_id` is not exposed by the API.
- */
-interface TeamMemberUser {
-  id: number;
-  name?: string;
-  username: string;
-  email?: string;
-  admin: boolean;
-  created?: string;
-  updated?: string;
-}
-
-/**
- * `GET`/`POST /teams/{id}` response shape: a `Team` with its members
- * embedded. the legacy client's `Team` type does not model this field, so it is
- * declared locally per the OpenAPI spec / server `models.Team` struct.
- * (An intersection, not `extends`, because `Team`'s inherited index
- * signature rejects an array-typed `members` property on a plain interface
- * extension.)
- */
-type TeamWithMembers = Team & { members?: TeamMemberUser[] };
 
 /**
  * `models.TeamMember` — the team-membership row returned by
@@ -75,34 +46,6 @@ interface TeamMembership {
  * returns from `DELETE /teams/{id}/members/{username}`. */
 interface VikunjaMessage {
   message: string;
-}
-
-/**
- * Builds a team update payload by merging the team's current server-side state
- * with the caller's requested changes.
- *
- * `POST /teams/{id}` is a full-model replace with no server-side merge (see the
- * call-site comment in the `update` subcommand for the go-vikunja references),
- * and `is_public` in particular is written unconditionally — so anything the
- * body omits is lost. Spreading the whole fetched team, rather than copying a
- * hand-maintained allow-list of fields, is deliberate: an allow-list silently
- * drops fields the server adds in later versions. Mirrors
- * `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`).
- */
-export function buildTeamUpdatePayload(
-  currentTeam: TeamWithMembers,
-  updates: {
-    name?: string;
-    description?: string;
-    isPublic?: boolean;
-  },
-): TeamWithMembers {
-  return {
-    ...currentTeam,
-    ...(updates.name !== undefined && { name: updates.name }),
-    ...(updates.description !== undefined && { description: updates.description }),
-    ...(updates.isPublic !== undefined && { is_public: updates.isPublic }),
-  };
 }
 
 export function registerTeamsTool(
@@ -138,9 +81,8 @@ export function registerTeamsTool(
         .optional()
         .describe(
           'Whether the team is publicly discoverable when sharing a project. On update, ' +
-            'omitting this leaves the stored value untouched: the tool reads the team first ' +
-            'and merges your changes over it, so pass isPublic only when you actually want ' +
-            'to change it (see docs/VIKUNJA_API_ISSUES.md).',
+            'omitting this leaves the stored value untouched, so pass isPublic only when ' +
+            'you actually want to change it (see docs/VIKUNJA_API_ISSUES.md).',
         ),
 
       // Member operations
@@ -298,36 +240,7 @@ export function registerTeamsTool(
               );
             }
 
-            // `POST /teams/{id}` is a FULL-MODEL REPLACE, so we read-then-merge —
-            // the same pattern `buildTeamUpdatePayload`'s sibling
-            // `buildProjectUpdatePayload` (src/tools/projects/crud.ts) applies to
-            // projects, and the one docs/ENDPOINT-PLAYBOOK.md §4 prescribes.
-            // Verified in go-vikunja source (v2.3.0):
-            //  - `pkg/web/handler/update.go:37` binds the request body into an
-            //    EMPTY struct (`c.EmptyStruct()`); nothing is merged from the
-            //    stored row, so the body we send is the whole model the server sees.
-            //  - `pkg/models/teams.go:388` writes with
-            //    `s.ID(t.ID).UseBool("is_public").Update(t)`. xorm skips zero-valued
-            //    columns on a struct update, but `UseBool` forces `is_public` to be
-            //    written EVEN WHEN FALSE — so a partial body that omitted it
-            //    silently flipped a public team to private.
-            //  - `pkg/models/teams.go:37` marks `Name` `valid:"required,..."` and
-            //    `Team.Update` (`teams.go:378`) returns `ErrTeamNameCannotBeEmpty`
-            //    when it is empty — so a description-only partial body 400d.
-            // Merging the caller's deltas over the current model fixes all three.
-            const currentTeam = await vikunjaRestRequest<TeamWithMembers>(
-              authManager,
-              'GET',
-              `/teams/${teamId}`,
-            );
-
-            const updateData = buildTeamUpdatePayload(currentTeam, {
-              ...(args.name !== undefined && { name: args.name }),
-              ...(args.description !== undefined && { description: args.description }),
-              ...(args.isPublic !== undefined && { isPublic: args.isPublic }),
-            });
-
-            // Report the caller's explicit deltas, not every field the merged
+            // Report the caller's explicit deltas, not every field the write
             // payload happens to carry.
             const affectedFields = [
               ...(args.name !== undefined ? ['name'] : []),
@@ -335,15 +248,22 @@ export function registerTeamsTool(
               ...(args.isPublic !== undefined ? ['is_public'] : []),
             ];
 
-            // The API only routes team updates through POST /teams/{id};
-            // PUT is reserved for team creation (PUT /teams) and is not a
-            // defined route here — sending PUT 404s/405s against a real server.
-            const team = await vikunjaRestRequest<Team>(
+            // Which API serves this, and the sequence it runs, is the strategy
+            // pair's business (src/tools/teams/update/). v1 reads the team and
+            // POSTs the whole merged model back, because that handler binds
+            // into an empty struct and writes `is_public` with xorm's
+            // `UseBool`; v2 sends one PATCH, which was probed live on 2.4.0,
+            // 2.5.0 and 2.6.0 and has neither hazard. Both return the same
+            // canonical team.
+            const team = await new TeamUpdateContext(authManager).execute({
               authManager,
-              'POST',
-              `/teams/${teamId}`,
-              updateData,
-            );
+              teamId,
+              args: {
+                ...(args.name !== undefined && { name: args.name }),
+                ...(args.description !== undefined && { description: args.description }),
+                ...(args.isPublic !== undefined && { isPublic: args.isPublic }),
+              },
+            });
 
             const standardResponse = createStandardResponse(
               'update-team',

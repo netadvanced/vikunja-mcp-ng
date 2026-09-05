@@ -223,11 +223,38 @@ update, and a team update is consequently non-atomic: a concurrent edit
 between the read and the write is overwritten by the merged snapshot (the same
 trade-off `buildProjectUpdatePayload` has always carried for projects).
 
-**Implementation:** `buildTeamUpdatePayload` (`src/tools/teams.ts`) is the teams
-sibling of `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`), the
+**The v2 route does not have this bug, and the workaround is now scoped to v1
+(2026-09-05, issue #184 P3 step 6).** `PATCH /api/v2/teams/{id}` was probed
+against the live 2.4.0, 2.5.0 and 2.6.0 stacks on a team stored
+`is_public: true` with a description:
+
+| Version | `PATCH {name}` | `is_public` after | `description` after | `PATCH {description}` |
+|---|---|---|---|---|
+| 2.4.0 | 200 | `true` | preserved | 200 |
+| 2.5.0 | 200 | `true` | preserved | 200 |
+| 2.6.0 | 200 | `true` | preserved | 200 |
+
+All three reasons the merge exists are absent on that route: nothing is written
+for a column the body does not mention, so `UseBool` never fires; and the
+required-name validator is not reached by a description-only body. `is_public`
+sent explicitly as `false` or `true` is still applied, so the
+omission-versus-explicit-`false` distinction survives. `vikunja_teams update`
+therefore sends one `PATCH` on a v2-capable server and keeps the fetch-merge
+only where it runs on v1 — under the `forceV1Api` kill switch, against a
+server with no v2 API, or in a session that has not been through capability
+detection. Note the v2 path is also atomic in the way the v1 one is not: it
+never sends fields it did not change, so a concurrent edit is no longer
+clobbered. **This item stays open**, because the v1 handler is unchanged and v1
+remains the floor.
+
+**Implementation:** `buildTeamUpdatePayload`
+(`src/tools/teams/update/V1TeamUpdateStrategy.ts`) is the teams sibling of
+`buildProjectUpdatePayload` (`src/tools/projects/crud.ts`), the
 fetch → merge → POST pattern `docs/ENDPOINT-PLAYBOOK.md` §4 prescribes. The
 spread is deliberate over a hand-maintained allow-list, which would silently
-drop fields a newer server adds.
+drop fields a newer server adds. The v2 sibling is
+`src/tools/teams/update/V2TeamUpdateStrategy.ts` and the routing rule lives in
+`TeamUpdateContext.ts` beside it.
 
 **Not affected: checked, same-shaped but genuinely safe.** The team-membership
 writes. `PUT /teams/{id}/members` is a *create* (`TeamMember.Create`,

@@ -346,8 +346,13 @@ Project sharing allows creating public or private links to share projects with e
    omitting other fields (like `description`) look harmless. An update that
    omitted `is_public` therefore silently un-published a public team.
    `vikunja_teams update` fetches the team first and merges requested
-   changes onto it via `buildTeamUpdatePayload` (`src/tools/teams.ts`), the
-   same fetch-merge-POST shape `buildProjectUpdatePayload` uses for projects.
+   changes onto it via `buildTeamUpdatePayload`
+   (`src/tools/teams/update/V1TeamUpdateStrategy.ts`), the same
+   fetch-merge-POST shape `buildProjectUpdatePayload` uses for projects.
+   That is now the **v1 path only**: `PATCH /api/v2/teams/{id}` writes only
+   the columns the body names, so it has neither the `UseBool` trap nor the
+   required-name rejection (probed live on 2.4.0, 2.5.0 and 2.6.0 for #184 P3
+   step 6), and a v2-capable server updates a team in one call.
    Full write-up, verified against the go-vikunja source, is in
    [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) §3a, including the
    generalized "watch for `UseBool` on any full-replace endpoint" lesson, and

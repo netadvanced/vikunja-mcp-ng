@@ -134,6 +134,32 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
   with the default thresholds three no-op patches in five calls would have opened a breaker shared
   by every caller of that endpoint group. Other 3xx still count.
 
+### Changed: `vikunja_teams update` runs on v2 `PATCH` (#184, 0.8.0 P3 step 6)
+
+- **A strategy pair behind a context** (`src/tools/teams/update/`), the same shape as
+  `TaskUpdateContext`. `V1TeamUpdateStrategy` is the previous sequence, moved rather than
+  rewritten: `GET` the team, merge the caller's deltas over the whole stored model, `POST` it back.
+  `V2TeamUpdateStrategy` sends one `PATCH /api/v2/teams/{id}` carrying only the fields the caller
+  named. Two calls become one, and both paths share `buildTeamFieldPatch` so they cannot drift over
+  what a field name maps to.
+- **The read-then-merge is retired on v2, not merely skipped.** It existed to defeat
+  `VIKUNJA_API_ISSUES.md` §3a: v1's handler binds the body into an empty struct and writes
+  `is_public` with xorm's `UseBool`, so an omitted boolean is written as an explicit `false` and a
+  rename silently un-publishes a public team. `PATCH` was probed live against 2.4.0, 2.5.0 and
+  2.6.0 before the merge was removed: on all three a name-only patch returns 200 and leaves
+  `is_public` and the description untouched, and a description-only patch is accepted rather than
+  rejected by the server's required-name validator. `team-rename-keeps-visibility.json` still
+  guards the behaviour on both paths.
+- **No `minVersion` floor**, deliberately. Task update carries one because its v2 `PATCH` 422s on
+  2.4.0 for subscribed tasks; nothing about the teams route is broken on the floor, so it uses
+  plain `resolveApiVersion` and 2.4.0 gets v2 too.
+- A no-op `PATCH` answers `304` with no body, which the transport surfaces as an error; the v2
+  strategy falls back to a v1 read so the caller still gets the current team.
+- No caller-visible change. `max_permission` is stripped at the strategy boundary, `affectedFields`
+  still reports only the caller's deltas, and the `forceV1Api` kill switch, a server with no v2
+  API, and a session that never ran capability detection all select v1, where behaviour is byte for
+  byte what it was.
+
 ### Fixed: `expand` is honoured on a single-project listing instead of dropped (#184, 0.8.0 P3 step 7)
 
 - `vikunja_tasks list` used to accept `expand` on a single-project listing, report it as ignored,
