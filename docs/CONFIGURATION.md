@@ -84,6 +84,7 @@ interface FeatureFlagsConfig {
   enableServerSideFiltering: boolean;
   enableAdvancedMetrics: boolean;
   enableExperimentalFeatures: boolean;
+  forceV1Api: boolean;   // Kill switch for the v2 API fast path — see Forcing the v1 API below
 }
 ```
 
@@ -440,6 +441,27 @@ conservatively:
   judgment call the three-way classification doesn't capture (e.g. `vikunja_teams`'
   `members:toggleAdmin` is a `write`, not a `delete`, but explicitly is **not**
   idempotent, since it flips a flag rather than setting it).
+
+### Forcing the v1 API
+
+The server detects once per session whether the Vikunja instance exposes the v2
+API. Today that detection result is surfaced only for reporting (see
+`vikunja_auth`'s `activeApiVersion` below) — no operation routes through v2
+yet. Once per-endpoint v2 support lands, this flag will let you force every
+operation onto the v1 API regardless of what was detected.
+
+- **Config file key**: `featureFlags.forceV1Api` (boolean, default `false`)
+- **Env override**: `VIKUNJA_MCP_FORCE_V1_API` (`true`/`false`) — as with every
+  other setting, the environment variable wins over the config file.
+
+```env
+VIKUNJA_MCP_FORCE_V1_API=true
+```
+
+With this set, behaviour is identical to running against a v1-only Vikunja
+server (2.3.0 and earlier). `vikunja_auth status` reports `activeApiVersion:
+"v1"`. Use it to rule the v2 path out when diagnosing a problem, or to pin
+behaviour if a v2 route misbehaves on your server.
 
 ## Templates Persistence
 
@@ -1032,6 +1054,7 @@ EXPORT_TOOL_TIMEOUT=600000
 ### Feature Flag Variables
 ```env
 VIKUNJA_ENABLE_SERVER_SIDE_FILTERING=true
+VIKUNJA_MCP_FORCE_V1_API=false               # optional, default false; see Forcing the v1 API
 ```
 
 ### Response Verbosity Variable

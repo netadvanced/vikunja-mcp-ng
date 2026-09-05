@@ -241,6 +241,16 @@ export class ConfigurationManager {
   }
 
   /**
+   * Whether the v2 API fast path is force-disabled. Synchronous for the same
+   * reason as `isReadOnly()` above: `loadConfiguration()` is synchronous and
+   * cached after the first call, and `resolveApiVersion` sits on a
+   * per-request path where an async config read would be a needless await.
+   */
+  public isV1Forced(): boolean {
+    return this.loadConfiguration().featureFlags.forceV1Api;
+  }
+
+  /**
    * Check if a feature is enabled
    */
   public async isFeatureEnabled(featureName: string): Promise<boolean> {
@@ -465,6 +475,12 @@ export class ConfigurationManager {
       'enableServerSideFiltering',
       process.env.VIKUNJA_ENABLE_SERVER_SIDE_FILTERING,
       true,
+    );
+    this.assignEnvValue(
+      featureFlags,
+      'forceV1Api',
+      process.env.VIKUNJA_MCP_FORCE_V1_API,
+      true
     );
     if (Object.keys(featureFlags).length > 0) {
       result.featureFlags = featureFlags;

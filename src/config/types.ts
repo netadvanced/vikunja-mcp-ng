@@ -88,6 +88,13 @@ export const FeatureFlagsConfigSchema = z.object({
   enableServerSideFiltering: z.boolean().default(true),
   enableAdvancedMetrics: z.boolean().default(false),
   enableExperimentalFeatures: z.boolean().default(false),
+  // Kill switch for the v2 API fast path: when true, every operation uses
+  // the v1 API even if this session's capability probe reported v2 support.
+  // Config file key: `featureFlags.forceV1Api`. Env override:
+  // `VIKUNJA_MCP_FORCE_V1_API` (env always wins, per standard layering).
+  // Deliberately absent from ENVIRONMENT_PROFILES so it stays false in every
+  // environment unless explicitly set. See src/utils/api-version.ts.
+  forceV1Api: z.boolean().default(false),
 });
 
 export type FeatureFlagsConfig = z.infer<typeof FeatureFlagsConfigSchema>;

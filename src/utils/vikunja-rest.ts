@@ -278,7 +278,7 @@ function isPreRequestNetworkError(error: unknown): boolean {
  * retry any real network failure. The result is threaded through via
  * `MCPErrorDetails.transient` so `defaultRestShouldRetry` can use it later.
  */
-function isTransientNetworkError(error: unknown): boolean {
+export function isTransientNetworkError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
   }
