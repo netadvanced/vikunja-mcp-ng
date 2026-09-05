@@ -276,7 +276,17 @@ Ordered so that each step's risk is retired before anything depends on it.
    branch. v2 routes into the identical `models.BulkTask.Update()` chain, and `bulk_task.go`
    registers only `PUT`, so there is no v2 `PATCH` for bulk either. **The assignee snapshot/restore
    stays**, on both paths, with no removal condition. What remains of this step is the verb change
-   and nothing else, so it should be sequenced last or dropped.
+   and nothing else.
+
+   **DROPPED, 2026-09-06.** This step was the milestone's second-headline item on a premise that
+   turned out to be false, and once the premise went there was nothing left worth the risk. Routing
+   bulk update to v2 would swap `POST /tasks/bulk` for `PUT /tasks/bulk`, keep the snapshot/restore
+   verbatim, keep every call, and change no observable behaviour, in the single most concurrency
+   sensitive path in the codebase. That is pure risk for no benefit.
+
+   **Revisit if** Vikunja registers a `PATCH` on `bulk_task.go`, or changes `models.BulkTask.Update()`
+   so a scalar-only payload stops decoding `assignees` to `nil`. Either would give v2 bulk something
+   v1 bulk does not have, and this step becomes worth doing again. Neither is true as of 2.6.0.
 6. **Remaining PATCH routes**: projects, views, labels, filters, comments, teams.
 7. **`expand`** — independent of v2 and **v1-only work in practice**, since v1 supports the entire
    value set including the three the draft called v2-only. It fixes a gap we have had all along;
