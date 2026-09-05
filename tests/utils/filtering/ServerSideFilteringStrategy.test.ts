@@ -77,7 +77,9 @@ describe('ServerSideFilteringStrategy', () => {
     jest.clearAllMocks();
 
     strategy = new ServerSideFilteringStrategy();
-    mockAuthManager = {} as AuthManager;
+    // See ClientSideFilteringStrategy.test.ts: undefined capabilities is the
+    // pre-detection state, and it resolves these reads to v1.
+    mockAuthManager = { getCapabilities: () => undefined } as unknown as AuthManager;
 
     (validateId as jest.MockedFunction<typeof validateId>).mockImplementation(() => {});
   });

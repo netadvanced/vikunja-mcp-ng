@@ -21,7 +21,7 @@ import { validateId } from '../../tools/tasks/validation';
 import { applyFilter } from '../../tools/tasks/filtering';
 import { getMaxTasksLimit } from '../memory';
 import { logger } from '../logger';
-import { buildTasksListQuery } from './RestCrossProjectFilteringStrategy';
+import { requestTaskListPage } from '../vikunja-task-reads';
 
 /** `models.Project` per the OpenAPI spec — only the fields this module reads. */
 interface VikunjaProjectSummary {
@@ -244,14 +244,26 @@ async function fetchProjectTasks(
     // Client-side filtering never sends `filter` server-side (that's the whole
     // point of this strategy) — apiParams never carries one for this code
     // path, but the query is built explicitly without it for clarity.
-    const query = buildTasksListQuery(
+    //
+    // Version-aware since #184 P3 step 3: `requestTaskListPage` picks the v1
+    // or v2 transport per `resolveApiVersion` and, on v2, asks for
+    // `format=markdown`.
+    //
+    // One consequence worth stating rather than discovering: `applyFilter`
+    // can compare `description` (see `evaluators.ts`), so on a v2-capable
+    // server a client-side `description like "..."` now matches the markdown
+    // text instead of the HTML source. That is the same text the caller is
+    // shown, so it is the more predictable of the two, but it does mean a
+    // filter written against HTML tags stops matching. Server-side `filter`
+    // is unaffected either way: the server always evaluates it against its
+    // own stored representation, whatever `format` the response asks for.
+    return requestTaskListPage(
+      authManager,
+      `/projects/${projectId}/tasks`,
       page === undefined ? params : { ...params, page },
       undefined,
       extras,
     );
-    const path = `/projects/${projectId}/tasks${query ? `?${query}` : ''}`;
-    const tasks = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
-    return Array.isArray(tasks) ? tasks : [];
   };
 
   if (!autoPaginate) {
