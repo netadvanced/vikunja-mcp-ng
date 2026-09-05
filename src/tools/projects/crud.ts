@@ -40,6 +40,7 @@ import { formatAorpAsMarkdown } from '../../utils/response-factory';
 import {
   ProjectUpdateContext,
   buildProjectUpdatePayload,
+  toCanonicalProject,
   type ProjectUpdateFields,
   type VikunjaProject,
 } from './update';
@@ -658,7 +659,10 @@ export async function archiveProject(
       const result = createProjectResponse(
         'archive_project',
         `Project "${currentProject.title}" is already archived`,
-        { project: currentProject },
+        // Same canonical shape the strategies produce. This path answers from
+        // a raw v1 read and never reaches one, so without this it would be the
+        // only project response still carrying `max_permission`.
+        { project: toCanonicalProject(currentProject) },
         {},
         verbosity,
         useOptimizedFormat,
@@ -735,7 +739,8 @@ export async function unarchiveProject(
       const result = createProjectResponse(
         'unarchive_project',
         `Project "${currentProject.title}" is already active (not archived)`,
-        { project: currentProject },
+        // See the archive early return above: raw v1 read, no strategy involved.
+        { project: toCanonicalProject(currentProject) },
         {},
         verbosity,
         useOptimizedFormat,

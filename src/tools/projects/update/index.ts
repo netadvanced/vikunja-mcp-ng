@@ -14,6 +14,7 @@
 export { ProjectUpdateContext, selectProjectUpdateStrategy } from './ProjectUpdateContext';
 export { buildProjectUpdatePayload } from './V1ProjectUpdateStrategy';
 export { buildProjectFieldPatch } from './analysis';
+export { toCanonicalProject } from './canonical';
 export type {
   ProjectUpdateFields,
   ProjectUpdateInput,
