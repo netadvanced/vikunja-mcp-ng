@@ -222,7 +222,7 @@ full v2 equivalents.
 
 | MCP function | v1 call(s) | v2 call(s) | Planned | Notes |
 |---|---|---|---|---|
-| `vikunja_labels update` | `PUT /labels/{id}` | `PATCH /labels/{id}` | **v2 →v1** | v2 splits PATCH (partial) / PUT (replace); PATCH matches actual semantics |
+| `vikunja_labels update` | `GET /labels/{id}`; `POST /labels/{id}` | `PATCH /labels/{id}` | **v2 →v1** | **SHIPPED.** No `minVersion` floor: v2 `PATCH` applied the change and preserved every unmentioned field on 2.4.0, 2.5.0 and 2.6.0 alike. The v1 column is corrected from `PUT /labels/{id}`, which `docs/vikunja-openapi.json` declares but which answers **405 on every supported version** — the tool used to send it, so this subcommand was broken before this change. The route the server routes is `POST /labels/{id}`, and it is a full model replace, hence the leading `GET` on the v1 path. See `src/utils/label-update.ts` |
 | `vikunja_labels create` | `PUT /labels` | `POST /labels` | v1 (later) | |
 | `vikunja_labels get` | `GET /labels/{id}` | same | v1 (later) | |
 | `vikunja_labels list` | `GET /labels` | same | v1 (later) | |
