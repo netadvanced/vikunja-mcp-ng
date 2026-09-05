@@ -2,9 +2,11 @@
  * Vikunja v2 REST transport.
  *
  * A deliberate sibling of `./vikunja-rest` rather than a branch inside it.
- * v1 is the permanent backward-compatible floor (minimum supported Vikunja
- * is 2.3.0, which is v1-only), so v2 support must not put new logic on the
- * code path v1 executes. Shared machinery — the retry loop, the named
+ * v1 is the permanent backward-compatible floor — per operation, not per
+ * version: every supported Vikunja release has a v2 API, and what keeps an
+ * operation on v1 is that v2 lacks the route, offers nothing over v1, or is
+ * broken below some release (see `./api-version`). So v2 support must not
+ * put new logic on the code path v1 executes. Shared machinery — the retry loop, the named
  * circuit breaker registry, the retry predicate — is imported, not copied;
  * only URL resolution, breaker naming, request content type, and error
  * parsing differ.
