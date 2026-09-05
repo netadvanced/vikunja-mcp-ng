@@ -24,6 +24,7 @@ import {
 } from '../../src/transport/oidcMiddlewareSeam';
 import { EnrollmentService, setActiveEnrollmentService } from '../../src/transport/enrollment';
 import { EnrollmentTicketStore } from '../../src/transport/enrollmentTickets';
+import { setActiveVaultStore, type VaultFileStore } from '../../src/storage/vaultFileStore';
 import { ConfigurationError } from '../../src/config/types';
 import type { HttpConfig } from '../../src/config/types';
 import { AuthManager } from '../../src/auth/AuthManager';
@@ -159,11 +160,14 @@ describe('httpTransport', () => {
 
   describe('with OIDC middleware registered', () => {
     let handle: HttpTransportHandle;
+    const healthyVault = { isDegraded: () => false } as unknown as VaultFileStore;
 
     afterEach(async () => {
       if (handle) {
         await handle.close();
       }
+      setActiveVaultStore(undefined);
+      jest.restoreAllMocks();
     });
 
     it('starts and serves /healthz unauthenticated even when the middleware would reject', async () => {
@@ -177,9 +181,74 @@ describe('httpTransport', () => {
       expect(JSON.parse(res.body)).toEqual({ status: 'ok' });
     });
 
-    it('starts and serves /readyz unauthenticated even when the middleware would reject', async () => {
+    it('serves /readyz unauthenticated, reporting ready when the vault loads clean and no JWKS is configured', async () => {
+      setOidcAuthMiddleware(async () => false);
+      setActiveVaultStore(healthyVault);
+      handle = await startHttpTransport(newServer, baseHttpConfig());
+      const port = getPort(handle);
+
+      const res = await request(port, { path: '/readyz' });
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ status: 'ok' });
+    });
+
+    it('reports /readyz not ready when no vault is active (§3a: vault file openable)', async () => {
       setOidcAuthMiddleware(async () => false);
       handle = await startHttpTransport(newServer, baseHttpConfig());
+      const port = getPort(handle);
+
+      const res = await request(port, { path: '/readyz' });
+
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body)).toEqual({
+        status: 'not_ready',
+        checks: { vault: 'degraded', jwks: 'ok' },
+      });
+    });
+
+    it('reports /readyz not ready when the vault load is degraded (issue #266)', async () => {
+      setOidcAuthMiddleware(async () => false);
+      setActiveVaultStore({ isDegraded: () => true } as unknown as VaultFileStore);
+      handle = await startHttpTransport(newServer, baseHttpConfig());
+      const port = getPort(handle);
+
+      const res = await request(port, { path: '/readyz' });
+
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body)).toEqual({
+        status: 'not_ready',
+        checks: { vault: 'degraded', jwks: 'ok' },
+      });
+    });
+
+    it('reports /readyz not ready when the configured JWKS endpoint is unreachable (§3a: JWKS reachability)', async () => {
+      setOidcAuthMiddleware(async () => false);
+      setActiveVaultStore(healthyVault);
+      jest.spyOn(global, 'fetch').mockRejectedValue(new Error('network unreachable'));
+      handle = await startHttpTransport(newServer, baseHttpConfig(), {
+        issuer: 'https://idp.example.test',
+        jwksUri: 'https://idp.example.test/jwks',
+      });
+      const port = getPort(handle);
+
+      const res = await request(port, { path: '/readyz' });
+
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body)).toEqual({
+        status: 'not_ready',
+        checks: { vault: 'ok', jwks: 'unreachable' },
+      });
+    });
+
+    it('reports /readyz ready when the vault loads clean and the JWKS endpoint answers', async () => {
+      setOidcAuthMiddleware(async () => false);
+      setActiveVaultStore(healthyVault);
+      jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true } as Response);
+      handle = await startHttpTransport(newServer, baseHttpConfig(), {
+        issuer: 'https://idp.example.test',
+        jwksUri: 'https://idp.example.test/jwks',
+      });
       const port = getPort(handle);
 
       const res = await request(port, { path: '/readyz' });

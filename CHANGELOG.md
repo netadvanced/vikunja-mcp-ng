@@ -61,6 +61,16 @@ changed the fix.
   only ever mentions *tasks*), removing a relation whose other task you can no
   longer read (`403`), and attaching a team you cannot read to a project
   (`403`).
+- **`GET /readyz` (OIDC `http` transport mode) now actually checks readiness**,
+  completing the contract `docs/OIDC-RESOURCE-SERVER.md` §3a always specified:
+  the configured JWKS endpoint must answer, and the credential vault must have
+  loaded without corruption (`VaultFileStore.isDegraded()`, already used
+  elsewhere for this exact purpose). Previously it unconditionally returned
+  `{status: 'ok'}` — a readiness probe that always passes even when the IdP or
+  the vault is unreachable would route traffic to an instance that cannot
+  actually authenticate anyone. Returns `503 {status: 'not_ready', checks: {
+  vault, jwks }}` naming which check failed; `GET /healthz` (liveness) is
+  unaffected and still never touches either.
 
 ### Fixed
 
