@@ -8,6 +8,34 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+### Changed: `vikunja_tasks update` runs on v2 `PATCH` from Vikunja 2.5.0 (#184, 0.8.0 P3 step 4)
+
+The milestone's payoff, and the first operation to actually route through v2.
+
+- **A strategy pair behind a context** (`src/tools/tasks/crud/update/`), mirroring
+  `FilteringContext`. `V1TaskUpdateStrategy` is the previous sequence, moved rather than rewritten:
+  merge the caller's fields into the whole task, `POST` it back, write labels, snapshot and diff
+  assignees one user at a time, re-read. `V2TaskUpdateStrategy` writes labels, then sends one
+  `PATCH` carrying the changed fields and the assignees together, and returns its response as the
+  result. For a title change with two new assignees that is 7 v1 calls against 3 on v2; for a
+  field-only change, 3 against 2.
+- **Selected by server version, not by capability alone.** v2 `PATCH /tasks/{id}` answers 422 for
+  any task carrying a subscription on 2.4.0, and assigning a user auto-subscribes them, so the
+  operation this change exists to improve is exactly the one 2.4.0 cannot serve. The context
+  therefore asks `resolveApiVersion` for a `minVersion` of 2.5.0: 2.4.0 keeps the v1 strategy, not
+  as a degraded fallback but because fetch-merge-`POST` is the correct way to update a task on that
+  server. Re-probed live on 2.4.0, 2.5.0 and 2.6.0 on 2026-09-05.
+- **No `subscription: null` workaround.** It does make 2.4.0's `PATCH` succeed, and it is withdrawn
+  on judgement: a future Vikunja honouring merge-patch null semantics would read it as "delete this
+  field" and silently unsubscribe users. There is no test pinning the upstream defect either.
+- **No caller-visible change.** Both strategies return the same canonical task: v2-only fields are
+  stripped at the boundary, and the pre-update read that feeds `previousState`/`affectedFields`
+  happens on both paths. It never feeds the v2 request body, so v2 is not read-modify-write and two
+  concurrent updates can no longer clobber each other's untouched fields. The kill switch
+  (`VIKUNJA_MCP_FORCE_V1_API`) and an undetected server version both select v1.
+- Update responses keep their current description format: v2 ignores `?format=markdown` on `PATCH`,
+  and per the owner decision of 2026-09-05 no re-read is added to paper over that.
+
 ### Added: v2 response normalizer (#184, 0.8.0 P3 step 2)
 
 - **`src/utils/vikunja-v2-normalize.ts`**, the boundary that makes v2 responses indistinguishable

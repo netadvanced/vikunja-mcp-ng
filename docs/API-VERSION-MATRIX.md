@@ -1,10 +1,13 @@
 # API Version Matrix — which Vikunja API version serves each MCP function
 
-> **Status: partly shipped.** P3 step 3 routed the **task read paths** through v2: `vikunja_tasks
-> get` and `vikunja_tasks list` now run against v2 on a v2-capable server, for `?format=markdown`.
-> Every other row still describes the P3 target rather than current behaviour — the v2 transport,
-> error adapter, routing decision and kill switch exist (0.7.0 P1+P2) but nothing else is wired to
-> them. Rows flip as P3 lands, per the maintenance rule at the bottom.
+> **Status: P3 in progress.** Rows whose **Notes** begin with **SHIPPED** route through v2 today:
+> P3 step 3 routed the task read paths (`vikunja_tasks get`, `vikunja_tasks list`) through v2 for
+> `?format=markdown`, and P3 step 4 routed `vikunja_tasks update` through v2 `PATCH` on servers from
+> 2.5.0. Every other row still describes the P3 target rather than current behaviour: the v2
+> transport, error adapter, routing decision and kill switch exist (0.7.0 P1+P2), and the remaining
+> functions are still wired only to `vikunja_auth`'s reporting. Rows flip as P3 lands, per the
+> maintenance rule at the bottom. The **Planned path** cell keeps its wording when a row ships, so
+> the counts in the summary stay recountable.
 >
 > **Read/write format asymmetry (deliberate, owner decision 2026-09-05).** v2 honours
 > `?format=markdown` on `GET` and ignores it on `PATCH`, so a task description read through
@@ -103,9 +106,9 @@ full v2 equivalents.
 
 | MCP function | v1 call(s) | v2 call(s) | Planned | Notes |
 |---|---|---|---|---|
-| `vikunja_tasks update` | `GET /tasks/{id}`; `POST /tasks/{id}`; `GET /tasks/{id}` | `GET`; `PATCH /tasks/{id}`; `GET` | **v2 (≥2.5.0) →v1** | Milestone payoff: PATCH + inline assignees replaces fetch-merge-POST. Carries a per-operation minimum server version of **2.5.0**: the subscription-422 (`VIKUNJA_API_ISSUES.md` #25) is fixed from 2.5.0 and unfixed on 2.4.0, so 2.4.0 stays on v1. No workaround is used (re-probed 2026-09-05) |
-| `vikunja_tasks get` | `GET /tasks/{id}` | `GET /tasks/{id}?format=markdown` | **v2 →v1 (shipped)** | Markdown descriptions are the entire reason. No `minVersion` floor: `format` was verified on 2.4.0, 2.5.0 and 2.6.0. v2's `max_permission` is dropped at the boundary, so the payload is otherwise identical to v1's |
-| `vikunja_tasks list` | `GET /tasks` or `GET /projects/{id}/tasks` | same, plus `format=markdown`, with `s` spelled `q` | **v2 →v1 (shipped)** | Markdown, and nothing else. The earlier claim that `GET /projects/{id}/tasks` was v2-only was **disproved live**: v1 serves it on all three supported versions, so no discovery call is saved. `/tasks/all` has no v2 route and stays on v1 |
+| `vikunja_tasks update` | `GET /tasks/{id}`; `POST /tasks/{id}`; assignee diff; labels; `GET /tasks/{id}` | `GET /tasks/{id}`; labels; `PATCH /tasks/{id}` (fields + assignees) | **v2 (≥2.5.0) →v1** | **SHIPPED.** Milestone payoff: PATCH with inline assignees replaces fetch-merge-POST, the per-user assignee diff and the trailing re-read. Carries a per-operation minimum server version of **2.5.0**: the subscription-422 (`VIKUNJA_API_ISSUES.md` #25) is fixed from 2.5.0 and unfixed on 2.4.0, so 2.4.0 stays on v1 — not as a fallback, but because fetch-merge-POST is the correct update there. No workaround is used (re-probed 2026-09-05). The leading `GET` remains on both paths: it is the pre-update snapshot the response's `previousState`/`affectedFields` are derived from, and it never feeds the v2 request body, so v2 is not read-modify-write. Labels move ahead of the write on v2 so the `PATCH` response is the final state. The update response stays HTML — see the read/write format asymmetry note at the top. See `src/tools/tasks/crud/update/` |
+| `vikunja_tasks get` | `GET /tasks/{id}` | `GET /tasks/{id}?format=markdown` | **v2 →v1** | **SHIPPED.** Markdown descriptions are the entire reason. No `minVersion` floor: `format` was verified on 2.4.0, 2.5.0 and 2.6.0. v2's `max_permission` is dropped at the boundary, so the payload is otherwise identical to v1's |
+| `vikunja_tasks list` | `GET /tasks` or `GET /projects/{id}/tasks` | same, plus `format=markdown`, with `s` spelled `q` | **v2 →v1** | **SHIPPED.** Markdown, and nothing else. The earlier claim that `GET /projects/{id}/tasks` was v2-only was **disproved live**: v1 serves it on all three supported versions, so no discovery call is saved. `/tasks/all` has no v2 route and stays on v1 |
 | `vikunja_tasks create` | `PUT /projects/{id}/tasks` | `POST /projects/{project}/tasks` | **v2 →v1** | v2 accepts `assignees` inline (labels still need a separate call) |
 | `vikunja_tasks delete` | `GET /tasks/{id}` (best-effort); `DELETE` | same | v1 (later) | Context-fetch failure swallowed; delete proceeds |
 | `vikunja_tasks add-reminder` | `GET /tasks/{id}`; `POST /tasks/{id}` | `GET`; `PUT /tasks/{id}` | v1 (later) | Reminders are a task field — no dedicated endpoint in either version |
