@@ -952,10 +952,18 @@ these responses were emitting an unassigned zero value that read as a real
 was not updated to match, so a generated client types the field as a plain
 integer and a strict deserializer would reject the response.
 
-No impact on this project: nothing in `src/` reads `max_permission`, and the
-generated type already marks it optional. Recorded so a future reader who
-starts consuming the field knows it is nullable regardless of what the
-vendored spec says.
+**The v2 API behaves differently, and the difference matters.** Re-probed
+2026-09-05 against all three supported versions (issue #184 P3 re-verification):
+`GET /api/v2/projects/{id}` returns a real integer (`2` for an owned project) on
+2.4.0, 2.5.0 and 2.6.0, but the v2 **list** endpoint `GET /api/v2/projects`
+returns `null` for every item on all three. So `max_permission` is populated on
+v2 single-entity reads only. A caller cannot list projects and read permissions
+in one call; that still needs a per-project read.
+
+No impact on this project today: nothing in `src/` reads `max_permission`, and
+the generated type already marks it optional. Recorded so a future reader who
+starts consuming the field knows it is nullable on the v1 path and on v2 lists,
+regardless of what the vendored spec says.
 
 ## 24. `DELETE /projects/{projectID}/users/{userID}` Wants a Username
 
@@ -984,9 +992,10 @@ Both are encoded once in `shareProjectWithUser`/`revokeProjectUser`
 ## 25. v2 `PATCH /tasks/{id}` Returns 422 for Any Subscribed Task (2.4.0 only)
 
 **Status:** reproduces on **2.4.0** (the current floor); **fixed upstream on 2.5.0 and 2.6.0**.
-The workaround below is therefore floor-only, and its removal condition is "the floor moves past
-2.4.0", not "2.6.0 is fine". Verified live against a clean `2.4.0` e2e stack, 2026-07-27, and
-re-confirmed across all three lanes 2026-09-02.
+Verified live against a clean `2.4.0` e2e stack, 2026-07-27; re-confirmed across all three lanes
+2026-09-02; and independently re-probed end to end on 2026-09-05 (issue #184 P3), which reproduced
+the 422 on 2.4.0 with the exact error below and got a plain `200` with assignees and subscription
+both preserved on 2.5.0 and 2.6.0.
 
 `PATCH /api/v2/tasks/{id}` rejects any task that carries a `subscription`:
 
@@ -1018,20 +1027,22 @@ Measured on one task, in order:
 | `PATCH {priority: 9, subscription: null}` | **200** — applied, **assignees preserved** |
 | `PATCH [{op:"replace",path:"/priority",...}]` (RFC 6902) | **422** — identical error |
 
-**Workaround:** include `subscription: null` in the merge-patch body. The change applies, assignees
-are preserved with no fetch-merge or snapshot/restore, and the subscription itself survives (the
-server ignores the field). JSON Patch is **not** an alternative — it hits the same 422.
+**Known workaround, deliberately NOT adopted:** including `subscription: null` in the merge-patch
+body does work. Re-verified on 2.4.0 on 2026-09-05: the request returns 200, the change applies,
+assignees are preserved, and the subscription itself survives because the server ignores the field.
+JSON Patch is not an alternative, it hits the same 422.
 
-**This workaround has an expiry, and that matters.** The server ignoring `subscription: null` today
-is incidental. A future Vikunja that honours merge-patch null semantics would interpret it as
-"delete this field" and **silently unsubscribe users**. So it must be:
+It is not used, and no code should introduce it. The server ignoring `subscription: null` is
+incidental, and a future Vikunja honouring merge-patch null semantics would read it as "delete this
+field" and **silently unsubscribe users**. Since the bug is fixed from 2.5.0 and affects only the
+oldest supported version, the correct response is to route rather than to work around: `vikunja_tasks
+update` uses the v1 strategy on 2.4.0 and the v2 `PATCH` strategy from 2.5.0 upward. On a 2.4.0
+server, fetch-merge-`POST` is not a fallback, it is the right implementation. Nothing to file
+upstream, since the fix already shipped.
 
-- applied only for affected server versions, never unconditionally, and
-- pinned by a test that fails if a `PATCH` ever removes a subscription — so the semantics changing
-  surfaces in CI rather than as quietly lost notifications.
-
-**Impact:** the v2 fast path for `vikunja_tasks update` needs the version gate on the 2.4.0 lane.
-See [API-VERSION-MATRIX.md](API-VERSION-MATRIX.md) for which functions this affects.
+**Impact:** the v2 fast path for `vikunja_tasks update` carries a per-operation minimum server
+version of 2.5.0. See [API-VERSION-MATRIX.md](API-VERSION-MATRIX.md) for which functions this
+affects.
 
 **Related v2 findings from the same session** (not bugs, but behaviour a client must handle):
 
@@ -1043,9 +1054,18 @@ See [API-VERSION-MATRIX.md](API-VERSION-MATRIX.md) for which functions this affe
   rather than returning 412. v2's ETags are usable for cache validation (`If-None-Match` → 304
   works) but provide **no** optimistic-locking guarantee — do not build lost-update protection on
   them.
-- `GET /projects/{project}/tasks` (new in v2) has no `view` parameter, so it cannot reproduce a
-  view's bucket ordering. View-scoped listing must keep using
-  `/projects/{project}/views/{view}/tasks`.
+- `GET /projects/{project}/tasks` has no `view` parameter, so it cannot reproduce a view's bucket
+  ordering. View-scoped listing must keep using `/projects/{project}/views/{view}/tasks`.
+  **Corrected 2026-09-05:** it is *not* "new in v2". `GET /api/v1/projects/{id}/tasks` exists and
+  works on 2.4.0, 2.5.0 and 2.6.0, returning a bare array. The vendored v1 spec declares only `PUT`
+  on that path, so this is a spec omission rather than a missing route.
+- v2 silently ignores query parameters it does not implement. `GET /api/v2/tasks?s=...` returned the
+  full unfiltered set (v2 renamed the search parameter to `q`), and
+  `GET /api/v2/projects/{id}/tasks?view=1` returns 200 while ignoring `view`. A mis-ported parameter
+  name degrades to "no filter applied" with no error, which is the worst available failure mode.
+- `?format=markdown` is honoured on `GET` but **ignored on `PATCH`**: the parameter is declared on
+  `GET`/`POST`/`PUT` only, and a live `PATCH ...?format=markdown` on 2.6.0 returned HTML. A read and
+  an update of the same task therefore disagree on the description's format.
 
 ## Recommendations for Vikunja Maintainers
 
