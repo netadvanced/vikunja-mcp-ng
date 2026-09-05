@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/) with
 pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that means in practice.
 
-## [Unreleased]
+## [0.7.0-beta.5] - 2026-09-05
 
 ### Vikunja 2.6.0 alignment, and a rolling three-version support window
 
@@ -113,6 +113,35 @@ changed the fix.
   a genuine mismatch is unchanged; Vikunja's random-username *pattern* is never guessed at
   — only a live account lookup is used. (#224)
 
+- **The `keyVersion`-1 vault migration notice no longer implies the same
+  token is required.** It told the caller to "re-run `vikunja_auth provision`
+  with the same token to upgrade it," which reads as a dead end to an agent
+  that no longer has that exact token in context. Any valid API token
+  completes the upgrade, so the notice says that instead. Found during a live
+  PoC testing session. (#343)
+
+- **An empty-string `VIKUNJA_E2E_TARGET` broke a bare `npm run e2e:up`
+  instead of falling back to the default target.**
+  `docker/e2e/bootstrap.sh` invokes the target CLI as `--shell
+  "${VIKUNJA_E2E_TARGET:-}"`, so an unset env var arrived as an empty-string
+  *positional* argument rather than a missing one, and the CLI's
+  `positional[0] ?? env ?? DEFAULT_TARGET` only treats `null`/`undefined` as
+  absent — so `''` reached `resolveTarget()` and failed its regex. Fixed by
+  switching to `||`, matching the pattern already used elsewhere. Also
+  verified live that #219 (a stale `oidc-e2e.ts` port-hardcoding report) no
+  longer reproduces. Closes #218, #219. (#339)
+
+### Security
+
+- **Closed the last two known `npm audit` findings.** `fast-uri` (transitive,
+  npm/yarn group) bumped 3.1.5 → 3.1.7 (#346). `qs`, pinned via this repo's own
+  override for the last-vulnerable `^6.15.3` (array-limit bypass via
+  bracket-key comma parsing, GHSA-x5fp-wj9c-mxmx; DoS via attacker-controlled
+  `isBuffer`, GHSA-4mjr-xmp4-gh2g; transitive via
+  `@modelcontextprotocol/sdk` → `express` → `body-parser`/`qs`), bumped to
+  `^6.16.0`, the first fixed version for both advisories. `npm audit` now
+  reports 0 vulnerabilities. (#349)
+
 ### Changed
 
 - **Vendored OpenAPI spec and generated types re-captured from a 2.6.0
@@ -163,37 +192,6 @@ auto-subscribe is confirmed live on 2.6.0 and absent on 2.5.0, so the feared
 widening of that blocker lands on a bug that no longer exists above the floor.
 The `subscription: null` workaround is still needed, but only for 2.4.0, and its
 removal condition is "the floor moves past 2.4.0", not "2.6.0 is fine".
-
-
-## [0.7.0-beta.5] - 2026-09-05
-
-_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._
-
-### Added
-
-- implement the real /readyz contract, clean up a stale H1b TODO (#347)
-- support the trailing 3 Vikunja versions as a rolling window, fix a real test:matrix bug (#345)
-- align to Vikunja 2.6.0, keep the floor at 2.4.0 (#342)
-- one shared Postgres for the newer targets, and resolve the spec-fetch port (#341)
-
-### Fixed
-
-- don't imply the legacy-format migration notice needs the same token (#343)
-- clarify identity-pinning matching and mitigate username squatting (#338)
-- empty-string target arg falls back to default; docs: #219 resolved (#339)
-
-### Documentation
-
-- correct the pending_email forward-looking note now that 2.6.0 is verified (#344)
-
-### Chores
-
-- bump qs override to ^6.16.0, closes the last known vulnerability (#349)
-- bump fast-uri in the npm_and_yarn group across 1 directory (#346)
-
-### Unclassified — review manually
-
-- battle: re-derive 7 stale optimalCallCount baselines (#202) (#340)
 
 ## [0.7.0-beta.4] - 2026-09-02
 
