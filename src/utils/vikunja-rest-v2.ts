@@ -178,7 +178,7 @@ export function parseVikunjaV2Error(
     try {
       const parsed: unknown = JSON.parse(rawBody);
       if (typeof parsed === 'object' && parsed !== null) {
-        model = parsed as VikunjaProblemJson;
+        model = parsed;
       }
     } catch {
       // Malformed body — handled by the `model === undefined` branch below.
