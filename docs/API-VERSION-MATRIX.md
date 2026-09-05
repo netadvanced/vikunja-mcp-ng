@@ -228,7 +228,7 @@ full v2 equivalents.
 | `vikunja_labels list` | `GET /labels` | same | v1 (later) | |
 | `vikunja_labels delete` | `DELETE /labels/{id}` | same | v1 (later) | |
 | `vikunja_labels ensure` | `GET /labels?s=`; `PUT /labels` (conditional) | `GET ?q=`; `POST` | v1 (later) | Search param `s`→`q` |
-| `vikunja_filters update` | `GET /filters/{id}`; `POST /filters/{id}` (replace) | `GET`; `PATCH /filters/{filter}` | **v2 →v1** | |
+| `vikunja_filters update` | `GET /filters/{id}`; `POST /filters/{id}` (replace) | `GET`; `PATCH /filters/{filter}` | **v2 →v1** | **SHIPPED.** P3 step 6. One `PATCH` replaces the v1 read-merge-write pair, on **every** supported version: probed on 2.4.0/2.5.0/2.6.0, no `minVersion` floor. `filters` merges per key, so a query-only patch preserves the stored `s`, `sort_by`, `order_by`, `filter_include_nulls`; `is_favorite: false` applies; an invalid query is rejected exactly as v1 rejects it. A no-op answers 304 and is re-read on v1 |
 | `vikunja_filters create` | `PUT /filters` | `POST /filters` | v1 (later) | |
 | `vikunja_filters get` | `GET /filters/{id}` | same | v1 (later) | |
 | `vikunja_filters list` | `GET /projects`; `GET /filters/{id}` per entry | same | v1 (later) | N+1 in both — no list-all-filters endpoint |
