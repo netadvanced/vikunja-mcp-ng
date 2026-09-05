@@ -27,6 +27,32 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 - No tool-surface change. A no-op patch answers `304`, which is resolved with a fresh read so the
   caller still gets a current project.
 
+### Changed: project view updates run on v2 `PATCH` (#184, 0.8.0 P3 step 6)
+
+- `vikunja_projects update-view` and the `set-done-bucket` composite now go through a strategy pair
+  behind a context (`src/tools/projects/view-update/`), the same shape `vikunja_tasks update` uses.
+  `V1ViewUpdateStrategy` is the previous sequence, moved rather than rewritten: read the view, merge
+  the caller's fields into the whole model, `POST` it back. `V2ViewUpdateStrategy` sends one `PATCH`
+  carrying only the changed fields. Two calls become one, and the read-modify-write race between two
+  concurrent updates goes away.
+- The v1 read was never optional: `ProjectView.Update` writes an explicit `Cols(...)` allowlist, so
+  a partial v1 body resets a view's `position` to 0 and blanks its `filter`
+  ([VIKUNJA_API_ISSUES.md](docs/VIKUNJA_API_ISSUES.md) #15). v2 performs that merge server-side,
+  which is what makes the read redundant rather than merely inconvenient.
+- **No `minVersion` floor.** The route was probed on live 2.4.0, 2.5.0 and 2.6.0 servers
+  (2026-09-05) and behaved identically on all three: a partial `PATCH` applied, untouched fields
+  survived, a nested `filter` patch left the rest of the task collection alone, and a patch that
+  would change nothing answered `304`. Task update's 2.5.0 floor is specific to that route's
+  subscription bug and is not inherited here.
+- A `304` is resolved with a read of the view rather than surfaced as an error. `set-done-bucket`
+  hits it whenever the requested bucket already holds the role, and its verify-then-report check
+  passes on the re-read exactly as it did before.
+- **Kanban buckets stay on v1 permanently**, unchanged by this: v2 registers no `PATCH` on a bucket
+  at all. `done_bucket_id` is a field of the *view*, which is why `set-done-bucket` is a view update.
+- No tool-surface change. Both strategies return the same canonical `models.ProjectView`, the kill
+  switch (`forceV1Api`) still forces v1 on every version, and an undetected server version still
+  selects v1.
+
 ### Fixed: `expand` is honoured on a single-project listing instead of dropped (#184, 0.8.0 P3 step 7)
 
 - `vikunja_tasks list` used to accept `expand` on a single-project listing, report it as ignored,

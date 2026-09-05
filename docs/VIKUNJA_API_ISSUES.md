@@ -614,11 +614,23 @@ listed-but-omitted field) rather than leaving them untouched.
 e.g. `title` would reset the view's `position` and `filter`.
 
 **Resolution:** `update-view` and the `set-done-bucket` composite
-(`src/tools/projects/views.ts`) fetch the current view first and merge
+(`src/tools/projects/view-update/`) fetch the current view first and merge
 requested changes onto it (`buildViewUpdatePayload`) before POSTing,
 functionally the same shape as a true full-replace fix, even though the
 underlying server-side hazard is a `Cols(...)` allowlist rather than a bare
 struct write.
+
+**v1 only, as of #184 P3 step 6.** The `Cols(...)` write is reached with a
+complete struct on v2 as well, because v2's
+`PATCH /api/v2/projects/{project}/views/{view}` merges the patch onto the
+stored view *before* calling the same model code. Probed live on 2.4.0, 2.5.0
+and 2.6.0 (2026-09-05): a `PATCH` naming only `title` returned 200 with
+`position: 4242` and the view's filter unchanged, and a v1 re-read agreed. So
+on a v2-capable server the client-side fetch-merge is not needed and
+`V2ViewUpdateStrategy` sends the bare partial body; `V1ViewUpdateStrategy`
+keeps the merge, and remains the correct implementation wherever v2 is not
+selected. Bucket updates are unaffected and stay on v1: v2 registers no
+`PATCH` on a bucket at all.
 
 ## 16. Project `is_favorite` Reset By Omission: a Second Mechanism, Not `UseBool`
 
