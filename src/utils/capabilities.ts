@@ -17,8 +17,9 @@
  * endpoint group, and retries — none of which is wanted for a single
  * best-effort, non-authenticated probe of a sibling `/api/v2` path. The
  * probe must also never throw or block `connect`/`info`/`status`: any
- * non-200 response or network error (including our own timeout abort) is
- * treated identically as "assume v1-only".
+ * response that is not a recognizable OpenAPI document, and any network
+ * error (including our own timeout abort), is treated identically as
+ * "assume v1-only".
  */
 
 import type { AuthManager } from '../auth/AuthManager';
@@ -44,10 +45,45 @@ export function resolveV2ProbeUrl(apiUrl: string): string {
 }
 
 /**
- * One-time, best-effort probe for v2 API support. Resolves `true` only on a
- * 2xx response; resolves `false` — never rejects — on any non-2xx status,
- * network error, or timeout. Callers are expected to cache the result
- * (see {@link getOrDetectCapabilities}) rather than probing on every call.
+ * True for a content type that can carry a JSON document.
+ *
+ * Deliberately not an equality check against `application/json`: Vikunja
+ * serves `/api/v2/openapi.json` as `application/openapi+json` (verified live
+ * on 2.4.0, 2.5.0 and 2.6.0 on 2026-09-05), so an equality check would
+ * reject every genuinely v2-capable server. Any `+json` structured suffix is
+ * accepted, and parameters (`; charset=utf-8`) are stripped first.
+ */
+function isJsonContentType(contentType: string): boolean {
+  const essence = contentType.replace(/;.*$/, '').trim().toLowerCase();
+  return essence === 'application/json' || essence.endsWith('+json');
+}
+
+/**
+ * True for a parsed body that looks like an OpenAPI document: an object with
+ * a top-level string `openapi`. The real document's top-level keys are
+ * `{components, info, openapi, paths, security, servers}` with
+ * `openapi: "3.1.0"`, so this key is a reliable discriminator against the
+ * JSON a proxy or SPA catch-all might answer with instead.
+ */
+function looksLikeOpenApiDocument(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null) {
+    return false;
+  }
+  return typeof (body as { openapi?: unknown }).openapi === 'string';
+}
+
+/**
+ * One-time, best-effort probe for v2 API support. Resolves `false` — never
+ * rejects — on any non-2xx status, network error, or timeout. Callers are
+ * expected to cache the result (see {@link getOrDetectCapabilities}) rather
+ * than probing on every call.
+ *
+ * A 2xx alone is NOT enough. A reverse proxy or SPA catch-all that answers
+ * every unmatched path with `200` + `index.html` would otherwise report v2
+ * support on a v1-only server. That was harmless while the result only fed
+ * `vikunja_auth`'s status report, and stops being harmless the moment an
+ * operation routes on it (issue #184 P3), so the probe also requires a JSON
+ * content type and an actual OpenAPI document in the body.
  */
 export async function probeV2Api(apiUrl: string): Promise<boolean> {
   const url = resolveV2ProbeUrl(apiUrl);
@@ -55,7 +91,31 @@ export async function probeV2Api(apiUrl: string): Promise<boolean> {
   const timer = setTimeout(() => controller.abort(), V2_PROBE_TIMEOUT_MS);
   try {
     const response = await fetch(url, { method: 'GET', signal: controller.signal });
-    return response.ok;
+    if (!response.ok) {
+      logger.debug('v2 API probe for %s returned HTTP %d; assuming v1-only', url, response.status);
+      return false;
+    }
+
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!isJsonContentType(contentType)) {
+      logger.debug(
+        'v2 API probe for %s returned 200 with content type "%s", not a JSON document; assuming v1-only',
+        url,
+        contentType,
+      );
+      return false;
+    }
+
+    const body: unknown = await response.json();
+    if (!looksLikeOpenApiDocument(body)) {
+      logger.debug(
+        'v2 API probe for %s returned JSON without a top-level "openapi" key; assuming v1-only',
+        url,
+      );
+      return false;
+    }
+
+    return true;
   } catch (error) {
     logger.debug(
       'v2 API probe failed for %s: %s',
