@@ -8,6 +8,25 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+### Changed: project updates go through v2 `PATCH` on every supported version (#184, 0.8.0 P3 step 6)
+
+- `vikunja_projects update`, `archive`, `unarchive` and `move` now write through a v1/v2 strategy
+  pair (`src/tools/projects/update/`) instead of one hard-coded full-model `POST`. On a v2-capable
+  server each becomes a single `PATCH /api/v2/projects/{id}` carrying only the fields the caller
+  named; on any other server the v1 fetch-merge-POST runs exactly as before. The kill switch
+  (`VIKUNJA_MCP_FORCE_V1_API`) and a session with no v2 capability both select v1.
+- No version floor, unlike task update. Project `PATCH` was probed on live 2.4.0, 2.5.0 and 2.6.0
+  stacks and answered 200 on all three, so the 2.5.0 floor that task update needs would have
+  stranded the oldest supported release on v1 for no reason.
+- The two project full-replace traps were probed rather than assumed. `is_favorite` (tagged
+  `xorm:"-"`, so an omitted value reads as an explicit unfavorite through a side effect on the
+  favorites table) and `parent_project_id` (an omitted value means move-to-root) both survive a v2
+  partial update untouched, because the server applies the patch to the stored project first. The
+  merge that guards them stays on the v1 path, where the bug is real. An explicit
+  `isFavorite: false` still unfavorites on both paths.
+- No tool-surface change. A no-op patch answers `304`, which is resolved with a fresh read so the
+  caller still gets a current project.
+
 ### Fixed: `expand` is honoured on a single-project listing instead of dropped (#184, 0.8.0 P3 step 7)
 
 - `vikunja_tasks list` used to accept `expand` on a single-project listing, report it as ignored,

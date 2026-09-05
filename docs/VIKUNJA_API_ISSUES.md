@@ -645,11 +645,24 @@ explicit unfavorite request.
 explicitly resend `isFavorite: true` silently unfavorited a favorited
 project.
 
-**Resolution:** `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`)
-fetches the current project and carries its `isFavorite` value forward
-unless the caller explicitly supplies a different one, the same
-fetch-merge-POST pattern used for #3a, closing both mechanisms with one
-merge despite their different root causes.
+**Resolution:** `buildProjectUpdatePayload`
+(`src/tools/projects/update/V1ProjectUpdateStrategy.ts`, re-exported from
+`src/tools/projects/crud.ts`) fetches the current project and carries its
+`isFavorite` value forward unless the caller explicitly supplies a different
+one, the same fetch-merge-POST pattern used for #3a, closing both mechanisms
+with one merge despite their different root causes.
+
+**Does not apply to the v2 `PATCH` path (probed 2026-09-06, #184 P3 step 6).**
+`PATCH /api/v2/projects/{id}` with a body that omits `is_favorite` returned 200
+and left the project favorited on 2.4.0, 2.5.0 and 2.6.0. The merge patch is
+applied to the stored project before the handler runs, so the omitted field is
+never bound to Go's zero value and `removeFromFavorite` never fires. An
+explicit `{"is_favorite": false}` still unfavorites. The merge therefore stays
+on v1, where the bug is real, and is not carried onto v2, where it would only
+reintroduce the read-modify-write race it was written to work around. Probing
+this rather than assuming it either way was the point: assuming `PATCH` fixes
+it without checking is how you ship a server that unfavorites every project it
+touches.
 
 ## 17. `labels` Filter Matches Label IDs, Not Titles
 

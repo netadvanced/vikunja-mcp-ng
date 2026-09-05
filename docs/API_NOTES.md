@@ -106,6 +106,16 @@ report to the operator.
    set explicitly (to the new parent, or `0` for root) rather than left
    untouched like the other fields.
 
+   **This describes the v1 path only, as of #184 P3 step 6.** All four
+   functions now write through `ProjectUpdateContext`
+   (`src/tools/projects/update/`), which sends a partial
+   `PATCH /api/v2/projects/{id}` when the session resolves to v2 and keeps
+   this merge otherwise. The merge moved to
+   `update/V1ProjectUpdateStrategy.ts` and is re-exported from `crud.ts`; it
+   did not change. `moveProject`'s explicit `parent_project_id` survives on
+   both paths for the same reason, since dropping the field from a patch
+   would mean "leave the parent alone" rather than "move to root".
+
 2. **`is_favorite` Is a Second, Different Full-Replace Trap**: `is_favorite`
    never even reaches xorm's column layer: `Project.IsFavorite` is tagged
    `xorm:"-"` (not a real column, `pkg/models/project.go:69`), so it is
@@ -126,9 +136,21 @@ report to the operator.
    favorites association, not a forced column write). Worth keeping distinct
    so the `UseBool` lesson isn't over-generalized to "every silently-wiped
    boolean is a `UseBool` column." `buildProjectUpdatePayload`
-   (`src/tools/projects/crud.ts`) fetches the current project and carries its
-   `isFavorite` forward unless the caller explicitly overrides it, closing
-   both mechanisms with the one merge.
+   (`src/tools/projects/update/V1ProjectUpdateStrategy.ts`, re-exported from
+   `crud.ts`) fetches the current project and carries its `isFavorite`
+   forward unless the caller explicitly overrides it, closing both mechanisms
+   with the one merge.
+
+   **v2's `PATCH` closes both without the merge** (probed live on 2.4.0,
+   2.5.0 and 2.6.0 on 2026-09-06, on a favorited child project). A patch of
+   `{"title": ...}` returned 200 and left `is_favorite` and
+   `parent_project_id` exactly as they were, because the server applies the
+   merge patch to the stored project before running the same `UpdateProject`
+   code, so an omitted field is never bound to Go's zero value. An explicit
+   `{"is_favorite": false}` still unfavorites and `{"is_favorite": true}`
+   still favorites, so nothing is lost. This was worth probing rather than
+   assuming: a partial-update route that reached the handler the same way v1
+   does would have silently unfavorited every project the server touched.
 
 3. **List Pagination Has No Total Count**: `GET /projects` returns a bare
    array (`models.Project[]` in the vendored spec). There is no
@@ -721,3 +743,9 @@ hypothesis) to "Filter Implementation Notes." All new claims verified
 against go-vikunja source (`~/Projects/vikunja`, pinned v2.3.0) or this
 repo's `src/`, with file:line citations, and cross-linked to the matching
 new entries in `docs/VIKUNJA_API_ISSUES.md`.*
+
+*Updated 2026-09-06: recorded that `PATCH /api/v2/projects/{id}` closes both
+project full-replace traps (`is_favorite` and `parent_project_id`) without a
+fetch-merge, probed on 2.4.0, 2.5.0 and 2.6.0, and noted that the v1 merge now
+lives in `src/tools/projects/update/V1ProjectUpdateStrategy.ts` (#184 P3 step
+6).*
