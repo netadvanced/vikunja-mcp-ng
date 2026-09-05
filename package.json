@@ -122,7 +122,7 @@
   "overrides": {
     "zod": "^3.25.28",
     "qs": "^6.15.3",
-    "fast-uri": "^3.1.5",
+    "fast-uri": "^3.1.7",
     "path-to-regexp": "^8.4.2",
     "body-parser": "^2.3.0",
     "@modelcontextprotocol/sdk": {
