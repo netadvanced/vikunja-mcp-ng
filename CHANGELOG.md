@@ -104,6 +104,36 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 - `forceV1Api`, a server with no v2 API, and a session that never went through capability detection
   all keep the v1 sequence unchanged.
 
+### Changed: `vikunja_task_comments update` runs on the v2 `PATCH` route (#184, 0.8.0 P3 step 6)
+
+- A comment update now sends `PATCH /api/v2/tasks/{task}/comments/{commentid}` as a merge patch
+  instead of v1's `POST /tasks/{id}/comments/{commentID}`. Same one-field request either way, so
+  this is a version dispatcher rather than a strategy pair: there was no fetch-merge here to
+  retire, because v1's update already replaced only the comment text.
+- **No minimum server version.** The route was probed against live 2.4.0, 2.5.0 and 2.6.0 on
+  2026-09-06 and behaves identically on all three, so the support floor gets v2 as well. The 2.5.0
+  floor `vikunja_tasks update` carries comes from a task-specific subscription bug that has no
+  comment equivalent.
+- v2 answers an empty `304 Not Modified` when the patch would change nothing, where v1 answered
+  200 with the comment. Re-sending a comment's current text therefore re-reads it over v1 and
+  returns it, so the operation still succeeds and still reports a comment.
+- Fixes an incidental v1 defect on this path: v1's update response echoes `author: null` and
+  `created: "0001-01-01T00:00:00Z"` even though the stored comment is intact. The v2 response
+  carries the real author and creation time. The response shape is unchanged.
+- The update response is still HTML. `?format=markdown` is honoured on v2 `GET` and ignored on
+  `PATCH` (verified on all three versions), and the owner decision of 2026-09-05 is to leave
+  update responses as they are rather than pay a re-read for cosmetic consistency. Comment reads
+  are untouched by this change and still run on v1.
+- `VIKUNJA_MCP_FORCE_V1_API` selects the unchanged v1 `POST` on every version, as does a session
+  whose capabilities were never probed.
+
+### Fixed: a v2 `304 Not Modified` no longer counts against a circuit breaker (#184, 0.8.0 P3 step 6)
+
+- `isClientErrorExcludedFromBreaker` treated 304 as a failure, because the v2 transport surfaces
+  it as an error (304 is not `Response.ok`). It is a correct answer to a well-formed request, and
+  with the default thresholds three no-op patches in five calls would have opened a breaker shared
+  by every caller of that endpoint group. Other 3xx still count.
+
 ### Fixed: `expand` is honoured on a single-project listing instead of dropped (#184, 0.8.0 P3 step 7)
 
 - `vikunja_tasks list` used to accept `expand` on a single-project listing, report it as ignored,
