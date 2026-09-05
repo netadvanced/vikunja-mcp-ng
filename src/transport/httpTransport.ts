@@ -61,6 +61,7 @@ import {
 } from './resourceMetadata';
 import { getOidcAuthMiddleware } from './oidcMiddlewareSeam';
 import { getActiveEnrollmentService } from './enrollment';
+import { getActiveVaultStore } from '../storage/vaultFileStore';
 import { runWithRequestContext, takeAttachedRequestContext } from '../context/requestContext';
 import { logger } from '../utils/logger';
 
@@ -123,7 +124,7 @@ function sendJson(
 export async function startHttpTransport(
   createMcpServer: McpServerFactory,
   httpConfig: HttpConfig,
-  oidc?: Pick<OidcConfig, 'issuer'>,
+  oidc?: Pick<OidcConfig, 'issuer' | 'jwksUri'>,
 ): Promise<HttpTransportHandle> {
   const authMiddleware = getOidcAuthMiddleware();
   if (!authMiddleware) {
@@ -149,6 +150,7 @@ export async function startHttpTransport(
       requestPath,
       httpConfig,
       oidcIssuer: oidc?.issuer,
+      jwksUri: oidc?.jwksUri,
     }).catch((error) => {
       logger.error('Unhandled error while handling HTTP MCP request:', error);
       sendJson(res, 500, { error: 'internal_error' });
@@ -186,6 +188,30 @@ export async function startHttpTransport(
   };
 }
 
+/** How long `/readyz` waits for the JWKS endpoint before calling it unreachable. */
+const JWKS_REACHABILITY_TIMEOUT_MS = 3000;
+
+/**
+ * `/readyz`'s JWKS half of the §3a "Health/readiness" contract: a plain GET
+ * against the configured JWKS endpoint, independent of `jose`'s own
+ * `createRemoteJWKSet` cache inside the auth middleware — a readiness probe
+ * should reflect whether the endpoint answers RIGHT NOW, not whether a
+ * previously-cached key set is still in memory. `undefined` (no OIDC
+ * configured) has nothing to check, so it reports reachable.
+ */
+async function isJwksReachable(jwksUri: string | undefined): Promise<boolean> {
+  if (!jwksUri) return true;
+  try {
+    const response = await fetch(jwksUri, {
+      method: 'GET',
+      signal: AbortSignal.timeout(JWKS_REACHABILITY_TIMEOUT_MS),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 interface RequestHandlerContext {
   createMcpServer: McpServerFactory;
   allowedHosts: string[];
@@ -193,6 +219,7 @@ interface RequestHandlerContext {
   requestPath: string;
   httpConfig: HttpConfig;
   oidcIssuer: string | undefined;
+  jwksUri: string | undefined;
 }
 
 async function handleIncomingRequest(
@@ -212,10 +239,23 @@ async function handleIncomingRequest(
     return;
   }
   if (req.method === 'GET' && pathname === '/readyz') {
-    // TODO(H2): extend with JWKS reachability + vault-file-openable checks
-    // once the vault exists (§3a "Health/readiness" describes the full
-    // contract).
-    sendJson(res, 200, { status: 'ok' });
+    const vault = getActiveVaultStore();
+    // A vault degraded load (#266 — unreadable/malformed file) means writes
+    // are refused and reads may be silently incomplete; §3a is explicit that
+    // this deserves operator visibility here rather than looking ready.
+    // Missing vault entirely is treated the same way: oidc-http mode always
+    // provisions one before the listener opens, so its absence at request
+    // time is itself a not-ready signal, not a "nothing to check" no-op.
+    const vaultOk = vault !== undefined && !vault.isDegraded();
+    const jwksOk = await isJwksReachable(ctx.jwksUri);
+    if (vaultOk && jwksOk) {
+      sendJson(res, 200, { status: 'ok' });
+    } else {
+      sendJson(res, 503, {
+        status: 'not_ready',
+        checks: { vault: vaultOk ? 'ok' : 'degraded', jwks: jwksOk ? 'ok' : 'unreachable' },
+      });
+    }
     return;
   }
 

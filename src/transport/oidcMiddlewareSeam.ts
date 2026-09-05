@@ -4,22 +4,20 @@
  * item).
  *
  * This item (H1a) builds the Streamable HTTP transport plumbing only; it
- * does not validate bearer tokens. Per the spec's deny-mixed-mode rule
+ * does not validate bearer tokens itself. Per the spec's deny-mixed-mode rule
  * (§2 "Selection rule"), `transport=http` must never serve unauthenticated
- * HTTP — so until H1b lands and registers a real middleware here via
- * `setOidcAuthMiddleware()`, `getOidcAuthMiddleware()` returns `undefined`
- * and `src/transport/httpTransport.ts` refuses to start the HTTP listener.
+ * HTTP — so `getOidcAuthMiddleware()` returning `undefined` (nothing
+ * registered yet) makes `src/transport/httpTransport.ts` refuse to start the
+ * HTTP listener.
  *
- * TODO(H1b): replace this stub seam with the real JWT-validation middleware
- * described in docs/OIDC-RESOURCE-SERVER.md §3b — `jose`'s
- * `createRemoteJWKSet` + `jwtVerify`, validating `iss`/`aud`/`alg`
- * allowlist/`exp`/`nbf`/clock-skew/`sub`, attaching `{ sub, issuer, claims }`
- * to the request (via `req.auth`, matching the SDK's
- * `IncomingMessage & { auth?: AuthInfo }` contract) on success, or writing a
- * generic `401` with `WWW-Authenticate: Bearer error="invalid_token"` (or
- * `403` for a valid token missing `requiredScope`) on failure. Register the
- * real implementation by calling `setOidcAuthMiddleware()` during server
- * startup, before `startHttpTransport()` is invoked.
+ * **H1b has landed**: the real JWT-validation middleware described in §3b —
+ * `jose`'s `createRemoteJWKSet` + `jwtVerify`, validating
+ * `iss`/`aud`/`alg` allowlist/`exp`/`nbf`/clock-skew/`sub` — lives in
+ * `src/auth/oidc/jwtValidator.ts`, and `src/transport/oidcHttpAuth.ts`
+ * registers it here via `setOidcAuthMiddleware()` during server startup,
+ * before `startHttpTransport()` is invoked. This module stays a pure seam
+ * (types + get/set) rather than importing that implementation directly, so
+ * `httpTransport.ts` never has to know which auth scheme registered it.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
