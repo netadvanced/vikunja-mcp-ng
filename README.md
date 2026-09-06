@@ -51,7 +51,7 @@ This project supports and tests the trailing three released Vikunja versions —
 
 The minimum rose from 2.3.0 to 2.4.0 in the `0.7.0-beta` line. Nine operations this server ships as implemented, the eight `vikunja_admin` operations and `vikunja_tasks get-by-index`, do not exist on a released 2.3.0, so the older claim was not true in practice. On Vikunja 2.3.0, either upgrade Vikunja or pin `vikunja-mcp-ng@0.6.2`.
 
-The server speaks Vikunja's v1 API. v2 adoption is tracked in [issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184) and has not started.
+The server speaks **both** Vikunja API versions, choosing one per operation ([issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184)). There is no v2 mode to turn on: each operation uses v2 where v2 is genuinely better and v1 everywhere else, and you get the same response shape either way. The change you will actually notice is that task descriptions and other rich text come back as GitHub-flavoured markdown instead of HTML when the server is read over v2, which is what an LLM wants. Some operations stay on v1 permanently, because v2 either has no equivalent or offers nothing over v1; one (`vikunja_tasks update`) needs Vikunja 2.5.0 or newer for its v2 path and uses v1 on the 2.4.0 floor. [docs/API-VERSION-MATRIX.md](docs/API-VERSION-MATRIX.md) lists which version serves each function and why. Set `VIKUNJA_MCP_FORCE_V1_API=true` to force everything back onto v1.
 
 ## Docker
 

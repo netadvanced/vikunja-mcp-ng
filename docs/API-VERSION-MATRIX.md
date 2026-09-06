@@ -1,17 +1,20 @@
 # API Version Matrix — which Vikunja API version serves each MCP function
 
-> **Status: P3 in progress.** Rows whose **Notes** begin with **SHIPPED** route through v2 today:
-> P3 step 3 routed the task read paths (`vikunja_tasks get`, `vikunja_tasks list`) through v2 for
-> `?format=markdown`, P3 step 4 routed `vikunja_tasks update` through v2 `PATCH` on servers from
-> 2.5.0, and P3 step 6 is routing the update-shaped writes of the remaining entities: the four
-> project writes (`update`, `archive`, `unarchive`, `move`), the two project-view writes
-> (`update-view`, `set-done-bucket`), `vikunja_labels update`, `vikunja_filters update`,
-> `vikunja_task_comments update` and `vikunja_teams update`, each on every supported version (no
-> floor). Every other row still describes the P3 target rather than current behaviour: the v2
-> transport, error adapter, routing decision and kill switch exist (0.7.0 P1+P2), and the remaining
-> functions are still wired only to `vikunja_auth`'s reporting. Rows flip as P3 lands, per the
-> maintenance rule at the bottom. The **Planned path** cell keeps its wording when a row ships, so
-> the counts in the summary stay recountable.
+> **Status: P3 complete (2026-09-06), unreleased.** Rows whose **Notes** begin with **SHIPPED**
+> route through v2 today: the task read paths (`vikunja_tasks get`, `vikunja_tasks list`) for
+> `?format=markdown`, `vikunja_tasks update` on v2 `PATCH` from server 2.5.0, and the update-shaped
+> writes of the remaining entities: the four project writes (`update`, `archive`, `unarchive`,
+> `move`), the two project-view writes (`update-view`, `set-done-bucket`), `vikunja_labels update`,
+> `vikunja_filters update`, `vikunja_task_comments update` and `vikunja_teams update`, each on every
+> supported version with no floor. Every other row describes what v2 *could* do for that function,
+> not current behaviour: those functions still run on v1 and adopting them is not scheduled.
+>
+> Two planned P3 steps did not produce v2 routing, and the reasons are recorded rather than omitted.
+> **`vikunja_task_bulk` was dropped** (its `v1 pinned` row below explains why: v2 bulk wipes assignees
+> exactly as v1 does and there is no v2 `PATCH` for bulk). **`expand` turned out to be v1-only work**,
+> fixed on the v1 path, with no v2 advantage on any supported version. Rows flip per the maintenance
+> rule at the bottom. The **Planned path** cell keeps its wording when a row ships, so the counts in
+> the summary stay recountable.
 >
 > **Read/write format asymmetry (deliberate, owner decision 2026-09-05).** v2 honours
 > `?format=markdown` on `GET` and ignores it on `PATCH`, so a task description read through
@@ -83,16 +86,18 @@ changes were matched on resource + intent, so a v1→v2 verb rename is **not** c
 
 | Planned path | Count | |
 |---|--:|---|
-| **v2 →v1** | 19 | P3 targets — v2 when available, v1 fallback |
+| **v2 →v1** | 17 | P3 targets: v2 when available, v1 fallback |
 | **v1 (later)** | 149 | v2 equivalent exists; migration not scheduled in P3 |
-| **v1 pinned** | 3 | v2 exists but offers no benefit — see rows for reasons |
+| **v1 pinned** | 5 | v2 exists but offers no benefit; see rows for reasons |
 | **v1 only** | 3 | No v2 equivalent. Permanent |
 | **local** | 9 | No Vikunja API call |
 | **Total** | **183** | |
 
-Counts are recounted from the row markers, never hand-adjusted:
-`grep -cF '| **v2 →v1** |' docs/API-VERSION-MATRIX.md` (and equivalents), applied to the sections
-below the summary.
+Counts are recounted from the row markers, never hand-adjusted: `grep -cF '| v1 (later) |'` and
+equivalents, applied to the sections below the summary. The **v2 →v1** count is the one that needs a
+pattern rather than a fixed string, because a row that carries a per-operation version floor spells its
+marker differently (`| **v2 (≥2.5.0) →v1** |`, currently just `vikunja_tasks update`):
+`grep -cE '\| \*\*v2 [^|]*→v1\*\* \|' docs/API-VERSION-MATRIX.md`.
 
 The three permanent `v1 only` functions:
 
@@ -142,11 +147,11 @@ full v2 equivalents.
 | `vikunja_tasks set-bucket` | `GET /tasks/{id}`; `GET .../views`; `POST .../buckets/{bucket}/tasks` | `GET`; `GET`; `PUT` | v1 (later) | Resolution GETs conditional |
 | `vikunja_tasks set-position` | `GET /tasks/{id}`; `GET .../views`; `POST /tasks/{id}/position` | `GET`; `GET`; `PUT` | v1 (later) | |
 | `vikunja_tasks bulk-create` | `PUT /projects/{id}/tasks`; `POST .../labels/bulk`; `PUT .../assignees`; `GET` | v2 verbs | v1 (later) | Label/assignee calls conditional per item |
-| `vikunja_tasks bulk-update` | `GET /tasks/{id}`; `POST /tasks/bulk`; `POST .../assignees/bulk` | `GET`; `PUT /tasks/bulk`; `PUT` | **v2 →v1** | Verb change only. Does **not** retire the assignee snapshot/restore: v2 `PUT /tasks/bulk` wipes assignees exactly as v1 does (re-probed live on 2.6.0, 2026-09-05), because both route into the same `models.BulkTask.Update()` chain |
+| `vikunja_tasks bulk-update` | `GET /tasks/{id}`; `POST /tasks/bulk`; `POST .../assignees/bulk` | `GET`; `PUT /tasks/bulk`; `PUT` | **v1 pinned** | **P3 step 5 was DROPPED, 2026-09-06.** The step existed to retire the assignee snapshot/restore, and v2 does not retire it: `PUT /tasks/bulk` wipes assignees exactly as v1's `POST` does (re-probed live on 2.6.0, 2026-09-05), because both route into the same `models.BulkTask.Update()` chain, and `bulk_task.go` registers no `PATCH`. With the premise gone, routing here would swap one verb for another in the most concurrency-sensitive path in the codebase and change nothing observable. **Revisit if** Vikunja registers a `PATCH` on `bulk_task.go`, or changes `models.BulkTask.Update()` so a scalar-only payload stops decoding `assignees` to `nil` |
 | `vikunja_tasks bulk-delete` | `GET /tasks/{id}`; `DELETE /tasks/{id}` | same | v1 (later) | |
 | `vikunja_tasks bulk-set-bucket` | `GET /tasks/{id}`; `GET .../views`; `POST .../buckets/{bucket}/tasks` | `GET`; `GET`; `PUT` | v1 (later) | |
 | `vikunja_task_bulk bulk-create` | As `vikunja_tasks bulk-create` | same | v1 (later) | |
-| `vikunja_task_bulk bulk-update` | As `vikunja_tasks bulk-update` | same | **v2 →v1** | Verb change only. Does **not** retire the assignee snapshot/restore: v2 `PUT /tasks/bulk` wipes assignees exactly as v1 does (re-probed live on 2.6.0, 2026-09-05), because both route into the same `models.BulkTask.Update()` chain |
+| `vikunja_task_bulk bulk-update` | As `vikunja_tasks bulk-update` | same | **v1 pinned** | **P3 step 5 was DROPPED, 2026-09-06.** The step existed to retire the assignee snapshot/restore, and v2 does not retire it: `PUT /tasks/bulk` wipes assignees exactly as v1's `POST` does (re-probed live on 2.6.0, 2026-09-05), because both route into the same `models.BulkTask.Update()` chain, and `bulk_task.go` registers no `PATCH`. With the premise gone, routing here would swap one verb for another in the most concurrency-sensitive path in the codebase and change nothing observable. **Revisit if** Vikunja registers a `PATCH` on `bulk_task.go`, or changes `models.BulkTask.Update()` so a scalar-only payload stops decoding `assignees` to `nil` |
 | `vikunja_task_bulk bulk-delete` | As `vikunja_tasks bulk-delete` | same | v1 (later) | |
 | `vikunja_task_bulk bulk-set-bucket` | As `vikunja_tasks bulk-set-bucket` | same | v1 (later) | |
 | `vikunja_task_assignees assign` | `PUT /tasks/{id}/assignees` | `POST /tasks/{id}/assignees` | v1 (later) | |

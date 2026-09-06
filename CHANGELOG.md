@@ -8,259 +8,312 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
-### Changed: project updates go through v2 `PATCH` on every supported version (#184, 0.8.0 P3 step 6)
+### Vikunja's v2 API, adopted per operation (issue #184, milestone 0.8.0)
 
-- `vikunja_projects update`, `archive`, `unarchive` and `move` now write through a v1/v2 strategy
-  pair (`src/tools/projects/update/`) instead of one hard-coded full-model `POST`. On a v2-capable
-  server each becomes a single `PATCH /api/v2/projects/{id}` carrying only the fields the caller
-  named; on any other server the v1 fetch-merge-POST runs exactly as before. The kill switch
-  (`VIKUNJA_MCP_FORCE_V1_API`) and a session with no v2 capability both select v1.
-- No version floor, unlike task update. Project `PATCH` was probed on live 2.4.0, 2.5.0 and 2.6.0
-  stacks and answered 200 on all three, so the 2.5.0 floor that task update needs would have
-  stranded the oldest supported release on v1 for no reason.
-- The two project full-replace traps were probed rather than assumed. `is_favorite` (tagged
-  `xorm:"-"`, so an omitted value reads as an explicit unfavorite through a side effect on the
-  favorites table) and `parent_project_id` (an omitted value means move-to-root) both survive a v2
-  partial update untouched, because the server applies the patch to the stored project first. The
-  merge that guards them stays on the v1 path, where the bug is real. An explicit
-  `isFavorite: false` still unfavorites on both paths.
-- No tool-surface change. A no-op patch answers `304`, which is resolved with a fresh read so the
-  caller still gets a current project.
+This release starts serving real operations from Vikunja's **v2 REST API**, and keeps v1 as a
+**permanent per-operation floor**. There is no "v2 mode" to switch on. Each operation resolves its
+own version from the session's one-time capability probe, and callers get the same response shape
+whichever version ran.
 
-### Changed: project view updates run on v2 `PATCH` (#184, 0.8.0 P3 step 6)
+Supported window: Vikunja **2.4.0** (floor), **2.5.0**, **2.6.0** (aligned default). All three have
+a v2 API, so v1 is not being kept around for old servers. Three separate reasons keep an operation
+on v1, and only the third is version-shaped:
 
-- `vikunja_projects update-view` and the `set-done-bucket` composite now go through a strategy pair
-  behind a context (`src/tools/projects/view-update/`), the same shape `vikunja_tasks update` uses.
-  `V1ViewUpdateStrategy` is the previous sequence, moved rather than rewritten: read the view, merge
-  the caller's fields into the whole model, `POST` it back. `V2ViewUpdateStrategy` sends one `PATCH`
-  carrying only the changed fields. Two calls become one, and the read-modify-write race between two
-  concurrent updates goes away.
-- The v1 read was never optional: `ProjectView.Update` writes an explicit `Cols(...)` allowlist, so
-  a partial v1 body resets a view's `position` to 0 and blanks its `filter`
-  ([VIKUNJA_API_ISSUES.md](docs/VIKUNJA_API_ISSUES.md) #15). v2 performs that merge server-side,
-  which is what makes the read redundant rather than merely inconvenient.
-- **No `minVersion` floor.** The route was probed on live 2.4.0, 2.5.0 and 2.6.0 servers
-  (2026-09-05) and behaved identically on all three: a partial `PATCH` applied, untouched fields
-  survived, a nested `filter` patch left the rest of the task collection alone, and a patch that
-  would change nothing answered `304`. Task update's 2.5.0 floor is specific to that route's
-  subscription bug and is not inherited here.
-- A `304` is resolved with a read of the view rather than surfaced as an error. `set-done-bucket`
-  hits it whenever the requested bucket already holds the role, and its verify-then-report check
-  passes on the re-read exactly as it did before.
-- **Kanban buckets stay on v1 permanently**, unchanged by this: v2 registers no `PATCH` on a bucket
-  at all. `done_bucket_id` is a field of the *view*, which is why `set-done-bucket` is a view update.
-- No tool-surface change. Both strategies return the same canonical `models.ProjectView`, the kill
-  switch (`forceV1Api`) still forces v1 on every version, and an undetected server version still
-  selects v1.
+1. **No v2 equivalent exists**, on any version: `vikunja_admin list-users` and the two Unsplash
+   background functions. Permanently v1.
+2. **v2 offers nothing over v1** for that operation: bulk task update, `expand`. v1 by default
+   rather than by necessity.
+3. **v2 is broken on some supported versions**: `vikunja_tasks update`, which runs v1 on 2.4.0 and
+   v2 from 2.5.0. This resolves itself as the support window rolls forward.
 
-### Fixed: `vikunja_labels update` works again, and runs on v2 `PATCH` (#184, 0.8.0 P3 step 6)
+The two headline changes for a caller are that **task descriptions now arrive as markdown instead
+of HTML** on read paths, and that **`vikunja_labels update`, which failed on every call, works
+again**. `VIKUNJA_MCP_FORCE_V1_API=true` still forces every operation back onto v1 and is the
+supported way to rule the v2 path out when diagnosing something. Per-function detail lives in
+[docs/API-VERSION-MATRIX.md](docs/API-VERSION-MATRIX.md).
 
-- **`vikunja_labels update` was broken on every supported version.** It sent
-  `PUT /api/v1/labels/{id}`, the verb `docs/vikunja-openapi.json` declares, and every server answers
-  `405 Method Not Allowed` to it (`Allow: OPTIONS, DELETE, GET, POST`, probed live on 2.4.0, 2.5.0
-  and 2.6.0 on 2026-09-05). The unit tests did not catch it because a spec-derived mock and a
-  spec-derived route agreed with each other. Recorded as `VIKUNJA_API_ISSUES.md` #26.
-- **The v1 route that does exist is a full model replace.** `POST /labels/{id}` with only
+Every claim below was measured against live 2.4.0, 2.5.0 and 2.6.0 stacks rather than read off the
+vendored OpenAPI specs. That mattered repeatedly: four load-bearing premises of the original design
+were disproved by the servers and the plan changed to match. See **Plans that did not survive
+contact**, below.
+
+### Changed
+
+- **Task descriptions and other rich text come back as GFM markdown, not HTML** (`vikunja_tasks
+  get`, `vikunja_tasks list`, PR #357). v2's `?format=markdown` renders every rich-text field, and
+  for an MCP server feeding an LLM this is the single largest quality win in the milestone. No
+  version floor: `format` was verified on all three supported versions. Against a v1-only server,
+  or with the kill switch on, descriptions stay HTML exactly as before.
+
+  **The same field can come back in two formats depending on how you fetched it.** v2 honours
+  `?format=markdown` on `GET` and ignores it on `PATCH`, so an update response still carries HTML
+  while a read of the same task carries markdown. This is a deliberate owner decision of
+  2026-09-05, not an oversight: the alternative was re-reading after every update, which costs back
+  the exact round trip `PATCH` was introduced to save. It is documented rather than hidden, and it
+  disappears the day Vikunja adds `format` to `PATCH`.
+
+- **`vikunja_tasks update` runs on v2 `PATCH` from Vikunja 2.5.0** (PR #356), the milestone's
+  payoff and the first operation to route through v2. A v1/v2 strategy pair behind a context
+  (`src/tools/tasks/crud/update/`) replaces the single hard-coded path. `V1TaskUpdateStrategy` is
+  the old sequence moved rather than rewritten: merge the caller's fields into the whole task,
+  `POST` it back, write labels, snapshot and diff assignees one user at a time, re-read.
+  `V2TaskUpdateStrategy` writes labels, then sends one `PATCH` carrying the changed fields and the
+  assignees together. A title change with two new assignees goes from **7 calls to 3**; a
+  field-only change from 3 to 2.
+
+  The v2 path is not read-modify-write, so two concurrent updates can no longer clobber each
+  other's untouched fields. The leading `GET` stays on both paths because it is the snapshot
+  `previousState`/`affectedFields` are derived from; it never feeds the v2 request body.
+
+  **Selected by server version, not by capability alone.** On 2.4.0, v2 `PATCH /tasks/{id}` answers
+  422 for any task carrying a subscription, and assigning a user auto-subscribes them, so the
+  operation this change exists to improve is exactly the one 2.4.0 cannot serve. The context asks
+  `resolveApiVersion` for a `minVersion` of `2.5.0`. On 2.4.0 the v1 strategy runs, not as a
+  degraded fallback but because fetch-merge-`POST` is the correct way to update a task on that
+  server.
+
+  **The `subscription: null` workaround is withdrawn**, superseding the note in `0.7.0-beta.5`
+  that said it was still needed on 2.4.0. It does work. It is dropped on judgement: a future
+  Vikunja honouring merge-patch null semantics would read it as "delete this field" and silently
+  unsubscribe users, and carrying it would mean carrying a test that pins an upstream defect in
+  place. No `subscription: null` appears anywhere in the codebase, and no test asserts the bug
+  still exists.
+
+- **The remaining update-shaped writes run on v2 `PATCH`, on every supported version.** None of
+  these carries a version floor: each route was probed on live 2.4.0, 2.5.0 and 2.6.0 stacks and
+  behaved identically on all three. Task update's 2.5.0 floor is specific to its subscription bug
+  and is not inherited. In each case the v1 sequence is preserved unchanged behind the strategy
+  boundary, and the kill switch, a server with no v2 API, and a session that never ran capability
+  detection all select it.
+
+  - **Projects** (PR #360): `vikunja_projects update`, `archive`, `unarchive` and `move` become a
+    single `PATCH /api/v2/projects/{id}` carrying only the named fields. The two full-replace traps
+    were probed rather than assumed: `is_favorite` (tagged `xorm:"-"`, so an omitted value reads as
+    an explicit unfavorite through a side effect on the favorites table) and `parent_project_id`
+    (an omitted value means move-to-root) both survive a v2 partial update untouched, because the
+    server applies the patch to the stored project first. The merge that guards them stays on the
+    v1 path, where the bug is real. An explicit `isFavorite: false` still unfavorites on both paths.
+  - **Project views** (PR #362): `update-view` and the `set-done-bucket` composite go from two
+    calls to one. The v1 read was never optional there: `ProjectView.Update` writes an explicit
+    `Cols(...)` allowlist, so a partial v1 body resets a view's `position` to 0 and blanks its
+    `filter` ([VIKUNJA_API_ISSUES.md](docs/VIKUNJA_API_ISSUES.md) #15). v2 performs that merge
+    server-side, which is what makes dropping the read safe rather than merely convenient. **Kanban
+    buckets stay on v1 permanently**: v2 registers no `PATCH` on a bucket at all. `done_bucket_id`
+    is a field of the *view*, which is why `set-done-bucket` is a view update.
+  - **Labels** (PR #363): see the `vikunja_labels update` fix under **Fixed**, which this is part of.
+  - **Saved filters** (PR #365): `vikunja_filters update` sends one `PATCH /filters/{filter}`
+    instead of read-overlay-`POST`, because `POST /filters/{id}` replaces the resource and rejects a
+    body without `filters` outright (`412`, `filters: non zero value required`). The `filters`
+    sub-object merges per key server-side: a query-only patch rewrites `filters.filter` and
+    preserves the stored `s`, `sort_by`, `order_by` and `filter_include_nulls`, which is what makes
+    dropping the read lossless. The saved filter's own query string is untouched by any of this;
+    both versions store it verbatim and reject an invalid field with the same `400` (Vikunja code
+    4016), so the project's Zod pipeline still runs first and still means what it meant.
+    `src/tools/filters/query.ts` was extracted unchanged from `src/tools/filters.ts` so `create`
+    and `update` share one implementation.
+  - **Task comments** (PR #359): `vikunja_task_comments update` sends `PATCH
+    /api/v2/tasks/{task}/comments/{commentid}`. This is a version dispatcher rather than a strategy
+    pair, because there was no fetch-merge to retire: v1's update already replaced only the comment
+    text. Comment *reads* are untouched and still run on v1, so a comment update response is still
+    HTML.
+  - **Teams** (PR #364): `vikunja_teams update` becomes one `PATCH /api/v2/teams/{id}`. The v1
+    read-then-merge is retired on v2 rather than merely skipped: it existed to defeat
+    [VIKUNJA_API_ISSUES.md](docs/VIKUNJA_API_ISSUES.md) §3a, where v1 binds the body into an empty
+    struct and writes `is_public` with xorm's `UseBool`, so a rename silently un-publishes a public
+    team. `PATCH` was probed on all three versions before the merge was removed: a name-only patch
+    leaves `is_public` and the description untouched, and a description-only patch is accepted
+    rather than refused by the server's required-name validator. The
+    `team-rename-keeps-visibility.json` battle scenario still guards the behaviour on both paths.
+    Both paths share `buildTeamFieldPatch`, so they cannot drift over what a field name maps to.
+
+- **A no-op `PATCH` answers `304 Not Modified` with an empty body**, on every one of these routes.
+  Each strategy resolves it with a read, so the caller still receives the current entity and the
+  operation still reports success. `set-done-bucket` meets this whenever the requested bucket
+  already holds the role.
+
+### Removed
+
+- **`max_permission` no longer appears on `vikunja_projects` write responses** (`update`,
+  `archive`, `unarchive`, `move`, including their already-archived and already-unarchived early
+  returns; PR #366 and follow-up). **This is a caller-visible schema change**, and the only one in
+  a milestone whose stated constraint was to make none, so it is listed here rather than buried in
+  a bullet about something else.
+
+  It is argued in full in `src/tools/projects/update/canonical.ts`. The short version: projects are
+  the one entity where **both** API versions return the field and they disagree on the value. Probed
+  live on 2026-09-06, one owned project per version, v1 returns `0` on 2.4.0 and 2.5.0 and `null` on
+  2.6.0, while v2 returns `2` on a read and `null` from a `PATCH`. Stripping only the v2 side would
+  have traded a `0`-versus-`null` divergence for an absent-versus-`0` one, which is no better;
+  stripping on both is what actually makes the two paths indistinguishable. The value being removed
+  is documented garbage ([VIKUNJA_API_ISSUES.md](docs/VIKUNJA_API_ISSUES.md) #23: `0` where the
+  spec promises a permission level, `null` from 2.6.0 on), nothing in `src/` reads it, and the P3
+  design put it explicitly off the tool surface.
+
+  `vikunja_projects get` and `list` are untouched and still emit whatever the server sends. On
+  tasks, teams and saved filters the field is a v2 addition, so stripping it there restores parity
+  with v1 rather than changing anything a caller sees.
+
+### Fixed
+
+- **`vikunja_labels update` works again. It failed on every call, on every supported version**
+  (PR #363). It sent `PUT /api/v1/labels/{id}`, the verb `docs/vikunja-openapi.json` declares, and
+  every server answers `405 Method Not Allowed` to it (`Allow: OPTIONS, DELETE, GET, POST`, probed
+  live on 2.4.0, 2.5.0 and 2.6.0). The unit tests did not catch it because a spec-derived mock and a
+  spec-derived route agreed with each other. Recorded as
+  [VIKUNJA_API_ISSUES.md](docs/VIKUNJA_API_ISSUES.md) #26.
+
+  The v1 route that does exist, `POST /labels/{id}`, is a full-model replace: sending only
   `hex_color` came back with `title` and `description` blanked, contradicting the comment in
   `src/tools/labels.ts` that claimed the handler applied only the fields present. The v1 path now
-  reads the label and sends the merged model back, the same fetch-merge-`POST` shape projects, views
-  and teams already use.
-- **v2 `PATCH /labels/{id}` replaces both calls with one** on a v2-capable session. It is a true
-  partial update on 2.4.0, 2.5.0 and 2.6.0 alike, so this operation carries **no `minVersion`
-  floor**, unlike task update. A patch the server considers a no-op answers `304` with an empty
-  body; that one case reads the label so the caller still gets one back.
-- A strategy pair was warranted here after all, for a reason unrelated to the URL prefix: the call
-  shapes genuinely differ, two calls against one. The v1 kill switch (`VIKUNJA_MCP_FORCE_V1_API`),
-  a server with no v2 API, and a session that never ran capability detection all select v1, and all
-  three are covered. New code in `src/utils/label-update.ts`; no tool-surface or response-shape
-  change.
+  reads the label and posts the merged model back. On a v2-capable server, one `PATCH /labels/{id}`
+  replaces both calls.
 
-### Changed: `vikunja_filters update` runs on v2 `PATCH` on every supported version (#184, 0.8.0 P3 step 6)
+- **`expand` is honoured on a single-project listing instead of silently dropped** (PR #358).
+  `vikunja_tasks list` used to accept `expand`, report it as ignored, and send a request without it
+  whenever a `projectId` was given. `GET /projects/{id}/tasks` accepts the parameter perfectly well
+  and populates the expanded fields, on all three supported versions. It is now forwarded on
+  filtered and unfiltered single-project listings and on the per-project requests of the
+  cross-project aggregation fallback, where it was also being dropped. `orderBy`, `filterTimezone`
+  and `filterIncludeNulls` are unchanged: they remain cross-project-only and are still reported as
+  ignored.
 
-- **A strategy pair behind a context** (`src/tools/filters/update/`), mirroring
-  `src/tools/tasks/crud/update/`. `V1SavedFilterUpdateStrategy` is the previous sequence, moved
-  rather than rewritten: read the filter, overlay the caller's fields onto the whole model, `POST`
-  it back, because `POST /filters/{id}` replaces the resource and rejects a body without `filters`
-  outright (`412`, `filters: non zero value required`). `V2SavedFilterUpdateStrategy` sends one
-  `PATCH /filters/{filter}` carrying only what changed, and returns its response as the result.
-  Two calls become one, and the read-modify-write window in which a concurrent edit is clobbered by
-  a stale model disappears.
-- **No `minVersion` floor**, unlike task update. `PATCH /api/v2/filters/{filter}` was probed
-  against the live 2.4.0, 2.5.0 and 2.6.0 stacks on 2026-09-05 and behaved identically on all
-  three, so 2.4.0 gets the single-call path too.
-- **The `filters` sub-object merges per key.** A query-only patch rewrites `filters.filter` and
-  preserves the stored `s`, `sort_by`, `order_by` and `filter_include_nulls` server-side, which is
-  what makes dropping the v1 read safe rather than lossy.
-- **The saved filter's own query string is unaffected by v2.** Both versions store it verbatim and
-  parse it with the same server-side code: an invalid field is rejected with the same `400`
-  (Vikunja code 4016) on either path, so the project's Zod pipeline
-  (`src/tools/filters/query.ts`, extracted unchanged from `src/tools/filters.ts` so `create` and
-  `update` share one implementation) still runs first and still means what it meant. The `s` to `q`
-  search rename does not reach in here either: it is a query-string concern, and a saved filter's
-  own search term lives in the request body, where v2 still calls it `s`.
-- **No tool-surface change.** Same arguments, same response, same `affectedFields`, computed once
-  for both paths. `is_favorite: false` applies rather than being swallowed, a no-op patch answers
-  `304` and is resolved with a read, and v2's `max_permission` is stripped at the boundary.
-- `forceV1Api`, a server with no v2 API, and a session that never went through capability detection
-  all keep the v1 sequence unchanged.
+- **A scope-refused `expand` fails the call instead of burying the reason.** Vikunja 2.6.0 checks
+  `comments` and `reactions` against a `tk_*` token's scopes; the per-project aggregation used to
+  skip every project in turn and report "N project(s) could not be read", which hid the one thing
+  the caller could act on.
 
-### Changed: `vikunja_task_comments update` runs on the v2 `PATCH` route (#184, 0.8.0 P3 step 6)
+- **A v2 `304 Not Modified` no longer counts against a circuit breaker** (PR #359).
+  `isClientErrorExcludedFromBreaker` treated 304 as a failure, because the v2 transport surfaces it
+  as an error (a 304 is not `Response.ok`). It is a correct answer to a well-formed request, and
+  with the default thresholds **three no-op patches in five calls would have opened a breaker shared
+  by every caller of that endpoint group**. Other 3xx still count.
 
-- A comment update now sends `PATCH /api/v2/tasks/{task}/comments/{commentid}` as a merge patch
-  instead of v1's `POST /tasks/{id}/comments/{commentID}`. Same one-field request either way, so
-  this is a version dispatcher rather than a strategy pair: there was no fetch-merge here to
-  retire, because v1's update already replaced only the comment text.
-- **No minimum server version.** The route was probed against live 2.4.0, 2.5.0 and 2.6.0 on
-  2026-09-06 and behaves identically on all three, so the support floor gets v2 as well. The 2.5.0
-  floor `vikunja_tasks update` carries comes from a task-specific subscription bug that has no
-  comment equivalent.
-- v2 answers an empty `304 Not Modified` when the patch would change nothing, where v1 answered
-  200 with the comment. Re-sending a comment's current text therefore re-reads it over v1 and
-  returns it, so the operation still succeeds and still reports a comment.
-- Fixes an incidental v1 defect on this path: v1's update response echoes `author: null` and
-  `created: "0001-01-01T00:00:00Z"` even though the stored comment is intact. The v2 response
-  carries the real author and creation time. The response shape is unchanged.
-- The update response is still HTML. `?format=markdown` is honoured on v2 `GET` and ignored on
-  `PATCH` (verified on all three versions), and the owner decision of 2026-09-05 is to leave
-  update responses as they are rather than pay a re-read for cosmetic consistency. Comment reads
-  are untouched by this change and still run on v1.
-- `VIKUNJA_MCP_FORCE_V1_API` selects the unchanged v1 `POST` on every version, as does a session
-  whose capabilities were never probed.
+- **A comment update response carries the real author and creation time.** v1's update response
+  echoes `author: null` and `created: "0001-01-01T00:00:00Z"` even though the stored comment is
+  intact; the v2 response does not. Incidental, and fixed by the routing change rather than
+  deliberately.
 
-### Fixed: a v2 `304 Not Modified` no longer counts against a circuit breaker (#184, 0.8.0 P3 step 6)
+- **`GET /tasks/all` rejects `expand` with a clear error** rather than silently building a query
+  without it. That endpoint does not exist on any supported version, answering `400 code 2004` with
+  and without query parameters, and the only remaining call site is an unreachable branch of
+  `ServerSideFilteringStrategy`.
 
-- `isClientErrorExcludedFromBreaker` treated 304 as a failure, because the v2 transport surfaces
-  it as an error (304 is not `Response.ok`). It is a correct answer to a well-formed request, and
-  with the default thresholds three no-op patches in five calls would have opened a breaker shared
-  by every caller of that endpoint group. Other 3xx still count.
+### Security
 
-### Changed: `vikunja_teams update` runs on v2 `PATCH` (#184, 0.8.0 P3 step 6)
+- **The v2 transport redacts upstream error text and honours the execution abort signal** (PR
+  #361), two protections v1 has applied for a while and v2 was missing. Both were harmless while
+  nothing routed through v2 and became live the moment task reads, listings and updates did.
 
-- **A strategy pair behind a context** (`src/tools/teams/update/`), the same shape as
-  `TaskUpdateContext`. `V1TeamUpdateStrategy` is the previous sequence, moved rather than
-  rewritten: `GET` the team, merge the caller's deltas over the whole stored model, `POST` it back.
-  `V2TeamUpdateStrategy` sends one `PATCH /api/v2/teams/{id}` carrying only the fields the caller
-  named. Two calls become one, and both paths share `buildTeamFieldPatch` so they cannot drift over
-  what a field name maps to.
-- **The read-then-merge is retired on v2, not merely skipped.** It existed to defeat
-  `VIKUNJA_API_ISSUES.md` §3a: v1's handler binds the body into an empty struct and writes
-  `is_public` with xorm's `UseBool`, so an omitted boolean is written as an explicit `false` and a
-  rename silently un-publishes a public team. `PATCH` was probed live against 2.4.0, 2.5.0 and
-  2.6.0 before the merge was removed: on all three a name-only patch returns 200 and leaves
-  `is_public` and the description untouched, and a description-only patch is accepted rather than
-  rejected by the server's required-name validator. `team-rename-keeps-visibility.json` still
-  guards the behaviour on both paths.
-- **No `minVersion` floor**, deliberately. Task update carries one because its v2 `PATCH` 422s on
-  2.4.0 for subscribed tasks; nothing about the teams route is broken on the floor, so it uses
-  plain `resolveApiVersion` and 2.4.0 gets v2 too.
-- A no-op `PATCH` answers `304` with no body, which the transport surfaces as an error; the v2
-  strategy falls back to a v1 read so the caller still gets the current team.
-- No caller-visible change. `max_permission` is stripped at the strategy boundary, `affectedFields`
-  still reports only the caller's deltas, and the `forceV1Api` kill switch, a server with no v2
-  API, and a session that never ran capability detection all select v1, where behaviour is byte for
-  byte what it was.
+  v1 runs every upstream error body through `redactUpstreamText` before it reaches an `MCPError`;
+  v2 put the raw body, and the raw `problem+json` fields, straight into the message. v2 also
+  carries a field v1 has no equivalent for, `errors[].value`, which Vikunja documents as "the value
+  at the given location" and which a live 2.6.0 server echoes back verbatim, so it can contain
+  whatever the caller sent. Separately, v2 never called `getExecutionAbortSignal()`, so a v2
+  request could outlive the deadline meant to bound it; an abort is now a cancelled `MCPError` that
+  is neither retried nor counted against the shared breaker.
 
-### Fixed: `expand` is honoured on a single-project listing instead of dropped (#184, 0.8.0 P3 step 7)
+  The pieces both transports must apply identically now live in `src/utils/vikunja-rest-shared.ts`.
+  v1 imports them unchanged and its behaviour is byte-identical.
 
-- `vikunja_tasks list` used to accept `expand` on a single-project listing, report it as ignored,
-  and send a request without it. The premise was that `GET /projects/{id}/tasks` did not support
-  the parameter. It does, on 2.4.0, 2.5.0 and 2.6.0 alike (re-probed live 2026-09-05), and it
-  populates the expanded fields. `expand` is now forwarded there, on filtered and unfiltered
-  listings, and on the per-project requests of the cross-project aggregation fallback where it was
-  also being dropped.
-- `orderBy`, `filterTimezone` and `filterIncludeNulls` are unchanged: they stay cross-project-only
-  and are still reported as ignored on a single-project listing.
-- A scope-refused `expand` (Vikunja 2.6.0 checks `comments`/`reactions` against a `tk_*` token's
-  scopes) now fails the per-project aggregation outright instead of skipping every project in turn
-  and reporting "N project(s) could not be read", which buried the one thing the caller could act
-  on.
-- The unreachable `GET /tasks/all` branch of `ServerSideFilteringStrategy` rejects `expand` with a
-  clear error rather than silently building a query without it. That endpoint does not exist on any
-  supported version: it answers `400 code 2004` with and without query params.
-- This is v1 work. `expand` behaves identically on v1 and v2 across the whole support window, so
-  nothing here routes to v2.
+### Added
 
-### Changed: `vikunja_tasks update` runs on v2 `PATCH` from Vikunja 2.5.0 (#184, 0.8.0 P3 step 4)
+- **v2 REST transport** (`src/utils/vikunja-rest-v2.ts`, PR #351), a sibling of the v1 helper
+  rather than a branch inside it, so v1's code path is untouched. Same retry and circuit-breaker
+  discipline under a distinct `vikunja-rest-v2-` breaker namespace, because breakers are
+  process-wide and keyed by name and a shared name would let one API surface's failures trip the
+  other's. Sends RFC 7386 merge-patch by default on `PATCH`, with RFC 6902 json-patch selectable.
 
-The milestone's payoff, and the first operation to actually route through v2.
+- **`application/problem+json` to `MCPError` adapter** (PR #351, lint follow-up #353), preserving
+  Vikunja's numeric error `code`, the per-field `errors[]` list, and the HTTP status. Falls back to
+  the v1 message shape for non-`problem+json` or malformed bodies, which is a real case: a proxy can
+  return a plain-text 502. Every catch block in the codebase stays version-blind.
 
-- **A strategy pair behind a context** (`src/tools/tasks/crud/update/`), mirroring
-  `FilteringContext`. `V1TaskUpdateStrategy` is the previous sequence, moved rather than rewritten:
-  merge the caller's fields into the whole task, `POST` it back, write labels, snapshot and diff
-  assignees one user at a time, re-read. `V2TaskUpdateStrategy` writes labels, then sends one
-  `PATCH` carrying the changed fields and the assignees together, and returns its response as the
-  result. For a title change with two new assignees that is 7 v1 calls against 3 on v2; for a
-  field-only change, 3 against 2.
-- **Selected by server version, not by capability alone.** v2 `PATCH /tasks/{id}` answers 422 for
-  any task carrying a subscription on 2.4.0, and assigning a user auto-subscribes them, so the
-  operation this change exists to improve is exactly the one 2.4.0 cannot serve. The context
-  therefore asks `resolveApiVersion` for a `minVersion` of 2.5.0: 2.4.0 keeps the v1 strategy, not
-  as a degraded fallback but because fetch-merge-`POST` is the correct way to update a task on that
-  server. Re-probed live on 2.4.0, 2.5.0 and 2.6.0 on 2026-09-05.
-- **No `subscription: null` workaround.** It does make 2.4.0's `PATCH` succeed, and it is withdrawn
-  on judgement: a future Vikunja honouring merge-patch null semantics would read it as "delete this
-  field" and silently unsubscribe users. There is no test pinning the upstream defect either.
-- **No caller-visible change.** Both strategies return the same canonical task: v2-only fields are
-  stripped at the boundary, and the pre-update read that feeds `previousState`/`affectedFields`
-  happens on both paths. It never feeds the v2 request body, so v2 is not read-modify-write and two
-  concurrent updates can no longer clobber each other's untouched fields. The kill switch
-  (`VIKUNJA_MCP_FORCE_V1_API`) and an undetected server version both select v1.
-- Update responses keep their current description format: v2 ignores `?format=markdown` on `PATCH`,
-  and per the owner decision of 2026-09-05 no re-read is added to paper over that.
-
-### Added: v2 response normalizer (#184, 0.8.0 P3 step 2)
-
-- **`src/utils/vikunja-v2-normalize.ts`**, the boundary that makes v2 responses indistinguishable
-  from v1 ones. It unwraps v2's pagination envelope (`{$schema, items, total, page, per_page,
-  total_pages}`, confirmed live on 2.4.0, 2.5.0 and 2.6.0) to the bare array callers expect, strips
-  `$schema` from single-entity responses too, and leaves bare arrays and non-objects alone. The
-  kanban `buckets/tasks` route is enveloped as `{$schema, items, total}` with no page fields, so
-  recognition never requires `total_pages`.
-- `total`, `page`, `per_page` and `total_pages` are kept in a `WeakMap` side table readable through
-  `getV2PaginationMeta`, so the counters are not thrown away while the return type and the tool
-  surface stay exactly as they were. Nothing consumes them yet: surfacing pagination totals is an
-  explicit non-goal of P3.
-- `vikunjaRestV2Request` normalizes by default and takes `normalize: false` for a future
-  per-operation strategy that needs the raw envelope.
-- **No behaviour change:** no operation routes through v2 yet, so nothing in the server calls this
-  code path in production.
-
-### Added — Vikunja v2 API groundwork (#184, 0.7.0 P1+P2)
-
-Infrastructure for adopting Vikunja's v2 API as a capability-gated fast path. **No behaviour
-change:** no operation routes through v2 yet, and v1 remains the permanent floor for every
-operation. Per-endpoint adoption is P3.
-
-- **v2 REST transport** (`src/utils/vikunja-rest-v2.ts`) — a sibling of the v1 helper rather than a
-  branch inside it, so v1's code path is untouched. Same retry and circuit-breaker discipline under
-  a distinct `vikunja-rest-v2-` breaker namespace (a shared name would let one API surface's
-  failures trip the other's breaker). Sends RFC 7386 merge-patch by default on `PATCH`, with RFC
-  6902 json-patch selectable.
-- **`application/problem+json` → `MCPError` adapter** — preserves Vikunja's numeric error `code`,
-  the per-field `errors[]` list, and the HTTP status (in both `details.statusCode` and a top-level
-  `.status`, which shared classifiers read). Falls back to the v1 message shape for non-problem+json
-  or malformed bodies — a real case, since a proxy can return a plain-text 502.
-- **`resolveApiVersion`** (`src/utils/api-version.ts`) — the single routing decision point.
+- **`resolveApiVersion`** (`src/utils/api-version.ts`, PR #351), the single routing decision point.
   Synchronous, no network call, and returns `v2` only on positive evidence: kill switch off **and**
   a cached capability snapshot reporting v2 support. Every other path returns `v1`.
-- **`featureFlags.forceV1Api` kill switch** (env: `VIKUNJA_MCP_FORCE_V1_API`) — forces every
-  operation onto v1 regardless of what was detected. See
+
+- **A per-operation `minVersion` floor on `resolveApiVersion`** (PR #354). An operation can now
+  declare its own minimum server version (`resolveApiVersion(authManager, { minVersion: '2.5.0' })`)
+  and everything below it keeps v1. `GET /info` reports the version with a leading `v` (`v2.6.0`),
+  which the comparison strips, and an **undetected** version resolves to v1: "we could not tell" is
+  not evidence that a server is new enough.
+
+- **`probeV2Api` validates a real OpenAPI document** instead of trusting an HTTP 200 (PR #354). A
+  reverse proxy or SPA catch-all returning `200` plus `index.html` used to report v2 support on a
+  v1-only server. Harmless while the result only fed a status report, load-bearing the moment an
+  operation routes on it. The probe now checks the content type and parses for a top-level `openapi`
+  key. One detail that would bite a naive implementation: the server answers `Content-Type:
+  application/openapi+json`, **not** `application/json`, so an equality check against
+  `application/json` rejects a genuinely v2-capable server.
+
+- **v2 response normalizer** (`src/utils/vikunja-v2-normalize.ts`, PR #355), the boundary that makes
+  v2 responses indistinguishable from v1 ones. It unwraps v2's pagination envelope (`{$schema,
+  items, total, page, per_page, total_pages}`, confirmed byte-for-byte on all three versions) to the
+  bare array callers expect, strips `$schema` from single-entity responses too, and leaves bare
+  arrays and non-objects alone. The kanban `buckets/tasks` route is enveloped as `{$schema, items,
+  total}` with no page fields, so recognition never requires `total_pages`. `total`, `page`,
+  `per_page` and `total_pages` are kept in a `WeakMap` side table readable through
+  `getV2PaginationMeta` so the counters are not thrown away, but nothing consumes them: surfacing
+  pagination totals is an explicit non-goal of this milestone.
+
+- **`featureFlags.forceV1Api` kill switch** (env: `VIKUNJA_MCP_FORCE_V1_API`, PR #351), which forces
+  every operation onto v1 regardless of what was detected. See
   [docs/CONFIGURATION.md](docs/CONFIGURATION.md#forcing-the-v1-api).
-- **`vikunja_auth` reports `activeApiVersion`** on `connect`, `status`, and `info`, so the routing
-  decision — including the kill switch's effect — is observable. `connect` now also reports
+
+- **`vikunja_auth` reports `activeApiVersion`** on `connect`, `status` and `info` (PR #351), so the
+  routing decision, including the kill switch's effect, is observable. `connect` also reports
   `hasV2Api`, which it previously omitted despite being the subcommand that triggers detection.
+
+### Plans that did not survive contact
+
+Two planned steps were dropped or reframed after live servers disproved their premises. They are
+recorded here rather than quietly omitted, because the reasoning is the useful part.
+
+- **Routing `vikunja_task_bulk` to v2 was dropped** (P3 step 5). Its premise was that v2's bulk
+  update would retire the assignee snapshot/restore in `bulk-operations-simplified.ts`. It does
+  not. v2 `PUT /tasks/bulk` routes into the identical `models.BulkTask.Update()` chain and wipes
+  assignees exactly as v1's `POST /tasks/bulk` does, verified live on 2.6.0: a task with one
+  assignee and one label kept the label and lost the assignee on both versions. There is no v2
+  `PATCH` for bulk either, since `bulk_task.go` registers only `PUT`. With the premise gone, all
+  that remained was swapping one verb for another in the most concurrency-sensitive path in the
+  codebase, keeping every call and changing no observable behaviour: pure risk for no benefit.
+  **The snapshot/restore stays, on both paths, with no removal condition.** Revisit if Vikunja
+  registers a `PATCH` on `bulk_task.go`, or changes `models.BulkTask.Update()` so a scalar-only
+  payload stops decoding `assignees` to `nil`.
+
+- **The `expand` work turned out to be v1-only, and its original framing was wrong** (P3 step 7).
+  It was specified as "move off `/tasks/all`, which rejects `expand`". Both halves were false.
+  `/tasks/all` answers `400 code 2004` with *and without* `expand`, so the 400 is the endpoint and
+  not the parameter, and nothing routed there by default anyway. The real gap was entirely
+  client-side, and is the fix listed under **Fixed** above. `expand` yields no v2 advantage at all:
+  v1 accepts and populates the full v2 value set, including the three (`comment_count`,
+  `time_entries_count`, `is_unread`) an earlier draft called v2-only.
+
+Two more premises were corrected before they could be built on: `GET /projects/{id}/tasks` is
+**not** v2-only, so routing project-task reads to v2 saves no discovery call and is justified by
+`format=markdown` alone; and single-entity v2 reads are not an N+1 win, because v1's `models.Task`
+already embeds `assignees`, `labels`, `attachments`, `related_tasks` and `reminders`.
 
 ### Documentation
 
-- **`docs/API-VERSION-MATRIX.md`** (new) — one row per MCP function (183 across 27 tools): whether
-  v1 and v2 can serve it, which this server uses, and why when that is not v2. Only three functions
-  have no v2 path at all (`vikunja_admin list-users`, and the two Unsplash background ones).
-- **`docs/VIKUNJA_API_ISSUES.md` #12** — Vikunja 2.4.0 returns 422 on `PATCH /api/v2/tasks/{id}`
-  for any task carrying a subscription, and assigning a user auto-subscribes them. Includes the
-  `subscription: null` workaround, its expiry condition, and four v2 behaviours a client must
-  handle (pagination envelope, leading-`v` version string, unenforced `If-Match`, view-less
-  project-tasks route).
-- Design specs for both phases under `docs/superpowers/specs/`.
+- **[docs/API-VERSION-MATRIX.md](docs/API-VERSION-MATRIX.md)** (new) tracks one row per MCP function
+  (183 across 27 tools): whether v1 and v2 can serve it, which this server uses, and why when that
+  is not v2. Only three functions have no v2 path at all. Rows carrying **SHIPPED** route through v2
+  today. Its maintenance rule is that a row changes in the same PR that changes the behaviour it
+  describes, never as a later reconciliation pass.
+- **[docs/VIKUNJA_API_ISSUES.md](docs/VIKUNJA_API_ISSUES.md) #25**, the 2.4.0-only v2
+  `PATCH`/subscription 422, updated to record the re-verification across the support window and to
+  drop the withdrawn workaround prescription. There is no expiry condition and no upstream filing,
+  because the fix already shipped in 2.5.0. **#26** is new: `PUT /api/v1/labels/{id}` is declared in
+  the vendored spec and answers 405 on every supported version.
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**'s API version handling section now describes the
+  shipped architecture (the strategy-pair pattern, the normalization boundary, `minVersion`, and the
+  three reasons an operation stays on v1) rather than a plan.
+- **[docs/ROADMAP.md](docs/ROADMAP.md)** decision 30 records the per-operation version selection
+  model with its conditions, and the §6 horizon item for this wave is closed out.
+- The P3 design spec (`docs/superpowers/specs/2026-08-02-vikunja-v2-native-adoption-design.md`, PRs
+  #352 and follow-ups) documents its own corrections inline, including the four premises re-probed
+  across 2.4.0, 2.5.0 and 2.6.0 on 2026-09-05 and the step 5 drop.
 
 ## [0.7.0-beta.5] - 2026-09-05
 
