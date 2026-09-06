@@ -106,6 +106,16 @@ report to the operator.
    set explicitly (to the new parent, or `0` for root) rather than left
    untouched like the other fields.
 
+   **This describes the v1 path only, as of #184 P3 step 6.** All four
+   functions now write through `ProjectUpdateContext`
+   (`src/tools/projects/update/`), which sends a partial
+   `PATCH /api/v2/projects/{id}` when the session resolves to v2 and keeps
+   this merge otherwise. The merge moved to
+   `update/V1ProjectUpdateStrategy.ts` and is re-exported from `crud.ts`; it
+   did not change. `moveProject`'s explicit `parent_project_id` survives on
+   both paths for the same reason, since dropping the field from a patch
+   would mean "leave the parent alone" rather than "move to root".
+
 2. **`is_favorite` Is a Second, Different Full-Replace Trap**: `is_favorite`
    never even reaches xorm's column layer: `Project.IsFavorite` is tagged
    `xorm:"-"` (not a real column, `pkg/models/project.go:69`), so it is
@@ -126,9 +136,21 @@ report to the operator.
    favorites association, not a forced column write). Worth keeping distinct
    so the `UseBool` lesson isn't over-generalized to "every silently-wiped
    boolean is a `UseBool` column." `buildProjectUpdatePayload`
-   (`src/tools/projects/crud.ts`) fetches the current project and carries its
-   `isFavorite` forward unless the caller explicitly overrides it, closing
-   both mechanisms with the one merge.
+   (`src/tools/projects/update/V1ProjectUpdateStrategy.ts`, re-exported from
+   `crud.ts`) fetches the current project and carries its `isFavorite`
+   forward unless the caller explicitly overrides it, closing both mechanisms
+   with the one merge.
+
+   **v2's `PATCH` closes both without the merge** (probed live on 2.4.0,
+   2.5.0 and 2.6.0 on 2026-09-06, on a favorited child project). A patch of
+   `{"title": ...}` returned 200 and left `is_favorite` and
+   `parent_project_id` exactly as they were, because the server applies the
+   merge patch to the stored project before running the same `UpdateProject`
+   code, so an omitted field is never bound to Go's zero value. An explicit
+   `{"is_favorite": false}` still unfavorites and `{"is_favorite": true}`
+   still favorites, so nothing is lost. This was worth probing rather than
+   assuming: a partial-update route that reached the handler the same way v1
+   does would have silently unfavorited every project the server touched.
 
 3. **List Pagination Has No Total Count**: `GET /projects` returns a bare
    array (`models.Project[]` in the vendored spec). There is no
@@ -234,21 +256,34 @@ Project sharing allows creating public or private links to share projects with e
    `filter` on every field in that list the caller omits. `update-view` and
    the `set-done-bucket` composite both fetch the current view first and
    merge requested changes onto it (`buildViewUpdatePayload` in
-   `src/tools/projects/views.ts`) rather than sending a bare partial object,
-   which happens to close this the same way a true full-replace endpoint
-   would. But the underlying hazard is `Cols(...)`, not the zero-value skip
-   `UseBool`/`Cols` are usually contrasted against. See
+   `src/tools/projects/view-update/mapping.ts`) rather than sending a bare
+   partial object, which happens to close this the same way a true
+   full-replace endpoint would. But the underlying hazard is `Cols(...)`, not
+   the zero-value skip `UseBool`/`Cols` are usually contrasted against. See
    [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #15.
+
+   **v1 only, as of #184 P3 step 6.** v2's
+   `PATCH /api/v2/projects/{project}/views/{view}` applies a merge patch on
+   the server and never reaches the `Cols(...)` path with an incomplete
+   struct, so the client fetch is unnecessary there: a `PATCH` naming only
+   `title` left `position` and `filter` intact on 2.4.0, 2.5.0 and 2.6.0
+   (probed live 2026-09-05). `src/tools/projects/view-update/` picks the
+   single-`PATCH` strategy on any v2-capable server and keeps the
+   fetch-merge-`POST` one everywhere else.
 
 2. **Setting the Done Bucket**: `models.Bucket` has no `is_done_bucket`
    field. The done bucket is `done_bucket_id` on the `ProjectView`
    (see "Kanban 'Done' Bucket" above, which covers *reading* it via
    `list-buckets`). `set-done-bucket` is the only way to *set* it: resolve
    the Kanban view (auto-resolved from the project, or an explicit
-   `viewId`), fetch-merge-POST the `done_bucket_id` change, then verify the
-   response actually reflects the requested bucket before reporting
+   `viewId`), write the `done_bucket_id` change through the view-update
+   strategy pair (one v2 `PATCH`, or v1's fetch-merge-`POST`), then verify
+   the response actually reflects the requested bucket before reporting
    success. A mismatch (e.g. a stale `updated` snapshot on a concurrently
    edited view) raises an `API_ERROR` rather than silently claiming success.
+   On v2, asking for the bucket that already holds the role changes nothing
+   and the server answers `304` with no body; the strategy resolves that with
+   a read, so the verify step still sees a real view.
 
 3. **Per-View Task Listing Shape**: `GET /projects/{id}/views/{view}/tasks`
    (`list-view-tasks`) declares a flat `models.Task[]` response schema for
@@ -311,8 +346,13 @@ Project sharing allows creating public or private links to share projects with e
    omitting other fields (like `description`) look harmless. An update that
    omitted `is_public` therefore silently un-published a public team.
    `vikunja_teams update` fetches the team first and merges requested
-   changes onto it via `buildTeamUpdatePayload` (`src/tools/teams.ts`), the
-   same fetch-merge-POST shape `buildProjectUpdatePayload` uses for projects.
+   changes onto it via `buildTeamUpdatePayload`
+   (`src/tools/teams/update/V1TeamUpdateStrategy.ts`), the same
+   fetch-merge-POST shape `buildProjectUpdatePayload` uses for projects.
+   That is now the **v1 path only**: `PATCH /api/v2/teams/{id}` writes only
+   the columns the body names, so it has neither the `UseBool` trap nor the
+   required-name rejection (probed live on 2.4.0, 2.5.0 and 2.6.0 for #184 P3
+   step 6), and a v2-capable server updates a team in one call.
    Full write-up, verified against the go-vikunja source, is in
    [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) §3a, including the
    generalized "watch for `UseBool` on any full-replace endpoint" lesson, and
@@ -327,6 +367,33 @@ Project sharing allows creating public or private links to share projects with e
    registration and struct-tag citations. The general rule this establishes:
    **when the vendored OpenAPI spec and the Go handler disagree, the handler
    wins**. Verify against the handler source, not the spec text.
+
+### Label Update
+
+1. **The v1 Route in the Spec Does Not Exist**: `docs/vikunja-openapi.json`
+   declares `PUT /labels/{id}` for label update, and `vikunja_labels update`
+   sent exactly that until #184 P3 step 6. Every supported server answers
+   `405 Method Not Allowed` with `Allow: OPTIONS, DELETE, GET, POST` (probed
+   live on 2.4.0, 2.5.0 and 2.6.0 on 2026-09-05), so the subcommand failed on
+   every call. The route the server routes is `POST /labels/{id}`. Another
+   instance of the rule the team-member note above states: when the vendored
+   spec and the server disagree, the server wins.
+
+2. **That `POST` Is a Full Model Replace**: sending only `{"hex_color":
+   "ff0000"}` returned a label whose `title` and `description` were both `""`.
+   The comment that used to sit atop `src/tools/labels.ts` claimed the
+   opposite — that the label service applies only the fields present on the
+   incoming struct — and it was wrong. The v1 path therefore reads the label
+   and sends the merged model back, the same fetch-merge-POST shape projects,
+   views and teams use.
+
+3. **v2 `PATCH /labels/{id}` Is a True Partial Update, On Every Supported
+   Version**: it applied the change and preserved every unmentioned field on
+   2.4.0, 2.5.0 and 2.6.0, so label update carries no `minVersion` floor and a
+   v2-capable session sends one call instead of two. A patch that would change
+   nothing answers `304` with an empty body, which the transport surfaces as an
+   error; the v2 strategy reads the label in that one case. See
+   `src/utils/label-update.ts`.
 
 ### User Settings
 
@@ -374,6 +441,57 @@ Project sharing allows creating public or private links to share projects with e
    update by the same mechanism, and for the same reason, as
    `targetUrl`/`secret`.) See
    [docs/VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #14.
+
+### Task Listing Endpoints and `expand`
+
+Re-probed live on 2026-09-05 against the running 2.4.0, 2.5.0 and 2.6.0
+stacks, all three answering identically unless a row says otherwise.
+
+| v1 endpoint | `expand` |
+|---|---|
+| `GET /tasks` | accepted, populated |
+| `GET /projects/{id}/tasks` | accepted, populated |
+| `GET /tasks/{id}` | accepted (not exposed by this server's `get`) |
+| `GET /tasks/all` | irrelevant: see below |
+
+`GET /tasks/all` does not exist. It answers `400 {"code":2004,"message":
+"Invalid model provided: Bad Request"}` **with and without** query params, so
+the 400 is the endpoint, not the parameter. Nothing in this server routes a
+real listing there: `FilteringContext` sends cross-project listings to
+`GET /tasks` and single-project ones to `GET /projects/{id}/tasks`. The one
+call site that still names it is the unreachable cross-project branch of
+`ServerSideFilteringStrategy`, preserved from the pre-migration call-site
+port, and it now rejects `expand` explicitly rather than building a query
+that could never honour it.
+
+The accepted value set is the same on every version and on every endpoint
+above: `subtasks`, `buckets`, `reactions`, `comments`, `comment_count`,
+`time_entries_count`, `is_unread`. An unrecognised value is a **412**, not a
+400 or a 422:
+
+```
+412 {"code":2002,"message":"Expand must be one of the following values:
+subtasks, buckets, reactions, comments, comment_count, time_entries_count,
+is_unread","invalid_fields":["expand"]}
+```
+
+Two things worth knowing before extending this:
+
+- **This is not a v2 capability.** The v2 adoption design (#184) attributed
+  `comment_count`, `time_entries_count` and `is_unread` to v2. v1 accepts all
+  three on all three supported versions, and each behaves identically on both
+  API versions: `comment_count` returns the real count, the other two emit no
+  field at all. `expand` is therefore not a reason to route anything to v2.
+- **This server's tool surface exposes only four of the seven** (`subtasks`,
+  `buckets`, `reactions`, `comments`). The other three are deliberately left
+  off: two of them populate nothing, so advertising them would be a new
+  silent no-op, and `comment_count` is a surface addition for its own item
+  rather than for #184 P3 step 7.
+
+From 2.6.0, `expand=comments` and `expand=reactions` are additionally checked
+against a `tk_*` token's scopes and refused with a 401 that is byte-identical
+to a bad-token 401 — see [VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) §22
+for how that is diagnosed and why no listing path silently degrades around it.
 
 ## Operation Patterns
 
@@ -670,3 +788,9 @@ hypothesis) to "Filter Implementation Notes." All new claims verified
 against go-vikunja source (`~/Projects/vikunja`, pinned v2.3.0) or this
 repo's `src/`, with file:line citations, and cross-linked to the matching
 new entries in `docs/VIKUNJA_API_ISSUES.md`.*
+
+*Updated 2026-09-06: recorded that `PATCH /api/v2/projects/{id}` closes both
+project full-replace traps (`is_favorite` and `parent_project_id`) without a
+fetch-merge, probed on 2.4.0, 2.5.0 and 2.6.0, and noted that the v1 merge now
+lives in `src/tools/projects/update/V1ProjectUpdateStrategy.ts` (#184 P3 step
+6).*

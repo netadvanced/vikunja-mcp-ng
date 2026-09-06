@@ -74,9 +74,18 @@ on them:
   `time_entries_count` and `is_unread` are accepted and populated by v1 too, verified on 2.4.0,
   2.5.0 and 2.6.0. So `expand` yields **no** v2 advantage whatsoever. Two live details the
   implementation needs: v1 validates the value (`412` for an unknown one, versus v2's `422`), and v1
-  accepts `expand` on `/tasks`, `/tasks/{id}` and `/projects/{id}/tasks` but **rejects it on
-  `/tasks/all` with `400 code 2004`**, which is the endpoint this codebase reaches for by default.
-  Using `expand` on the v1 path therefore also means moving off `/tasks/all`.
+  accepts `expand` on `/tasks`, `/tasks/{id}` and `/projects/{id}/tasks`.
+
+  **Corrected while implementing step 7 (2026-09-05).** The line above used to add that v1 "rejects
+  `expand` on `/tasks/all` with `400 code 2004`, which is the endpoint this codebase reaches for by
+  default", and that supporting `expand` therefore meant moving off it. Both halves were wrong.
+  `/tasks/all` answers `400 code 2004` **with and without** `expand`, so the 400 is the endpoint not
+  the parameter; and this codebase does not reach for it by default. `FilteringContext` routes
+  cross-project listings to `GET /tasks` and single-project ones to `GET /projects/{id}/tasks`; the
+  only remaining `/tasks/all` call site is the unreachable cross-project branch of
+  `ServerSideFilteringStrategy`. The gap was narrower and entirely client-side: `expand` was
+  forwarded on `GET /tasks` and dropped into `ignoredParams` on `GET /projects/{id}/tasks`, which
+  accepts it perfectly well. See docs/API_NOTES.md, "Task Listing Endpoints and `expand`".
 - **Single-entity reads are not an N+1 win.** v1's `models.Task` already embeds `assignees`,
   `labels`, `attachments`, `related_tasks`, `reminders`. Only `max_permission` is genuinely new.
 
@@ -155,6 +164,27 @@ Two constraints on that work:
 This lands with probe hardening in step 1, since both are about the routing decision being
 trustworthy before anything routes on it.
 
+### Decision: markdown on reads only (owner call, 2026-09-05)
+
+`?format=markdown` is honoured on `GET` and ignored on `PATCH`, so a read and an update of the same
+task would disagree on the description's format.
+
+**Decision: request markdown on reads, and leave update responses exactly as they are today.**
+
+Rejected alternatives, and why:
+
+- *Re-read after every update to get markdown.* Costs back the call `PATCH` was introduced to save,
+  which is the milestone's whole payoff. Paying a round trip to make a response cosmetically
+  consistent is a bad trade.
+- *Hold markdown back until both sides can agree.* Forfeits the single largest caller-visible
+  quality win in the milestone, and the read path is precisely where an LLM consumes descriptions.
+
+**The cost is real and must be documented, not hidden:** the same field comes back in two formats
+depending on how the caller obtained it. This is a deliberate asymmetry, not an oversight.
+
+**Revisit if** Vikunja adds `format` to `PATCH`, at which point updates should adopt markdown and
+the asymmetry disappears. Until then, do not add a re-read to paper over it.
+
 ## Architecture
 
 ### Strategy + Context per operation
@@ -232,9 +262,7 @@ Ordered so that each step's risk is retired before anything depends on it.
    caller-visible quality win. **Scope reduced 2026-09-05:** `GET /projects/{id}/tasks` is dropped
    from this step's rationale, since v1 already serves it and no discovery call is saved. Routing
    project-task reads to v2 is still worth doing for `format=markdown`, but that is the whole
-   justification now, not the endpoint itself. Note the read/write asymmetry: `PATCH` ignores
-   `format`, so either the update path re-reads to get markdown, or the canonical shape tolerates
-   both and callers are told which they have. Decide that explicitly here rather than in step 4.
+   justification now, not the endpoint itself. The read/write asymmetry is **decided**, see below.
 4. **Task update** — the milestone's payoff: `PATCH` + inline assignees, selected only on servers
    >= 2.5.0 and falling to the v1 strategy on 2.4.0. Retires the fetch-merge-POST race on every
    version where v2 can be trusted to do it. No `subscription: null`, no bug-pinning test. Depends
@@ -248,12 +276,27 @@ Ordered so that each step's risk is retired before anything depends on it.
    branch. v2 routes into the identical `models.BulkTask.Update()` chain, and `bulk_task.go`
    registers only `PUT`, so there is no v2 `PATCH` for bulk either. **The assignee snapshot/restore
    stays**, on both paths, with no removal condition. What remains of this step is the verb change
-   and nothing else, so it should be sequenced last or dropped.
+   and nothing else.
+
+   **DROPPED, 2026-09-06.** This step was the milestone's second-headline item on a premise that
+   turned out to be false, and once the premise went there was nothing left worth the risk. Routing
+   bulk update to v2 would swap `POST /tasks/bulk` for `PUT /tasks/bulk`, keep the snapshot/restore
+   verbatim, keep every call, and change no observable behaviour, in the single most concurrency
+   sensitive path in the codebase. That is pure risk for no benefit.
+
+   **Revisit if** Vikunja registers a `PATCH` on `bulk_task.go`, or changes `models.BulkTask.Update()`
+   so a scalar-only payload stops decoding `assignees` to `nil`. Either would give v2 bulk something
+   v1 bulk does not have, and this step becomes worth doing again. Neither is true as of 2.6.0.
 6. **Remaining PATCH routes**: projects, views, labels, filters, comments, teams.
 7. **`expand`** — independent of v2 and **v1-only work in practice**, since v1 supports the entire
    value set including the three the draft called v2-only. It fixes a gap we have had all along;
-   it is not a v2 adoption item. The real work is moving off `/tasks/all`, which rejects `expand`
-   outright, onto `/tasks` or `/projects/{id}/tasks`, which accept it.
+   it is not a v2 adoption item. **Done, 2026-09-05.** The work was not moving off `/tasks/all`
+   (see the correction above: nothing routes there): it was forwarding `expand` on the
+   `GET /projects/{id}/tasks` paths, which accept it, instead of pushing it into `ignoredParams`.
+   Single-project listings, filtered single-project listings, and the per-project aggregation
+   fallback all carry it now; the unreachable `/tasks/all` branch rejects it explicitly rather than
+   dropping it. The tool surface keeps its four-value enum; the other three v1 values are recorded
+   in docs/API_NOTES.md and left for their own item, since two of them populate nothing.
 
 Steps 3–6 each: v2 strategy + v1 strategy + both tested + battle-harness call-count delta recorded.
 

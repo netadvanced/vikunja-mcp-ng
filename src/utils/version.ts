@@ -36,3 +36,48 @@ export function resolvePackageVersion(baseDir: string): string {
   }
   return FALLBACK_VERSION;
 }
+
+/**
+ * Compares two plain `X.Y.Z` version strings. Returns a negative number when
+ * `a` sorts before `b`, 0 when equal, positive when after. A leading `v` is
+ * accepted on either side, which is not cosmetic: `GET /info` reports
+ * `v2.6.0` on every supported Vikunja release, so a comparison that does not
+ * strip it reads the version as unparseable and sorts it as 0.0.0.
+ *
+ * Only the first three components are compared, and non-numeric or missing
+ * components sort as 0. So `2.6` compares equal to `2.6.0`, and a
+ * prerelease-ish `2.5.0-rc1` compares equal to `2.5.0` rather than throwing.
+ * That last case is deliberate: this is a routing gate, not a package
+ * resolver, and a server reporting something unexpected must degrade to a
+ * decision rather than crash a request.
+ */
+export function compareVersions(a: string, b: string): number {
+  const parse = (v: string): number[] =>
+    v
+      .replace(/^v/, '')
+      .split('.')
+      .map((part) => {
+        const n = Number.parseInt(part, 10);
+        return Number.isFinite(n) ? n : 0;
+      });
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0; i < 3; i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
+ * True when the detected server version is `min` or newer.
+ *
+ * An UNDETECTED version (`null`/`undefined`) returns `false`. "We could not
+ * tell" is never evidence that a server is new enough, and callers use this
+ * to decide whether an operation may take a newer code path, so guessing
+ * upward would route a request at a server that cannot serve it.
+ */
+export function serverAtLeast(detected: string | null | undefined, min: string): boolean {
+  if (!detected) return false;
+  return compareVersions(detected, min) >= 0;
+}

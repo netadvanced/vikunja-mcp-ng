@@ -439,7 +439,8 @@ export function registerUsersTool(
             //
             // Same fetch -> merge -> POST shape as buildProjectUpdatePayload
             // (src/tools/projects/crud.ts) and buildTeamUpdatePayload
-            // (src/tools/teams.ts). GET /user returns exactly the
+            // (src/tools/teams/update/V1TeamUpdateStrategy.ts). GET /user
+            // returns exactly the
             // models.UserGeneralSettings object this endpoint accepts, nested
             // under `settings`, so the round trip is field-for-field exact.
             const currentUser = await vikunjaRestRequest<VikunjaUserWithSettings>(

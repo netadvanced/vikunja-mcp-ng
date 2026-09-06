@@ -1,92 +1,32 @@
 /**
  * Task Update Service
- * Handles task updates with field diffing and relationship management
+ *
+ * Validates the caller's arguments, reads the task once to build the diff the
+ * response reports, then hands the actual write to whichever strategy this
+ * session resolves to (see ./update/TaskUpdateContext). Everything from the
+ * first write onwards — call count, ordering, request bodies — belongs to the
+ * strategy, because v1 and v2 genuinely differ there; everything before and
+ * after it is version-blind, so a caller cannot tell which one ran.
  */
 
 import { MCPError, ErrorCode } from '../../../types';
 import type { AuthManager } from '../../../auth/AuthManager';
-import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
-import { getTaskViaRest } from '../../../utils/task-rest-transport';
-import {
-  validateDateString,
-  validateHexColor,
-  validateId,
-  convertRepeatConfiguration,
-} from '../validation';
+import { validateDateString, validateHexColor, validateId } from '../validation';
 import { sanitizeString } from '../../../utils/validation';
-import { assertValidPercentDone, percentDoneToFraction } from '../../../utils/percent-done';
-import { isAuthenticationError } from '../../../utils/auth-error-handler';
-import { RETRY_CONFIG } from '../../../utils/retry';
-import { setTaskLabels } from '../../../utils/label-bulk';
+import { assertValidPercentDone } from '../../../utils/percent-done';
 import {
   transformApiError,
   handleFetchError,
   handleStatusCodeError,
   wrapIfRestOrigin,
 } from '../../../utils/error-handler';
-import { extractHttpErrorDetail } from '../../../utils/http-error-detail';
-import { AUTH_ERROR_MESSAGES } from '../constants';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
-import { moveTaskToBucket } from '../buckets';
-import type { components } from '../../../types/generated/vikunja-openapi';
+import { analyzeUpdateState } from './update/analysis';
+import { TaskUpdateContext } from './update/TaskUpdateContext';
+import type { UpdateTaskArgs } from './update/types';
 
-/** `models.Task` per the OpenAPI spec — request/response shape for the task endpoints. */
-type VikunjaTask = components['schemas']['models.Task'];
-
-export interface UpdateTaskArgs {
-  id?: number;
-  title?: string;
-  description?: string;
-  dueDate?: string;
-  startDate?: string;
-  endDate?: string;
-  priority?: number;
-  /**
-   * Completion progress as a whole percentage, **0-100** (50 = 50%), the
-   * tool surface's scale. Converted to Vikunja's 0-1 wire fraction before it
-   * reaches the API — see `src/utils/percent-done.ts`.
-   */
-  percentDone?: number;
-  done?: boolean;
-  /**
-   * Task colour, `#RRGGBB`, or `''` to clear it.
-   *
-   * `hex_color` is in `updateSingleTask`'s column allowlist and Vikunja
-   * deliberately maps an empty value back onto the task, so both setting and
-   * clearing are real, server-backed operations — see `validateHexColor` in
-   * `../validation`. Undeclared here until now, which meant a caller
-   * recolouring a task got a success response and no colour change.
-   */
-  hexColor?: string;
-  /** Move the task to another project (merged into full-model update). */
-  projectId?: number;
-  labels?: number[];
-  assignees?: number[];
-  repeatAfter?: number;
-  repeatMode?: 'day' | 'week' | 'month' | 'year';
-  /**
-   * Move the task into a Kanban bucket. Applied via the same view/bucket
-   * resolution `set-bucket` uses (see `moveTaskToBucket` in `../buckets`) —
-   * previously this field was accepted by the tool schema but silently
-   * dropped here (battle-tested friction: agents had to notice the loss and
-   * redo the work via `set-bucket`).
-   */
-  bucketId?: number;
-  /** Optional Kanban view id, used with `bucketId`. Auto-resolved when omitted. */
-  viewId?: number;
-  // Session ID for AORP response tracking
-  sessionId?: string;
-}
-
-/**
- * Internal interface for tracking update state and field changes
- */
-interface UpdateState {
-  currentTask: VikunjaTask;
-  previousState: Record<string, unknown>;
-  affectedFields: string[];
-}
+export type { UpdateTaskArgs } from './update/types';
 
 /**
  * Updates a task with comprehensive field diffing and relationship management
@@ -105,7 +45,7 @@ export async function updateTask(
     // service passed both straight through unsanitized, so `update` silently accepted
     // content that `create`/`create-subtask`/`bulk-create-subtasks` rejected (issue #226).
     // Mutating args in place so every downstream read (affected-field diffing in
-    // analyzeUpdateState, the payload built in buildUpdateData) sees the sanitized value.
+    // analyzeUpdateState, the payload the strategy builds) sees the sanitized value.
     if (args.title !== undefined) {
       args.title = sanitizeString(args.title, 'title');
     }
@@ -150,43 +90,20 @@ export async function updateTask(
       validateId(args.viewId, 'viewId');
     }
 
-    // Analyze current state and track changes
+    // Analyze current state and track changes. Read once, on both paths: the
+    // v1 strategy merges it into its full-model write, the v2 strategy never
+    // sends it anywhere and only the response metadata below depends on it.
     const updateState = await analyzeUpdateState(authManager, args.id, args);
 
-    // Build and apply the update (full-model merge — Vikunja replaces the whole task)
-    const updateData = buildUpdateData(updateState.currentTask, args);
-    await vikunjaRestRequest<VikunjaTask>(authManager, 'POST', `/tasks/${args.id}`, updateData);
-
-    // Update labels if provided
-    if (args.labels !== undefined) {
-      await updateTaskLabels(authManager, args.id, args.labels);
-    }
-
-    // Update assignees if provided
-    if (args.assignees !== undefined) {
-      await updateTaskAssignees(authManager, args.id, args.assignees);
-    }
-
-    // Move the task into a Kanban bucket if requested. Runs after the
-    // full-model update above so that a same-call project move (args.projectId)
-    // has already landed — moveTaskToBucket resolves the project from
-    // args.projectId when given, otherwise re-fetches the task's (now
-    // possibly new) project itself.
-    if (args.bucketId !== undefined) {
-      await moveTaskToBucket(authManager, {
-        taskId: args.id,
-        bucketId: args.bucketId,
-        viewId: args.viewId,
-        projectId: args.projectId,
-      });
-    }
-
-    // Fetch the complete updated task
-    const completeTask = await vikunjaRestRequest<VikunjaTask>(
+    // Apply the update. v1 fetch-merge-POST plus per-user assignee calls, or
+    // v2's single PATCH with inline assignees — resolved per session.
+    const context = new TaskUpdateContext(authManager);
+    const completeTask = await context.execute({
       authManager,
-      'GET',
-      `/tasks/${args.id}`,
-    );
+      taskId: args.id,
+      args,
+      currentTask: updateState.currentTask,
+    });
 
     // Verify project move actually stuck — Vikunja can report success while leaving
     // the task in the old project (silent failure → data loss if the old project is deleted)
@@ -234,7 +151,9 @@ export async function updateTask(
     // pre-migration legacy client) gets the conventional "Failed to update
     // task: ..." wrapping restored via wrapIfRestOrigin, preserving the
     // original code/details; this tool's own validation/internal MCPErrors
-    // (no REST statusCode) still pass through unmodified.
+    // (no REST statusCode) still pass through unmodified. The v2 transport
+    // builds the same message prefix on purpose, so a v2 PATCH failure is
+    // wrapped identically to a v1 POST one.
     if (error instanceof MCPError) {
       if (error.details?.statusCode === 404 && args.id) {
         throw new MCPError(ErrorCode.NOT_FOUND, `Task with ID ${args.id} not found`);
@@ -262,239 +181,5 @@ export async function updateTask(
       );
     }
     throw transformApiError(error, 'Failed to update task');
-  }
-}
-
-/**
- * Analyzes the current task state and determines which fields are being updated
- */
-async function analyzeUpdateState(
-  authManager: AuthManager,
-  taskId: number,
-  args: UpdateTaskArgs,
-): Promise<UpdateState> {
-  // Fetch the current task to preserve all fields and track changes
-  const currentTask = await vikunjaRestRequest<VikunjaTask>(authManager, 'GET', `/tasks/${taskId}`);
-  const previousState: Record<string, unknown> = {};
-  if (currentTask.title !== undefined) previousState.title = currentTask.title;
-  if (currentTask.description !== undefined) previousState.description = currentTask.description;
-  if (currentTask.due_date !== undefined) previousState.due_date = currentTask.due_date;
-  if (currentTask.start_date !== undefined) previousState.start_date = currentTask.start_date;
-  if (currentTask.end_date !== undefined) previousState.end_date = currentTask.end_date;
-  if (currentTask.priority !== undefined) previousState.priority = currentTask.priority;
-  if (currentTask.done !== undefined) previousState.done = currentTask.done;
-  if (currentTask.percent_done !== undefined) previousState.percent_done = currentTask.percent_done;
-  if (currentTask.hex_color !== undefined) previousState.hex_color = currentTask.hex_color;
-  if (currentTask.project_id !== undefined) previousState.project_id = currentTask.project_id;
-  if (currentTask.repeat_after !== undefined) previousState.repeat_after = currentTask.repeat_after;
-  if (currentTask.repeat_mode !== undefined) previousState.repeat_mode = currentTask.repeat_mode;
-
-  // Track which fields are being updated
-  const affectedFields: string[] = [];
-
-  if (args.title !== undefined && args.title !== currentTask.title) affectedFields.push('title');
-  if (args.description !== undefined && args.description !== currentTask.description)
-    affectedFields.push('description');
-  if (args.dueDate !== undefined && args.dueDate !== currentTask.due_date)
-    affectedFields.push('dueDate');
-  if (args.startDate !== undefined && args.startDate !== currentTask.start_date)
-    affectedFields.push('start_date');
-  if (args.endDate !== undefined && args.endDate !== currentTask.end_date)
-    affectedFields.push('end_date');
-  if (args.priority !== undefined && args.priority !== currentTask.priority)
-    affectedFields.push('priority');
-  // args.percentDone is a 0-100 percentage; currentTask.percent_done is the
-  // 0-1 wire fraction. Compare in wire space so "already 75%" is correctly
-  // reported as unchanged instead of always looking different.
-  if (
-    args.percentDone !== undefined &&
-    percentDoneToFraction(args.percentDone) !== currentTask.percent_done
-  )
-    affectedFields.push('percentDone');
-  if (args.done !== undefined && args.done !== currentTask.done) affectedFields.push('done');
-  // Vikunja stores hex_color WITHOUT the leading '#' (utils.NormalizeHex), so
-  // the stored '4287f5' is compared against the caller's '#4287f5' with the
-  // '#' stripped — otherwise a no-op recolour would always look like a change.
-  if (
-    args.hexColor !== undefined &&
-    args.hexColor.replace(/^#/, '').toLowerCase() !==
-      (currentTask.hex_color ?? '').replace(/^#/, '').toLowerCase()
-  )
-    affectedFields.push('hexColor');
-  if (args.projectId !== undefined && args.projectId !== currentTask.project_id)
-    affectedFields.push('projectId');
-  if (args.repeatAfter !== undefined && args.repeatAfter !== currentTask.repeat_after)
-    affectedFields.push('repeatAfter');
-  // args.repeatMode is the user-facing string enum ('day'|'week'|...);
-  // currentTask.repeat_mode is the API's numeric enum (0|1|2) — these were
-  // never the same representation even before this migration (the legacy client's
-  // type incorrectly claimed both were the string enum), so this comparison
-  // is always true when repeatMode is supplied. Cast preserves that existing
-  // runtime behavior while satisfying the now-correctly-typed comparison.
-  if (args.repeatMode !== undefined && (args.repeatMode as unknown) !== currentTask.repeat_mode)
-    affectedFields.push('repeatMode');
-  if (args.labels !== undefined) affectedFields.push('labels');
-  if (args.assignees !== undefined) affectedFields.push('assignees');
-  // bucketId has no comparable "current" representation here (models.Task's
-  // bucket_id is only populated when the task is fetched via a view with
-  // buckets — see docs/API_NOTES.md), so it's reported unconditionally like
-  // labels/assignees above. If the actual move (moveTaskToBucket, called
-  // later in updateTask) fails, the whole request throws before this
-  // affectedFields list is ever returned to the caller, so it stays honest.
-  if (args.bucketId !== undefined) affectedFields.push('bucketId');
-
-  return {
-    currentTask,
-    previousState,
-    affectedFields,
-  };
-}
-
-/**
- * Builds the update data object by merging current task data with updates
- * This prevents the API from clearing fields that aren't explicitly updated
- */
-function buildUpdateData(currentTask: VikunjaTask, args: UpdateTaskArgs): VikunjaTask {
-  const updateData: VikunjaTask = {
-    ...currentTask,
-    // Override with any provided updates
-    ...(args.title !== undefined && { title: args.title }),
-    ...(args.description !== undefined && { description: args.description }),
-    ...(args.dueDate !== undefined && { due_date: args.dueDate }),
-    ...(args.startDate !== undefined && { start_date: args.startDate }),
-    ...(args.endDate !== undefined && { end_date: args.endDate }),
-    ...(args.priority !== undefined && { priority: args.priority }),
-    // 0-100 percentage in, 0-1 fraction on the wire.
-    ...(args.percentDone !== undefined && {
-      percent_done: percentDoneToFraction(args.percentDone),
-    }),
-    ...(args.done !== undefined && { done: args.done }),
-    // Explicit-undefined so `hexColor: ''` reaches the wire as an empty
-    // hex_color, which is how Vikunja clears a task colour.
-    ...(args.hexColor !== undefined && { hex_color: args.hexColor }),
-    // Move between projects — must be part of the full-model payload or Vikunja ignores it
-    ...(args.projectId !== undefined && { project_id: args.projectId }),
-    // Handle repeat configuration for updates. The generated
-    // `models.Task.repeat_mode` type (0 | 1 | 2) matches the real API, so no
-    // bypass cast is needed here (unlike the legacy client's incorrect string enum).
-    //
-    // #274 (HIGH-3): `convertRepeatConfiguration` expects `repeatAfter` as a
-    // user-friendly day/week/month/year *count* and multiplies it into
-    // seconds. `currentTask.repeat_after` is already in seconds (it came
-    // straight off the wire), so it must never be fed back into that
-    // converter as a fallback — doing so re-applies the multiplier to an
-    // already-converted value (e.g. a weekly task's 604800 seconds becomes
-    // 604800 * 604800 seconds, ~1650 years). When only `repeatMode` is being
-    // changed, leave `repeat_after` untouched and set `repeat_mode` directly.
-    ...(args.repeatAfter !== undefined || args.repeatMode !== undefined
-      ? ((): Partial<VikunjaTask> => {
-          if (args.repeatAfter !== undefined) {
-            const repeatConfig = convertRepeatConfiguration(args.repeatAfter, args.repeatMode);
-            const updates: Partial<VikunjaTask> = {};
-            if (repeatConfig.repeat_after !== undefined)
-              updates.repeat_after = repeatConfig.repeat_after;
-            if (repeatConfig.repeat_mode !== undefined)
-              updates.repeat_mode = repeatConfig.repeat_mode as 0 | 1 | 2;
-            return updates;
-          }
-          // Only repeatMode was provided: repeat_after is already in
-          // seconds on the current task and must be left as-is.
-          return { repeat_mode: args.repeatMode === 'month' ? 1 : 0 };
-        })()
-      : {}),
-  };
-
-  return updateData;
-}
-
-/**
- * Updates task labels with authentication error handling.
- *
- * The catch surfaces the HTTP status + body of the underlying Vikunja error
- * in both branches. Previously the catch replaced any 403/422 from
- * `POST /tasks/{id}/labels/bulk` with the generic LABEL_UPDATE "known
- * limitation" message, which hid the real cause (e.g. a permission failure
- * vs an invalid label id) from the MCP client and made the diagnostic
- * round-trip much longer for the consumer.
- */
-async function updateTaskLabels(
-  authManager: AuthManager,
-  taskId: number,
-  labelIds: number[],
-): Promise<void> {
-  try {
-    await setTaskLabels(authManager, taskId, labelIds);
-  } catch (labelError) {
-    const detail = extractHttpErrorDetail(labelError);
-    if (isAuthenticationError(labelError)) {
-      throw new MCPError(
-        ErrorCode.API_ERROR,
-        detail ? `${AUTH_ERROR_MESSAGES.LABEL_UPDATE} ${detail}` : AUTH_ERROR_MESSAGES.LABEL_UPDATE,
-      );
-    }
-    if (detail) {
-      throw new MCPError(ErrorCode.API_ERROR, `Failed to update task labels ${detail}`);
-    }
-    throw labelError;
-  }
-}
-
-/**
- * Updates task assignees with diff calculation and authentication error
- * handling, via the direct-REST assignee endpoints.
- */
-async function updateTaskAssignees(
-  authManager: AuthManager,
-  taskId: number,
-  newAssigneeIds: number[],
-): Promise<void> {
-  try {
-    // Get current assignees to calculate diff
-    const currentTask = await getTaskViaRest(authManager, taskId);
-    const currentAssigneeIds = (currentTask.assignees ?? [])
-      .map((a) => a.id)
-      .filter((id): id is number => typeof id === 'number');
-
-    // Calculate which assignees to add and remove
-    const toAdd = newAssigneeIds.filter((id: number) => !currentAssigneeIds.includes(id));
-    const toRemove = currentAssigneeIds.filter((id: number) => !newAssigneeIds.includes(id));
-
-    // Add new assignees first to avoid leaving task unassigned if removal fails.
-    // Use the ADDITIVE single-assign endpoint per user (PUT
-    // /tasks/{taskID}/assignees, body { user_id }, models.TaskAssginee) rather
-    // than the bulk endpoint (POST .../assignees/bulk), which REPLACES the
-    // whole list and would silently unassign everyone
-    // (democratize-technology/vikunja-mcp#15).
-    // Sequential on purpose (post-#89 pattern sweep, mirrors the per-user
-    // removal loop directly below): concurrent per-user writes to the same
-    // task risk "database is locked" 500s on SQLite-backed instances.
-    for (const userId of toAdd) {
-      await vikunjaRestRequest(authManager, 'PUT', `/tasks/${taskId}/assignees`, {
-        user_id: userId,
-      });
-    }
-
-    // Remove old assignees only after new ones are successfully added. DELETE
-    // /tasks/{taskID}/assignees/{userID} per the OpenAPI spec — no body.
-    for (const userId of toRemove) {
-      try {
-        await vikunjaRestRequest(authManager, 'DELETE', `/tasks/${taskId}/assignees/${userId}`);
-      } catch (removeError) {
-        // Check if it's an auth error on remove
-        if (isAuthenticationError(removeError)) {
-          throw new MCPError(ErrorCode.API_ERROR, AUTH_ERROR_MESSAGES.ASSIGNEE_REMOVE_PARTIAL);
-        }
-        throw removeError;
-      }
-    }
-  } catch (assigneeError) {
-    // Check if it's an auth error after retries
-    if (isAuthenticationError(assigneeError)) {
-      throw new MCPError(
-        ErrorCode.API_ERROR,
-        `${AUTH_ERROR_MESSAGES.ASSIGNEE_UPDATE} (Retried ${RETRY_CONFIG.AUTH_ERRORS.maxRetries} times)`,
-      );
-    }
-    throw assigneeError;
   }
 }

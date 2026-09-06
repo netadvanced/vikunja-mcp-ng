@@ -4,19 +4,24 @@
  *
  * Migrated off the legacy client (Wave D domain migration, tracking issue #28)
  * onto `vikunjaRestRequest` + types generated from the vendored OpenAPI spec.
- * `POST /projects/{id}` is a full-model-replace endpoint (see
- * docs/ENDPOINT-PLAYBOOK.md §4 and docs/API_NOTES.md "Project Operations"):
- * `buildProjectUpdatePayload` fetches the current project and merges the
- * caller's changes onto it before every update-shaped write
- * (updateProject/archiveProject/unarchiveProject/moveProject) so omitted
- * fields survive the round trip — this merge semantics is load-bearing and
- * must not change shape during this migration.
+ *
+ * Every update-shaped write here (updateProject/archiveProject/
+ * unarchiveProject, plus moveProject in ./hierarchy) goes through
+ * `ProjectUpdateContext` (./update), which picks a v1 or a v2 strategy per
+ * session — #184 P3 step 6. On v1 the write is still the full-model-replace
+ * `POST /projects/{id}` with the caller's changes merged onto the fetched
+ * project, because omitting a field there clears it (docs/ENDPOINT-PLAYBOOK.md
+ * §4, docs/API_NOTES.md "Project Operations"). On v2 it is a single
+ * `PATCH /api/v2/projects/{id}` carrying only the named fields, which was
+ * probed live to preserve both of the things that merge guards. See
+ * ./update/V2ProjectUpdateStrategy for the evidence.
  *
  * Endpoints (verified against docs/vikunja-openapi.json):
  *   - GET  /projects       list
  *   - PUT  /projects       create
  *   - GET  /projects/{id}  get
- *   - POST /projects/{id}  update (full-model-replace)
+ *   - POST /projects/{id}  update (full-model-replace, v1 path)
+ *   - PATCH /api/v2/projects/{id} update (partial, v2 path)
  *   - DELETE /projects/{id} delete
  */
 
@@ -32,11 +37,22 @@ import {
 } from './validation';
 import { createProjectResponse, createProjectListResponse } from './response-formatter';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
-import type { components } from '../../types/generated/vikunja-openapi';
+import {
+  ProjectUpdateContext,
+  buildProjectUpdatePayload,
+  toCanonicalProject,
+  type ProjectUpdateFields,
+  type VikunjaProject,
+} from './update';
 
 // Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
 // docs/API-SPEC.md. All fields are optional per the spec.
-export type VikunjaProject = components['schemas']['models.Project'];
+export type { VikunjaProject };
+
+// The v1 merge moved into ./update/V1ProjectUpdateStrategy when the strategy
+// pair landed, and is re-exported here because docs/API_NOTES.md and
+// docs/VIKUNJA_API_ISSUES.md §16 both name this module as its home.
+export { buildProjectUpdatePayload };
 
 // MCP response type
 export type McpResponse = {
@@ -120,41 +136,6 @@ export interface ArchiveProjectArgs {
   verbosity?: string;
   useOptimizedFormat?: boolean;
   useAorp?: boolean;
-}
-
-/**
- * Builds a project update payload by merging current project state with
- * requested field changes. Vikunja's update endpoint replaces the whole
- * model, so omitted fields would otherwise be cleared (e.g. parent_project_id → 0).
- */
-export function buildProjectUpdatePayload(
-  currentProject: VikunjaProject,
-  updates: {
-    title?: string;
-    description?: string;
-    parentProjectId?: number;
-    isArchived?: boolean;
-    hexColor?: string;
-    isFavorite?: boolean;
-  },
-): VikunjaProject {
-  return {
-    ...currentProject,
-    ...(updates.title !== undefined && { title: updates.title.trim() }),
-    ...(updates.description !== undefined && { description: updates.description.trim() }),
-    ...(updates.parentProjectId !== undefined && { parent_project_id: updates.parentProjectId }),
-    ...(updates.isArchived !== undefined && { is_archived: updates.isArchived }),
-    ...(updates.hexColor !== undefined && { hex_color: updates.hexColor.toLowerCase() }),
-    // `is_favorite` is the UseBool-style hazard this merge exists for
-    // (docs/VIKUNJA_API_ISSUES.md §3a): go-vikunja's `UpdateProject` reads
-    // the flag off the request body and DELETES the favorites row whenever
-    // it is false, regardless of xorm's zero-value column skipping — so a
-    // partial body with no `is_favorite` would unfavorite the project on
-    // every unrelated update. Carrying the fetched project's own value
-    // forward (`GET /projects/{id}` populates it per-user) is what prevents
-    // that; an explicit `false` from the caller still wins.
-    ...(updates.isFavorite !== undefined && { is_favorite: updates.isFavorite }),
-  };
 }
 
 /**
@@ -564,18 +545,12 @@ export async function updateProject(
       }
     }
 
-    // Vikunja project update is a full-model replace. Merge with the current
-    // project so omitted fields (especially parent_project_id) are preserved.
-    // Detaching from a parent requires an explicit parentProjectId change
-    // (or using the move subcommand). See issue #45.
-    const fieldUpdates: {
-      title?: string;
-      description?: string;
-      parentProjectId?: number;
-      isArchived?: boolean;
-      hexColor?: string;
-      isFavorite?: boolean;
-    } = {};
+    // Only the fields the caller named. Whether that becomes a v1 full-model
+    // merge or a v2 merge patch is the strategy's business, not this
+    // function's. Detaching from a parent still requires an explicit
+    // parentProjectId change (or the move subcommand) on both paths, since
+    // an omitted parent means "leave it alone" here. See issue #45.
+    const fieldUpdates: ProjectUpdateFields = {};
     if (title !== undefined) fieldUpdates.title = title;
     if (description !== undefined) fieldUpdates.description = description;
     if (parentProjectId !== undefined) fieldUpdates.parentProjectId = parentProjectId;
@@ -584,14 +559,12 @@ export async function updateProject(
     // `!== undefined`: `isFavorite: false` means "unfavorite", not "unset".
     if (isFavorite !== undefined) fieldUpdates.isFavorite = isFavorite;
 
-    const updateData = buildProjectUpdatePayload(currentProject, fieldUpdates);
-
-    const updatedProject = await vikunjaRestRequest<VikunjaProject>(
+    const updatedProject = await new ProjectUpdateContext(authManager).execute({
       authManager,
-      'POST',
-      `/projects/${id}`,
-      updateData,
-    );
+      projectId: id,
+      fields: fieldUpdates,
+      currentProject,
+    });
 
     const result = createProjectResponse(
       'update_project',
@@ -686,7 +659,10 @@ export async function archiveProject(
       const result = createProjectResponse(
         'archive_project',
         `Project "${currentProject.title}" is already archived`,
-        { project: currentProject },
+        // Same canonical shape the strategies produce. This path answers from
+        // a raw v1 read and never reaches one, so without this it would be the
+        // only project response still carrying `max_permission`.
+        { project: toCanonicalProject(currentProject) },
         {},
         verbosity,
         useOptimizedFormat,
@@ -703,13 +679,15 @@ export async function archiveProject(
       };
     }
 
-    // Archive the project (merge so parent/other fields are not wiped)
-    const project = await vikunjaRestRequest<VikunjaProject>(
+    // Archive the project. On v1 this merges so parent/other fields are not
+    // wiped; on v2 it is a one-field merge patch. Either way nothing but
+    // is_archived changes.
+    const project = await new ProjectUpdateContext(authManager).execute({
       authManager,
-      'POST',
-      `/projects/${id}`,
-      buildProjectUpdatePayload(currentProject, { isArchived: true }),
-    );
+      projectId: id,
+      fields: { isArchived: true },
+      currentProject,
+    });
 
     const result = createProjectResponse(
       'archive_project',
@@ -761,7 +739,8 @@ export async function unarchiveProject(
       const result = createProjectResponse(
         'unarchive_project',
         `Project "${currentProject.title}" is already active (not archived)`,
-        { project: currentProject },
+        // See the archive early return above: raw v1 read, no strategy involved.
+        { project: toCanonicalProject(currentProject) },
         {},
         verbosity,
         useOptimizedFormat,
@@ -778,13 +757,14 @@ export async function unarchiveProject(
       };
     }
 
-    // Unarchive the project (merge so parent/other fields are not wiped)
-    const project = await vikunjaRestRequest<VikunjaProject>(
+    // Unarchive the project. Same shape as archiveProject above: v1 merges,
+    // v2 patches the single field.
+    const project = await new ProjectUpdateContext(authManager).execute({
       authManager,
-      'POST',
-      `/projects/${id}`,
-      buildProjectUpdatePayload(currentProject, { isArchived: false }),
-    );
+      projectId: id,
+      fields: { isArchived: false },
+      currentProject,
+    });
 
     const result = createProjectResponse(
       'unarchive_project',

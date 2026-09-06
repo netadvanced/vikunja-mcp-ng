@@ -341,12 +341,28 @@ describe('Labels Tool', () => {
       ).rejects.toThrow('At least one field to update is required');
     });
 
+    // This mock auth manager has no `getCapabilities`, so every test in this
+    // block resolves to the v1 strategy: GET the label, then POST the merged
+    // full model back. `POST` (not the spec's `PUT`, which 405s) and the merge
+    // are both live findings — see src/utils/label-update.ts. The v2 path has
+    // its own suite in tests/utils/label-update.test.ts.
     it('should update a label with partial fields', async () => {
       const mockLabel = {
         id: 1,
         title: 'Updated Label',
+        description: 'Kept description',
         hex_color: '#00ff00',
       };
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({
+          body: {
+            id: 1,
+            title: 'Original Label',
+            description: 'Kept description',
+            hex_color: '#00ff00',
+          },
+        }),
+      );
       mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabel }));
 
       const result = await mockHandler({
@@ -355,12 +371,24 @@ describe('Labels Tool', () => {
         title: 'Updated Label',
       });
 
-      expect(mockFetch).toHaveBeenCalledWith(
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        1,
         'https://vikunja.example.com/api/v1/labels/1',
-        expect.objectContaining({ method: 'PUT' }),
+        expect.objectContaining({ method: 'GET' }),
       );
-      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-      expect(JSON.parse(init.body as string)).toEqual({ title: 'Updated Label' });
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        'https://vikunja.example.com/api/v1/labels/1',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      // The fields the caller did not mention are carried over rather than
+      // blanked, which is the whole point of the read.
+      const [, init] = mockFetch.mock.calls[1] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({
+        title: 'Updated Label',
+        description: 'Kept description',
+        hex_color: '#00ff00',
+      });
       const markdown = result.content[0].text;
       parseMarkdown(markdown);
       expect(markdown).toContain('## ✅ Success');
@@ -375,6 +403,9 @@ describe('Labels Tool', () => {
         description: 'New description',
         hex_color: '#0000ff',
       };
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: { id: 1, title: 'Old', description: 'Old', hex_color: '#111111' } }),
+      );
       mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabel }));
 
       const result = await mockHandler({
@@ -385,7 +416,7 @@ describe('Labels Tool', () => {
         hexColor: '#0000ff',
       });
 
-      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+      const [, init] = mockFetch.mock.calls[1] as [string, RequestInit];
       expect(JSON.parse(init.body as string)).toEqual({
         title: 'Complete Update',
         description: 'New description',
@@ -404,6 +435,9 @@ describe('Labels Tool', () => {
         title: 'Label',
         description: '',
       };
+      mockFetch.mockResolvedValueOnce(
+        mockResponse({ body: { id: 1, title: 'Label', description: 'Was set' } }),
+      );
       mockFetch.mockResolvedValueOnce(mockResponse({ body: mockLabel }));
 
       const result = await mockHandler({
@@ -412,8 +446,10 @@ describe('Labels Tool', () => {
         description: '',
       });
 
-      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-      expect(JSON.parse(init.body as string)).toEqual({ description: '' });
+      // An empty description is a value, not an omission: it must survive the
+      // merge instead of being replaced by the label's current description.
+      const [, init] = mockFetch.mock.calls[1] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({ title: 'Label', description: '' });
       const markdown = result.content[0].text;
       parseMarkdown(markdown);
       expect(markdown).toContain('## ✅ Success');

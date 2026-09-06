@@ -2,7 +2,9 @@
  * Tests for the Vikunja v2 REST transport (src/utils/vikunja-rest-v2.ts).
  *
  * Covers v2 base-URL normalization, version-scoped circuit breaker naming,
- * the problem+json error adapter, and the request helper itself.
+ * the problem+json error adapter, the request helper itself, and the response
+ * normalization it applies (the normalizer's own rules live in
+ * ./vikunja-v2-normalize.test.ts).
  */
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
@@ -15,6 +17,7 @@ import {
   vikunjaRestV2Request,
 } from '../../src/utils/vikunja-rest-v2';
 import { deriveRestBreakerName } from '../../src/utils/vikunja-rest';
+import { getV2PaginationMeta } from '../../src/utils/vikunja-v2-normalize';
 import { MCPError, ErrorCode } from '../../src/types';
 
 const mockFetch = jest.fn();
@@ -42,7 +45,9 @@ function mockV2Response(opts: {
     ok,
     status,
     statusText,
-    headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? contentType : null) },
+    headers: {
+      get: (name: string) => (name.toLowerCase() === 'content-type' ? contentType : null),
+    },
     text: jest.fn(async () => text),
   } as unknown as Response;
 }
@@ -410,6 +415,92 @@ describe('vikunja-rest-v2 helper', () => {
         { value: 'extra' },
       ]);
     });
+
+    /**
+     * `details.vikunjaError` is a second, independent way upstream text
+     * leaves this transport: `MCPError.toJSON()` includes `details`, and
+     * `wrapIfRestOrigin` copies it through. The composed MESSAGE has always
+     * been capped, but the `errors[]` list attached to `details` was not, so
+     * an echoed value matching no redaction rule survived at full length on a
+     * channel v1 never had. Every echoed string now goes through the same
+     * 500-character `redactUpstreamText` cap v1 applies to error bodies.
+     */
+    it('caps an oversized echoed value on details.vikunjaError', () => {
+      const error = parseVikunjaV2Error(
+        'POST',
+        '/projects',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          title: 'Validation failed',
+          errors: [{ location: 'body.title', value: 'y'.repeat(900) }],
+        }),
+      );
+
+      const [entry] = error.details?.vikunjaError?.errors as [{ value: string }];
+      expect(entry.value).toBe('y'.repeat(500));
+    });
+
+    it('caps an oversized location and message on details.vikunjaError', () => {
+      const error = parseVikunjaV2Error(
+        'POST',
+        '/projects',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          errors: [{ location: `body.${'a'.repeat(900)}`, message: 'b'.repeat(900) }],
+        }),
+      );
+
+      const [entry] = error.details?.vikunjaError?.errors as [
+        { location: string; message: string },
+      ];
+      expect(entry.location).toHaveLength(500);
+      expect(entry.message).toBe('b'.repeat(500));
+    });
+
+    // A structured value is redacted in its serialized form, so capping it
+    // usually leaves text that no longer parses as JSON. The bounded string
+    // is the intended answer there: the entry's `location` still says which
+    // field it came from, and an unbounded faithful echo is the thing being
+    // fixed.
+    it('degrades an oversized structured value to bounded text', () => {
+      const error = parseVikunjaV2Error(
+        'POST',
+        '/projects',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          errors: [{ location: 'body.description', value: { nested: 'z'.repeat(900) } }],
+        }),
+      );
+
+      const [entry] = error.details?.vikunjaError?.errors as [{ value: unknown }];
+      expect(typeof entry.value).toBe('string');
+      expect(entry.value as string).toHaveLength(500);
+    });
+
+    // The cap must not change what a normal-sized structured value looks
+    // like: it still round-trips back to an object.
+    it('leaves a short structured value as an object', () => {
+      const error = parseVikunjaV2Error(
+        'POST',
+        '/projects',
+        422,
+        'Unprocessable Entity',
+        'application/problem+json',
+        JSON.stringify({
+          errors: [{ location: 'body.description', value: { nested: 'short' } }],
+        }),
+      );
+
+      expect(error.details?.vikunjaError?.errors).toEqual([
+        { location: 'body.description', value: { nested: 'short' } },
+      ]);
+    });
   });
 
   describe('vikunjaRestV2Request', () => {
@@ -454,9 +545,15 @@ describe('vikunja-rest-v2 helper', () => {
     it('sends json-patch+json when that patch format is requested', async () => {
       mockFetch.mockResolvedValueOnce(mockV2Response({ text: '{}' }));
 
-      await vikunjaRestV2Request(authManager, 'PATCH', '/tasks/7', [{ op: 'remove', path: '/assignees/0' }], {
-        patchFormat: 'json-patch',
-      });
+      await vikunjaRestV2Request(
+        authManager,
+        'PATCH',
+        '/tasks/7',
+        [{ op: 'remove', path: '/assignees/0' }],
+        {
+          patchFormat: 'json-patch',
+        },
+      );
 
       const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
       expect((init.headers as Record<string, string>)['Content-Type']).toBe(
@@ -471,6 +568,66 @@ describe('vikunja-rest-v2 helper', () => {
 
       const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
       expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    });
+
+    it('unwraps a v2 list envelope to a bare array and records its counters', async () => {
+      // The envelope shape is the one the live 2.4.0/2.5.0/2.6.0 servers send,
+      // confirmed with curl on 2026-09-05.
+      mockFetch.mockResolvedValueOnce(
+        mockV2Response({
+          text: JSON.stringify({
+            $schema: 'https://vikunja.test/api/v2/schemas/PaginatedProject.json',
+            items: [{ id: 1, title: 'first' }],
+            total: 17,
+            page: 1,
+            per_page: 1,
+            total_pages: 17,
+          }),
+        }),
+      );
+
+      const result = await vikunjaRestV2Request(authManager, 'GET', '/projects');
+
+      expect(result).toEqual([{ id: 1, title: 'first' }]);
+      expect(getV2PaginationMeta(result)).toEqual({
+        total: 17,
+        page: 1,
+        perPage: 1,
+        totalPages: 17,
+      });
+    });
+
+    it('strips $schema from a single-entity response', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockV2Response({
+          text: JSON.stringify({
+            $schema: 'https://vikunja.test/api/v2/schemas/ProjectReadBody.json',
+            id: 60,
+            title: 'a project',
+          }),
+        }),
+      );
+
+      await expect(vikunjaRestV2Request(authManager, 'GET', '/projects/60')).resolves.toEqual({
+        id: 60,
+        title: 'a project',
+      });
+    });
+
+    it('returns the raw envelope when normalization is turned off', async () => {
+      const envelope = {
+        $schema: 'https://vikunja.test/api/v2/schemas/PaginatedProject.json',
+        items: [{ id: 1 }],
+        total: 1,
+        page: 1,
+        per_page: 50,
+        total_pages: 1,
+      };
+      mockFetch.mockResolvedValueOnce(mockV2Response({ text: JSON.stringify(envelope) }));
+
+      await expect(
+        vikunjaRestV2Request(authManager, 'GET', '/projects', undefined, { normalize: false }),
+      ).resolves.toEqual(envelope);
     });
 
     it('returns null for an empty response body', async () => {
@@ -587,9 +744,9 @@ describe('vikunja-rest-v2 helper', () => {
 
       // A tripped breaker rejects with a reworded "circuit breaker is open"
       // message instead of the underlying 404 — assert we still see the 404.
-      await expect(
-        vikunjaRestV2Request(authManager, 'GET', '/tasks/7'),
-      ).rejects.toMatchObject({ details: { statusCode: 404 } });
+      await expect(vikunjaRestV2Request(authManager, 'GET', '/tasks/7')).rejects.toMatchObject({
+        details: { statusCode: 404 },
+      });
     });
 
     it('registers its breaker under the v2-prefixed name', async () => {

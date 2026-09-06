@@ -12,7 +12,7 @@ import { vikunjaRestRequest } from '../vikunja-rest';
 import { validateId } from '../../tools/tasks/validation';
 import { logger } from '../logger';
 import { MCPError, ErrorCode } from '../../types';
-import { buildTasksListQuery } from './RestCrossProjectFilteringStrategy';
+import { buildTasksListQuery, requestTaskListPage } from '../vikunja-task-reads';
 import {
   createBudget,
   DEFAULT_SERVER_PAGE_CAP,
@@ -79,12 +79,28 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
         // ClientSideFilteringStrategy's `fetchProjectTasks` doc comment for
         // why the spec's `get?: never` at this path doesn't block reusing it
         // here).
+        // `expand` rides along with the filtered request (#184 P3 step 7).
+        // `GET /projects/{id}/tasks` accepts `filter` and `expand` on the
+        // same call — verified live on 2.6.0 — so a filtered single-project
+        // listing expands exactly like an unfiltered one, and the
+        // client-side fallback below sends the same `expand` if this
+        // request fails.
+        const expandExtras =
+          args.expand !== undefined && args.expand.length > 0 ? { expand: args.expand } : {};
+
         const requestPage = async (page: number): Promise<VikunjaTask[]> => {
           const pageApiParams = page === firstPage ? apiParams : { ...apiParams, page };
-          const query = buildTasksListQuery(pageApiParams, filterString, {});
-          const path = `/projects/${projectId}/tasks${query ? `?${query}` : ''}`;
-          const result = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
-          return Array.isArray(result) ? result : [];
+          // Version-aware since #184 P3 step 3 — see `requestTaskListPage`.
+          // The server-side `filter` string is spelled `filter` on both
+          // versions and was confirmed on 2.6.0 to actually apply on the v2
+          // route rather than merely return 200.
+          return requestTaskListPage(
+            authManager,
+            `/projects/${projectId}/tasks`,
+            pageApiParams,
+            filterString,
+            expandExtras,
+          );
         };
 
         tasks = await fetchAllPages(requestPage, {
@@ -105,6 +121,35 @@ export class ServerSideFilteringStrategy implements TaskFilteringStrategy {
         // migration is preserved rather than silently redirected to a
         // different, working endpoint, per this item's byte-compatible
         // refactor-not-redesign scope.
+        //
+        // Stays on v1 unconditionally: `/tasks/all` has no v2 route at all
+        // (v2 registers `/tasks`, `/projects/{project}/tasks` and the
+        // per-view listing, and nothing else), so there is nothing to route
+        // to.
+        //
+        // `expand` is REFUSED rather than dropped here (#184 P3 step 7).
+        // Every other listing path in this project now forwards it; this
+        // one cannot, because the endpoint itself does not exist —
+        // `GET /tasks/all` answers `400 {"code":2004,"message":"Invalid
+        // model provided: Bad Request"}` on 2.4.0, 2.5.0 and 2.6.0 alike,
+        // with and without `expand` (re-probed 2026-09-05). Silently
+        // building a query without `expand` would promise an expansion this
+        // branch could never deliver even if the endpoint worked, so it
+        // says so instead. `FilteringContext` never routes a cross-project
+        // listing here — it picks `RestCrossProjectFilteringStrategy`,
+        // which does forward `expand` — so this is reachable only by using
+        // the strategy directly.
+        if (args.expand !== undefined && args.expand.length > 0) {
+          throw new MCPError(
+            ErrorCode.VALIDATION_ERROR,
+            'expand is not supported on the cross-project branch of ' +
+              'ServerSideFilteringStrategy: it lists tasks via GET /tasks/all, which every ' +
+              'supported Vikunja rejects with 400 code 2004 regardless of query params. ' +
+              'Use a cross-project listing (no projectId, or allProjects: true), which routes ' +
+              'through GET /tasks and does support expand.',
+          );
+        }
+
         const query = buildTasksListQuery(apiParams, filterString, {});
         const path = `/tasks/all${query ? `?${query}` : ''}`;
         const result = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);

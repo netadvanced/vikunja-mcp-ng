@@ -872,6 +872,19 @@ describe('Projects Tool', () => {
       expect(markdown).toMatch(/archive[_\\]+project/);
     });
 
+    it('keeps max_permission off the already-archived early return', async () => {
+      // This path answers from a raw v1 read and never reaches a project
+      // update strategy, so it does not inherit their canonical-shape
+      // stripping. Without an explicit call it would be the one project
+      // response still carrying the field (#184 P3, review finding).
+      const archivedProject = { ...mockProject, is_archived: true, max_permission: 0 };
+      routeFetch({ 'GET /projects/1': mockResponse({ body: archivedProject }) });
+
+      const result = await callTool('archive', { id: 1 });
+
+      expect(result.content[0].text).not.toContain('max_permission');
+    });
+
     it('should require project ID', async () => {
       await expect(callTool('archive')).rejects.toThrow('Project ID is required');
     });
@@ -948,6 +961,17 @@ describe('Projects Tool', () => {
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('Project "Test Project" is already active (not archived)');
       expect(markdown).toMatch(/unarchive[_\\]+project/);
+    });
+
+    it('keeps max_permission off the already-active early return', async () => {
+      // See the archive equivalent above: raw v1 read, no strategy involved.
+      routeFetch({
+        'GET /projects/1': mockResponse({ body: { ...mockProject, max_permission: 0 } }),
+      });
+
+      const result = await callTool('unarchive', { id: 1 });
+
+      expect(result.content[0].text).not.toContain('max_permission');
     });
 
     it('should require project ID', async () => {

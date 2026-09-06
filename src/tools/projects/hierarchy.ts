@@ -4,11 +4,13 @@
  *
  * Migrated off the legacy client (Wave D domain migration, tracking issue #28)
  * onto `vikunjaRestRequest` + types generated from the vendored OpenAPI spec.
- * `moveProject` reuses `buildProjectUpdatePayload` from `crud.ts` — see that
- * module's doc comment and docs/API_NOTES.md "Project Operations" for why an
- * omitted `parentProjectId` on move means "move to root" rather than "leave
- * untouched" (the one exception to the merge-preserves-untouched-fields
- * default).
+ * `moveProject` writes through the same `ProjectUpdateContext` as `crud.ts`
+ * (#184 P3 step 6), so it gets the v2 `PATCH` on a v2-capable server and the
+ * v1 fetch-merge-POST otherwise. See `./update` and docs/API_NOTES.md
+ * "Project Operations" for why an omitted `parentProjectId` on move means
+ * "move to root" rather than "leave untouched" — the one exception to the
+ * "only touch what the caller named" default, and the reason this function
+ * always supplies the field explicitly on both paths.
  */
 
 import { MCPError, ErrorCode } from '../../types';
@@ -22,7 +24,8 @@ import {
   createBreadcrumbResponse,
 } from './response-formatter';
 import { formatAorpAsMarkdown } from '../../utils/response-factory';
-import { buildProjectUpdatePayload, fetchAllProjects, type VikunjaProject } from './crud';
+import { fetchAllProjects, type VikunjaProject } from './crud';
+import { ProjectUpdateContext } from './update';
 
 // MCP response type
 type McpResponse = {
@@ -346,21 +349,20 @@ export async function moveProject(
       }
     }
 
-    // POST /projects/{id} is a full-model-replace endpoint: merge through
-    // the current project (like crud.ts's updateProject/archiveProject) so
-    // title/description/hex_color/etc. survive the move. Unlike a regular
-    // update, an omitted parentProjectId here means "move to root" — so
-    // parent_project_id is always set explicitly (0 clears it), never left
-    // to buildProjectUpdatePayload's "only touch what's provided" default.
-    const updateData = buildProjectUpdatePayload(currentProject, {
-      parentProjectId: parentProjectId ?? 0,
-    });
-    const updatedProject = await vikunjaRestRequest<VikunjaProject>(
+    // `parent_project_id` is always sent, never left to the "only touch what
+    // the caller named" default: an omitted parentProjectId on *move* means
+    // "move to root", so `0` has to travel as a real value. That is what
+    // makes this call site safe on both strategies — the v1 merge writes the
+    // explicit 0 into the full model, and the v2 patch carries it as the one
+    // field it changes (verified live on 2.4.0/2.5.0/2.6.0: a patch of
+    // `{parent_project_id: 0}` detaches to root and leaves title, colour and
+    // favorite state alone).
+    const updatedProject = await new ProjectUpdateContext(authManager).execute({
       authManager,
-      'POST',
-      `/projects/${id}`,
-      updateData,
-    );
+      projectId: id,
+      fields: { parentProjectId: parentProjectId ?? 0 },
+      currentProject,
+    });
 
     const parentInfo = parentProjectId ? ` to parent project ${parentProjectId}` : ' to root level';
 
@@ -435,7 +437,14 @@ function buildProjectTree(
     .filter((p: VikunjaProject) => p.parent_project_id === project.id)
     .filter((p: VikunjaProject) => includeArchived || !p.is_archived)
     .map((child: VikunjaProject) =>
-      buildProjectTree(child, allProjects, currentDepth + 1, maxDepth, includeArchived, truncatedIds),
+      buildProjectTree(
+        child,
+        allProjects,
+        currentDepth + 1,
+        maxDepth,
+        includeArchived,
+        truncatedIds,
+      ),
     )
     .filter(Boolean) as ProjectTreeNode[];
 

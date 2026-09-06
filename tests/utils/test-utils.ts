@@ -132,6 +132,12 @@ export function createMockTestableAuthManager(
     }),
     _validateCredentials: jest.fn().mockReturnValue(authenticated),
     _detectAuthType: jest.fn().mockReturnValue(token.startsWith('eyJ') ? 'jwt' : 'api_token'),
+    // Every real AuthManager has this, and `resolveApiVersion`
+    // (src/utils/api-version.ts) calls it unguarded on every routed
+    // operation. `undefined` is the honest default: a session that has not
+    // been through capability detection resolves to v1, which is what these
+    // tests assert against.
+    getCapabilities: jest.fn().mockReturnValue(undefined),
   };
 
   return mockAuthManager as jest.Mocked<TestableAuthManager>;

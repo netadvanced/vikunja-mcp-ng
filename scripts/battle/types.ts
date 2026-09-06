@@ -162,9 +162,11 @@ const TaskFirstInListViewCheck = z.object({
  * replace that writes `is_public` unconditionally (go-vikunja
  * `pkg/models/teams.go`'s `UseBool("is_public")`), so any update body that
  * omits the field silently un-publishes a public team. Asserting the raw
- * `is_public` after an update that only asked for a *different* field is
- * what makes this check fail if `buildTeamUpdatePayload`'s read-then-merge
- * (src/tools/teams.ts) is ever removed.
+ * `is_public` after an update that only asked for a *different* field is what
+ * keeps that guarantee honest whichever API version served the update: the v1
+ * strategy earns it with `buildTeamUpdatePayload`'s read-then-merge, the v2
+ * strategy earns it by sending a `PATCH` that never mentions the column
+ * (src/tools/teams/update/). The check fails if either one regresses.
  *
  * `hasMemberUsername` matches against the embedded `members[]` array
  * (`GET /teams` returns members inline) by USERNAME -- Vikunja keys team

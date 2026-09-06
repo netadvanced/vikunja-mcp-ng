@@ -10,7 +10,9 @@
  * see `ClientSideFilteringStrategy`) nor any other code path in this
  * project ever called the real endpoint.
  *
- * This strategy calls `GET /tasks` directly via `vikunjaRestRequest` and is
+ * This strategy calls `GET /tasks` directly via `requestTaskListPage`
+ * (`../vikunja-task-reads`, which picks the v1 or v2 transport per
+ * `resolveApiVersion` and asks v2 for markdown descriptions) and is
  * the PRIMARY strategy for cross-project ("all projects" or no `projectId`)
  * listing — one call instead of an N+1 per-project aggregation. If the
  * direct call fails for any reason (older server without the endpoint, the
@@ -30,15 +32,8 @@
  */
 
 import type { TaskFilteringStrategy } from './TaskFilteringStrategy';
-import type {
-  FilteringArgs,
-  FilteringParams,
-  FilteringResult,
-  TaskListApiParams,
-  VikunjaTask,
-} from './types';
+import type { FilteringParams, FilteringResult, VikunjaTask } from './types';
 import { ClientSideFilteringStrategy } from './ClientSideFilteringStrategy';
-import { vikunjaRestRequest } from '../vikunja-rest';
 import { MCPError, ErrorCode } from '../../types';
 import { logger } from '../logger';
 import {
@@ -47,39 +42,15 @@ import {
   fetchAllPages,
   readServerPageCap,
 } from './pagination';
+import { requestTaskListPage } from '../vikunja-task-reads';
 
 /**
- * Builds the `GET /tasks` query string from the shared API params plus the
- * task-list-only extras (`order_by`, `filter_timezone`,
- * `filter_include_nulls`, `expand`) — single-project listing
- * (`ClientSideFilteringStrategy`/`ServerSideFilteringStrategy`) does not
- * honor these, since they were never part of the legacy client's `GetTasksParams`
- * shape that the pre-migration single-project call sites used (see
- * docs/ENDPOINT-PLAYBOOK.md's direct-REST rule).
+ * The `GET /tasks` / `GET /projects/{id}/tasks` query builder now lives in
+ * `../vikunja-task-reads` next to its v2 spelling (which renames `s` to `q` and
+ * adds `format=markdown`). Re-exported here so the modules that have always
+ * imported it from this file keep working.
  */
-export function buildTasksListQuery(
-  apiParams: TaskListApiParams,
-  filterString: string | undefined,
-  args: FilteringArgs,
-): string {
-  const query = new URLSearchParams();
-  if (apiParams.page !== undefined) query.set('page', String(apiParams.page));
-  if (apiParams.per_page !== undefined) query.set('per_page', String(apiParams.per_page));
-  if (apiParams.s !== undefined) query.set('s', String(apiParams.s));
-  if (apiParams.sort_by !== undefined) query.set('sort_by', String(apiParams.sort_by));
-  if (filterString) query.set('filter', filterString);
-  if (args.orderBy) query.set('order_by', args.orderBy);
-  if (args.filterTimezone) query.set('filter_timezone', args.filterTimezone);
-  if (args.filterIncludeNulls !== undefined) {
-    query.set('filter_include_nulls', args.filterIncludeNulls ? 'true' : 'false');
-  }
-  if (args.expand && args.expand.length > 0) {
-    for (const value of args.expand) {
-      query.append('expand', value);
-    }
-  }
-  return query.toString();
-}
+export { buildTasksListQuery } from '../vikunja-task-reads';
 
 export class RestCrossProjectFilteringStrategy implements TaskFilteringStrategy {
   async execute(params: FilteringParams): Promise<FilteringResult> {
@@ -106,10 +77,12 @@ export class RestCrossProjectFilteringStrategy implements TaskFilteringStrategy 
 
     const requestPage = async (page: number): Promise<VikunjaTask[]> => {
       const pageApiParams = page === firstPage ? apiParams : { ...apiParams, page };
-      const query = buildTasksListQuery(pageApiParams, filterString, args);
-      const path = `/tasks${query ? `?${query}` : ''}`;
-      const tasks = await vikunjaRestRequest<VikunjaTask[]>(authManager, 'GET', path);
-      return Array.isArray(tasks) ? tasks : [];
+      // Version-aware since #184 P3 step 3: on a v2-capable server this reads
+      // `GET /api/v2/tasks?...&format=markdown` instead, which is the only
+      // caller-visible difference (descriptions arrive as markdown). The
+      // envelope is unwrapped by the transport's normalizer, and `s` is
+      // renamed to `q` inside the v2 query builder.
+      return requestTaskListPage(authManager, '/tasks', pageApiParams, filterString, args);
     };
 
     try {
@@ -152,14 +125,18 @@ export class RestCrossProjectFilteringStrategy implements TaskFilteringStrategy 
       return { tasks: safeTasks, metadata };
     } catch (error) {
       // An `expand` value the API token has no scope for (Vikunja >= 2.6.0)
-      // must NOT fall back (issue #254, item A1). The fallback rebuilds the
-      // query from `{}` and drops `expand` entirely, so the caller would get
-      // a perfectly successful task list that is quietly missing the very
-      // data they asked to expand — verified live against 2.6.0: a narrow
-      // `tk_*` token requesting expand=comments came back 200 with no
-      // `comments` key on any task. Degrading silently is worse than
-      // failing here, because nothing downstream can tell the difference
-      // between "expanded and empty" and "never expanded".
+      // must NOT fall back (issue #254, item A1). Falling back would cost a
+      // full per-project aggregation and end in the same refusal, since the
+      // fallback now forwards `expand` too (#184 P3 step 7) — so failing
+      // here is the same answer, immediately, with the scope diagnosis
+      // intact.
+      //
+      // Before that step the fallback dropped `expand` entirely, which was
+      // worse still: the caller got a perfectly successful task list quietly
+      // missing the very data they asked to expand. Verified live against
+      // 2.6.0 at the time: a narrow `tk_*` token requesting expand=comments
+      // came back 200 with no `comments` key on any task. Nothing downstream
+      // could tell "expanded and empty" from "never expanded".
       if (error instanceof MCPError && error.details?.insufficientScope === true) {
         logger.warn('Direct REST GET /tasks refused an expand value for lack of token scope', {
           filter: filterString,

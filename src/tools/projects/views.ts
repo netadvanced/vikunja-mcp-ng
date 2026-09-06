@@ -7,18 +7,25 @@
  * has no support for project views at all, so — like `buckets.ts` — this
  * calls the Vikunja REST API directly via the shared `vikunja-rest` helper.
  *
- * `POST /projects/{project}/views/{id}` replaces the entire ProjectView
- * resource (see docs/ENDPOINT-PLAYBOOK.md §4), so `update-view` and
- * `set-done-bucket` both fetch the current view first and merge requested
- * changes onto it (`buildViewUpdatePayload`) rather than sending a bare
- * partial object — the same fetch-merge-POST pattern as
- * `buildProjectUpdatePayload` in `crud.ts`. That merge is load-bearing for
- * `position` and `filter` in particular: go-vikunja's `ProjectView.Update`
- * writes an explicit `Cols("title", "view_kind", "filter", "position",
- * "bucket_configuration_mode", "bucket_configuration", "default_bucket_id",
- * "done_bucket_id")` list, and an explicit `Cols` column is persisted even
- * when its value is the zero value — so a partial body would silently reset
- * a view's position to 0 and blank its filter.
+ * `update-view` and `set-done-bucket` are the two write paths that change an
+ * existing view, and both run through `ViewUpdateContext` (see
+ * ./view-update/), which picks between two genuinely different call shapes:
+ *
+ *   v1: GET the view, merge the caller's fields into the whole model, POST it
+ *       back. The merge is load-bearing, because go-vikunja's
+ *       `ProjectView.Update` writes an explicit `Cols(...)` allowlist and
+ *       persists every named column even at its zero value, so a bare partial
+ *       body would reset a view's position to 0 and blank its filter.
+ *   v2: one PATCH carrying only the changed fields. The server does that merge
+ *       itself, which removes the read and the read-modify-write race.
+ *
+ * Kanban buckets stay on v1 permanently and are not touched here: v2 has no
+ * `PATCH` on a bucket at all. `done_bucket_id` and `default_bucket_id` are
+ * fields of the *view*, which is why `set-done-bucket` is a view update rather
+ * than a bucket update (docs/API_NOTES.md, "Setting the Done Bucket").
+ *
+ * `create-view` is unrelated to all of that and stays on v1's
+ * `PUT /projects/{project}/views`.
  *
  * Fields the create/update surface forwards, and the two it deliberately
  * refuses: `position` and `filter` are honored by BOTH endpoints (the create
@@ -36,96 +43,19 @@ import { MCPError, ErrorCode } from '../../types';
 import { validateId } from '../../utils/validation';
 import { createStandardResponse, formatAorpAsMarkdown } from '../../utils/response-factory';
 import { vikunjaRestRequest, resolveKanbanViewId } from '../../utils/vikunja-rest';
-import {
-  parseFilterString,
-  validateFilterExpression,
-  expressionToString,
-} from '../../utils/filters';
-import type { components } from '../../types/generated/vikunja-openapi';
+import { ViewUpdateContext, buildViewFilter, buildBucketConfiguration } from './view-update';
+import type {
+  VikunjaProjectView,
+  ViewKind,
+  BucketConfigurationMode,
+  ViewBucketConfigurationInput,
+  ViewFieldUpdates,
+} from './view-update';
 
-// Sourced from the vendored OpenAPI spec (docs/vikunja-openapi.json) — see
-// docs/API-SPEC.md. All fields are optional per the spec.
-type VikunjaProjectView = components['schemas']['models.ProjectView'];
-type VikunjaTaskCollection = components['schemas']['models.TaskCollection'];
-type VikunjaBucketConfiguration = components['schemas']['models.ProjectViewBucketConfiguration'];
-
-type ViewKind = 'list' | 'gantt' | 'table' | 'kanban';
-type BucketConfigurationMode = 'none' | 'manual' | 'filter';
-
-/** One `bucket_configuration` entry as the caller supplies it (flat filter string). */
-export interface ViewBucketConfigurationInput {
-  /** Column title for the generated bucket. */
-  title: string;
-  /** Filter query selecting the tasks that land in this bucket. */
-  filter?: string;
-}
-
-/**
- * Parses, validates, and translates a caller-supplied DSL filter string into
- * the snake_case form Vikunja's API expects — the SAME pipeline
- * `vikunja_filters` and `vikunja_tasks list` route through
- * (`parseFilterString` -> `validateFilterExpression` -> `expressionToString`,
- * see src/utils/filters.ts). Without the last step a DSL field name
- * (`dueDate`) is sent verbatim and Vikunja rejects it, since the real field
- * is `due_date`.
- *
- * @throws {MCPError} VALIDATION_ERROR when the filter fails to parse/validate.
- */
-function translateViewFilter(filterStr: string, label: string): string {
-  const parseResult = parseFilterString(filterStr);
-  if (!parseResult.expression) {
-    throw new MCPError(
-      ErrorCode.VALIDATION_ERROR,
-      `Invalid ${label}: ${parseResult.error?.message || 'Invalid filter syntax'}`,
-    );
-  }
-  const validation = validateFilterExpression(parseResult.expression);
-  if (!validation.valid) {
-    throw new MCPError(
-      ErrorCode.VALIDATION_ERROR,
-      `Invalid ${label}: ${validation.errors.join('; ')}`,
-    );
-  }
-  return expressionToString(parseResult.expression);
-}
-
-/**
- * Builds the nested `filter` object Vikunja's ProjectView model expects.
- *
- * The wire shape is NOT a bare string: `models.ProjectView.filter` is a
- * `models.TaskCollection` (`{ filter: "<query>" }`) — verified against the
- * vendored spec and against `ProjectView.Filter *TaskCollection` in
- * go-vikunja's `pkg/models/project_view.go`. The existing collection (sort_by,
- * order_by, s, ...) is preserved when one is already set on the view, so
- * changing the query on an update doesn't wipe the rest of the collection.
- */
-function buildViewFilter(
-  filterStr: string,
-  current?: VikunjaTaskCollection,
-): VikunjaTaskCollection {
-  return { ...(current ?? {}), filter: translateViewFilter(filterStr, 'filter') };
-}
-
-/** Maps the caller's flat bucket-configuration entries onto the wire shape. */
-function buildBucketConfiguration(
-  entries: ViewBucketConfigurationInput[],
-): VikunjaBucketConfiguration[] {
-  return entries.map((entry, index) => {
-    if (typeof entry?.title !== 'string' || entry.title.trim() === '') {
-      throw new MCPError(
-        ErrorCode.VALIDATION_ERROR,
-        `bucketConfiguration[${index}].title is required and must be a non-empty string`,
-      );
-    }
-    const mapped: VikunjaBucketConfiguration = { title: entry.title.trim() };
-    if (entry.filter !== undefined) {
-      mapped.filter = {
-        filter: translateViewFilter(entry.filter, `bucketConfiguration[${index}].filter`),
-      };
-    }
-    return mapped;
-  });
-}
+// Re-exported so the field mapping and its types keep a single import path for
+// existing callers and tests, even though they now live with the strategies.
+export { buildViewUpdatePayload } from './view-update';
+export type { ViewBucketConfigurationInput, ViewFieldUpdates } from './view-update';
 
 export interface ListViewsArgs {
   /** Project whose views should be listed. */
@@ -220,50 +150,6 @@ export interface SetDoneBucketArgs {
   bucketId?: number;
   /** Session id for response tracking. */
   sessionId?: string;
-}
-
-/** The caller-facing field deltas `buildViewUpdatePayload` can overlay. */
-export interface ViewFieldUpdates {
-  title?: string;
-  viewKind?: ViewKind;
-  bucketConfigurationMode?: BucketConfigurationMode;
-  bucketConfiguration?: ViewBucketConfigurationInput[];
-  position?: number;
-  filter?: string;
-  doneBucketId?: number;
-  defaultBucketId?: number;
-}
-
-/**
- * Builds a project view update payload by merging the current view with
- * requested field changes, so fields the caller didn't mention survive the
- * full-model-replace `POST /projects/{project}/views/{id}` round trip.
- */
-export function buildViewUpdatePayload(
-  currentView: VikunjaProjectView,
-  updates: ViewFieldUpdates,
-): VikunjaProjectView {
-  return {
-    ...currentView,
-    ...(updates.title !== undefined && { title: updates.title.trim() }),
-    ...(updates.viewKind !== undefined && { view_kind: updates.viewKind }),
-    ...(updates.bucketConfigurationMode !== undefined && {
-      bucket_configuration_mode: updates.bucketConfigurationMode,
-    }),
-    ...(updates.bucketConfiguration !== undefined && {
-      bucket_configuration: buildBucketConfiguration(updates.bucketConfiguration),
-    }),
-    // `position` and `filter` are in the handler's explicit `Cols(...)` list
-    // (go-vikunja pkg/models/project_view.go `ProjectView.Update`), so they
-    // are written even when zero/empty — merging the fetched view forward is
-    // what keeps an untouched position from being reset to 0.
-    ...(updates.position !== undefined && { position: updates.position }),
-    ...(updates.filter !== undefined && {
-      filter: buildViewFilter(updates.filter, currentView.filter),
-    }),
-    ...(updates.doneBucketId !== undefined && { done_bucket_id: updates.doneBucketId }),
-    ...(updates.defaultBucketId !== undefined && { default_bucket_id: updates.defaultBucketId }),
-  };
 }
 
 function viewSummary(view: VikunjaProjectView): Record<string, unknown> {
@@ -453,9 +339,13 @@ export async function createView(
 }
 
 /**
- * Updates a project view. `POST /projects/{project}/views/{id}` is a
- * full-model-replace endpoint, so the current view is fetched first and
- * merged with the requested changes (see `buildViewUpdatePayload`).
+ * Updates a project view.
+ *
+ * The request the server actually sees depends on which API this session
+ * resolves to: a v2 `PATCH` with just the caller's fields, or v1's
+ * fetch-merge-`POST`. `ViewUpdateContext` owns that choice; everything below
+ * is the same on both paths, including the `affectedFields` metadata, which is
+ * derived from the caller's arguments rather than from a diff.
  */
 export async function updateView(
   args: UpdateViewArgs,
@@ -491,12 +381,6 @@ export async function updateView(
   if (args.doneBucketId !== undefined) validateId(args.doneBucketId, 'doneBucketId');
   if (args.defaultBucketId !== undefined) validateId(args.defaultBucketId, 'defaultBucketId');
 
-  const currentView = await vikunjaRestRequest<VikunjaProjectView>(
-    authManager,
-    'GET',
-    `/projects/${args.id}/views/${args.viewId}`,
-  );
-
   const fieldUpdates: ViewFieldUpdates = {};
   if (args.title !== undefined) fieldUpdates.title = args.title;
   if (args.viewKind !== undefined) fieldUpdates.viewKind = args.viewKind;
@@ -512,14 +396,12 @@ export async function updateView(
   if (args.doneBucketId !== undefined) fieldUpdates.doneBucketId = args.doneBucketId;
   if (args.defaultBucketId !== undefined) fieldUpdates.defaultBucketId = args.defaultBucketId;
 
-  const payload = buildViewUpdatePayload(currentView, fieldUpdates);
-
-  const updatedView = await vikunjaRestRequest<VikunjaProjectView>(
+  const updatedView = await new ViewUpdateContext(authManager).execute({
     authManager,
-    'POST',
-    `/projects/${args.id}/views/${args.viewId}`,
-    payload,
-  );
+    projectId: args.id,
+    viewId: args.viewId,
+    updates: fieldUpdates,
+  });
 
   const response = createStandardResponse(
     'update-view',
@@ -578,9 +460,18 @@ export async function deleteView(
  * docs/API_NOTES.md "Kanban 'Done' Bucket") — the done bucket is a property
  * of the ProjectView (`done_bucket_id`), not the bucket. This is the only
  * way to *set* it (list-buckets can only read it). Steps: resolve the
- * project's Kanban view (or use an explicit `viewId`), fetch-merge-POST the
- * `done_bucket_id` change onto it, then verify the response reflects the
- * requested bucket before reporting success.
+ * project's Kanban view (or use an explicit `viewId`), write the
+ * `done_bucket_id` change onto it through `ViewUpdateContext`, then verify the
+ * response reflects the requested bucket before reporting success.
+ *
+ * Because the done bucket lives on the view, this is a view update and gets
+ * v2's `PATCH` like any other. It is not a bucket update: v2 has no bucket
+ * `PATCH`, and `buckets.ts` stays on v1 permanently.
+ *
+ * The verify step also covers v2's `304`: a patch that sets `done_bucket_id`
+ * to the value it already holds changes nothing, and the strategy answers it
+ * with a fresh read of the view, whose `done_bucket_id` is by definition the
+ * requested one.
  */
 export async function setDoneBucket(
   args: SetDoneBucketArgs,
@@ -605,20 +496,12 @@ export async function setDoneBucket(
   const viewId =
     args.viewId !== undefined ? args.viewId : await resolveKanbanViewId(authManager, args.id);
 
-  const currentView = await vikunjaRestRequest<VikunjaProjectView>(
+  const updatedView = await new ViewUpdateContext(authManager).execute({
     authManager,
-    'GET',
-    `/projects/${args.id}/views/${viewId}`,
-  );
-
-  const payload = buildViewUpdatePayload(currentView, { doneBucketId: args.bucketId });
-
-  const updatedView = await vikunjaRestRequest<VikunjaProjectView>(
-    authManager,
-    'POST',
-    `/projects/${args.id}/views/${viewId}`,
-    payload,
-  );
+    projectId: args.id,
+    viewId,
+    updates: { doneBucketId: args.bucketId },
+  });
 
   // Verify-then-report: the response's done_bucket_id must reflect the
   // requested bucket before this is reported as a success (ENDPOINT-PLAYBOOK
