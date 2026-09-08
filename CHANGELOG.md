@@ -13,12 +13,15 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 Promotes the `0.7.0-beta.x` line to stable: OIDC HTTP transport support and the August hardening
 batch are now what every `npm install vikunja-mcp-ng` / `docker pull …:latest` user gets by
 default, no longer opt-in via the `beta` dist-tag. Everything below is new since `0.7.0-beta.5`;
-see that and earlier `0.7.0-beta.*` sections above for the full OIDC feature set.
+see that and earlier `0.7.0-beta.*` sections below for the full OIDC feature set.
 
 ### Security
 
-Found and fixed during a pre-tag cross-model review of the OIDC HTTP transport (this is its first
-release as `latest`, not the `beta` tag) — none of these shipped in any prior tagged release.
+Found and fixed during a pre-tag cross-model review of the OIDC HTTP transport, ahead of its
+first release as `latest` rather than `beta`. The underlying bugs themselves are not new — most
+were already present somewhere in the `0.7.0-beta.0`–`.5` line (`/readyz`'s unthrottled JWKS
+fetch, for instance, dates to beta.5's #347) — but none had been fixed or disclosed before this
+release, and none of this line's beta users were ever exposed as the default install.
 
 - **The `X-Forwarded-Proto` header could redirect MCP authorization-discovery metadata to an
   attacker origin.** Behind a reverse proxy that passes through client-supplied

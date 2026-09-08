@@ -12,10 +12,12 @@ MCP Context Forge** in front of this server, read this manual first, then
 [`CONTEXT-FORGE.md`](CONTEXT-FORGE.md). For *why* the design is shaped this way, including
 the threat model, see [`OIDC-RESOURCE-SERVER.md`](OIDC-RESOURCE-SERVER.md).
 
-> **Status: beta.** The authentication boundary, the vault, provisioning, and per-identity
-> isolation have all been exercised against a real gateway + Keycloak + Vikunja deployment.
-> What has *not* happened yet is sustained production use by anyone other than its authors.
-> Treat it accordingly: pilot it, keep backups of the vault, and report what breaks.
+> **Status: stable as of `0.7.0`**, after several beta releases (`0.7.0-beta.0`–`.5`). The
+> authentication boundary, the vault, provisioning, and per-identity isolation have all been
+> exercised against a real gateway + Keycloak + Vikunja deployment through that beta line, but
+> it is newly stable and has not yet seen sustained production use at scale by anyone other
+> than its authors. Treat it accordingly: pilot it, keep backups of the vault, and report what
+> breaks.
 
 ---
 
@@ -94,7 +96,7 @@ And you should have decided:
 ### Option A — npm (recommended for a first deployment)
 
 ```bash
-npm install -g vikunja-mcp-ng@beta
+npm install -g vikunja-mcp-ng
 ```
 
 The binary is `vikunja-mcp-ng`; it reads configuration from the environment (§5) and, in
@@ -117,7 +119,7 @@ docker run -d --name vikunja-mcp \
   -p 127.0.0.1:8765:8765 \
   -v /srv/vikunja-mcp:/data \
   --env-file /etc/vikunja-mcp/env \
-  ghcr.io/netadvanced/vikunja-mcp-ng:beta
+  ghcr.io/netadvanced/vikunja-mcp-ng:latest
 ```
 
 With a volume mounted at `/data` as above, point the vault inside it —
