@@ -19,6 +19,12 @@
  * `oidc-http` mode and invisible to every test we run in `stdio` mode. They
  * live here so there is one definition of each and the next transport cannot
  * forget them.
+ *
+ * A fourth of the same class is not here, because the two transports cannot
+ * share one function for it: `deriveRestBreakerName` / `deriveRestV2BreakerName`
+ * must both strip the query string before collapsing segments (v1's #254
+ * fix), but they emit different prefixes. The v2 copy was taken before that
+ * strip existed and shipped into P3 that way. See the v2 helper's doc comment.
  */
 
 import { MCPError, ErrorCode } from '../types';
