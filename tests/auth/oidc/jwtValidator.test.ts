@@ -377,6 +377,56 @@ describe('createOidcJwtValidator', () => {
     });
   });
 
+  describe('requireAtJwtTyp enforcement (RFC 9068, issue #374)', () => {
+    it('is off by default: a token with a generic typ still validates', async () => {
+      const validator = createOidcJwtValidator(baseConfig, deps);
+      const token = await signTestToken(key.privateKey, { kid: key.kid });
+
+      await expect(validator.validate(`Bearer ${token}`)).resolves.toBeDefined();
+    });
+
+    it('accepts an at+jwt-typed token when enforcement is on', async () => {
+      const validator = createOidcJwtValidator({ ...baseConfig, requireAtJwtTyp: true }, deps);
+      const token = await signTestToken(key.privateKey, {
+        kid: key.kid,
+        extraHeader: { typ: 'at+jwt' },
+      });
+
+      await expect(validator.validate(`Bearer ${token}`)).resolves.toBeDefined();
+    });
+
+    it('accepts a case-insensitive at+jwt typ with the application/ prefix', async () => {
+      const validator = createOidcJwtValidator({ ...baseConfig, requireAtJwtTyp: true }, deps);
+      const token = await signTestToken(key.privateKey, {
+        kid: key.kid,
+        extraHeader: { typ: 'Application/AT+JWT' },
+      });
+
+      await expect(validator.validate(`Bearer ${token}`)).resolves.toBeDefined();
+    });
+
+    it('rejects a generically-typed token (e.g. an ID token) when enforcement is on', async () => {
+      const validator = createOidcJwtValidator({ ...baseConfig, requireAtJwtTyp: true }, deps);
+      const token = await signTestToken(key.privateKey, { kid: key.kid, extraHeader: { typ: 'JWT' } });
+
+      await expectGeneric401(validator.validate(`Bearer ${token}`));
+    });
+
+    it('rejects a token with no typ header at all when enforcement is on', async () => {
+      const validator = createOidcJwtValidator({ ...baseConfig, requireAtJwtTyp: true }, deps);
+      // extraHeader's typ:undefined overrides the helper's default typ:'JWT'
+      // and is dropped entirely by JSON serialization, producing a header
+      // with no typ claim at all — exercises isAccessTokenTyp's non-string
+      // guard, not just the "wrong string" path above.
+      const token = await signTestToken(key.privateKey, {
+        kid: key.kid,
+        extraHeader: { typ: undefined },
+      });
+
+      await expectGeneric401(validator.validate(`Bearer ${token}`));
+    });
+  });
+
   describe('required scope (403, not 401)', () => {
     it('accepts a token carrying the required scope as a space-delimited string', async () => {
       const validator = createOidcJwtValidator(

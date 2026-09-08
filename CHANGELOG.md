@@ -45,10 +45,23 @@ release as `latest`, not the `beta` tag) — none of these shipped in any prior 
   as fetched "over HTTPS" as an invariant; the schema didn't enforce it, so a misconfigured or
   on-path-attacker-substituted cleartext JWKS endpoint could be used to mint tokens for any
   identity. Now rejected at config load unless the scheme is `https:`.
-
-Deferred as tracked follow-ups (lower severity or more involved; not blocking this release):
-unthrottled live JWKS fetch on every `/readyz` call (#373), no `typ` claim enforcement on bearer
-JWTs (#374), `oidc.allowedAlgs` accepting any string rather than a known-safe allowlist (#375).
+- **`/readyz` made an unthrottled live JWKS fetch on every unauthenticated request** (#373) — health
+  checks sit outside the JWT middleware by design (§3a), so a caller looping `GET /readyz` fanned
+  out one outbound request per hit to the configured IdP with no limit: amplification against the
+  IdP plus self-inflicted socket/timeout cost on this server. The reachability result is now cached
+  for 5s per running listener; a real outage still surfaces within one or two probe cycles at any
+  typical readiness-probe cadence.
+- **Bearer JWT validation didn't enforce a `typ` claim** (#374) — any same-issuer, same-audience
+  JWT (an ID token, a logout token) was accepted as an access token, exploitable only under IdP
+  configurations where `oidc.audience` doubles as a client_id also embedded in other token types.
+  New opt-in `oidc.requireAtJwtTyp` (default off, since most IdPs don't set `at+jwt`) rejects a
+  missing or wrong `typ` per RFC 9068 §2.1/§4.
+- **`oidc.allowedAlgs` accepted any string, including `none`** (#375) — not currently exploitable
+  (`jose` already refuses `none` outright, and a remote JWKS never carries a symmetric key for
+  `HS*` to succeed against), but a misconfiguration should fail loud at config load rather than
+  rely solely on the verifier's own backstop. `none` is now rejected at the schema level; `HS*`
+  remains permitted (discouraged, not forbidden — a legitimate reason to configure one still
+  exists).
 
 ### Added — Vikunja v2 API groundwork (#184, P1+P2)
 

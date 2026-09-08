@@ -257,6 +257,92 @@ describe('httpTransport', () => {
       expect(JSON.parse(res.body)).toEqual({ status: 'ok' });
     });
 
+    // Issue #373: /readyz is unauthenticated, so without a cache each hit
+    // fanned out a fresh live request to the IdP's JWKS endpoint —
+    // amplification against the IdP plus self-inflicted cost on this server.
+    it('caches the JWKS reachability result across repeated /readyz calls (#373)', async () => {
+      setOidcAuthMiddleware(async () => false);
+      setActiveVaultStore(healthyVault);
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true } as Response);
+      handle = await startHttpTransport(newServer, baseHttpConfig(), {
+        issuer: 'https://idp.example.test',
+        jwksUri: 'https://idp.example.test/jwks',
+      });
+      const port = getPort(handle);
+
+      await request(port, { path: '/readyz' });
+      await request(port, { path: '/readyz' });
+      const res = await request(port, { path: '/readyz' });
+
+      expect(res.statusCode).toBe(200);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // Fable review follow-up on #373: the settled-result cache alone still
+    // let every request that arrived WHILE a fetch was in flight fire its
+    // own independent fetch — exactly the scenario (a slow/timing-out IdP)
+    // where throttling matters most. Concurrent callers must coalesce onto
+    // the same in-flight request instead.
+    it('coalesces concurrent /readyz calls onto a single in-flight JWKS fetch (#373)', async () => {
+      setOidcAuthMiddleware(async () => false);
+      setActiveVaultStore(healthyVault);
+      let resolveFetch: (() => void) | undefined;
+      const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveFetch = () => resolve({ ok: true } as Response);
+          }),
+      );
+      handle = await startHttpTransport(newServer, baseHttpConfig(), {
+        issuer: 'https://idp.example.test',
+        jwksUri: 'https://idp.example.test/jwks',
+      });
+      const port = getPort(handle);
+
+      const concurrent = Promise.all([
+        request(port, { path: '/readyz' }),
+        request(port, { path: '/readyz' }),
+        request(port, { path: '/readyz' }),
+      ]);
+      try {
+        // Give all three real loopback requests time to reach the
+        // (still-pending) fetch call before resolving it. `finally` below
+        // guarantees resolveFetch still runs if this assertion fails, so a
+        // flake here doesn't leave three sockets hanging into teardown.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        resolveFetch?.();
+      }
+      const results = await concurrent;
+
+      for (const res of results) {
+        expect(res.statusCode).toBe(200);
+      }
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-fetches JWKS reachability once the cache entry expires (#373)', async () => {
+      setOidcAuthMiddleware(async () => false);
+      setActiveVaultStore(healthyVault);
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true } as Response);
+      const nowSpy = jest.spyOn(Date, 'now');
+      nowSpy.mockReturnValue(1_000_000);
+      handle = await startHttpTransport(newServer, baseHttpConfig(), {
+        issuer: 'https://idp.example.test',
+        jwksUri: 'https://idp.example.test/jwks',
+      });
+      const port = getPort(handle);
+
+      await request(port, { path: '/readyz' });
+      nowSpy.mockReturnValue(1_000_000 + 5001);
+      const res = await request(port, { path: '/readyz' });
+
+      expect(res.statusCode).toBe(200);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      nowSpy.mockRestore();
+    });
+
     it('ignores a query string when matching routes', async () => {
       setOidcAuthMiddleware(async () => false);
       handle = await startHttpTransport(newServer, baseHttpConfig());

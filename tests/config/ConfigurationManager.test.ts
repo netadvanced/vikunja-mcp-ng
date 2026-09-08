@@ -59,6 +59,7 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS;
     delete process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC;
     delete process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE;
+    delete process.env.VIKUNJA_MCP_OIDC_REQUIRE_AT_JWT_TYP;
     delete process.env.VIKUNJA_MCP_ENROLL_ENABLED;
     delete process.env.VIKUNJA_MCP_ENROLL_PROVIDER;
     delete process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL;
@@ -844,6 +845,7 @@ describe('ConfigurationManager', () => {
       process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS = 'RS256, ES256';
       process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC = '30';
       process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE = 'vikunja';
+      process.env.VIKUNJA_MCP_OIDC_REQUIRE_AT_JWT_TYP = 'true';
 
       const config = await ConfigurationManager.getInstance().getConfiguration();
       expect(config.oidc).toEqual({
@@ -853,7 +855,43 @@ describe('ConfigurationManager', () => {
         allowedAlgs: ['RS256', 'ES256'],
         clockSkewSec: 30,
         requiredScope: 'vikunja',
+        requireAtJwtTyp: true,
       });
+    });
+
+    // Issue #375: jose already refuses `none` outright, but a misconfigured
+    // allowlist should fail loud at config load, not rely solely on the
+    // verifier's own backstop as the only defense.
+    it("rejects an allowedAlgs list containing 'none'", () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS = 'RS256, none';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it("rejects a case-variant 'None' in allowedAlgs too", () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS = 'None';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('still permits an HS* algorithm (discouraged but not forbidden)', async () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS = 'HS256';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc?.allowedAlgs).toEqual(['HS256']);
     });
 
     it('fails loud on an incomplete OIDC block (issuer without audience/jwksUri)', () => {

@@ -66,6 +66,19 @@ export interface OidcJwtValidatorConfig {
   clockSkewSec?: number;
   /** Optional coarse scope gate (`oidc.requiredScope`). When set, a validly-authenticated token missing this scope is a 403, not a 401. */
   requiredScope?: string;
+  /**
+   * When true, reject a token whose JWS header `typ` is missing OR is not
+   * `at+jwt` (RFC 9068 §2.1 and §4, case-insensitive, tolerating an
+   * `application/` prefix). Defaults to false/unset: most IdPs mint access
+   * tokens with a generic `typ: 'JWT'` (or omit it), the same value an ID token or a
+   * logout token from the same issuer would carry, so enforcing this by
+   * default would reject legitimate tokens from IdPs that predate or don't
+   * implement RFC 9068. Turn this on only against an IdP known to set
+   * `at+jwt` on its access tokens — it then closes the gap where any
+   * same-issuer, same-audience JWT (not only an access token) would
+   * otherwise be accepted (`oidc.requireAtJwtTyp`).
+   */
+  requireAtJwtTyp?: boolean;
   /** Optional tuning for the underlying JWKS cache. */
   jwks?: OidcJwksCacheConfig;
 }

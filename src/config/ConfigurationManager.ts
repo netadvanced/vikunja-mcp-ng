@@ -600,6 +600,12 @@ export class ConfigurationManager {
     }
     this.assignEnvValue(oidc, 'clockSkewSec', process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC, true);
     this.assignEnvValue(oidc, 'requiredScope', process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE, false);
+    this.assignEnvValue(
+      oidc,
+      'requireAtJwtTyp',
+      process.env.VIKUNJA_MCP_OIDC_REQUIRE_AT_JWT_TYP,
+      true,
+    );
     if (Object.keys(oidc).length > 0) {
       result.oidc = oidc;
     }

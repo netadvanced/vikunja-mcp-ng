@@ -269,8 +269,19 @@ export const OidcConfigSchema = z.object({
       },
     ),
   // Allowed JWS `alg` values (`oidc.allowedAlgs`). Defaults (in the validator)
-  // to `['RS256']`; `none` is never accepted.
-  allowedAlgs: z.array(z.string().min(1)).min(1).optional(),
+  // to `['RS256']`. `none` is never accepted by `jose` itself, but is also
+  // rejected here at config load — a misconfiguration should fail loud at
+  // startup rather than rely solely on the verifier's own backstop. `HS*`
+  // algorithms are still permitted: unlike `none`, there is a legitimate
+  // (if discouraged) reason to configure one, see
+  // `OidcJwtValidatorConfig.allowedAlgs`'s doc comment.
+  allowedAlgs: z
+    .array(z.string().min(1))
+    .min(1)
+    .refine((algs) => !algs.some((alg) => alg.toLowerCase() === 'none'), {
+      message: "oidc.allowedAlgs must not include 'none'",
+    })
+    .optional(),
   // Bounded clock-skew tolerance in seconds (`oidc.clockSkewSec`), applied to
   // `exp`/`nbf`/`iat`. Validator default: 60. Capped at 300 (5 minutes): jose
   // applies this value as `clockTolerance` on `exp` itself, so an
@@ -280,6 +291,10 @@ export const OidcConfigSchema = z.object({
   // Optional coarse scope gate (`oidc.requiredScope`) — a validly
   // authenticated token missing it is a 403, not a 401.
   requiredScope: z.string().min(1).optional(),
+  // Optional RFC 9068 `typ` enforcement (`oidc.requireAtJwtTyp`) — off by
+  // default. See `OidcJwtValidatorConfig.requireAtJwtTyp`'s doc comment for
+  // what this closes and why it isn't the default.
+  requireAtJwtTyp: z.boolean().optional(),
 });
 
 export type OidcConfig = z.infer<typeof OidcConfigSchema>;

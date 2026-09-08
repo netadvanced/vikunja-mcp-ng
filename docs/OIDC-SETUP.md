@@ -128,8 +128,8 @@ container's ephemeral filesystem and every restart unlinks every user (§10).
 > `EXPOSE` and no `HEALTHCHECK` — its Dockerfile still says *"this is a stdio MCP server, not
 > a network listener."* Nothing is broken by that (`EXPOSE` is metadata; `-p` works
 > regardless), but your orchestrator will not learn the port or liveness probe from the image
-> and you must supply both yourself. Point your probe at `GET /healthz` — and read
-> [§11](#11-known-limitations) first, because `/readyz` does not mean what its name suggests.
+> and you must supply both yourself. Point a liveness probe at `GET /healthz` and a
+> readiness probe at `GET /readyz` — see [§11](#11-known-limitations) for what each checks.
 
 ### A systemd unit, for the common case
 
@@ -226,9 +226,10 @@ inert unless you set `transport=http`.
 | `VIKUNJA_MCP_OIDC_ISSUER` | `oidc.issuer` | **yes** | Must equal the token's `iss` claim **exactly** — plain string comparison, no prefix or trailing-slash tolerance |
 | `VIKUNJA_MCP_OIDC_AUDIENCE` | `oidc.audience` | **yes** | Required `aud` value; comma-separated for several |
 | `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | **yes** | Your provider's JWKS endpoint (the `jwks_uri` from its discovery document). **Must be `https://`** — a plain `http://` value is rejected at startup |
-| `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | `oidc.allowedAlgs` | no | Comma list; defaults to `RS256`. **`none` is never accepted, whatever you set** |
+| `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | `oidc.allowedAlgs` | no | Comma list; defaults to `RS256`. **`none` is rejected at config load as well as by the verifier itself.** `HS*` is still permitted (discouraged, not forbidden) |
 | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | `oidc.clockSkewSec` | no | Seconds, default `60`, capped at `300`, applied to `exp`/`nbf`/`iat`. **Note the `_SEC` suffix** — `VIKUNJA_MCP_OIDC_CLOCK_SKEW` is not a variable and is silently ignored |
 | `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` | `oidc.requiredScope` | no | Coarse gate. A valid token missing it gets **403**, not 401 |
+| `VIKUNJA_MCP_OIDC_REQUIRE_AT_JWT_TYP` | `oidc.requireAtJwtTyp` | no | `true`/`false`, default `false`. When on, rejects a bearer token whose JWS header `typ` is missing or isn't `at+jwt` (RFC 9068 §2.1/§4) — only enable against an IdP known to set it, most don't by default |
 
 **Vault**
 
@@ -655,10 +656,12 @@ incident; see [`OIDC-RESOURCE-SERVER.md`](OIDC-RESOURCE-SERVER.md) §4.
 
 Read these before you design around anything.
 
-- **`/readyz` is a stub.** It returns `{"status":"ok"}` unconditionally and checks nothing —
-  not the vault, not JWKS reachability. Its `TODO` says as much in the source. Use it for
-  liveness if you like, but **do not** treat a 200 from it as evidence that the vault loaded,
-  and do not use it to diagnose mass-unprovisioning.
+- **`/readyz` checks JWKS reachability and vault-file openability**, returning `503` with a
+  `checks: { vault, jwks }` breakdown when either is unhealthy. A `200` is evidence the vault
+  loaded and the IdP answered — but the JWKS reachability half is cached for 5s per running
+  listener (issue #373, to stop an unauthenticated caller from turning readiness probing into
+  unthrottled load against the IdP), so a real recovery can lag up to that long behind the
+  underlying state.
 - **The container image is not shaped for HTTP mode** — no `EXPOSE`, no `HEALTHCHECK`. See
   [§3](#option-c--container).
 - **Circuit breakers are shared across users.** See [§10](#10-operations).

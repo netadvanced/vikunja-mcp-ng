@@ -84,9 +84,10 @@ rules — env always wins over the config file):
 | Trusted issuer | `VIKUNJA_MCP_OIDC_ISSUER` | Your realm's issuer, e.g. `https://keycloak.example.com/realms/your-realm` — must match the token's `iss` claim **exactly** (string compare, no prefix matching) |
 | Expected audience | `VIKUNJA_MCP_OIDC_AUDIENCE` | The client-id (or custom audience/scope) Context Forge's own Keycloak client is issued tokens for — comma-separated if more than one is valid |
 | JWKS endpoint | `VIKUNJA_MCP_OIDC_JWKS_URI` | e.g. `https://keycloak.example.com/realms/your-realm/protocol/openid-connect/certs` — must be `https://`, rejected at startup otherwise |
-| Allowed algorithms | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | Leave unset (defaults to `RS256`) unless your IdP uses something else — `none` and unexpected `HS*` are never accepted regardless |
+| Allowed algorithms | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | Leave unset (defaults to `RS256`) unless your IdP uses something else — `none` is rejected outright, whatever you set |
 | Clock skew tolerance | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | Leave unset (defaults to 60s) unless you have a specific reason; capped at 300s |
 | Required scope (optional) | `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` | Only if you want a coarse scope gate beyond "token is valid for this audience" |
+| Require `at+jwt` typ (optional) | `VIKUNJA_MCP_OIDC_REQUIRE_AT_JWT_TYP` | If your Keycloak client is configured to emit RFC 9068-compliant access tokens (`typ: at+jwt`), set to `true` to reject any other same-issuer/audience JWT (e.g. an ID token) as a bearer token. Leave `false` (default) otherwise |
 | Shared Vikunja instance | `VIKUNJA_URL` | e.g. `https://vikunja.example.com/api/v1` |
 | Vault file path | `VIKUNJA_MCP_VAULT_PATH` | e.g. `/data/vikunja-mcp/vault.json` — on a persistent volume; `0600` permissions, atomic writes |
 | Vault master key | `VIKUNJA_MCP_VAULT_KEY` (or `_FILE`) | 32 bytes: `openssl rand -hex 32` (64 hex chars) or `openssl rand -base64 32`. Prefer the `_FILE` variant (points at a Docker/Kubernetes secret file) so the key never appears in `docker inspect` / process listings — see `docs/CONFIGURATION.md`'s Secrets Management section for the general `_FILE` convention this reuses. |
@@ -162,9 +163,11 @@ Note the tool-name prefix: Context Forge exposes tools as
 `<gateway-name>-<tool-name>`, not the bare name.
 
 Set the gateway's health check path to `/healthz` (unauthenticated liveness,
-never touches the vault or Vikunja). **Do not** point it at `/readyz` — that
-endpoint is a stub that returns `ok` unconditionally
-([`OIDC-SETUP.md`](OIDC-SETUP.md) §11).
+never touches the vault or Vikunja) — that's what a gateway's liveness probe
+wants. `/readyz` is readiness, not liveness: it checks vault-file openability
+and JWKS reachability and returns `503` when either is unhealthy, so use it
+for a readiness probe or manual diagnosis instead
+([`OIDC-SETUP.md`](OIDC-SETUP.md) §11), not as the gateway's liveness check.
 
 **Verify the registration actually worked**: the response should report
 `"reachable": true` and an **empty** `skippedTools` array. A non-empty
@@ -266,9 +269,9 @@ they already provisioned:
   every restart wipes every user's provisioning.
 - If *many* users report this at once, suspect the vault file rather than
   authentication — an ephemeral volume, or a restore that didn't happen.
-  **`GET /readyz` will not tell you this**: it is a stub that answers `ok`
-  unconditionally without checking the vault or anything else
-  ([`OIDC-SETUP.md`](OIDC-SETUP.md) §11). Check the file itself and the
+  **`GET /readyz` is the first thing to check**: a degraded or missing vault
+  surfaces there as `503` with `checks.vault: "degraded"`
+  ([`OIDC-SETUP.md`](OIDC-SETUP.md) §11). Also check the file itself and the
   server's startup log.
 
 ### Circuit breaker open (`opossum` breaker tripped)

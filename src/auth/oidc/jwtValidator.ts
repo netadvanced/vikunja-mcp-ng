@@ -94,6 +94,7 @@ export function createOidcJwtValidator(
     }
 
     let payload: Awaited<ReturnType<JoseDeps['jwtVerify']>>['payload'];
+    let protectedHeader: Awaited<ReturnType<JoseDeps['jwtVerify']>>['protectedHeader'];
     try {
       const result = await deps.jwtVerify(token, jwks, {
         issuer: config.issuer,
@@ -107,8 +108,14 @@ export function createOidcJwtValidator(
         requiredClaims: ['sub', 'exp'],
       });
       payload = result.payload;
+      protectedHeader = result.protectedHeader;
     } catch (err) {
       logger.warn('OIDC auth rejected: %s', describeVerifyFailure(err));
+      throw unauthorized();
+    }
+
+    if (config.requireAtJwtTyp && !isAccessTokenTyp(protectedHeader.typ)) {
+      logger.warn('OIDC auth rejected: token typ is not at+jwt');
       throw unauthorized();
     }
 
@@ -161,6 +168,16 @@ function extractBearerToken(header: string | null | undefined): string | undefin
     return undefined;
   }
   return BEARER_PATTERN.exec(header.trim())?.[1];
+}
+
+/**
+ * RFC 9068 §2.1: an access token's JWS header `typ` SHOULD be `at+jwt`.
+ * Case-insensitive, and tolerates the `application/` prefix some IdPs use
+ * (the same convention `typ` allows elsewhere per RFC 7515).
+ */
+function isAccessTokenTyp(typ: unknown): boolean {
+  if (typeof typ !== 'string') return false;
+  return typ.toLowerCase().replace(/^application\//, '') === 'at+jwt';
 }
 
 function hasRequiredScope(payload: Record<string, unknown>, requiredScope: string): boolean {
