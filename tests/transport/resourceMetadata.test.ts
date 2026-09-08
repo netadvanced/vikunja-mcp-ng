@@ -84,6 +84,38 @@ describe('resolveResourceUrl', () => {
     ).toBe('http://mcp.example.ch/mcp');
   });
 
+  it('is case-insensitive for a valid x-forwarded-proto value', () => {
+    expect(
+      resolveResourceUrl(
+        httpConfig(),
+        fakeRequest({ host: 'mcp.example.ch', 'x-forwarded-proto': 'HTTPS' })
+      )
+    ).toBe('https://mcp.example.ch/mcp');
+  });
+
+  // A forwarded-proto value must be exactly `http`/`https` — otherwise it is
+  // interpolated unchecked into the constructed URL's scheme position, so a
+  // caller behind a proxy that passes through client-supplied
+  // X-Forwarded-Proto could point the advertised resource/resource_metadata
+  // URLs at an attacker-controlled origin.
+  it('falls back to http when x-forwarded-proto is not a bare http/https token', () => {
+    expect(
+      resolveResourceUrl(
+        httpConfig(),
+        fakeRequest({ host: 'mcp.example.ch', 'x-forwarded-proto': 'https://evil.example' })
+      )
+    ).toBe('http://mcp.example.ch/mcp');
+  });
+
+  it('falls back to http for an unrelated scheme value', () => {
+    expect(
+      resolveResourceUrl(
+        httpConfig(),
+        fakeRequest({ host: 'mcp.example.ch', 'x-forwarded-proto': 'javascript' })
+      )
+    ).toBe('http://mcp.example.ch/mcp');
+  });
+
   it('derives without a request at all (startup-time resolution)', () => {
     expect(resolveResourceUrl(httpConfig({ host: '0.0.0.0', port: 9000, path: '/api/mcp' }))).toBe(
       'http://0.0.0.0:9000/api/mcp'
@@ -133,6 +165,19 @@ describe('resolveResourceUrl', () => {
       expect(
         resolveResourceUrl(httpConfig(), fakeRequest({ host: 'anything.example' }))
       ).toBe('http://anything.example/mcp');
+    });
+
+    it('falls back to http for a malicious x-forwarded-proto even behind an allowlisted host', () => {
+      expect(
+        resolveResourceUrl(
+          httpConfig(),
+          fakeRequest({
+            host: 'mcp.example.ch:8765',
+            'x-forwarded-proto': 'https://evil.example',
+          }),
+          ['mcp.example.ch:8765']
+        )
+      ).toBe('http://mcp.example.ch:8765/mcp');
     });
   });
 });

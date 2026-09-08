@@ -83,9 +83,9 @@ rules — env always wins over the config file):
 | Allowed `Host` headers | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` | Comma-separated, exact `host:port` strings; defaults to the bind `host:port` only. Must list the `Host` header **as Context Forge's requests actually carry it** — a gateway running in a container and reaching this server on the host arrives as e.g. `host.docker.internal:8765`, which is not covered by the default. A mismatch is a `403 Invalid Host header` on otherwise-valid requests; see [`OIDC-SETUP.md`](OIDC-SETUP.md) §5.4 |
 | Trusted issuer | `VIKUNJA_MCP_OIDC_ISSUER` | Your realm's issuer, e.g. `https://keycloak.example.com/realms/your-realm` — must match the token's `iss` claim **exactly** (string compare, no prefix matching) |
 | Expected audience | `VIKUNJA_MCP_OIDC_AUDIENCE` | The client-id (or custom audience/scope) Context Forge's own Keycloak client is issued tokens for — comma-separated if more than one is valid |
-| JWKS endpoint | `VIKUNJA_MCP_OIDC_JWKS_URI` | e.g. `https://keycloak.example.com/realms/your-realm/protocol/openid-connect/certs` |
+| JWKS endpoint | `VIKUNJA_MCP_OIDC_JWKS_URI` | e.g. `https://keycloak.example.com/realms/your-realm/protocol/openid-connect/certs` — must be `https://`, rejected at startup otherwise |
 | Allowed algorithms | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | Leave unset (defaults to `RS256`) unless your IdP uses something else — `none` and unexpected `HS*` are never accepted regardless |
-| Clock skew tolerance | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | Leave unset (defaults to 60s) unless you have a specific reason |
+| Clock skew tolerance | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | Leave unset (defaults to 60s) unless you have a specific reason; capped at 300s |
 | Required scope (optional) | `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` | Only if you want a coarse scope gate beyond "token is valid for this audience" |
 | Shared Vikunja instance | `VIKUNJA_URL` | e.g. `https://vikunja.example.com/api/v1` |
 | Vault file path | `VIKUNJA_MCP_VAULT_PATH` | e.g. `/data/vikunja-mcp/vault.json` — on a persistent volume; `0600` permissions, atomic writes |

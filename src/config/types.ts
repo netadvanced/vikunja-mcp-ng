@@ -247,14 +247,36 @@ export const OidcConfigSchema = z.object({
   // Required audience value(s) (`oidc.audience`). Env form is a
   // comma-separated list; a single value stays a string.
   audience: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
-  // JWKS endpoint URL to fetch signing keys from (`oidc.jwksUri`).
-  jwksUri: z.string().url(),
+  // JWKS endpoint URL to fetch signing keys from (`oidc.jwksUri`). Must be
+  // `https:` — docs/OIDC-RESOURCE-SERVER.md documents signing keys as fetched
+  // "over HTTPS" as a security invariant; a plain `http://` endpoint lets an
+  // on-path attacker substitute keys and mint tokens for any identity.
+  jwksUri: z
+    .string()
+    .url()
+    .refine(
+      (value) => {
+        try {
+          return new URL(value).protocol === 'https:';
+        } catch {
+          // Already-invalid URLs are rejected by .url() above with its own
+          // message; this refinement only adds the scheme check.
+          return false;
+        }
+      },
+      {
+        message: 'oidc.jwksUri must use https:// — signing keys must not be fetched over plaintext',
+      },
+    ),
   // Allowed JWS `alg` values (`oidc.allowedAlgs`). Defaults (in the validator)
   // to `['RS256']`; `none` is never accepted.
   allowedAlgs: z.array(z.string().min(1)).min(1).optional(),
   // Bounded clock-skew tolerance in seconds (`oidc.clockSkewSec`), applied to
-  // `exp`/`nbf`/`iat`. Validator default: 60.
-  clockSkewSec: z.number().int().nonnegative().optional(),
+  // `exp`/`nbf`/`iat`. Validator default: 60. Capped at 300 (5 minutes): jose
+  // applies this value as `clockTolerance` on `exp` itself, so an
+  // unbounded value would let an operator (deliberately or via a fat-fingered
+  // env var) make already-expired tokens still verify.
+  clockSkewSec: z.number().int().nonnegative().max(300).optional(),
   // Optional coarse scope gate (`oidc.requiredScope`) — a validly
   // authenticated token missing it is a 403, not a 401.
   requiredScope: z.string().min(1).optional(),
@@ -305,11 +327,20 @@ export const EnrollConfigSchema = z.object({
   // Expiry, in days, of the auto-minted per-user Vikunja API token
   // (`VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS`). Default: 365. When a token
   // expires the user simply re-runs `vikunja_auth provision` and clicks the
-  // link again — re-enrollment mints and vaults a fresh token.
-  tokenExpiryDays: z.number().int().positive().default(365),
+  // link again — re-enrollment mints and vaults a fresh token. Capped at 3650
+  // (10 years): unbounded, this feeds `Date` arithmetic in
+  // `src/transport/enrollment.ts` directly (`Date.now() + tokenExpiryDays *
+  // 24 * 3600 * 1000`), and an extreme value overflows `Date`'s valid range,
+  // throwing on every enrollment callback rather than minting a long-lived
+  // token.
+  tokenExpiryDays: z.number().int().positive().max(3650).default(365),
   // Enrollment ticket lifetime in seconds (`VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC`)
   // — how long the returned enrollment URL stays clickable. Default: 600.
-  ticketTtlSec: z.number().int().positive().default(600),
+  // Capped at 3600 (1 hour): this is a short-lived, leak-sensitive credential
+  // (it travels in a URL and as an OAuth `state` value), so an unbounded
+  // value is the same "operator tolerance with no ceiling" class of bug as
+  // `clockSkewSec` above, not a legitimate long-lived-knob use case.
+  ticketTtlSec: z.number().int().positive().max(3600).default(600),
 });
 
 export type EnrollConfig = z.infer<typeof EnrollConfigSchema>;

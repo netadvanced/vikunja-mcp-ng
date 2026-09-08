@@ -62,7 +62,7 @@ export interface OidcJwtValidatorConfig {
    * reason to accept HMAC-signed tokens against key material published as public keys.
    */
   allowedAlgs?: string[];
-  /** Bounded clock skew tolerance, in seconds, applied to `exp`/`nbf`/`iat` (`oidc.clockSkewSec`). Defaults to 60. */
+  /** Bounded clock skew tolerance, in seconds, applied to `exp`/`nbf`/`iat` (`oidc.clockSkewSec`). Defaults to 60, capped at 300 (enforced synchronously by `createOidcJwtValidator`). */
   clockSkewSec?: number;
   /** Optional coarse scope gate (`oidc.requiredScope`). When set, a validly-authenticated token missing this scope is a 403, not a 401. */
   requiredScope?: string;

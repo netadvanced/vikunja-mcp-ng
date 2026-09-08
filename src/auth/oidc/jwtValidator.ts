@@ -21,6 +21,11 @@ import type { Identity, JoseDeps, OidcJwksCacheConfig, OidcJwtValidatorConfig } 
 
 const DEFAULT_ALLOWED_ALGS = ['RS256'];
 const DEFAULT_CLOCK_SKEW_SEC = 60;
+// Mirrors OidcConfigSchema's clockSkewSec cap (src/config/types.ts) so the
+// same bound holds for a direct caller of createOidcJwtValidator, not only
+// for config loaded through that Zod schema — a large clockTolerance
+// applies to `exp` itself and can make already-expired tokens verify.
+const MAX_CLOCK_SKEW_SEC = 300;
 
 const INVALID_TOKEN_MESSAGE = 'Invalid or expired token';
 const INSUFFICIENT_SCOPE_MESSAGE = 'Token lacks required scope';
@@ -69,6 +74,11 @@ export function createOidcJwtValidator(
   if (!config.jwksUri) {
     throw new Error('createOidcJwtValidator: config.jwksUri is required');
   }
+  if (config.clockSkewSec !== undefined && config.clockSkewSec > MAX_CLOCK_SKEW_SEC) {
+    throw new Error(
+      `createOidcJwtValidator: config.clockSkewSec must not exceed ${MAX_CLOCK_SKEW_SEC}`,
+    );
+  }
 
   const allowedAlgs =
     config.allowedAlgs && config.allowedAlgs.length > 0 ? config.allowedAlgs : DEFAULT_ALLOWED_ALGS;
@@ -90,7 +100,11 @@ export function createOidcJwtValidator(
         audience: config.audience,
         algorithms: allowedAlgs,
         clockTolerance,
-        requiredClaims: ['sub'],
+        // 'exp' must be REQUIRED, not merely checked-if-present: jose only
+        // validates exp/nbf/iat when the claim exists, so a correctly-signed
+        // token that simply omits `exp` would otherwise verify and never
+        // expire.
+        requiredClaims: ['sub', 'exp'],
       });
       payload = result.payload;
     } catch (err) {

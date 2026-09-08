@@ -64,6 +64,20 @@ describe('createOidcJwtValidator', () => {
         /jwksUri is required/,
       );
     });
+
+    // Defense in depth for a direct caller of createOidcJwtValidator, which
+    // bypasses OidcConfigSchema's own .max(300) — see src/config/types.ts.
+    it('accepts a clockSkewSec at the 300s cap', () => {
+      expect(() =>
+        createOidcJwtValidator({ ...baseConfig, clockSkewSec: 300 }, deps),
+      ).not.toThrow();
+    });
+
+    it('throws synchronously when clockSkewSec exceeds the 300s cap', () => {
+      expect(() => createOidcJwtValidator({ ...baseConfig, clockSkewSec: 301 }, deps)).toThrow(
+        /clockSkewSec must not exceed 300/,
+      );
+    });
   });
 
   describe('happy path', () => {
@@ -244,6 +258,17 @@ describe('createOidcJwtValidator', () => {
     it('rejects a token with an empty-string sub claim', async () => {
       const validator = createOidcJwtValidator(baseConfig, deps);
       const token = await signTestToken(key.privateKey, { kid: key.kid, sub: '' });
+
+      await expectGeneric401(validator.validate(`Bearer ${token}`));
+    });
+
+    // A correctly-signed token from the right issuer/audience that simply
+    // omits `exp` must not verify: jose only checks exp/nbf/iat when the
+    // claim is present, so `exp` has to be in `requiredClaims`, not just
+    // implicitly relied on — otherwise such a token stays valid forever.
+    it('rejects a token missing the exp claim', async () => {
+      const validator = createOidcJwtValidator(baseConfig, deps);
+      const token = await signTestToken(key.privateKey, { kid: key.kid, omitExpiresAt: true });
 
       await expectGeneric401(validator.validate(`Bearer ${token}`));
     });

@@ -873,6 +873,43 @@ describe('ConfigurationManager', () => {
         ConfigurationError,
       );
     });
+
+    // clockSkewSec feeds jose's clockTolerance directly, applied to `exp`
+    // itself — an unbounded value (deliberate or a fat-fingered env var)
+    // would let already-expired tokens still verify.
+    it('accepts a clockSkewSec at the 300s cap', async () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC = '300';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc?.clockSkewSec).toBe(300);
+    });
+
+    it('rejects a clockSkewSec above the 300s cap', () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC = '301';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    // docs/OIDC-RESOURCE-SERVER.md documents signing keys as fetched "over
+    // HTTPS" as a security invariant; a plain http:// endpoint lets an
+    // on-path attacker substitute keys and mint tokens for any identity.
+    it('rejects a plain http:// jwksUri', () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'http://idp.example.test/certs';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
   });
 
   describe('SSO Enrollment Configuration (oidc-http mode, issue #220)', () => {
@@ -916,6 +953,32 @@ describe('ConfigurationManager', () => {
       setOidcHttpEnv();
       process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
       process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    // Unbounded, tokenExpiryDays feeds Date arithmetic in
+    // src/transport/enrollment.ts directly; an extreme value overflows
+    // Date's valid range and throws on every enrollment callback.
+    it('rejects a tokenExpiryDays above the 3650-day cap', () => {
+      setOidcHttpEnv();
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      process.env.VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS = '3651';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    // ticketTtlSec gates how long a leaked enrollment URL stays redeemable —
+    // a short-lived, leak-sensitive credential, not a legitimate long-lived
+    // knob like tokenExpiryDays.
+    it('rejects a ticketTtlSec above the 3600s cap', () => {
+      setOidcHttpEnv();
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      process.env.VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC = '3601';
 
       expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
         ConfigurationError,

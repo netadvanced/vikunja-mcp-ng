@@ -119,9 +119,9 @@ The existing config engine (`src/config/ConfigurationManager.ts`) already does l
 | Public URL (opt) | `VIKUNJA_MCP_HTTP_PUBLIC_URL` | `http.publicUrl` | canonical public MCP URL, e.g. `https://mcp-vikunja.example.ch/mcp` — the RFC 9728 `resource` value (§3e); recommended behind a reverse proxy, derived from the request `Host` header when unset |
 | OIDC issuer | `VIKUNJA_MCP_OIDC_ISSUER` | `oidc.issuer` | e.g. `https://iam.example.org/realms/foo` — **generic**; single-issuer scalar (D11) |
 | OIDC audience | `VIKUNJA_MCP_OIDC_AUDIENCE` | `oidc.audience` | required `aud` value(s); comma list allowed |
-| JWKS URI | `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | **required as shipped** — issuer-discovery was designed but not implemented; see the as-shipped amendment below |
+| JWKS URI | `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | **required as shipped** — issuer-discovery was designed but not implemented; see the as-shipped amendment below. Must be `https://`; enforced at config load, not just documented (a plain `http://` endpoint lets an on-path attacker substitute signing keys) |
 | Allowed algs | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | `oidc.allowedAlgs` | default `RS256` (allowlist; see §3b) |
-| Clock skew (s) | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | `oidc.clockSkewSec` | default `60`. (An earlier draft of this table named the env var without the `_SEC` suffix — that name was never implemented and is silently ignored) |
+| Clock skew (s) | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | `oidc.clockSkewSec` | default `60`, capped at `300` (5 minutes) — this value feeds `jose`'s `clockTolerance` applied to `exp` itself, so it is enforced, not just documented. (An earlier draft of this table named the env var without the `_SEC` suffix — that name was never implemented and is silently ignored) |
 | Required scope (opt) | `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` | `oidc.requiredScope` | optional coarse gate |
 | Vault file path | `VIKUNJA_MCP_VAULT_PATH` | `vault.path` | path to the encrypted JSON vault file (D1); path is **not** secret, the key is |
 | **Vault master key** | `VIKUNJA_MCP_VAULT_KEY` **/ `VIKUNJA_MCP_VAULT_KEY_FILE`** | *(never in file)* | **add to `SENSITIVE_ENV_VARS`**; 32-byte key, base64 (D4) |
@@ -202,7 +202,7 @@ A small middleware runs before `transport.handleRequest`, validates the bearer, 
 - **`alg` allowlist** — reject anything not in `oidc.allowedAlgs` (default `['RS256']`). Explicitly reject `none` and, unless configured, HMAC algs (`HS*`) — an HMAC-accepting verifier against a public JWKS is an alg-confusion foot-gun.
 - **`iss`** must equal `oidc.issuer` exactly (string compare, no prefix match).
 - **`aud`** must contain `oidc.audience`. **Strict** — a token minted for another client/audience in the same realm must be rejected (audience-confusion defence, §4).
-- **`exp` / `nbf` / `iat`** validated with `clockTolerance: oidc.clockSkewSec` (default 60s).
+- **`exp` / `nbf` / `iat`** validated with `clockTolerance: oidc.clockSkewSec` (default 60s, capped at 300s). `exp` is a required claim — `jose` only checks `exp`/`nbf`/`iat` when present, so a token that simply omitted `exp` would otherwise verify and never expire; `requiredClaims` forces its presence.
 - Optional **`requiredScope`** — if configured, the token's `scope`/`scp` must include it.
 - **`sub`** must be present and non-empty — it is our tenancy key; a token without a stable `sub` is rejected.
 

@@ -574,9 +574,9 @@ env vars:
 |---|---|---|---|
 | Issuer (required) | `oidc.issuer` | `VIKUNJA_MCP_OIDC_ISSUER` | Exact-match trusted issuer, e.g. `https://iam.example.org/realms/foo`; generic, no org-specific values baked in |
 | Audience (required) | `oidc.audience` | `VIKUNJA_MCP_OIDC_AUDIENCE` | Required `aud` value(s); comma-separated list accepted, a single value stays a string |
-| JWKS URI (required) | `oidc.jwksUri` | `VIKUNJA_MCP_OIDC_JWKS_URI` | The provider's JWKS endpoint (e.g. its `/.well-known/openid-configuration`'s `jwks_uri`) |
+| JWKS URI (required) | `oidc.jwksUri` | `VIKUNJA_MCP_OIDC_JWKS_URI` | The provider's JWKS endpoint (e.g. its `/.well-known/openid-configuration`'s `jwks_uri`). Must be `https://`; a plain `http://` value is rejected at config load |
 | Allowed algorithms | `oidc.allowedAlgs` | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | Comma list; validator default `RS256`; `none` is never accepted regardless of this setting |
-| Clock skew (seconds) | `oidc.clockSkewSec` | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | Validator default `60`; applied to `exp`/`nbf`/`iat` |
+| Clock skew (seconds) | `oidc.clockSkewSec` | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | Validator default `60`; applied to `exp`/`nbf`/`iat`; capped at `300` |
 | Required scope | `oidc.requiredScope` | `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` | Optional coarse gate: a validly-authenticated token missing it gets `403`, not `401` |
 
 A validated token's `sub` (subject) is the per-user tenancy key the rest of this section
@@ -667,8 +667,8 @@ matching behavior, the squatting scenario, and the mitigation.
 | Enable enrollment | `enroll.enabled` | `VIKUNJA_MCP_ENROLL_ENABLED` | Default `false`. Manual token provisioning keeps working either way |
 | Provider | `enroll.provider` | `VIKUNJA_MCP_ENROLL_PROVIDER` | Vikunja OpenID provider `key`/`name` (from `GET /info`). Optional when the backend has exactly one |
 | Vikunja URL | `enroll.vikunjaUrl` | `VIKUNJA_MCP_ENROLL_VIKUNJA_URL` | Vikunja API base for the flow; defaults to the shared `VIKUNJA_URL` |
-| Token expiry (days) | `enroll.tokenExpiryDays` | `VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS` | Default `365`. Re-running `provision` after expiry mints a fresh token |
-| Ticket TTL (seconds) | `enroll.ticketTtlSec` | `VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC` | Default `600`. How long an issued enrollment link stays clickable (single-use) |
+| Token expiry (days) | `enroll.tokenExpiryDays` | `VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS` | Default `365`, capped at `3650` (10 years). Re-running `provision` after expiry mints a fresh token |
+| Ticket TTL (seconds) | `enroll.ticketTtlSec` | `VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC` | Default `600`, capped at `3600` (1 hour). How long an issued enrollment link stays clickable (single-use) |
 
 In `oidc-http` mode there is no single server-wide token to connect: `connect` is refused
 with an error pointing you at `provision`, and `disconnect` is accepted but simply aliases
@@ -993,9 +993,9 @@ provider).
 ```env
 VIKUNJA_MCP_OIDC_ISSUER=https://idp.example.org/realms/example       # required
 VIKUNJA_MCP_OIDC_AUDIENCE=vikunja-mcp                                # required; comma list accepted
-VIKUNJA_MCP_OIDC_JWKS_URI=https://idp.example.org/realms/example/protocol/openid-connect/certs  # required
+VIKUNJA_MCP_OIDC_JWKS_URI=https://idp.example.org/realms/example/protocol/openid-connect/certs  # required, must be https://
 VIKUNJA_MCP_OIDC_ALLOWED_ALGS=RS256                                  # optional; comma list, default RS256, "none" never accepted
-VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC=60                                   # optional; default 60
+VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC=60                                   # optional; default 60, capped at 300
 VIKUNJA_MCP_OIDC_REQUIRED_SCOPE=vikunja                              # optional
 ```
 

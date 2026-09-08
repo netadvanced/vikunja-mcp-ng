@@ -15,6 +15,41 @@ batch are now what every `npm install vikunja-mcp-ng` / `docker pull …:latest`
 default, no longer opt-in via the `beta` dist-tag. Everything below is new since `0.7.0-beta.5`;
 see that and earlier `0.7.0-beta.*` sections above for the full OIDC feature set.
 
+### Security
+
+Found and fixed during a pre-tag cross-model review of the OIDC HTTP transport (this is its first
+release as `latest`, not the `beta` tag) — none of these shipped in any prior tagged release.
+
+- **The `X-Forwarded-Proto` header could redirect MCP authorization-discovery metadata to an
+  attacker origin.** Behind a reverse proxy that passes through client-supplied
+  `X-Forwarded-Proto`, an unauthenticated caller could set e.g. `X-Forwarded-Proto:
+  https://evil.example` and have it reflected as the scheme of the `resource`/`resource_metadata`
+  URLs this server advertises on unauthenticated discovery requests and 401 challenges — steering
+  an auto-discovering MCP client toward a malicious authorization server. Only `http`/`https` are
+  now accepted (case-insensitive exact match); anything else falls back to `http`
+  (`src/transport/resourceMetadata.ts`).
+- **A bearer access token with no `exp` claim was accepted indefinitely.** `jose`'s `jwtVerify`
+  only validates `exp`/`nbf`/`iat` when the claim is present in the payload; `exp` was not in
+  `requiredClaims`, so a correctly-signed token from the right issuer/audience that simply omitted
+  `exp` would verify and never expire. `exp` is now a required claim
+  (`src/auth/oidc/jwtValidator.ts`).
+- **Three security-relevant numeric config values had no upper bound**: `oidc.clockSkewSec`
+  (`jose`'s `clockTolerance`, applied to `exp` itself — an operator error or misconfigured env var
+  could make already-expired tokens verify), `enroll.tokenExpiryDays` (also overflowed `Date`
+  arithmetic in the enrollment flow at extreme values, throwing on every callback), and
+  `enroll.ticketTtlSec` (how long a leaked enrollment URL, which travels in a link and as an OAuth
+  `state` value, stays redeemable). Now capped at 300s, 3650 days, and 3600s respectively
+  (`src/config/types.ts`, defense-in-depth mirror in `src/auth/oidc/jwtValidator.ts` for a direct
+  caller of the validator).
+- **`oidc.jwksUri` accepted a plain `http://` endpoint.** The docs already documented signing keys
+  as fetched "over HTTPS" as an invariant; the schema didn't enforce it, so a misconfigured or
+  on-path-attacker-substituted cleartext JWKS endpoint could be used to mint tokens for any
+  identity. Now rejected at config load unless the scheme is `https:`.
+
+Deferred as tracked follow-ups (lower severity or more involved; not blocking this release):
+unthrottled live JWKS fetch on every `/readyz` call (#373), no `typ` claim enforcement on bearer
+JWTs (#374), `oidc.allowedAlgs` accepting any string rather than a known-safe allowlist (#375).
+
 ### Added — Vikunja v2 API groundwork (#184, P1+P2)
 
 Infrastructure for adopting Vikunja's v2 API as a capability-gated fast path. **No behaviour

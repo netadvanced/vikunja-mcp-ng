@@ -225,9 +225,9 @@ inert unless you set `transport=http`.
 |---|---|---|---|
 | `VIKUNJA_MCP_OIDC_ISSUER` | `oidc.issuer` | **yes** | Must equal the token's `iss` claim **exactly** — plain string comparison, no prefix or trailing-slash tolerance |
 | `VIKUNJA_MCP_OIDC_AUDIENCE` | `oidc.audience` | **yes** | Required `aud` value; comma-separated for several |
-| `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | **yes** | Your provider's JWKS endpoint (the `jwks_uri` from its discovery document) |
+| `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | **yes** | Your provider's JWKS endpoint (the `jwks_uri` from its discovery document). **Must be `https://`** — a plain `http://` value is rejected at startup |
 | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | `oidc.allowedAlgs` | no | Comma list; defaults to `RS256`. **`none` is never accepted, whatever you set** |
-| `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | `oidc.clockSkewSec` | no | Seconds, default `60`, applied to `exp`/`nbf`/`iat`. **Note the `_SEC` suffix** — `VIKUNJA_MCP_OIDC_CLOCK_SKEW` is not a variable and is silently ignored |
+| `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | `oidc.clockSkewSec` | no | Seconds, default `60`, capped at `300`, applied to `exp`/`nbf`/`iat`. **Note the `_SEC` suffix** — `VIKUNJA_MCP_OIDC_CLOCK_SKEW` is not a variable and is silently ignored |
 | `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` | `oidc.requiredScope` | no | Coarse gate. A valid token missing it gets **403**, not 401 |
 
 **Vault**
@@ -530,8 +530,8 @@ Two IdP-side consequences fall out of the verified facts:
 | `VIKUNJA_MCP_ENROLL_ENABLED` | `false` | Master switch for the enrollment endpoints + URL issuing. |
 | `VIKUNJA_MCP_ENROLL_PROVIDER` | *(auto)* | Vikunja OpenID provider `key` (or `name`) to enroll through. Optional when the backend has exactly one provider. |
 | `VIKUNJA_MCP_ENROLL_VIKUNJA_URL` | `VIKUNJA_URL` | Vikunja API base the enrollment flow talks to (`.../api/v1`). |
-| `VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS` | `365` | Expiry of the auto-minted per-user `tk_*` token. On expiry the user re-runs `provision` and clicks the fresh link. |
-| `VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC` | `600` | How long an issued enrollment URL stays clickable. |
+| `VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS` | `365` | Expiry of the auto-minted per-user `tk_*` token, capped at `3650` (10 years). On expiry the user re-runs `provision` and clicks the fresh link. |
+| `VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC` | `600` | How long an issued enrollment URL stays clickable, capped at `3600` (1 hour). |
 
 `VIKUNJA_MCP_HTTP_PUBLIC_URL` is **required** whenever enrollment is enabled (a hard
 config error otherwise): enrollment links and the OAuth `redirect_uri` are built from it
