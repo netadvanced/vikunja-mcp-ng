@@ -84,10 +84,33 @@ describe('vikunja-rest-v2 helper', () => {
       expect(deriveRestV2BreakerName('/')).toBe('vikunja-rest-v2-root');
     });
 
+    // Same #254 failure v1 already pins in vikunja-260-alignment.test.ts.
+    // Task reads always send a query (`?format=markdown`, plus list params),
+    // so without the strip this names a breaker per query, and worse,
+    // `/tasks/7?format=markdown` keeps `7?format=markdown` as a segment
+    // because it is no longer `/^\d+$/`.
+    it('strips the query string before collapsing segments', () => {
+      expect(deriveRestV2BreakerName('/tasks')).toBe('vikunja-rest-v2-tasks');
+      expect(deriveRestV2BreakerName('/tasks?page=1&per_page=1000&format=markdown')).toBe(
+        'vikunja-rest-v2-tasks',
+      );
+      expect(deriveRestV2BreakerName('/tasks/7?format=markdown')).toBe('vikunja-rest-v2-tasks');
+      expect(deriveRestV2BreakerName('/projects/4/views?page=2')).toBe(
+        'vikunja-rest-v2-projects-views',
+      );
+      expect(deriveRestV2BreakerName('/?a=1')).toBe('vikunja-rest-v2-root');
+    });
+
     // Regression guard: breakers are process-wide and keyed by name, so a
     // shared name would let v1 failures trip the v2 breaker and vice versa.
     it('never collides with the v1 breaker name for the same path', () => {
-      for (const path of ['/tasks/7', '/projects/4/views', '/labels/1']) {
+      for (const path of [
+        '/tasks/7',
+        '/projects/4/views',
+        '/labels/1',
+        '/tasks?format=markdown',
+        '/tasks/7?format=markdown',
+      ]) {
         expect(deriveRestV2BreakerName(path)).not.toBe(deriveRestBreakerName(path));
       }
     });
@@ -756,6 +779,22 @@ describe('vikunja-rest-v2 helper', () => {
 
       expect(circuitBreakerRegistry.has('vikunja-rest-v2-tasks')).toBe(true);
       expect(circuitBreakerRegistry.has('vikunja-rest-tasks')).toBe(false);
+    });
+
+    it('does not create a new breaker per distinct query (the registry-growth bug)', async () => {
+      for (const query of [
+        '?format=markdown',
+        '?page=1&per_page=1000&format=markdown',
+        '?page=2&per_page=1000&expand=comments&format=markdown',
+      ]) {
+        mockFetch.mockResolvedValueOnce(mockV2Response({ text: '[]' }));
+        await vikunjaRestV2Request(authManager, 'GET', `/tasks${query}`);
+      }
+      mockFetch.mockResolvedValueOnce(mockV2Response({ text: '{}' }));
+      await vikunjaRestV2Request(authManager, 'GET', '/tasks/7?format=markdown');
+
+      const names = Object.keys(circuitBreakerRegistry.getAllStats());
+      expect(names).toEqual(['vikunja-rest-v2-tasks']);
     });
 
     it('honours an explicit breaker name override', async () => {

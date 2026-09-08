@@ -59,6 +59,18 @@ export { resolveV2BaseUrl };
  * `deriveRestBreakerName` in `./vikunja-rest` but under a distinct
  * `vikunja-rest-v2-` prefix.
  *
+ * The query string is stripped first. That is the same fix v1 got in #254,
+ * and it is not optional here just because the prefix differs: `path` is a
+ * full request path including its query, and P3's first routed operations
+ * (task reads and listings) always carry one (`?format=markdown`, plus
+ * `page`/`expand`/`q` on lists). Without the strip, `/tasks/7?format=markdown`
+ * derives `vikunja-rest-v2-tasks-7?format=markdown` (the id is no longer a
+ * pure numeric segment) and `/tasks?page=1&format=markdown` derives a
+ * different name per distinct query, which is one breaker per listing shape
+ * rather than one per endpoint group. v1's `deriveRestBreakerName` already
+ * strips; this sibling grew up from a copy taken before that fix, the same
+ * class of drift `./vikunja-rest-shared` exists to stop.
+ *
  * The prefix is load-bearing, not cosmetic. Breakers are process-wide and
  * keyed by name in the shared registry in `./retry`; without it, a v2
  * `PATCH /tasks/{id}` and a v1 `POST /tasks/{id}` would both derive
@@ -71,10 +83,11 @@ export { resolveV2BaseUrl };
  * name. If a v1 request path's first non-numeric segment were ever literally
  * `v2` (e.g. a hypothetical v1 route `/v2/...`), it would derive
  * `vikunja-rest-v2-...` and collide with this namespace. No such v1 path
- * exists today — just don't introduce one without revisiting this.
+ * exists today. Do not introduce one without revisiting this.
  */
 export function deriveRestV2BreakerName(path: string): string {
-  const segments = path.split('/').filter((seg) => seg.length > 0 && !/^\d+$/.test(seg));
+  const pathOnly = path.split('?')[0] ?? path;
+  const segments = pathOnly.split('/').filter((seg) => seg.length > 0 && !/^\d+$/.test(seg));
   const group = segments.slice(0, 2).join('-') || 'root';
   return `vikunja-rest-v2-${group}`;
 }
@@ -323,14 +336,14 @@ export type PatchFormat = 'merge' | 'json-patch';
 /**
  * Extends `VikunjaRestRequestOptions` (v1's option shape) rather than
  * defining an unrelated interface, which means a `VikunjaRestV2RequestOptions`
- * object — including one carrying `patchFormat` — is structurally assignable
+ * object (including one carrying `patchFormat`) is structurally assignable
  * to v1's `vikunjaRestRequest`. v1 has no notion of PATCH body format and
- * will silently ignore `patchFormat` if passed to it. That is harmless today
- * only because nothing routes through v2 yet (this phase wires up no
- * operation). In P3, if a call site builds one options object and passes it
- * to whichever transport `resolveApiVersion` picks, an accidental v1 fallback
- * carrying `patchFormat: 'json-patch'` would silently send a JSON-Patch array
- * body to v1's full-model POST/PUT — a corrupt update, not an error. Callers
+ * will silently ignore `patchFormat` if passed to it. That is no longer a
+ * dormant hazard: P3 routes real operations through v2, so if a call site
+ * builds one options object and passes it to whichever transport
+ * `resolveApiVersion` picks, an accidental v1 fallback carrying
+ * `patchFormat: 'json-patch'` would silently send a JSON-Patch array body
+ * to v1's full-model POST/PUT, a corrupt update, not an error. Callers
  * must construct/pass options per-transport rather than sharing one object
  * across both.
  */
