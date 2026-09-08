@@ -155,6 +155,21 @@ contact**, below.
 
 ### Fixed
 
+- **v2 circuit breaker names dropped the query string, so the breaker barely worked** (PR #370).
+  v1's `deriveRestBreakerName` strips `?...` before collapsing a path into an endpoint group; the
+  v2 sibling was copied from a version that predates that fix while still claiming to use "the same
+  segment-collapsing rules".
+
+  Every v2 task read carries `?format=markdown`, which is the entire reason those reads go to v2,
+  so `/tasks/7?format=markdown` derived `vikunja-rest-v2-tasks-7?format=markdown`. The task id
+  survived too, because `7?format=markdown` is not a pure numeric segment. Listings derived a
+  different name per distinct `page`, `expand` and `q`.
+
+  A breaker accumulates its rolling failure window under its name, so a fresh name per task and per
+  query meant the window never accumulated and the protection was effectively absent on the paths
+  this milestone made the most common. Unbounded registry growth was the lesser symptom. It shipped
+  because v2's breaker tests only used paths without a query string.
+
 - **`vikunja_labels update` works again. It failed on every call, on every supported version**
   (PR #363). It sent `PUT /api/v1/labels/{id}`, the verb `docs/vikunja-openapi.json` declares, and
   every server answers `405 Method Not Allowed` to it (`Allow: OPTIONS, DELETE, GET, POST`, probed
@@ -214,6 +229,19 @@ contact**, below.
 
   The pieces both transports must apply identically now live in `src/utils/vikunja-rest-shared.ts`.
   v1 imports them unchanged and its behaviour is byte-identical.
+
+- **The v2 transport resolves the caller's identity instead of assuming it** (PR #369). In
+  `oidc-http` mode the `AuthManager` a tool handler passes is the process-global closure one, which
+  is never authenticated in that mode; the credential to use lives on the per-identity manager
+  bound in the request context. v1 has resolved this at its single choke point since the OIDC work,
+  and v2 read the passed manager directly, so every operation this milestone routed to v2 would
+  have used the wrong identity there.
+
+  `stdio` mode is unaffected, because it never opens a request scope and the resolver returns the
+  passed manager unchanged. That is also why nothing caught it: the whole unit suite and all six
+  live matrix lanes run in `stdio` mode, where the two transports are indistinguishable on this
+  point. `resolveEffectiveAuthManager` moved into `src/utils/vikunja-rest-shared.ts` alongside the
+  two protections above, and the regression test fails against the unfixed transport.
 
 ### Added
 

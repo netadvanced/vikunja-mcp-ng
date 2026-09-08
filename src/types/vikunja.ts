@@ -37,9 +37,11 @@ export interface AuthSession {
  * {@link AuthSession} so it is computed at most once per connect and reset
  * automatically on disconnect (a fresh session starts with no capabilities).
  *
- * This is read-only groundwork for a future v2 API migration — nothing in
- * this server currently branches on `hasV2Api` to take a v2 request path.
- * See `src/utils/capabilities.ts`.
+ * `hasV2Api` is load-bearing as of #184 P3: `resolveApiVersion`
+ * (`src/utils/api-version.ts`) reads it to decide, per operation, whether a
+ * request takes the v1 or the v2 path. An absent or false value resolves
+ * every operation to v1. See `src/utils/capabilities.ts` for how it is
+ * detected and `docs/API-VERSION-MATRIX.md` for which functions use it.
  */
 export interface VikunjaCapabilities {
   /** `GET /info`'s `version` field, when present. */
