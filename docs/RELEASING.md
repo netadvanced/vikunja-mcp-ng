@@ -39,7 +39,50 @@ harness also referenced there.
 
   Use a beta line when a feature is complete and tested but wants real-world exposure before it
   becomes what everyone gets by default. Promote it with an ordinary `minor` bump once it holds:
-  `0.7.0-beta.3 → 0.7.0`.
+  `0.7.0-beta.3 → 0.7.0` (mechanically: merge `dev` into `main`, then bump — see the two-channel
+  policy below).
+
+- **Two channels, one branch each: `main` (stable) and `dev` (beta), adopted 2026-09-08 (`main`
+  as of `0.7.0` — a `v0.7.0`, `v0.7.1`, … lineage; `dev` established to carry v2/`0.8.0` work
+  forward without blocking `0.7.x` patches; ROADMAP.md decision 30).** Before this, every release
+  — stable and beta alike — was cut from `main`, which worked only as long as nothing needed
+  patching after newer work had already landed there. The split exists so a hotfix to the shipped
+  line and active development of the next one can proceed independently:
+    - **`main`** only ever ships `patch` or `minor` — hotfixes and stable promotions. Ordinary
+      contribution PRs targeting the current stable line's behavior land here.
+    - **`dev`** only ever ships `preminor` or `prerelease` — starting or advancing a beta line.
+      Feature work for the *next* minor (the kind of thing that used to block a `main`-only
+      pipeline from also shipping a `0.7.x` patch) lands here instead.
+    - **Promoting `dev`'s line to stable is a `main`-side act**: merge `dev` into `main` first
+      (bringing its `0.7.0-beta.N`-style `package.json` version along), *then* run
+      `release-prepare.sh minor` on `main` — the existing prerelease-drops-its-suffix mechanics
+      (above) take it from there. **The merge itself is not guaranteed conflict-free** if `main`
+      shipped its own patches while `dev` was active: `package.json`, `package-lock.json`,
+      `CHANGELOG.md`, and `server.json` are the files most likely to collide, and resolving them
+      is a manual step, not something either script does for you. The generated changelog draft
+      after promotion is similarly approximate — `release-prepare.sh`'s "since the last tag"
+      range is ambiguous right after a merge (it can land on either the last stable tag or the
+      last beta tag depending on merge shape), so read it with extra scrutiny at Step 2 rather
+      than trusting the mechanical draft as-is. Reset `dev` from the just-promoted `main`
+      afterward (`git checkout dev && git merge main` or a hard reset) so the next beta line
+      starts clean.
+    - **Keep `dev` from drifting behind `main`'s hotfixes**: every time a `patch` ships on `main`,
+      merge (or cherry-pick) it into `dev` too — the whole point of the split is that a beta line
+      keeps advancing independently, not that it stops receiving stability fixes. There's no
+      tooling enforcing this yet; it's operator discipline until it becomes a real pain point.
+    - `scripts/release-prepare.sh` and `scripts/release-tag.sh` auto-detect which branch you're on
+      and enforce the bump-kind restriction above; there's no flag to remember. `scripts/release-
+      publish.sh` (the disaster-recovery-only manual fallback, §4) derives the same channel from
+      the version string too, so it can't hand `latest` to a beta cut from `dev` either. The
+      npm/GHCR channel (`latest` vs. `beta`) is still derived from the **tag's version string**,
+      not the branch (§2, Step 6) — that part is unchanged and is exactly why this split needed
+      no workflow changes, only a precondition change in the release scripts.
+    - **This is a different mechanism from §6's future "maintenance branches for legacy majors"
+      policy** (`docs/ROADMAP.md`, Horizon section): that one is about keeping an old *major*
+      version alive after a `1.0`+ breaking bump, gated on Vikunja server-generation
+      compatibility, and is explicitly not scheduled until the `1.0` milestone. This one is about
+      the ordinary pre-1.0 case of shipping a `0.7.x` patch while `0.8.0` beta work is already
+      underway, and is active now.
 
 - **Releases are deliberate, batch-time acts**, never something that happens automatically on a
   merged PR. Someone decides "it's time to cut a release," picks patch or minor, and runs the flow
@@ -54,9 +97,10 @@ harness also referenced there.
   annotated release tag's message and the GitHub release notes are both generated directly from
   this section, so what you write there is what ships in three places at once.
 
-- **`main` is always releasable.** Every PR (release or otherwise) lands with lint, typecheck,
-  and the full coverage-gated test suite green. A release should never require "let me also fix
-  this failing test first"; that fix is its own PR that lands *before* the release PR.
+- **`main` and `dev` are both always releasable, each for its own channel.** Every PR (release or
+  otherwise) lands with lint, typecheck, and the full coverage-gated test suite green, on whichever
+  of the two it targets. A release should never require "let me also fix this failing test first";
+  that fix is its own PR that lands *before* the release PR.
 
 ## 2. Release flow
 
@@ -65,45 +109,58 @@ release-prepare.sh <patch|minor|preminor|prerelease> → curate CHANGELOG → op
   → merge → pre-tag checklist → release:tag → tag-triggered workflow publishes
 ```
 
-Steps 1–3 happen on a branch and go through normal PR review. Steps 4–6 happen on `main` after
-that PR merges. Steps 1, 2, 4, and 5 are things an operator (human or agent, once scope is
-decided) does by hand; step 6 is fully automated by `.github/workflows/release.yml` once the tag
+Steps 1–3 happen on a branch and go through normal PR review. Steps 4–6 happen on `main` or `dev`
+(§1) after that PR merges. Steps 1, 2, 4, and 5 are things an operator (human or agent, once scope
+is decided) does by hand; step 6 is fully automated by `.github/workflows/release.yml` once the tag
 lands.
 
 ### Step 1: Decide scope and run `release:prepare`
 
-Look at what's merged since the last tag (`git log v<last>..main --oneline`, or the `[Unreleased]`
-section of `CHANGELOG.md` if it's current) and decide **patch** or **minor** per §1. This is a
-judgment call the script doesn't make for you. Then:
+Check out the channel this release belongs to (§1's two-channel policy) — `main` for a stable
+hotfix/promotion, `dev` for a beta start/advance — then look at what's merged since the last tag
+reachable from it (`git log v<last>..<branch> --oneline`, or the `[Unreleased]` section of
+`CHANGELOG.md` if it's current) and decide the bump per §1. This is a judgment call the script
+doesn't make for you. On `main`:
 
 ```bash
 npm run release:prepare -- patch   # or: npm run release:prepare -- minor
 ```
 
-For a beta line, use the `pre*` scopes (`--preid` defaults to `beta`):
+On `dev`, for a beta line (`--preid` defaults to `beta`):
 
 ```bash
 npm run release:prepare -- preminor     # 0.6.2        → 0.7.0-beta.0   start the line
 npm run release:prepare -- prerelease   # 0.7.0-beta.0 → 0.7.0-beta.1   advance it
-npm run release:prepare -- minor        # 0.7.0-beta.3 → 0.7.0          promote to stable
 ```
 
-That last transition is worth reading twice: **`minor` applied to a prerelease of `0.7.0` yields
+Promoting a beta line to stable is **not** a `dev`-side `minor` — that's the one bump kind `dev`
+refuses. Merge `dev` into `main` first, then run `minor` on `main`:
+
+```bash
+npm run release:prepare -- minor        # (on main, post-merge) 0.7.0-beta.3 → 0.7.0
+```
+
+That transition is worth reading twice: **`minor` applied to a prerelease of `0.7.0` yields
 `0.7.0`, not `0.8.0`**: semver treats a prerelease as *before* the version it is a prerelease of,
-so promoting is a `minor` bump, not a further one. (`patch` on a beta does the same thing.) The
-script does not compute any of this itself; it asks `npm version` against a throwaway copy of
-`package.json`, so its prediction and the real bump can never disagree.
+so promoting is a `minor` bump, not a further one. (`patch` on a beta does the same thing, which is
+part of why `dev` doesn't allow `patch` either — a hotfix belongs on `main`, not disguised as a
+beta advance.) The script does not compute any of this itself; it asks `npm version` against a
+throwaway copy of `package.json`, so its prediction and the real bump can never disagree.
 
 `scripts/release-prepare.sh`:
 
-- **Must be run from a clean, up-to-date `main`**: it refuses a dirty tree, refuses any other
-  branch, and refuses when local `main` differs from `origin/main`. It then creates its own
-  `release/vX.Y.Z` branch for you. (Corrected 2026-08-03: this used to read "refuses to run on
-  `main` itself", which is the opposite of what the script checks.)
+- **Must be run from a clean, up-to-date `main` or `dev`, with a bump kind valid for that
+  branch** (`patch`/`minor` on `main`, `preminor`/`prerelease` on `dev`): it refuses a dirty tree,
+  refuses any other branch, refuses a bump kind the current branch doesn't ship, and refuses when
+  the local branch differs from its origin counterpart. It then creates its own `release/vX.Y.Z`
+  branch off whichever of the two you're on. (Corrected 2026-08-03: this used to read "refuses to
+  run on `main` itself", which is the opposite of what the script checks. The `main`/`dev` split
+  was added 2026-09-08, decision 30.)
 - Runs the full gate suite (lint, typecheck, tests, coverage) before touching anything: a release
   never starts from red.
-- Bumps `package.json`/`package-lock.json` via `npm version <patch|minor> --no-git-tag-version`:
-  no git tag yet, that's Step 5.
+- Bumps `package.json`/`package-lock.json` via
+  `npm version <patch|minor|preminor|prerelease> --no-git-tag-version` (only the two valid for
+  the current channel, per the bump-kind restriction above): no git tag yet, that's Step 5.
 - Syncs `server.json`'s two version fields (the MCP registry manifest) to the bumped version and
   asserts they match, so the published manifest can't drift from `package.json` (#186).
 - Generates a draft changelog section from conventional commits since the last tag and inserts it
@@ -121,9 +178,18 @@ lead the section with *"now aligned to Vikunja X.Y.Z"* (§3).
 
 ```bash
 git push -u origin release/vX.Y.Z
-gh pr create --repo netadvanced/vikunja-mcp-ng --base main \
+gh pr create --repo netadvanced/vikunja-mcp-ng --base <main-or-dev> \
   --title "release: vX.Y.Z" --body "See CHANGELOG.md"
 ```
+
+**`--base` must be whichever channel branch Step 1 ran on — literally `main` for a stable
+hotfix/promotion, or literally `dev` for a beta start/advance — not the branch you're currently
+on** (by Step 2 that's `release/vX.Y.Z`, which is never a valid PR base). There is no default to
+fall back on: passing neither explicitly lets `gh` silently use the repo's default branch
+(`main`), so a `dev`-bound PR opened without `--base dev` lands on `main`'s history instead. If
+you've lost track of which channel this was, `release-prepare.sh`'s own final output (Step 1)
+already prints the exact command with the right branch filled in — reuse that rather than
+retyping this template.
 
 ### Step 3: Merge the release PR
 
@@ -138,7 +204,8 @@ and no undo for an npm publish.
 
 - [ ] **Full local gates, clean.** `npm run lint && npm run typecheck && npm run test:coverage`:
       all three green on the exact commit you're about to tag. This should already be true from
-      Step 3's merge gate, but re-confirm on `main` post-merge, not just on the branch beforehand.
+      Step 3's merge gate, but re-confirm on `main` or `dev` post-merge (whichever this release is
+      on), not just on the branch beforehand.
 - [ ] **Version-matrix regression, both DBs, on ALL THREE `SUPPORTED_VERSIONS`.** Policy since
       2026-09-02 (docs/ROADMAP.md §3 decision 29): support and test exactly the trailing three
       released Vikunja versions, so a pre-tag run is six invocations, not four or two. Run
@@ -190,7 +257,7 @@ and no undo for an npm publish.
       (`npm run battle -- --all`) instead and read the friction report for regressions before
       tagging.
 - [ ] **Changelog curation, final pass.** Re-read the `CHANGELOG.md` section for this version once
-      more on `main` post-merge (not just during Step 2's PR review): this text becomes the
+      more on `main`/`dev` post-merge (not just during Step 2's PR review): this text becomes the
       annotated tag's message and the GitHub release notes (Step 6). Confirm it's accurate, in the
       right Keep a Changelog categories, and leads with the Vikunja alignment line if applicable
       (§3).
@@ -205,18 +272,22 @@ and no undo for an npm publish.
 
 Only once every box above is checked, proceed to Step 5.
 
-### Step 5: Run `release:tag` (on `main`, after merge)
+### Step 5: Run `release:tag` (on `main` or `dev`, after merge)
 
 ```bash
-git checkout main && git pull
+git checkout main && git pull   # or: git checkout dev && git pull, for a beta release
 npm run release:tag
 ```
 
 `scripts/release-tag.sh` reads the version out of `package.json`, verifies no tag `vX.Y.Z` already
 exists, creates an **annotated** tag (`git tag -a`, not lightweight) on `HEAD` whose message is the
-matching `CHANGELOG.md` section, and pushes it. A tag is a fixed pointer to one commit, always on
-`main`. There are no release branches. **Pushing this tag immediately triggers the live release
-workflow** (Step 6): this is the point of no return; it's why Step 4 comes first.
+matching `CHANGELOG.md` section, and pushes it. It also refuses a mismatch between the branch and
+the version kind — a stable version tagged from `dev`, or a prerelease tagged from `main` — since
+either would mean shipping a channel from the wrong line's history. A tag is a fixed pointer to one
+commit, on whichever of the two channel branches it was cut from; there are no *further* release
+branches beyond those two and the transient `release/vX.Y.Z` prep branch (§1). **Pushing this tag
+immediately triggers the live release workflow** (Step 6): this is the point of no return; it's why
+Step 4 comes first.
 
 ### Step 6: The tag-triggered workflow does the rest
 
@@ -371,13 +442,17 @@ case where GitHub Actions is unavailable and a release can't wait. It is **disas
 only**: the tag-triggered workflow (§2, Step 6) is the normal path for every release.
 
 ```bash
-git checkout vX.Y.Z   # or stay on main right after scripts/release-tag.sh
+git checkout vX.Y.Z   # or stay on main/dev right after scripts/release-tag.sh
 npm run release:publish            # add --push to also push the Docker image
 ```
 
 It re-verifies HEAD is the tagged commit, re-runs the full gate suite, then does by hand what the
-workflow does automatically: `npm publish --access public`, build-and-tag the Docker image
-(pushed only with `--push`), and `gh release create vX.Y.Z` from the `CHANGELOG.md` section.
+workflow does automatically: `npm publish --access public --tag <channel>`, build-and-tag the
+Docker image `:<channel>` (pushed only with `--push`), and `gh release create vX.Y.Z` from the
+`CHANGELOG.md` section (marked `--prerelease` when applicable). `<channel>` is derived from the
+version string the same way `.github/workflows/release.yml` does — `latest` for a bare `X.Y.Z`,
+the prerelease identifier (e.g. `beta`) otherwise — so this fallback can't hand `latest` to a
+beta cut from `dev` just because it's the manual path.
 
 Unlike the tag-triggered workflow, this path does **not** use OIDC Trusted Publishing: `npm
 publish` here authenticates as whatever account is logged in locally, which for an account with

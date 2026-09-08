@@ -5,11 +5,16 @@
 # Usage:
 #   scripts/release-tag.sh
 #
-# Run this on `main`, right after a `release: vX.Y.Z` PR (from scripts/release-prepare.sh) has
-# merged. It does NOT bump anything — it only tags. See docs/RELEASING.md for the full flow.
+# Run this on `main` (stable channel) or `dev` (beta channel), right after a `release: vX.Y.Z`
+# PR (from scripts/release-prepare.sh) has merged there. It does NOT bump anything — it only
+# tags. See docs/RELEASING.md for the full flow. The npm/GHCR channel (`latest` vs. `beta`) is
+# derived from the TAG's version string by the publish workflow, not the branch — but this
+# script still refuses a stable version tagged from `dev` or a prerelease tagged from `main`,
+# since either would mean a channel published from the wrong line's history.
 #
 # What it does:
-#   1. Verifies we're on `main`, the tree is clean, and local main matches origin/main.
+#   1. Verifies we're on `main` or `dev`, the tree is clean, local matches origin, and the
+#      version is the kind that branch is allowed to ship (stable on main, prerelease on dev).
 #   2. Reads the version out of package.json and verifies no `vX.Y.Z` tag exists yet.
 #   3. Extracts the matching CHANGELOG.md section as the tag message.
 #   4. Creates an ANNOTATED tag `vX.Y.Z` on HEAD and pushes it.
@@ -30,22 +35,28 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [[ "$CURRENT_BRANCH" != "main" ]]; then
-  echo "ERROR: must run this from 'main' (currently on '$CURRENT_BRANCH')." >&2
+case "$CURRENT_BRANCH" in
+  main | dev) BASE_BRANCH="$CURRENT_BRANCH" ;;
+  *)
+    echo "ERROR: must run this from 'main' or 'dev' (currently on '$CURRENT_BRANCH')." >&2
+    exit 1
+    ;;
+esac
+
+echo "==> Fetching origin/$BASE_BRANCH"
+if ! git fetch origin "$BASE_BRANCH" --quiet; then
+  echo "ERROR: could not fetch origin/$BASE_BRANCH — does that branch exist on origin yet?" >&2
   exit 1
 fi
 
-echo "==> Fetching origin/main"
-git fetch origin main --quiet
-
-LOCAL_SHA="$(git rev-parse main)"
-REMOTE_SHA="$(git rev-parse origin/main)"
+LOCAL_SHA="$(git rev-parse "$BASE_BRANCH")"
+REMOTE_SHA="$(git rev-parse "origin/$BASE_BRANCH")"
 if [[ "$LOCAL_SHA" != "$REMOTE_SHA" ]]; then
-  echo "ERROR: local main ($LOCAL_SHA) does not match origin/main ($REMOTE_SHA)." >&2
+  echo "ERROR: local $BASE_BRANCH ($LOCAL_SHA) does not match origin/$BASE_BRANCH ($REMOTE_SHA)." >&2
   echo "       git pull --ff-only" >&2
   exit 1
 fi
-echo "==> main is up to date with origin/main ($LOCAL_SHA)"
+echo "==> $BASE_BRANCH is up to date with origin/$BASE_BRANCH ($LOCAL_SHA)"
 
 # ---------------------------------------------------------------------------
 # 2. Version + idempotency check
@@ -54,6 +65,30 @@ echo "==> main is up to date with origin/main ($LOCAL_SHA)"
 VERSION="$(node -pe "require('./package.json').version")"
 TAG_NAME="v${VERSION}"
 echo "==> package.json version: $VERSION (tag: $TAG_NAME)"
+
+# A semver prerelease suffix (a literal `-`) means "beta" — belongs to `dev` only. Its absence
+# means "stable" — belongs to `main` only. Catches e.g. running this on `dev` right after a
+# manual/rebase mistake left a stable version in package.json, which would otherwise publish
+# to `latest` from the wrong line's history.
+case "$BASE_BRANCH" in
+  main)
+    if [[ "$VERSION" == *-* ]]; then
+      echo "ERROR: $VERSION is a prerelease, but this is 'main' (stable channel only)." >&2
+      echo "       A beta version belongs on 'dev'. If you meant to promote dev's line to" >&2
+      echo "       stable, that's a 'minor' bump (dropping the prerelease suffix), not a tag" >&2
+      echo "       of the prerelease version itself." >&2
+      exit 1
+    fi
+    ;;
+  dev)
+    if [[ "$VERSION" != *-* ]]; then
+      echo "ERROR: $VERSION is a stable version, but this is 'dev' (beta channel only)." >&2
+      echo "       A stable version belongs on 'main'. If dev's line is ready to promote," >&2
+      echo "       merge dev into main and tag from there instead." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
   EXISTING_SHA="$(git rev-parse "${TAG_NAME}^{commit}")"
