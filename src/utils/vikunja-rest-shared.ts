@@ -8,16 +8,23 @@
  * protection added to one is silently absent from the other, and nothing
  * fails until an operation actually routes through the other transport.
  *
- * Both pieces below were exactly that. Credential redaction of upstream text
+ * All three pieces below were exactly that. Credential redaction of upstream text
  * (audit #292 MED-18) and the tool-execution deadline's cancellation error
  * (LOW-20, #296) were added to v1 while nothing routed through v2, so v2 grew
  * up without either. #184 P3 made that live: task reads, task listings and
- * task update now select v2 against a v2-capable server. They live here so
- * there is one definition of each and the next transport cannot forget them.
+ * task update now select v2 against a v2-capable server. Per-identity auth
+ * resolution was the same story one round later: v1 has resolved the caller's
+ * effective `AuthManager` out of the ALS request context since the OIDC work,
+ * and v2 was reading the passed manager directly, which is wrong in
+ * `oidc-http` mode and invisible to every test we run in `stdio` mode. They
+ * live here so there is one definition of each and the next transport cannot
+ * forget them.
  */
 
 import { MCPError, ErrorCode } from '../types';
 import { redactSecretsInText } from './security';
+import { resolveIdentityAuthManager } from '../context/requestContext';
+import type { AuthManager } from '../auth/AuthManager';
 
 /**
  * How much of an upstream error body is scanned for credentials before it is
@@ -88,4 +95,48 @@ export function buildCancelledRequestError(method: string, path: string): MCPErr
       'had already applied it is unknown, so re-check before retrying.',
     { cancelled: true, transient: false },
   );
+}
+
+/**
+ * Resolves the EFFECTIVE `AuthManager` for a request, closing the
+ * credential-threading gap (docs/OIDC-RESOURCE-SERVER.md §3d, D6).
+ *
+ * The problem this fixes: most tool handlers capture the process-global
+ * `AuthManager` as a closure parameter at `registerTools()` time and pass
+ * *that* straight into `vikunjaRestRequest(authManager, ...)`, even though in
+ * `oidc-http` mode the credential that should be used lives on the
+ * per-identity `AuthManager` bound in the ALS `RequestContext` for this
+ * request — not on the global closure manager (which, in `oidc-http` mode,
+ * is never authenticated). Fixing this at every call site would mean editing
+ * dozens of handlers and forever policing new ones; fixing it here, once, at
+ * the single choke point every REST call already funnels through, makes the
+ * whole tool surface identity-correct for free.
+ *
+ * Rule:
+ *  - When an ALS `RequestContext` is bound (`oidc-http` mode, one scope per
+ *    request), its per-identity `authManager` is authoritative and the passed
+ *    closure manager is ignored. Two concurrent identities therefore each send
+ *    their OWN vaulted token, never the process global's.
+ *  - Otherwise (`stdio` mode — which NEVER opens an ALS scope) the passed
+ *    manager is used unchanged, so stdio behaviour is byte-for-byte identical.
+ *  - `options.ignoreRequestContext` forces the passed manager to win even
+ *    inside an ALS scope. Exactly one caller needs this: `vikunja_auth
+ *    provision`'s pre-store token validation (`verifyConnection`), which must
+ *    probe Vikunja with a *throwaway* manager holding the not-yet-stored
+ *    candidate token, NOT the calling identity's still-unprovisioned ALS
+ *    manager.
+ */
+export function resolveEffectiveAuthManager(
+  authManager: AuthManager,
+  // Structural rather than `VikunjaRestRequestOptions`, which lives in the v1
+  // transport: importing that type here would make the shared module depend on
+  // one of its own consumers. Both transports' option types satisfy this.
+  options?: { ignoreRequestContext?: boolean },
+): AuthManager {
+  if (options?.ignoreRequestContext) {
+    return authManager;
+  }
+  // Same one rule the capability/auth-type gates use (#270/#282) — see
+  // `resolveIdentityAuthManager`'s doc comment.
+  return resolveIdentityAuthManager(authManager);
 }

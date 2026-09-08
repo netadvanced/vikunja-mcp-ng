@@ -9,8 +9,9 @@
  * put new logic on the code path v1 executes. Shared machinery — the retry loop, the named
  * circuit breaker registry, the retry predicate, and the protections in
  * `./vikunja-rest-shared` (upstream-text redaction, the tool-execution
- * deadline's cancellation error) — is imported, not copied; only URL
- * resolution, breaker naming, request content type, and error parsing differ.
+ * deadline's cancellation error, and per-identity auth resolution) — is
+ * imported, not copied; only URL resolution, breaker naming, request content
+ * type, and error parsing differ.
  *
  * See docs/superpowers/specs/2026-07-27-vikunja-v2-transport-design.md.
  */
@@ -34,6 +35,7 @@ import {
   buildCancelledRequestError,
   describeRequestError,
   redactUpstreamText,
+  resolveEffectiveAuthManager,
 } from './vikunja-rest-shared';
 import { getExecutionAbortSignal } from '../context/executionContext';
 
@@ -509,10 +511,19 @@ export async function vikunjaRestV2Request<T = unknown>(
     shouldRetry: defaultRestShouldRetry,
     ...options?.retry,
   };
+  // Resolve the caller's identity exactly as v1 does. In `oidc-http` mode the
+  // manager a tool handler passes is the process-global closure one, which is
+  // never authenticated there; the credential to use lives on the per-identity
+  // manager bound in the ALS request context. v1 has done this since the OIDC
+  // work and v2 was reading the passed manager directly, so every operation
+  // #184 routed to v2 would have used the wrong identity. Invisible in `stdio`
+  // mode, where the resolver returns the passed manager unchanged, which is
+  // why the whole suite and all six live lanes stayed green.
+  const effectiveAuthManager = resolveEffectiveAuthManager(authManager, options);
   const breaker = createCircuitBreaker(vikunjaRestV2RequestRaw, breakerName, retryOptions);
   const result = await withRetry(
     () =>
-      breaker.fire(authManager, method, path, body, patchFormat).catch((error: unknown) => {
+      breaker.fire(effectiveAuthManager, method, path, body, patchFormat).catch((error: unknown) => {
         throw rewordBreakerOpenError(error);
       }),
     retryOptions,

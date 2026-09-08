@@ -32,56 +32,15 @@ import {
   rewordBreakerOpenError,
   type RetryOptions,
 } from './retry';
-import { resolveIdentityAuthManager } from '../context/requestContext';
 import { getExecutionAbortSignal } from '../context/executionContext';
 import {
   buildCancelledRequestError,
   describeRequestError,
   redactUpstreamText,
+  resolveEffectiveAuthManager,
 } from './vikunja-rest-shared';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-
-/**
- * Resolves the EFFECTIVE `AuthManager` for a request, closing the
- * credential-threading gap (docs/OIDC-RESOURCE-SERVER.md §3d, D6).
- *
- * The problem this fixes: most tool handlers capture the process-global
- * `AuthManager` as a closure parameter at `registerTools()` time and pass
- * *that* straight into `vikunjaRestRequest(authManager, ...)`, even though in
- * `oidc-http` mode the credential that should be used lives on the
- * per-identity `AuthManager` bound in the ALS `RequestContext` for this
- * request — not on the global closure manager (which, in `oidc-http` mode,
- * is never authenticated). Fixing this at every call site would mean editing
- * dozens of handlers and forever policing new ones; fixing it here, once, at
- * the single choke point every REST call already funnels through, makes the
- * whole tool surface identity-correct for free.
- *
- * Rule:
- *  - When an ALS `RequestContext` is bound (`oidc-http` mode, one scope per
- *    request), its per-identity `authManager` is authoritative and the passed
- *    closure manager is ignored. Two concurrent identities therefore each send
- *    their OWN vaulted token, never the process global's.
- *  - Otherwise (`stdio` mode — which NEVER opens an ALS scope) the passed
- *    manager is used unchanged, so stdio behaviour is byte-for-byte identical.
- *  - `options.ignoreRequestContext` forces the passed manager to win even
- *    inside an ALS scope. Exactly one caller needs this: `vikunja_auth
- *    provision`'s pre-store token validation (`verifyConnection`), which must
- *    probe Vikunja with a *throwaway* manager holding the not-yet-stored
- *    candidate token, NOT the calling identity's still-unprovisioned ALS
- *    manager.
- */
-function resolveEffectiveAuthManager(
-  authManager: AuthManager,
-  options?: VikunjaRestRequestOptions,
-): AuthManager {
-  if (options?.ignoreRequestContext) {
-    return authManager;
-  }
-  // Same one rule the capability/auth-type gates use (#270/#282) — see
-  // `resolveIdentityAuthManager`'s doc comment.
-  return resolveIdentityAuthManager(authManager);
-}
 
 /**
  * Resolves the API base URL for a session, normalizing whether or not
