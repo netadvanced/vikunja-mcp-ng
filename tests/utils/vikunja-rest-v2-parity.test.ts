@@ -24,6 +24,7 @@ import { AuthManager } from '../../src/auth/AuthManager';
 import { parseVikunjaV2Error, vikunjaRestV2Request } from '../../src/utils/vikunja-rest-v2';
 import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
 import { runWithExecutionSignal } from '../../src/context/executionContext';
+import { runWithRequestContext } from '../../src/context/requestContext';
 import { circuitBreakerRegistry, isClientErrorExcludedFromBreaker } from '../../src/utils/retry';
 import { MCPError, ErrorCode } from '../../src/types';
 
@@ -382,5 +383,79 @@ describe('v2 transport parity: the execution abort signal is honoured', () => {
     expect(v2.message).toBe(v1.message);
     expect(v2.code).toBe(v1.code);
     expect(v2.details).toEqual(v1.details);
+  });
+});
+
+describe('v2 transport parity: the caller identity is resolved, not assumed', () => {
+  // The third instance of this module's failure class, found while reviewing
+  // the finished epic. v1 has resolved the EFFECTIVE AuthManager out of the
+  // ALS request context since the OIDC work: in `oidc-http` mode the manager
+  // a tool handler passes is the process-global closure one, which is never
+  // authenticated there, and the credential to use lives on the per-identity
+  // manager bound for this request. v2 read the passed manager directly, so
+  // every operation #184 routed to v2 would have used the wrong identity.
+  //
+  // Nothing caught it because `stdio` mode never opens an ALS scope, so the
+  // resolver returns the passed manager unchanged and the two transports are
+  // indistinguishable. The whole unit suite and all six live e2e lanes run in
+  // `stdio` mode. Only a bound request context can tell these apart, which is
+  // exactly what these tests do.
+  const identity = { issuer: 'https://issuer.test', sub: 'user-a' };
+
+  function managerWith(url: string, token: string): AuthManager {
+    const manager = new AuthManager();
+    manager.connect(url, token);
+    return manager;
+  }
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    circuitBreakerRegistry.clear();
+  });
+
+  it('uses the per-identity manager from the request context, not the passed one', async () => {
+    const globalManager = managerWith('https://global.test', 'tk_globalglobalglobal1');
+    const identityManager = managerWith('https://identity.test', 'tk_identityidentity99');
+    mockFetch.mockResolvedValue(mockV2Response({ text: '{}' }));
+
+    await runWithRequestContext({ identity, authManager: identityManager }, () =>
+      vikunjaRestV2Request(globalManager, 'GET', '/tasks/7'),
+    );
+
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('https://identity.test');
+    expect(url).not.toContain('https://global.test');
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      'Bearer tk_identityidentity99',
+    );
+  });
+
+  it('honours ignoreRequestContext, so the passed manager wins inside a scope', async () => {
+    // The one caller that needs this on v1 is `vikunja_auth provision`'s
+    // pre-store token validation, which must probe with a throwaway manager
+    // holding the not-yet-stored candidate token. v2 inherits the option
+    // because its options type extends v1's, so it must honour it too.
+    const candidateManager = managerWith('https://candidate.test', 'tk_candidatecandidate');
+    const identityManager = managerWith('https://identity.test', 'tk_identityidentity99');
+    mockFetch.mockResolvedValue(mockV2Response({ text: '{}' }));
+
+    await runWithRequestContext({ identity, authManager: identityManager }, () =>
+      vikunjaRestV2Request(candidateManager, 'GET', '/tasks/7', undefined, {
+        ignoreRequestContext: true,
+      }),
+    );
+
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toContain('https://candidate.test');
+  });
+
+  it('leaves stdio behaviour unchanged when no request context is bound', async () => {
+    const stdioManager = managerWith('https://stdio.test', 'tk_stdiostdiostdio123');
+    mockFetch.mockResolvedValue(mockV2Response({ text: '{}' }));
+
+    await vikunjaRestV2Request(stdioManager, 'GET', '/tasks/7');
+
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toContain('https://stdio.test');
   });
 });
