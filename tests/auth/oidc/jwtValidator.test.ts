@@ -64,6 +64,20 @@ describe('createOidcJwtValidator', () => {
         /jwksUri is required/,
       );
     });
+
+    // Defense in depth for a direct caller of createOidcJwtValidator, which
+    // bypasses OidcConfigSchema's own .max(300) — see src/config/types.ts.
+    it('accepts a clockSkewSec at the 300s cap', () => {
+      expect(() =>
+        createOidcJwtValidator({ ...baseConfig, clockSkewSec: 300 }, deps),
+      ).not.toThrow();
+    });
+
+    it('throws synchronously when clockSkewSec exceeds the 300s cap', () => {
+      expect(() => createOidcJwtValidator({ ...baseConfig, clockSkewSec: 301 }, deps)).toThrow(
+        /clockSkewSec must not exceed 300/,
+      );
+    });
   });
 
   describe('happy path', () => {
@@ -248,6 +262,17 @@ describe('createOidcJwtValidator', () => {
       await expectGeneric401(validator.validate(`Bearer ${token}`));
     });
 
+    // A correctly-signed token from the right issuer/audience that simply
+    // omits `exp` must not verify: jose only checks exp/nbf/iat when the
+    // claim is present, so `exp` has to be in `requiredClaims`, not just
+    // implicitly relied on — otherwise such a token stays valid forever.
+    it('rejects a token missing the exp claim', async () => {
+      const validator = createOidcJwtValidator(baseConfig, deps);
+      const token = await signTestToken(key.privateKey, { kid: key.kid, omitExpiresAt: true });
+
+      await expectGeneric401(validator.validate(`Bearer ${token}`));
+    });
+
     it('rejects a token signed by a key not present in the JWKS', async () => {
       const validator = createOidcJwtValidator(baseConfig, deps);
       const token = await signTestToken(otherKey.privateKey, { kid: 'unknown-kid' });
@@ -347,6 +372,56 @@ describe('createOidcJwtValidator', () => {
       const validator = createOidcJwtValidator(baseConfig, deps);
       const now = Math.floor(Date.now() / 1000);
       const token = await signTestToken(key.privateKey, { kid: key.kid, notBefore: now + 300 });
+
+      await expectGeneric401(validator.validate(`Bearer ${token}`));
+    });
+  });
+
+  describe('requireAtJwtTyp enforcement (RFC 9068, issue #374)', () => {
+    it('is off by default: a token with a generic typ still validates', async () => {
+      const validator = createOidcJwtValidator(baseConfig, deps);
+      const token = await signTestToken(key.privateKey, { kid: key.kid });
+
+      await expect(validator.validate(`Bearer ${token}`)).resolves.toBeDefined();
+    });
+
+    it('accepts an at+jwt-typed token when enforcement is on', async () => {
+      const validator = createOidcJwtValidator({ ...baseConfig, requireAtJwtTyp: true }, deps);
+      const token = await signTestToken(key.privateKey, {
+        kid: key.kid,
+        extraHeader: { typ: 'at+jwt' },
+      });
+
+      await expect(validator.validate(`Bearer ${token}`)).resolves.toBeDefined();
+    });
+
+    it('accepts a case-insensitive at+jwt typ with the application/ prefix', async () => {
+      const validator = createOidcJwtValidator({ ...baseConfig, requireAtJwtTyp: true }, deps);
+      const token = await signTestToken(key.privateKey, {
+        kid: key.kid,
+        extraHeader: { typ: 'Application/AT+JWT' },
+      });
+
+      await expect(validator.validate(`Bearer ${token}`)).resolves.toBeDefined();
+    });
+
+    it('rejects a generically-typed token (e.g. an ID token) when enforcement is on', async () => {
+      const validator = createOidcJwtValidator({ ...baseConfig, requireAtJwtTyp: true }, deps);
+      const token = await signTestToken(key.privateKey, { kid: key.kid, extraHeader: { typ: 'JWT' } });
+
+      await expectGeneric401(validator.validate(`Bearer ${token}`));
+    });
+
+    it('rejects a token with no typ header at all when enforcement is on', async () => {
+      const validator = createOidcJwtValidator({ ...baseConfig, requireAtJwtTyp: true }, deps);
+      // extraHeader's typ:undefined overrides the helper's default typ:'JWT'
+      // and is dropped entirely by JSON serialization, producing a header
+      // with no typ claim at all — exercises isAccessTokenTyp's non-string
+      // guard, not just the "wrong string" path above.
+      const token = await signTestToken(key.privateKey, {
+        kid: key.kid,
+        extraHeader: { typ: undefined },
+      });
 
       await expectGeneric401(validator.validate(`Bearer ${token}`));
     });

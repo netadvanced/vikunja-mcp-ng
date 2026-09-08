@@ -33,6 +33,8 @@ export interface SignTestTokenOptions {
   sub?: string;
   issuedAt?: number;
   expiresAt?: number;
+  /** Set to omit the `exp` claim entirely (for the "missing exp" test case). */
+  omitExpiresAt?: boolean;
   notBefore?: number;
   extraClaims?: Record<string, unknown>;
   extraHeader?: Record<string, unknown>;
@@ -60,8 +62,11 @@ export async function signTestToken(
     })
     .setIssuer(options.issuer ?? DEFAULT_ISSUER)
     .setAudience(options.audience ?? DEFAULT_AUDIENCE)
-    .setIssuedAt(options.issuedAt ?? now)
-    .setExpirationTime(options.expiresAt ?? now + 3600);
+    .setIssuedAt(options.issuedAt ?? now);
+
+  if (!options.omitExpiresAt) {
+    builder.setExpirationTime(options.expiresAt ?? now + 3600);
+  }
 
   if (options.notBefore !== undefined) {
     builder.setNotBefore(options.notBefore);

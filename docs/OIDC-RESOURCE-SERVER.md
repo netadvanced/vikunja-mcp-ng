@@ -119,10 +119,11 @@ The existing config engine (`src/config/ConfigurationManager.ts`) already does l
 | Public URL (opt) | `VIKUNJA_MCP_HTTP_PUBLIC_URL` | `http.publicUrl` | canonical public MCP URL, e.g. `https://mcp-vikunja.example.ch/mcp` — the RFC 9728 `resource` value (§3e); recommended behind a reverse proxy, derived from the request `Host` header when unset |
 | OIDC issuer | `VIKUNJA_MCP_OIDC_ISSUER` | `oidc.issuer` | e.g. `https://iam.example.org/realms/foo` — **generic**; single-issuer scalar (D11) |
 | OIDC audience | `VIKUNJA_MCP_OIDC_AUDIENCE` | `oidc.audience` | required `aud` value(s); comma list allowed |
-| JWKS URI | `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | **required as shipped** — issuer-discovery was designed but not implemented; see the as-shipped amendment below |
-| Allowed algs | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | `oidc.allowedAlgs` | default `RS256` (allowlist; see §3b) |
-| Clock skew (s) | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | `oidc.clockSkewSec` | default `60`. (An earlier draft of this table named the env var without the `_SEC` suffix — that name was never implemented and is silently ignored) |
+| JWKS URI | `VIKUNJA_MCP_OIDC_JWKS_URI` | `oidc.jwksUri` | **required as shipped** — issuer-discovery was designed but not implemented; see the as-shipped amendment below. Must be `https://`; enforced at config load, not just documented (a plain `http://` endpoint lets an on-path attacker substitute signing keys) |
+| Allowed algs | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | `oidc.allowedAlgs` | default `RS256` (allowlist; see §3b). `none` is rejected at config load, not only by the verifier |
+| Clock skew (s) | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | `oidc.clockSkewSec` | default `60`, capped at `300` (5 minutes) — this value feeds `jose`'s `clockTolerance` applied to `exp` itself, so it is enforced, not just documented. (An earlier draft of this table named the env var without the `_SEC` suffix — that name was never implemented and is silently ignored) |
 | Required scope (opt) | `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` | `oidc.requiredScope` | optional coarse gate |
+| `at+jwt` typ (opt) | `VIKUNJA_MCP_OIDC_REQUIRE_AT_JWT_TYP` | `oidc.requireAtJwtTyp` | default `false`. When `true`, rejects a bearer token whose JWS header `typ` is missing or isn't `at+jwt` (RFC 9068 §2.1/§4) — closes the gap where an ID token or logout token from the same issuer/audience would otherwise pass as an access token. Off by default: most IdPs don't set `at+jwt` on access tokens |
 | Vault file path | `VIKUNJA_MCP_VAULT_PATH` | `vault.path` | path to the encrypted JSON vault file (D1); path is **not** secret, the key is |
 | **Vault master key** | `VIKUNJA_MCP_VAULT_KEY` **/ `VIKUNJA_MCP_VAULT_KEY_FILE`** | *(never in file)* | **add to `SENSITIVE_ENV_VARS`**; 32-byte key, base64 (D4) |
 | Shared Vikunja URL | `VIKUNJA_URL` (existing) | `auth.vikunjaUrl` | one shared Vikunja base URL for all users |
@@ -139,11 +140,11 @@ The existing config engine (`src/config/ConfigurationManager.ts`) already does l
 >    list should therefore be read as: **all** of `transport=http`, `oidc.issuer`,
 >    `oidc.audience`, `oidc.jwksUri`, `vault.path`, and a vault master key, any one
 >    missing being a hard startup error.
-> 2. **`/readyz` shipped as a stub.** §3a describes it checking JWKS reachability and
->    vault-file openability, and §3c describes a malformed vault surfacing there as
->    not-ready; none of that is implemented. It returns `{"status":"ok"}` unconditionally
->    (`TODO(H2)` in `src/transport/httpTransport.ts`) — today it is `/healthz` under
->    another name.
+> 2. ~~`/readyz` shipped as a stub.~~ **Resolved in `0.7.0-beta.5` (#347).** `/readyz` now
+>    checks both JWKS reachability and vault-file openability exactly as §3a describes,
+>    and a malformed/degraded vault does surface as not-ready per §3c. See §3a's own text
+>    for the current behavior, including the JWKS-reachability caching added in `0.7.0`
+>    (issue #373).
 > 3. **D8's optional global rate ceiling was not built.** Per-identity buckets shipped
 >    (`src/middleware/simplified-rate-limit.ts`); there is no aggregate cross-user
 >    ceiling protecting the shared Vikunja instance beyond the shared circuit breakers.
@@ -189,7 +190,7 @@ Four work areas: (a) transport, (b) JWT middleware, (c) vault, (d) per-user isol
 **Host binding / DNS-rebinding stance.**
 **Decision — bind `127.0.0.1` by default and enable DNS-rebinding protection (`enableDnsRebindingProtection: true` with `allowedHosts` from config) because the gateway is expected co-located (same host/pod) — revisit for cross-host gateway deployments, which must set `http.host=0.0.0.0` + explicit `allowedHosts` + network policy.** Binding loopback by default means a misconfigured deployment fails closed (unreachable) rather than exposing an unauthenticated-looking port to the LAN. DNS-rebinding protection defends a browser-based attacker from using a victim's browser to reach a loopback server; cheap to enable, matches the SDK's own security guidance.
 
-**Health/readiness.** Add an unauthenticated `GET /healthz` (liveness) that never touches the vault or Vikunja, and a `GET /readyz` that checks JWKS reachability + vault file openable. These sit *outside* the MCP path and the JWT middleware.
+**Health/readiness.** Add an unauthenticated `GET /healthz` (liveness) that never touches the vault or Vikunja, and a `GET /readyz` that checks JWKS reachability + vault file openable. These sit *outside* the MCP path and the JWT middleware. Because `/readyz` is unauthenticated, its JWKS reachability check is cached for 5s per running listener (issue #373) rather than making a live outbound request to the IdP on every hit — without that, an unthrottled caller could turn `/readyz` into amplification against the IdP plus self-inflicted socket/timeout cost on this server. A real outage still shows up within one or two probe cycles at any typical readiness-probe cadence (Kubernetes' own default is 10s).
 
 ### 3(b). JWT validation middleware
 
@@ -202,7 +203,7 @@ A small middleware runs before `transport.handleRequest`, validates the bearer, 
 - **`alg` allowlist** — reject anything not in `oidc.allowedAlgs` (default `['RS256']`). Explicitly reject `none` and, unless configured, HMAC algs (`HS*`) — an HMAC-accepting verifier against a public JWKS is an alg-confusion foot-gun.
 - **`iss`** must equal `oidc.issuer` exactly (string compare, no prefix match).
 - **`aud`** must contain `oidc.audience`. **Strict** — a token minted for another client/audience in the same realm must be rejected (audience-confusion defence, §4).
-- **`exp` / `nbf` / `iat`** validated with `clockTolerance: oidc.clockSkewSec` (default 60s).
+- **`exp` / `nbf` / `iat`** validated with `clockTolerance: oidc.clockSkewSec` (default 60s, capped at 300s). `exp` is a required claim — `jose` only checks `exp`/`nbf`/`iat` when present, so a token that simply omitted `exp` would otherwise verify and never expire; `requiredClaims` forces its presence.
 - Optional **`requiredScope`** — if configured, the token's `scope`/`scp` must include it.
 - **`sub`** must be present and non-empty — it is our tenancy key; a token without a stable `sub` is rejected.
 

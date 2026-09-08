@@ -30,6 +30,15 @@ import type { HttpConfig } from '../config/types';
 /** RFC 9728 §3 well-known path for protected resource metadata. */
 export const WELL_KNOWN_PROTECTED_RESOURCE_PATH = '/.well-known/oauth-protected-resource';
 
+/**
+ * `X-Forwarded-Proto` is meant to carry a bare scheme token (`http` or
+ * `https`), but nothing enforces that at the HTTP level — it's just a header
+ * an intermediary sets. Only these two exact values (case-insensitive) are
+ * trusted; anything else falls back to `http` rather than being interpolated
+ * into the constructed URL verbatim (see `resolveResourceUrl`'s history note).
+ */
+const ALLOWED_FORWARDED_PROTOS = new Set(['http', 'https']);
+
 /** The RFC 9728 metadata document this server serves. */
 export interface ProtectedResourceMetadata {
   resource: string;
@@ -59,9 +68,16 @@ export interface ProtectedResourceMetadata {
  * `host:port`, exactly as if no request were in hand at all, and
  * `X-Forwarded-Proto` is only trusted alongside a `Host` that passed the
  * allowlist (a forwarded-proto claim is meaningless from an untrusted host
- * anyway). Passing `undefined` for `allowedHosts` keeps the legacy
- * trust-the-request behaviour for callers that have not been threaded
- * through yet (there should be none left in this codebase after #292).
+ * anyway), and only when its value is exactly `http` or `https`
+ * (`ALLOWED_FORWARDED_PROTOS`) — otherwise it falls back to `http` rather
+ * than being interpolated into the URL template unchecked. An earlier
+ * version accepted any value here, so a caller behind a reverse proxy that
+ * doesn't strip client-supplied `X-Forwarded-Proto` could send e.g.
+ * `https://evil.example` and have it reflected as the scheme of the
+ * `resource`/`resource_metadata` URLs this endpoint advertises. Passing
+ * `undefined` for `allowedHosts` keeps the legacy trust-the-request
+ * behaviour for callers that have not been threaded through yet (there
+ * should be none left in this codebase after #292).
  */
 export function resolveResourceUrl(
   httpConfig: HttpConfig,
@@ -79,8 +95,11 @@ export function resolveResourceUrl(
   const host = hostHeaderTrusted ? hostHeader : `${httpConfig.host}:${httpConfig.port}`;
   const forwardedProto = hostHeaderTrusted ? req?.headers['x-forwarded-proto'] : undefined;
   const protoRaw = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
-  const protoCandidate = protoRaw?.split(',')[0]?.trim();
-  const proto = protoCandidate !== undefined && protoCandidate.length > 0 ? protoCandidate : 'http';
+  const protoCandidate = protoRaw?.split(',')[0]?.trim().toLowerCase();
+  const proto =
+    protoCandidate !== undefined && ALLOWED_FORWARDED_PROTOS.has(protoCandidate)
+      ? protoCandidate
+      : 'http';
   return `${proto}://${host}${httpConfig.path}`;
 }
 

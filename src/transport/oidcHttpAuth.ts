@@ -224,6 +224,9 @@ function toValidatorConfig(oidc: OidcConfig): OidcJwtValidatorConfig {
   if (oidc.requiredScope) {
     config.requiredScope = oidc.requiredScope;
   }
+  if (oidc.requireAtJwtTyp !== undefined) {
+    config.requireAtJwtTyp = oidc.requireAtJwtTyp;
+  }
   return config;
 }
 

@@ -141,6 +141,7 @@ export async function startHttpTransport(
 
   const allowedHosts = resolveAllowedHosts(httpConfig);
   const requestPath = httpConfig.path;
+  const jwksReachabilityCache: JwksReachabilityCache = { settled: null, pending: null };
 
   const httpServer = http.createServer((req, res) => {
     handleIncomingRequest(req, res, {
@@ -151,6 +152,7 @@ export async function startHttpTransport(
       httpConfig,
       oidcIssuer: oidc?.issuer,
       jwksUri: oidc?.jwksUri,
+      jwksReachabilityCache,
     }).catch((error) => {
       logger.error('Unhandled error while handling HTTP MCP request:', error);
       sendJson(res, 500, { error: 'internal_error' });
@@ -192,24 +194,76 @@ export async function startHttpTransport(
 const JWKS_REACHABILITY_TIMEOUT_MS = 3000;
 
 /**
+ * How long a `/readyz` JWKS reachability result stays cached (issue #373).
+ * `/readyz` is served before the JWT middleware, so it's reachable by an
+ * unauthenticated caller; without a cache, every hit fanned out a fresh live
+ * request to the IdP's JWKS endpoint with no throttling — amplification
+ * against the IdP plus self-inflicted socket/timeout cost on this server. 5s
+ * still means any real outage shows up within one or two probe cycles for a
+ * typical readiness-probe cadence (Kubernetes' own default is 10s).
+ */
+const JWKS_REACHABILITY_CACHE_TTL_MS = 5000;
+
+interface JwksReachabilityCacheEntry {
+  result: boolean;
+  expiresAt: number;
+}
+
+/**
+ * Mutable box scoped to one `startHttpTransport` listener (not a module
+ * global), so separate server instances — and separate tests — never share
+ * cached state. Holds a settled result once a fetch completes, and/or the
+ * in-flight promise while one is pending.
+ */
+interface JwksReachabilityCache {
+  settled: JwksReachabilityCacheEntry | null;
+  pending: Promise<boolean> | null;
+}
+
+/**
  * `/readyz`'s JWKS half of the §3a "Health/readiness" contract: a plain GET
  * against the configured JWKS endpoint, independent of `jose`'s own
  * `createRemoteJWKSet` cache inside the auth middleware — a readiness probe
  * should reflect whether the endpoint answers RIGHT NOW, not whether a
  * previously-cached key set is still in memory. `undefined` (no OIDC
  * configured) has nothing to check, so it reports reachable.
+ *
+ * Concurrent callers that arrive while a check is already in flight await
+ * the SAME promise rather than each starting their own fetch. Without this,
+ * the settled-result cache alone still let every request that landed during
+ * the fetch's own round trip fire an independent outbound request — exactly
+ * the scenario (a slow or timing-out IdP, up to `JWKS_REACHABILITY_TIMEOUT_MS`
+ * per attempt) where the throttling this cache exists for matters most.
  */
-async function isJwksReachable(jwksUri: string | undefined): Promise<boolean> {
+async function isJwksReachable(
+  jwksUri: string | undefined,
+  cache: JwksReachabilityCache,
+): Promise<boolean> {
   if (!jwksUri) return true;
-  try {
-    const response = await fetch(jwksUri, {
-      method: 'GET',
-      signal: AbortSignal.timeout(JWKS_REACHABILITY_TIMEOUT_MS),
-    });
-    return response.ok;
-  } catch {
-    return false;
+  const now = Date.now();
+  if (cache.settled !== null && cache.settled.expiresAt > now) {
+    return cache.settled.result;
   }
+  if (cache.pending !== null) {
+    return cache.pending;
+  }
+  const pending = (async (): Promise<boolean> => {
+    let result: boolean;
+    try {
+      const response = await fetch(jwksUri, {
+        method: 'GET',
+        signal: AbortSignal.timeout(JWKS_REACHABILITY_TIMEOUT_MS),
+      });
+      result = response.ok;
+    } catch {
+      result = false;
+    }
+    cache.settled = { result, expiresAt: Date.now() + JWKS_REACHABILITY_CACHE_TTL_MS };
+    cache.pending = null;
+    return result;
+  })();
+  cache.pending = pending;
+  return pending;
 }
 
 interface RequestHandlerContext {
@@ -220,6 +274,7 @@ interface RequestHandlerContext {
   httpConfig: HttpConfig;
   oidcIssuer: string | undefined;
   jwksUri: string | undefined;
+  jwksReachabilityCache: JwksReachabilityCache;
 }
 
 async function handleIncomingRequest(
@@ -247,7 +302,7 @@ async function handleIncomingRequest(
     // provisions one before the listener opens, so its absence at request
     // time is itself a not-ready signal, not a "nothing to check" no-op.
     const vaultOk = vault !== undefined && !vault.isDegraded();
-    const jwksOk = await isJwksReachable(ctx.jwksUri);
+    const jwksOk = await isJwksReachable(ctx.jwksUri, ctx.jwksReachabilityCache);
     if (vaultOk && jwksOk) {
       sendJson(res, 200, { status: 'ok' });
     } else {

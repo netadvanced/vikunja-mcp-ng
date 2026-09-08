@@ -21,6 +21,11 @@ import type { Identity, JoseDeps, OidcJwksCacheConfig, OidcJwtValidatorConfig } 
 
 const DEFAULT_ALLOWED_ALGS = ['RS256'];
 const DEFAULT_CLOCK_SKEW_SEC = 60;
+// Mirrors OidcConfigSchema's clockSkewSec cap (src/config/types.ts) so the
+// same bound holds for a direct caller of createOidcJwtValidator, not only
+// for config loaded through that Zod schema — a large clockTolerance
+// applies to `exp` itself and can make already-expired tokens verify.
+const MAX_CLOCK_SKEW_SEC = 300;
 
 const INVALID_TOKEN_MESSAGE = 'Invalid or expired token';
 const INSUFFICIENT_SCOPE_MESSAGE = 'Token lacks required scope';
@@ -69,6 +74,11 @@ export function createOidcJwtValidator(
   if (!config.jwksUri) {
     throw new Error('createOidcJwtValidator: config.jwksUri is required');
   }
+  if (config.clockSkewSec !== undefined && config.clockSkewSec > MAX_CLOCK_SKEW_SEC) {
+    throw new Error(
+      `createOidcJwtValidator: config.clockSkewSec must not exceed ${MAX_CLOCK_SKEW_SEC}`,
+    );
+  }
 
   const allowedAlgs =
     config.allowedAlgs && config.allowedAlgs.length > 0 ? config.allowedAlgs : DEFAULT_ALLOWED_ALGS;
@@ -84,17 +94,28 @@ export function createOidcJwtValidator(
     }
 
     let payload: Awaited<ReturnType<JoseDeps['jwtVerify']>>['payload'];
+    let protectedHeader: Awaited<ReturnType<JoseDeps['jwtVerify']>>['protectedHeader'];
     try {
       const result = await deps.jwtVerify(token, jwks, {
         issuer: config.issuer,
         audience: config.audience,
         algorithms: allowedAlgs,
         clockTolerance,
-        requiredClaims: ['sub'],
+        // 'exp' must be REQUIRED, not merely checked-if-present: jose only
+        // validates exp/nbf/iat when the claim exists, so a correctly-signed
+        // token that simply omits `exp` would otherwise verify and never
+        // expire.
+        requiredClaims: ['sub', 'exp'],
       });
       payload = result.payload;
+      protectedHeader = result.protectedHeader;
     } catch (err) {
       logger.warn('OIDC auth rejected: %s', describeVerifyFailure(err));
+      throw unauthorized();
+    }
+
+    if (config.requireAtJwtTyp && !isAccessTokenTyp(protectedHeader.typ)) {
+      logger.warn('OIDC auth rejected: token typ is not at+jwt');
       throw unauthorized();
     }
 
@@ -147,6 +168,16 @@ function extractBearerToken(header: string | null | undefined): string | undefin
     return undefined;
   }
   return BEARER_PATTERN.exec(header.trim())?.[1];
+}
+
+/**
+ * RFC 9068 §2.1: an access token's JWS header `typ` SHOULD be `at+jwt`.
+ * Case-insensitive, and tolerates the `application/` prefix some IdPs use
+ * (the same convention `typ` allows elsewhere per RFC 7515).
+ */
+function isAccessTokenTyp(typ: unknown): boolean {
+  if (typeof typ !== 'string') return false;
+  return typ.toLowerCase().replace(/^application\//, '') === 'at+jwt';
 }
 
 function hasRequiredScope(payload: Record<string, unknown>, requiredScope: string): boolean {

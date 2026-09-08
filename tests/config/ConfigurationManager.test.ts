@@ -59,6 +59,7 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS;
     delete process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC;
     delete process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE;
+    delete process.env.VIKUNJA_MCP_OIDC_REQUIRE_AT_JWT_TYP;
     delete process.env.VIKUNJA_MCP_ENROLL_ENABLED;
     delete process.env.VIKUNJA_MCP_ENROLL_PROVIDER;
     delete process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL;
@@ -844,6 +845,7 @@ describe('ConfigurationManager', () => {
       process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS = 'RS256, ES256';
       process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC = '30';
       process.env.VIKUNJA_MCP_OIDC_REQUIRED_SCOPE = 'vikunja';
+      process.env.VIKUNJA_MCP_OIDC_REQUIRE_AT_JWT_TYP = 'true';
 
       const config = await ConfigurationManager.getInstance().getConfiguration();
       expect(config.oidc).toEqual({
@@ -853,7 +855,43 @@ describe('ConfigurationManager', () => {
         allowedAlgs: ['RS256', 'ES256'],
         clockSkewSec: 30,
         requiredScope: 'vikunja',
+        requireAtJwtTyp: true,
       });
+    });
+
+    // Issue #375: jose already refuses `none` outright, but a misconfigured
+    // allowlist should fail loud at config load, not rely solely on the
+    // verifier's own backstop as the only defense.
+    it("rejects an allowedAlgs list containing 'none'", () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS = 'RS256, none';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it("rejects a case-variant 'None' in allowedAlgs too", () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS = 'None';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('still permits an HS* algorithm (discouraged but not forbidden)', async () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_ALLOWED_ALGS = 'HS256';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc?.allowedAlgs).toEqual(['HS256']);
     });
 
     it('fails loud on an incomplete OIDC block (issuer without audience/jwksUri)', () => {
@@ -868,6 +906,43 @@ describe('ConfigurationManager', () => {
       process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
       process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
       process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    // clockSkewSec feeds jose's clockTolerance directly, applied to `exp`
+    // itself — an unbounded value (deliberate or a fat-fingered env var)
+    // would let already-expired tokens still verify.
+    it('accepts a clockSkewSec at the 300s cap', async () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC = '300';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.oidc?.clockSkewSec).toBe(300);
+    });
+
+    it('rejects a clockSkewSec above the 300s cap', () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+      process.env.VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC = '301';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    // docs/OIDC-RESOURCE-SERVER.md documents signing keys as fetched "over
+    // HTTPS" as a security invariant; a plain http:// endpoint lets an
+    // on-path attacker substitute keys and mint tokens for any identity.
+    it('rejects a plain http:// jwksUri', () => {
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'http://idp.example.test/certs';
 
       expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
         ConfigurationError,
@@ -916,6 +991,32 @@ describe('ConfigurationManager', () => {
       setOidcHttpEnv();
       process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
       process.env.VIKUNJA_MCP_ENROLL_VIKUNJA_URL = 'not-a-url';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    // Unbounded, tokenExpiryDays feeds Date arithmetic in
+    // src/transport/enrollment.ts directly; an extreme value overflows
+    // Date's valid range and throws on every enrollment callback.
+    it('rejects a tokenExpiryDays above the 3650-day cap', () => {
+      setOidcHttpEnv();
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      process.env.VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS = '3651';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    // ticketTtlSec gates how long a leaked enrollment URL stays redeemable —
+    // a short-lived, leak-sensitive credential, not a legitimate long-lived
+    // knob like tokenExpiryDays.
+    it('rejects a ticketTtlSec above the 3600s cap', () => {
+      setOidcHttpEnv();
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+      process.env.VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC = '3601';
 
       expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
         ConfigurationError,

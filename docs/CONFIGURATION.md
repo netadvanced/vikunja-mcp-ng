@@ -551,10 +551,10 @@ When `transport=http`, additional settings apply under the `http` config section
 | Allowed `Host` headers | `http.allowedHosts` | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` (comma list) | `<host>:<port>`, used for the SDK transport's built-in DNS-rebinding protection, which is always on in `http` mode |
 
 Two endpoints are always served unauthenticated, outside the MCP path and any
-authentication middleware: `GET /healthz` (liveness) and `GET /readyz`. Note that
-`/readyz` is currently a stub: it returns `{"status":"ok"}` unconditionally, checking
-neither JWKS reachability nor the vault file, so today it tells you nothing `/healthz`
-doesn't (see `docs/OIDC-SETUP.md` §11).
+authentication middleware: `GET /healthz` (liveness) and `GET /readyz`. `/readyz` checks
+both JWKS reachability (cached for 5s per listener) and vault-file openability, returning
+`503` with a `checks` breakdown when either is unhealthy — unlike `/healthz`, a `200` from
+it is evidence the vault loaded and the IdP is reachable (see `docs/OIDC-SETUP.md` §11).
 
 **`transport=http` refuses to start without a complete OIDC + vault configuration.** The
 server must never serve unauthenticated HTTP, so `http` mode requires ALL of: the `oidc`
@@ -574,10 +574,11 @@ env vars:
 |---|---|---|---|
 | Issuer (required) | `oidc.issuer` | `VIKUNJA_MCP_OIDC_ISSUER` | Exact-match trusted issuer, e.g. `https://iam.example.org/realms/foo`; generic, no org-specific values baked in |
 | Audience (required) | `oidc.audience` | `VIKUNJA_MCP_OIDC_AUDIENCE` | Required `aud` value(s); comma-separated list accepted, a single value stays a string |
-| JWKS URI (required) | `oidc.jwksUri` | `VIKUNJA_MCP_OIDC_JWKS_URI` | The provider's JWKS endpoint (e.g. its `/.well-known/openid-configuration`'s `jwks_uri`) |
-| Allowed algorithms | `oidc.allowedAlgs` | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | Comma list; validator default `RS256`; `none` is never accepted regardless of this setting |
-| Clock skew (seconds) | `oidc.clockSkewSec` | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | Validator default `60`; applied to `exp`/`nbf`/`iat` |
+| JWKS URI (required) | `oidc.jwksUri` | `VIKUNJA_MCP_OIDC_JWKS_URI` | The provider's JWKS endpoint (e.g. its `/.well-known/openid-configuration`'s `jwks_uri`). Must be `https://`; a plain `http://` value is rejected at config load |
+| Allowed algorithms | `oidc.allowedAlgs` | `VIKUNJA_MCP_OIDC_ALLOWED_ALGS` | Comma list; validator default `RS256`; `none` is rejected at config load as well as by the verifier itself. `HS*` is still permitted — discouraged, not forbidden, see the schema's doc comment |
+| Clock skew (seconds) | `oidc.clockSkewSec` | `VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC` | Validator default `60`; applied to `exp`/`nbf`/`iat`; capped at `300` |
 | Required scope | `oidc.requiredScope` | `VIKUNJA_MCP_OIDC_REQUIRED_SCOPE` | Optional coarse gate: a validly-authenticated token missing it gets `403`, not `401` |
+| Require `at+jwt` typ | `oidc.requireAtJwtTyp` | `VIKUNJA_MCP_OIDC_REQUIRE_AT_JWT_TYP` | Optional, default `false` (off). When `true`, rejects a token whose JWS header `typ` is missing or isn't `at+jwt` (RFC 9068 §2.1/§4) — closes the gap where any same-issuer, same-audience JWT (an ID token, a logout token) would otherwise be accepted as a bearer access token. Off by default because most IdPs mint access tokens with a generic `typ` (or none); only turn this on against an IdP known to set `at+jwt` |
 
 A validated token's `sub` (subject) is the per-user tenancy key the rest of this section
 depends on; see the credential vault below and `docs/OIDC-RESOURCE-SERVER.md` §3b/§3d
@@ -667,8 +668,8 @@ matching behavior, the squatting scenario, and the mitigation.
 | Enable enrollment | `enroll.enabled` | `VIKUNJA_MCP_ENROLL_ENABLED` | Default `false`. Manual token provisioning keeps working either way |
 | Provider | `enroll.provider` | `VIKUNJA_MCP_ENROLL_PROVIDER` | Vikunja OpenID provider `key`/`name` (from `GET /info`). Optional when the backend has exactly one |
 | Vikunja URL | `enroll.vikunjaUrl` | `VIKUNJA_MCP_ENROLL_VIKUNJA_URL` | Vikunja API base for the flow; defaults to the shared `VIKUNJA_URL` |
-| Token expiry (days) | `enroll.tokenExpiryDays` | `VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS` | Default `365`. Re-running `provision` after expiry mints a fresh token |
-| Ticket TTL (seconds) | `enroll.ticketTtlSec` | `VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC` | Default `600`. How long an issued enrollment link stays clickable (single-use) |
+| Token expiry (days) | `enroll.tokenExpiryDays` | `VIKUNJA_MCP_ENROLL_TOKEN_EXPIRY_DAYS` | Default `365`, capped at `3650` (10 years). Re-running `provision` after expiry mints a fresh token |
+| Ticket TTL (seconds) | `enroll.ticketTtlSec` | `VIKUNJA_MCP_ENROLL_TICKET_TTL_SEC` | Default `600`, capped at `3600` (1 hour). How long an issued enrollment link stays clickable (single-use) |
 
 In `oidc-http` mode there is no single server-wide token to connect: `connect` is refused
 with an error pointing you at `provision`, and `disconnect` is accepted but simply aliases
@@ -993,10 +994,11 @@ provider).
 ```env
 VIKUNJA_MCP_OIDC_ISSUER=https://idp.example.org/realms/example       # required
 VIKUNJA_MCP_OIDC_AUDIENCE=vikunja-mcp                                # required; comma list accepted
-VIKUNJA_MCP_OIDC_JWKS_URI=https://idp.example.org/realms/example/protocol/openid-connect/certs  # required
+VIKUNJA_MCP_OIDC_JWKS_URI=https://idp.example.org/realms/example/protocol/openid-connect/certs  # required, must be https://
 VIKUNJA_MCP_OIDC_ALLOWED_ALGS=RS256                                  # optional; comma list, default RS256, "none" never accepted
-VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC=60                                   # optional; default 60
+VIKUNJA_MCP_OIDC_CLOCK_SKEW_SEC=60                                   # optional; default 60, capped at 300
 VIKUNJA_MCP_OIDC_REQUIRED_SCOPE=vikunja                              # optional
+VIKUNJA_MCP_OIDC_REQUIRE_AT_JWT_TYP=false                            # optional; default false, see the table above
 ```
 
 ### Credential Vault Variables (http mode only)

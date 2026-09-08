@@ -8,11 +8,69 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
-### Added — Vikunja v2 API groundwork (#184, 0.7.0 P1+P2)
+## [0.7.0] - 2026-09-08
+
+Promotes the `0.7.0-beta.x` line to stable: OIDC HTTP transport support and the August hardening
+batch are now what every `npm install vikunja-mcp-ng` / `docker pull …:latest` user gets by
+default, no longer opt-in via the `beta` dist-tag. Everything below is new since `0.7.0-beta.5`;
+see that and earlier `0.7.0-beta.*` sections below for the full OIDC feature set.
+
+### Security
+
+Found and fixed during a pre-tag cross-model review of the OIDC HTTP transport, ahead of its
+first release as `latest` rather than `beta`. The underlying bugs themselves are not new — most
+were already present somewhere in the `0.7.0-beta.0`–`.5` line (`/readyz`'s unthrottled JWKS
+fetch, for instance, dates to beta.5's #347) — but none had been fixed or disclosed before this
+release, and none of this line's beta users were ever exposed as the default install.
+
+- **The `X-Forwarded-Proto` header could redirect MCP authorization-discovery metadata to an
+  attacker origin.** Behind a reverse proxy that passes through client-supplied
+  `X-Forwarded-Proto`, an unauthenticated caller could set e.g. `X-Forwarded-Proto:
+  https://evil.example` and have it reflected as the scheme of the `resource`/`resource_metadata`
+  URLs this server advertises on unauthenticated discovery requests and 401 challenges — steering
+  an auto-discovering MCP client toward a malicious authorization server. Only `http`/`https` are
+  now accepted (case-insensitive exact match); anything else falls back to `http`
+  (`src/transport/resourceMetadata.ts`).
+- **A bearer access token with no `exp` claim was accepted indefinitely.** `jose`'s `jwtVerify`
+  only validates `exp`/`nbf`/`iat` when the claim is present in the payload; `exp` was not in
+  `requiredClaims`, so a correctly-signed token from the right issuer/audience that simply omitted
+  `exp` would verify and never expire. `exp` is now a required claim
+  (`src/auth/oidc/jwtValidator.ts`).
+- **Three security-relevant numeric config values had no upper bound**: `oidc.clockSkewSec`
+  (`jose`'s `clockTolerance`, applied to `exp` itself — an operator error or misconfigured env var
+  could make already-expired tokens verify), `enroll.tokenExpiryDays` (also overflowed `Date`
+  arithmetic in the enrollment flow at extreme values, throwing on every callback), and
+  `enroll.ticketTtlSec` (how long a leaked enrollment URL, which travels in a link and as an OAuth
+  `state` value, stays redeemable). Now capped at 300s, 3650 days, and 3600s respectively
+  (`src/config/types.ts`, defense-in-depth mirror in `src/auth/oidc/jwtValidator.ts` for a direct
+  caller of the validator).
+- **`oidc.jwksUri` accepted a plain `http://` endpoint.** The docs already documented signing keys
+  as fetched "over HTTPS" as an invariant; the schema didn't enforce it, so a misconfigured or
+  on-path-attacker-substituted cleartext JWKS endpoint could be used to mint tokens for any
+  identity. Now rejected at config load unless the scheme is `https:`.
+- **`/readyz` made an unthrottled live JWKS fetch on every unauthenticated request** (#373) — health
+  checks sit outside the JWT middleware by design (§3a), so a caller looping `GET /readyz` fanned
+  out one outbound request per hit to the configured IdP with no limit: amplification against the
+  IdP plus self-inflicted socket/timeout cost on this server. The reachability result is now cached
+  for 5s per running listener; a real outage still surfaces within one or two probe cycles at any
+  typical readiness-probe cadence.
+- **Bearer JWT validation didn't enforce a `typ` claim** (#374) — any same-issuer, same-audience
+  JWT (an ID token, a logout token) was accepted as an access token, exploitable only under IdP
+  configurations where `oidc.audience` doubles as a client_id also embedded in other token types.
+  New opt-in `oidc.requireAtJwtTyp` (default off, since most IdPs don't set `at+jwt`) rejects a
+  missing or wrong `typ` per RFC 9068 §2.1/§4.
+- **`oidc.allowedAlgs` accepted any string, including `none`** (#375) — not currently exploitable
+  (`jose` already refuses `none` outright, and a remote JWKS never carries a symmetric key for
+  `HS*` to succeed against), but a misconfiguration should fail loud at config load rather than
+  rely solely on the verifier's own backstop. `none` is now rejected at the schema level; `HS*`
+  remains permitted (discouraged, not forbidden — a legitimate reason to configure one still
+  exists).
+
+### Added — Vikunja v2 API groundwork (#184, P1+P2)
 
 Infrastructure for adopting Vikunja's v2 API as a capability-gated fast path. **No behaviour
 change:** no operation routes through v2 yet, and v1 remains the permanent floor for every
-operation. Per-endpoint adoption is P3.
+operation. Per-endpoint adoption (P3) is not part of this release — it ships separately once ready.
 
 - **v2 REST transport** (`src/utils/vikunja-rest-v2.ts`) — a sibling of the v1 helper rather than a
   branch inside it, so v1's code path is untouched. Same retry and circuit-breaker discipline under
@@ -33,6 +91,10 @@ operation. Per-endpoint adoption is P3.
   decision — including the kill switch's effect — is observable. `connect` now also reports
   `hasV2Api`, which it previously omitted despite being the subcommand that triggers detection.
 
+### Fixed
+
+- Dropped an unnecessary type assertion in the v2 error adapter (#353).
+
 ### Documentation
 
 - **`docs/API-VERSION-MATRIX.md`** (new) — one row per MCP function (183 across 27 tools): whether
@@ -43,6 +105,8 @@ operation. Per-endpoint adoption is P3.
   `subscription: null` workaround, its expiry condition, and four v2 behaviours a client must
   handle (pagination envelope, leading-`v` version string, unenforced `If-Match`, view-less
   project-tasks route).
+- Re-probed v2 against live 2.4.0/2.5.0/2.6.0 servers and corrected the P3 design spec accordingly
+  (#352); ROADMAP, CHANGELOG, and ARCHITECTURE brought current with the P1+P2 work.
 - Design specs for both phases under `docs/superpowers/specs/`.
 
 ## [0.7.0-beta.5] - 2026-09-05
