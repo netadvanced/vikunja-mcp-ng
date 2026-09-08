@@ -27,16 +27,16 @@ Worked examples, each paired with the exact tool call and the resulting Vikunja 
 
 | | Version | Notes |
 |---|---|---|
-| npm `latest` | 0.6.2 | Single-user `stdio` server |
-| npm `beta` | 0.7.0-beta.5 | Adds opt-in OIDC resource-server mode: Streamable HTTP transport, per-user identity, MCP auth discovery, SSO enrollment. `stdio` is unchanged and still the default |
+| npm `latest` | 0.7.0 | Single-user `stdio` server, plus opt-in OIDC resource-server mode: Streamable HTTP transport, per-user identity, MCP auth discovery, SSO enrollment. `stdio` is unchanged and still the default |
+| npm `beta` | — | No active beta line right now |
 
-OIDC mode has been exercised against a real gateway, identity provider and Vikunja, but has not seen sustained production use. See the [OIDC setup manual](../docs/OIDC-SETUP.md) and the [resource-server design and threat model](../docs/OIDC-RESOURCE-SERVER.md).
+OIDC mode is off by default and stable as of `0.7.0` after several beta releases. It has been exercised against a real gateway, identity provider and Vikunja through the beta line, but is newly stable and has not yet seen sustained production use at scale. See the [OIDC setup manual](../docs/OIDC-SETUP.md) and the [resource-server design and threat model](../docs/OIDC-RESOURCE-SERVER.md).
 
 **Vikunja compatibility.** This project supports and tests a rolling window of the trailing THREE released versions (policy since 2026-09-02, `docs/ROADMAP.md` §3 decision 29) — currently **2.4.0** (the floor), **2.5.0**, and **2.6.0** (aligned/tested default). All three run as full `test:matrix` lanes on both database backends. The floor rose from 2.3.0 in the `0.7.0-beta` line because nine operations shipped here as implemented, the eight `vikunja_admin` operations and `vikunja_tasks get-by-index`, do not exist on a released 2.3.0. On 2.3.0, upgrade Vikunja or pin `vikunja-mcp-ng@0.6.2`.
 
 When a new Vikunja version ships, the window shifts — the oldest version drops out and the new one takes its place — rather than the range simply growing; see `SUPPORTED_VERSIONS` in `scripts/lib/e2e-target.ts`, the single source of truth. 2.6.0 tightened several permission checks; where it refuses something 2.4.0 accepted, this server surfaces the refusal with an explanation instead of degrading quietly — see [`docs/VIKUNJA_API_ISSUES.md`](../docs/VIKUNJA_API_ISSUES.md) for the specifics, each asserted per-version in the e2e harness.
 
-This server speaks the v1 API. v2 adoption is [issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184) on the 0.8.0 milestone, and has not started. Node 22+ only.
+This server speaks the v1 API for every operation. v2 adoption ([issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184), 0.8.0 milestone) has landed detection and a capability-gated transport, but nothing routes through it yet — per-operation adoption ships separately once ready. Node 22+ only.
 
 ## Working on it
 

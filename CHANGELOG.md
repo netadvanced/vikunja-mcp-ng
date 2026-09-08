@@ -8,11 +8,18 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
-### Added — Vikunja v2 API groundwork (#184, 0.7.0 P1+P2)
+## [0.7.0] - 2026-09-08
+
+Promotes the `0.7.0-beta.x` line to stable: OIDC HTTP transport support and the August hardening
+batch are now what every `npm install vikunja-mcp-ng` / `docker pull …:latest` user gets by
+default, no longer opt-in via the `beta` dist-tag. Everything below is new since `0.7.0-beta.5`;
+see that and earlier `0.7.0-beta.*` sections above for the full OIDC feature set.
+
+### Added — Vikunja v2 API groundwork (#184, P1+P2)
 
 Infrastructure for adopting Vikunja's v2 API as a capability-gated fast path. **No behaviour
 change:** no operation routes through v2 yet, and v1 remains the permanent floor for every
-operation. Per-endpoint adoption is P3.
+operation. Per-endpoint adoption (P3) is not part of this release — it ships separately once ready.
 
 - **v2 REST transport** (`src/utils/vikunja-rest-v2.ts`) — a sibling of the v1 helper rather than a
   branch inside it, so v1's code path is untouched. Same retry and circuit-breaker discipline under
@@ -33,6 +40,10 @@ operation. Per-endpoint adoption is P3.
   decision — including the kill switch's effect — is observable. `connect` now also reports
   `hasV2Api`, which it previously omitted despite being the subcommand that triggers detection.
 
+### Fixed
+
+- Dropped an unnecessary type assertion in the v2 error adapter (#353).
+
 ### Documentation
 
 - **`docs/API-VERSION-MATRIX.md`** (new) — one row per MCP function (183 across 27 tools): whether
@@ -43,42 +54,9 @@ operation. Per-endpoint adoption is P3.
   `subscription: null` workaround, its expiry condition, and four v2 behaviours a client must
   handle (pagination envelope, leading-`v` version string, unenforced `If-Match`, view-less
   project-tasks route).
+- Re-probed v2 against live 2.4.0/2.5.0/2.6.0 servers and corrected the P3 design spec accordingly
+  (#352); ROADMAP, CHANGELOG, and ARCHITECTURE brought current with the P1+P2 work.
 - Design specs for both phases under `docs/superpowers/specs/`.
-
-
-## [0.7.0] - 2026-09-08
-
-_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._
-
-### Added
-
-- report activeApiVersion from vikunja_auth (#184)
-- resolveApiVersion routing decision point (#184)
-- forceV1Api kill switch with env override (#184)
-- v2 REST request helper with merge-patch default (#184)
-- problem+json to MCPError adapter (#184)
-- v2 base URL resolution and version-scoped breaker naming (#184)
-
-### Fixed
-
-- drop an unnecessary type assertion in the v2 error adapter (#353)
-- apply final whole-branch review fixes for v2 transport (#184)
-
-### Documentation
-
-- re-probe v2 against 2.4.0/2.5.0/2.6.0 and correct the P3 design spec (#352)
-- bring ROADMAP, CHANGELOG, ARCHITECTURE current with v2 P1+P2 (#184)
-- resolve the two unverified rows in the version matrix (#184)
-- API version matrix + the 2.4.0 PATCH/subscription bug (#184)
-- P3 design spec — v2 native adoption, not v1-with-PATCH (#184)
-- record the 2.4.0 PATCH-on-subscribed-task blocker (#184)
-- record live-verified findings from the 2.4.0 check (#184)
-- implementation plan for v2 transport and routing (#184 P1+P2)
-- design spec for v2 transport, error adapter, and routing (#184 P1+P2)
-
-### Chores
-
-- cover error-detail fallback branches in readErrorDetails
 
 ## [0.7.0-beta.5] - 2026-09-05
 

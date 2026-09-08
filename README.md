@@ -51,7 +51,7 @@ This project supports and tests the trailing three released Vikunja versions —
 
 The minimum rose from 2.3.0 to 2.4.0 in the `0.7.0-beta` line. Nine operations this server ships as implemented, the eight `vikunja_admin` operations and `vikunja_tasks get-by-index`, do not exist on a released 2.3.0, so the older claim was not true in practice. On Vikunja 2.3.0, either upgrade Vikunja or pin `vikunja-mcp-ng@0.6.2`.
 
-The server speaks Vikunja's v1 API. v2 adoption is tracked in [issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184) and has not started.
+The server speaks Vikunja's v1 API for every operation. v2 adoption ([issue #184](https://github.com/netadvanced/vikunja-mcp-ng/issues/184)) has landed detection and a capability-gated transport, but nothing routes through it yet — that per-operation adoption ships separately once ready.
 
 ## Docker
 
@@ -87,16 +87,16 @@ For Docker Desktop's MCP Toolkit rather than a bare `docker run`, there is a ste
 
 | npm tag | Version | What you get |
 |---|---|---|
-| `latest` | 0.6.2 | The single-user stdio server, which is what the quick start above installs |
-| `beta` | 0.7.0-beta.5 | The same, plus an opt-in OIDC resource-server mode |
+| `latest` | 0.7.0 | The single-user stdio server (the quick start above), plus an opt-in OIDC resource-server mode |
+| `beta` | — | No active beta line right now |
 
-OIDC resource-server mode makes the server a hosted, multi-user deployment: a Streamable HTTP transport, per-user identity taken from a validated OIDC access token, MCP authorization discovery, and an enrollment flow where each user links their own Vikunja token once. It is off by default. Installing the beta changes nothing until you turn it on, and the stdio transport behaves as it does on stable.
+OIDC resource-server mode makes the server a hosted, multi-user deployment: a Streamable HTTP transport, per-user identity taken from a validated OIDC access token, MCP authorization discovery, and an enrollment flow where each user links their own Vikunja token once. It is off by default and stable as of `0.7.0` after several beta releases; installing the package changes nothing until you turn it on, and the stdio transport behaves as it always has.
 
 ```bash
-npm install -g vikunja-mcp-ng@beta      # or: npx -y vikunja-mcp-ng@beta
+npm install -g vikunja-mcp-ng      # or: npx -y vikunja-mcp-ng
 ```
 
-It is beta. The authentication boundary, the credential vault and per-identity isolation have been exercised against a real gateway, identity provider and Vikunja, but none of it has seen sustained production use yet. Read the [OIDC setup manual](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/OIDC-SETUP.md) before enabling it; the design and threat model are in the [OIDC resource-server reference](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/OIDC-RESOURCE-SERVER.md).
+The authentication boundary, the credential vault and per-identity isolation have been exercised against a real gateway, identity provider and Vikunja through the beta line, but it is newly stable and has not yet seen sustained production use at scale. Read the [OIDC setup manual](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/OIDC-SETUP.md) before enabling it; the design and threat model are in the [OIDC resource-server reference](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/OIDC-RESOURCE-SERVER.md).
 
 ## What it looks like in use
 
