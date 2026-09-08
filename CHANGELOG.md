@@ -45,6 +45,41 @@ operation. Per-endpoint adoption is P3.
   project-tasks route).
 - Design specs for both phases under `docs/superpowers/specs/`.
 
+
+## [0.7.0] - 2026-09-08
+
+_Draft generated from conventional commits by scripts/release-prepare.sh — curate before merging._
+
+### Added
+
+- report activeApiVersion from vikunja_auth (#184)
+- resolveApiVersion routing decision point (#184)
+- forceV1Api kill switch with env override (#184)
+- v2 REST request helper with merge-patch default (#184)
+- problem+json to MCPError adapter (#184)
+- v2 base URL resolution and version-scoped breaker naming (#184)
+
+### Fixed
+
+- drop an unnecessary type assertion in the v2 error adapter (#353)
+- apply final whole-branch review fixes for v2 transport (#184)
+
+### Documentation
+
+- re-probe v2 against 2.4.0/2.5.0/2.6.0 and correct the P3 design spec (#352)
+- bring ROADMAP, CHANGELOG, ARCHITECTURE current with v2 P1+P2 (#184)
+- resolve the two unverified rows in the version matrix (#184)
+- API version matrix + the 2.4.0 PATCH/subscription bug (#184)
+- P3 design spec — v2 native adoption, not v1-with-PATCH (#184)
+- record the 2.4.0 PATCH-on-subscribed-task blocker (#184)
+- record live-verified findings from the 2.4.0 check (#184)
+- implementation plan for v2 transport and routing (#184 P1+P2)
+- design spec for v2 transport, error adapter, and routing (#184 P1+P2)
+
+### Chores
+
+- cover error-detail fallback branches in readErrorDetails
+
 ## [0.7.0-beta.5] - 2026-09-05
 
 ### Vikunja 2.6.0 alignment, and a rolling three-version support window
