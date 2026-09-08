@@ -64,13 +64,15 @@ describe('RestCrossProjectFilteringStrategy', () => {
     filterExpression: null,
     filterString: undefined,
     params: { page: 1, per_page: 50 },
-    authManager: {} as AuthManager,
+    authManager: { getCapabilities: () => undefined } as unknown as AuthManager,
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
     strategy = new RestCrossProjectFilteringStrategy();
-    mockAuthManager = {} as AuthManager;
+    // See ClientSideFilteringStrategy.test.ts: undefined capabilities is the
+    // pre-detection state, and it resolves these reads to v1.
+    mockAuthManager = { getCapabilities: () => undefined } as unknown as AuthManager;
     mockClientStrategy = { execute: jest.fn() };
     (
       ClientSideFilteringStrategy as jest.MockedClass<typeof ClientSideFilteringStrategy>

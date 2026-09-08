@@ -33,7 +33,11 @@ export interface FilteringArgs {
   filterTimezone?: string;
   /** GET /tasks `filter_include_nulls` param. Only honored for cross-project listing (direct REST). */
   filterIncludeNulls?: boolean;
-  /** GET /tasks `expand` param (repeatable). Only honored for cross-project listing (direct REST). */
+  /**
+   * The `expand` param (repeatable). Honored on cross-project AND
+   * single-project listings since #184 P3 step 7 — see the same field on
+   * `utils/filtering/types.ts`'s `FilteringArgs`.
+   */
   expand?: string[];
 }
 

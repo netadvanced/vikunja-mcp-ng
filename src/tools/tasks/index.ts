@@ -127,20 +127,27 @@ async function listTasks(
         ? ` — ${incomplete ? 'INCOMPLETE RESULT' : 'PARTIAL FILTER'}: ${resultWarnings.join(' ')}`
         : '';
 
-    // orderBy/filterTimezone/filterIncludeNulls/expand are GET /tasks query
-    // params only honored by the cross-project direct-REST path
+    // orderBy/filterTimezone/filterIncludeNulls are GET /tasks query params
+    // only honored by the cross-project direct-REST path
     // (RestCrossProjectFilteringStrategy) — single-project listing calls
-    // GET /projects/{id}/tasks, which never supported them (see the schema
-    // comment above these fields). Supplying one on a single-project
-    // listing used to be silently accepted and silently ignored, with no
-    // signal at all (issue #290 LOW-3).
+    // GET /projects/{id}/tasks, and these three were never part of the
+    // params shape those call sites used (see the schema comment above
+    // these fields). Supplying one on a single-project listing used to be
+    // silently accepted and silently ignored, with no signal at all (issue
+    // #290 LOW-3).
+    //
+    // `expand` used to be in this list and is NOT any more (#184 P3 step
+    // 7). It was grouped with the other three on the assumption that
+    // GET /projects/{id}/tasks did not accept it. Live probing of 2.4.0,
+    // 2.5.0 and 2.6.0 on 2026-09-05 showed it accepts it on all three and
+    // populates the expanded fields, so it is now forwarded on the
+    // single-project path instead of reported as ignored.
     const isCrossProjectListing = args.projectId === undefined || args.allProjects === true;
     const ignoredParams: string[] = [];
     if (!isCrossProjectListing) {
       if (args.orderBy !== undefined) ignoredParams.push('orderBy');
       if (args.filterTimezone !== undefined) ignoredParams.push('filterTimezone');
       if (args.filterIncludeNulls !== undefined) ignoredParams.push('filterIncludeNulls');
-      if (args.expand !== undefined && args.expand.length > 0) ignoredParams.push('expand');
     }
     const ignoredParamsMessage =
       ignoredParams.length > 0
@@ -402,7 +409,11 @@ export function registerTasksTool(
       // REST — see RestCrossProjectFilteringStrategy). Single-project
       // listing (ClientSideFilteringStrategy/ServerSideFilteringStrategy)
       // calls GET /projects/{id}/tasks, which never supported these extra
-      // params, so they are silently unused in that case.
+      // params, so they are unused in that case — and SAID to be unused,
+      // via the ignoredParams note the list handler renders.
+      //
+      // `expand` below is the exception: it is honored on both listing
+      // shapes since #184 P3 step 7.
       orderBy: z
         .enum(['asc', 'desc'])
         .optional()
@@ -429,9 +440,11 @@ export function registerTasksTool(
         .array(z.enum(['subtasks', 'buckets', 'reactions', 'comments']))
         .optional()
         .describe(
-          'Extra relations to embed in each task. Cross-project listing only (no projectId, ' +
-            'or allProjects: true) — ignored (with a response warning) on a single-project ' +
-            'listing.',
+          'Extra relations to embed in each task. Honored on both cross-project and ' +
+            'single-project listings. With a tk_* API token, expand=comments and ' +
+            'expand=reactions additionally need the tasks_comments / reactions token scopes ' +
+            'from Vikunja 2.6.0 on; without them the call fails with a 401 rather than ' +
+            'quietly returning unexpanded tasks.',
         ),
       // Comment fields
       comment: z.string().optional(),

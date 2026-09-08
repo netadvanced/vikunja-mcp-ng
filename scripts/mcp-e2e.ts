@@ -1179,6 +1179,27 @@ async function testLabels(h: McpHarness, ctx: FlowContext): Promise<void> {
     return;
   }
 
+  // Partial update, against a live server, because nothing else here can
+  // catch what went wrong with this subcommand: it used to send the verb the
+  // vendored v1 spec declares (`PUT /labels/{id}`), which every supported
+  // server answers 405 to, and the unit tests mocked that same spec-derived
+  // route so both sides agreed on a call that does not exist
+  // (VIKUNJA_API_ISSUES.md #26). Changing only the colour must leave the
+  // title standing: on v2 because `PATCH` is a true partial update, on v1
+  // because the strategy reads the label and merges before replacing it.
+  const update = await h.call('vikunja_labels', {
+    subcommand: 'update',
+    id: ctx.labelId,
+    hexColor: '#f97316',
+  });
+  if (assertOk('update label (colour only)', update)) {
+    assertStep(
+      'label update leaves the untouched title standing',
+      update.text.includes(title),
+      update.text.slice(0, 300),
+    );
+  }
+
   const apply = await h.call('vikunja_task_labels', {
     operation: 'apply-label',
     id: ctx.taskId,

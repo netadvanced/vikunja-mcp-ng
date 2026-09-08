@@ -1,10 +1,27 @@
 # API Version Matrix — which Vikunja API version serves each MCP function
 
-> **Status: PLANNED, not shipped.** As of this writing **no MCP function routes through v2** —
-> the v2 transport, error adapter, routing decision, and kill switch exist (0.7.0 P1+P2) but are
-> wired to nothing except `vikunja_auth`'s reporting. The **Planned path** column below describes
-> the P3 target, not current behaviour. Rows flip as P3 lands, per the maintenance rule at the
-> bottom.
+> **Status: P3 complete (2026-09-06), unreleased.** Rows whose **Notes** begin with **SHIPPED**
+> route through v2 today: the task read paths (`vikunja_tasks get`, `vikunja_tasks list`) for
+> `?format=markdown`, `vikunja_tasks update` on v2 `PATCH` from server 2.5.0, and the update-shaped
+> writes of the remaining entities: the four project writes (`update`, `archive`, `unarchive`,
+> `move`), the two project-view writes (`update-view`, `set-done-bucket`), `vikunja_labels update`,
+> `vikunja_filters update`, `vikunja_task_comments update` and `vikunja_teams update`, each on every
+> supported version with no floor. Every other row describes what v2 *could* do for that function,
+> not current behaviour: those functions still run on v1 and adopting them is not scheduled.
+>
+> Two planned P3 steps did not produce v2 routing, and the reasons are recorded rather than omitted.
+> **`vikunja_task_bulk` was dropped** (its `v1 pinned` row below explains why: v2 bulk wipes assignees
+> exactly as v1 does and there is no v2 `PATCH` for bulk). **`expand` turned out to be v1-only work**,
+> fixed on the v1 path, with no v2 advantage on any supported version. Rows flip per the maintenance
+> rule at the bottom. The **Planned path** cell keeps its wording when a row ships, so the counts in
+> the summary stay recountable.
+>
+> **Read/write format asymmetry (deliberate, owner decision 2026-09-05).** v2 honours
+> `?format=markdown` on `GET` and ignores it on `PATCH`, so a task description read through
+> `vikunja_tasks get` or `list` comes back as GitHub-flavoured markdown while the same description
+> returned by an update comes back as HTML. Reads take markdown because that is where an LLM
+> consumes descriptions; updates are left exactly as they were rather than paying a re-read round
+> trip to make the two agree. This disappears if Vikunja adds `format` to `PATCH`.
 
 ## Why this document exists
 
@@ -52,10 +69,12 @@ session's cached capability probe, and any operation can be on a different versi
 neighbour. This is permanent by design: several functions below have no v2 path at all, so a global
 switch could never be correct.
 
-Regardless of which version runs, **callers see identical output**. v2's pagination envelope is
-unwrapped, `$schema` stripped, and errors normalized to the same `MCPError` shape v1 produces,
-before any result leaves the internal strategy layer. The version in use is observable only via
-`vikunja_auth status` (`activeApiVersion`).
+Regardless of which version runs, **callers see the same output shape**. v2's pagination envelope is
+unwrapped, `$schema` and `max_permission` stripped, and errors normalized to the same `MCPError`
+shape v1 produces, before any result leaves the internal strategy layer. The version in use is
+observable via `vikunja_auth status` (`activeApiVersion`) and, deliberately, through one content
+difference: a task description read over v2 is markdown where v1 returns HTML (see the asymmetry
+note at the top of this document).
 
 The `featureFlags.forceV1Api` config key (env: `VIKUNJA_MCP_FORCE_V1_API`) forces every function to
 the v1 column — see [CONFIGURATION.md](CONFIGURATION.md#forcing-the-v1-api).
@@ -67,16 +86,18 @@ changes were matched on resource + intent, so a v1→v2 verb rename is **not** c
 
 | Planned path | Count | |
 |---|--:|---|
-| **v2 →v1** | 19 | P3 targets — v2 when available, v1 fallback |
+| **v2 →v1** | 17 | P3 targets: v2 when available, v1 fallback |
 | **v1 (later)** | 149 | v2 equivalent exists; migration not scheduled in P3 |
-| **v1 pinned** | 3 | v2 exists but offers no benefit — see rows for reasons |
+| **v1 pinned** | 5 | v2 exists but offers no benefit; see rows for reasons |
 | **v1 only** | 3 | No v2 equivalent. Permanent |
 | **local** | 9 | No Vikunja API call |
 | **Total** | **183** | |
 
-Counts are recounted from the row markers, never hand-adjusted:
-`grep -cF '| **v2 →v1** |' docs/API-VERSION-MATRIX.md` (and equivalents), applied to the sections
-below the summary.
+Counts are recounted from the row markers, never hand-adjusted: `grep -cF '| v1 (later) |'` and
+equivalents, applied to the sections below the summary. The **v2 →v1** count is the one that needs a
+pattern rather than a fixed string, because a row that carries a per-operation version floor spells its
+marker differently (`| **v2 (≥2.5.0) →v1** |`, currently just `vikunja_tasks update`):
+`grep -cE '\| \*\*v2 [^|]*→v1\*\* \|' docs/API-VERSION-MATRIX.md`.
 
 The three permanent `v1 only` functions:
 
@@ -94,9 +115,9 @@ full v2 equivalents.
 
 | MCP function | v1 call(s) | v2 call(s) | Planned | Notes |
 |---|---|---|---|---|
-| `vikunja_tasks update` | `GET /tasks/{id}`; `POST /tasks/{id}`; `GET /tasks/{id}` | `GET`; `PATCH /tasks/{id}`; `GET` | **v2 (≥2.5.0) →v1** | Milestone payoff: PATCH + inline assignees replaces fetch-merge-POST. Carries a per-operation minimum server version of **2.5.0**: the subscription-422 (`VIKUNJA_API_ISSUES.md` #25) is fixed from 2.5.0 and unfixed on 2.4.0, so 2.4.0 stays on v1. No workaround is used (re-probed 2026-09-05) |
-| `vikunja_tasks get` | `GET /tasks/{id}` | `GET /tasks/{id}` | **v2 →v1** | |
-| `vikunja_tasks list` | `GET /tasks` or `GET /projects/{id}/tasks` | same | **v2 →v1** | v1's project-scoped route is undocumented; v2 documents it |
+| `vikunja_tasks update` | `GET /tasks/{id}`; `POST /tasks/{id}`; assignee diff; labels; `GET /tasks/{id}` | `GET /tasks/{id}`; labels; `PATCH /tasks/{id}` (fields + assignees) | **v2 (≥2.5.0) →v1** | **SHIPPED.** Milestone payoff: PATCH with inline assignees replaces fetch-merge-POST, the per-user assignee diff and the trailing re-read. Carries a per-operation minimum server version of **2.5.0**: the subscription-422 (`VIKUNJA_API_ISSUES.md` #25) is fixed from 2.5.0 and unfixed on 2.4.0, so 2.4.0 stays on v1 — not as a fallback, but because fetch-merge-POST is the correct update there. No workaround is used (re-probed 2026-09-05). The leading `GET` remains on both paths: it is the pre-update snapshot the response's `previousState`/`affectedFields` are derived from, and it never feeds the v2 request body, so v2 is not read-modify-write. Labels move ahead of the write on v2 so the `PATCH` response is the final state. The update response stays HTML — see the read/write format asymmetry note at the top. See `src/tools/tasks/crud/update/` |
+| `vikunja_tasks get` | `GET /tasks/{id}` | `GET /tasks/{id}?format=markdown` | **v2 →v1** | **SHIPPED.** Markdown descriptions are the entire reason. No `minVersion` floor: `format` was verified on 2.4.0, 2.5.0 and 2.6.0. v2's `max_permission` is dropped at the boundary, so the payload is otherwise identical to v1's |
+| `vikunja_tasks list` | `GET /tasks` or `GET /projects/{id}/tasks` | same, plus `format=markdown`, with `s` spelled `q` | **v2 →v1** | **SHIPPED.** Markdown, and nothing else. The earlier claim that `GET /projects/{id}/tasks` was v2-only was **disproved live**: v1 serves it on all three supported versions, so no discovery call is saved. `/tasks/all` has no v2 route and stays on v1 |
 | `vikunja_tasks create` | `PUT /projects/{id}/tasks` | `POST /projects/{project}/tasks` | **v2 →v1** | v2 accepts `assignees` inline (labels still need a separate call) |
 | `vikunja_tasks delete` | `GET /tasks/{id}` (best-effort); `DELETE` | same | v1 (later) | Context-fetch failure swallowed; delete proceeds |
 | `vikunja_tasks add-reminder` | `GET /tasks/{id}`; `POST /tasks/{id}` | `GET`; `PUT /tasks/{id}` | v1 (later) | Reminders are a task field — no dedicated endpoint in either version |
@@ -126,11 +147,11 @@ full v2 equivalents.
 | `vikunja_tasks set-bucket` | `GET /tasks/{id}`; `GET .../views`; `POST .../buckets/{bucket}/tasks` | `GET`; `GET`; `PUT` | v1 (later) | Resolution GETs conditional |
 | `vikunja_tasks set-position` | `GET /tasks/{id}`; `GET .../views`; `POST /tasks/{id}/position` | `GET`; `GET`; `PUT` | v1 (later) | |
 | `vikunja_tasks bulk-create` | `PUT /projects/{id}/tasks`; `POST .../labels/bulk`; `PUT .../assignees`; `GET` | v2 verbs | v1 (later) | Label/assignee calls conditional per item |
-| `vikunja_tasks bulk-update` | `GET /tasks/{id}`; `POST /tasks/bulk`; `POST .../assignees/bulk` | `GET`; `PUT /tasks/bulk`; `PUT` | **v2 →v1** | Verb change only. Does **not** retire the assignee snapshot/restore: v2 `PUT /tasks/bulk` wipes assignees exactly as v1 does (re-probed live on 2.6.0, 2026-09-05), because both route into the same `models.BulkTask.Update()` chain |
+| `vikunja_tasks bulk-update` | `GET /tasks/{id}`; `POST /tasks/bulk`; `POST .../assignees/bulk` | `GET`; `PUT /tasks/bulk`; `PUT` | **v1 pinned** | **P3 step 5 was DROPPED, 2026-09-06.** The step existed to retire the assignee snapshot/restore, and v2 does not retire it: `PUT /tasks/bulk` wipes assignees exactly as v1's `POST` does (re-probed live on 2.6.0, 2026-09-05), because both route into the same `models.BulkTask.Update()` chain, and `bulk_task.go` registers no `PATCH`. With the premise gone, routing here would swap one verb for another in the most concurrency-sensitive path in the codebase and change nothing observable. **Revisit if** Vikunja registers a `PATCH` on `bulk_task.go`, or changes `models.BulkTask.Update()` so a scalar-only payload stops decoding `assignees` to `nil` |
 | `vikunja_tasks bulk-delete` | `GET /tasks/{id}`; `DELETE /tasks/{id}` | same | v1 (later) | |
 | `vikunja_tasks bulk-set-bucket` | `GET /tasks/{id}`; `GET .../views`; `POST .../buckets/{bucket}/tasks` | `GET`; `GET`; `PUT` | v1 (later) | |
 | `vikunja_task_bulk bulk-create` | As `vikunja_tasks bulk-create` | same | v1 (later) | |
-| `vikunja_task_bulk bulk-update` | As `vikunja_tasks bulk-update` | same | **v2 →v1** | Verb change only. Does **not** retire the assignee snapshot/restore: v2 `PUT /tasks/bulk` wipes assignees exactly as v1 does (re-probed live on 2.6.0, 2026-09-05), because both route into the same `models.BulkTask.Update()` chain |
+| `vikunja_task_bulk bulk-update` | As `vikunja_tasks bulk-update` | same | **v1 pinned** | **P3 step 5 was DROPPED, 2026-09-06.** The step existed to retire the assignee snapshot/restore, and v2 does not retire it: `PUT /tasks/bulk` wipes assignees exactly as v1's `POST` does (re-probed live on 2.6.0, 2026-09-05), because both route into the same `models.BulkTask.Update()` chain, and `bulk_task.go` registers no `PATCH`. With the premise gone, routing here would swap one verb for another in the most concurrency-sensitive path in the codebase and change nothing observable. **Revisit if** Vikunja registers a `PATCH` on `bulk_task.go`, or changes `models.BulkTask.Update()` so a scalar-only payload stops decoding `assignees` to `nil` |
 | `vikunja_task_bulk bulk-delete` | As `vikunja_tasks bulk-delete` | same | v1 (later) | |
 | `vikunja_task_bulk bulk-set-bucket` | As `vikunja_tasks bulk-set-bucket` | same | v1 (later) | |
 | `vikunja_task_assignees assign` | `PUT /tasks/{id}/assignees` | `POST /tasks/{id}/assignees` | v1 (later) | |
@@ -142,7 +163,7 @@ full v2 equivalents.
 | `vikunja_task_comments comment` | `PUT /tasks/{id}/comments`; `GET` | `POST`; `GET` | v1 (later) | |
 | `vikunja_task_comments list` | `GET /tasks/{id}/comments` | same | v1 (later) | |
 | `vikunja_task_comments get` | `GET /tasks/{id}/comments/{commentID}` | same | v1 (later) | |
-| `vikunja_task_comments update` | `POST /tasks/{id}/comments/{commentID}` | `PATCH /tasks/{task}/comments/{commentid}` | **v2 →v1** | True partial update |
+| `vikunja_task_comments update` | `POST /tasks/{id}/comments/{commentID}` | `PATCH /tasks/{task}/comments/{commentid}` | **v2 →v1** | **SHIPPED.** True partial update. **No `minVersion` floor**, unlike `vikunja_tasks update`: the route was probed on 2.4.0, 2.5.0 and 2.6.0 on 2026-09-06 and applies the patch, preserves `author`/`created`, and answers 404/422 correctly on all three, so the floor release gets v2 too. Still one request on both paths — there was never a fetch-merge here to retire, since v1's `POST` already replaces only `comment` — so this is a dispatcher, not a strategy pair. A no-op patch answers an empty **304**, which v1 answers 200; that case re-reads over v1 so the caller still gets a comment back. The update response stays HTML, and comment READS are unchanged (still v1) — see the asymmetry note at the top. See `src/tools/tasks/comments/CommentOperationsService.ts` |
 | `vikunja_task_comments delete` | `DELETE /tasks/{id}/comments/{commentID}` | same | v1 (later) | |
 | `vikunja_task_relations relate` | `PUT /tasks/{id}/relations`; `GET` | `POST`; `GET` | v1 (later) | |
 | `vikunja_task_relations unrelate` | `DELETE .../relations/{kind}/{otherID}`; `GET` | same | v1 (later) | |
@@ -157,12 +178,12 @@ full v2 equivalents.
 
 | MCP function | v1 call(s) | v2 call(s) | Planned | Notes |
 |---|---|---|---|---|
-| `vikunja_projects update` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH /projects/{id}` | **v2 →v1** | PATCH removes the fetch-merge |
-| `vikunja_projects archive` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | |
-| `vikunja_projects unarchive` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | |
-| `vikunja_projects move` | `GET /projects` (fetch-all); `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | |
-| `vikunja_projects update-view` | `GET .../views/{view}`; `POST .../views/{view}` | `GET`; `PATCH .../views/{view}` | **v2 →v1** | |
-| `vikunja_projects set-done-bucket` | `[GET views]`; `GET .../views/{view}`; `POST .../views/{view}` | `GET`; `GET`; `PATCH` | **v2 →v1** | |
+| `vikunja_projects update` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH /projects/{id}` | **v2 →v1** | **SHIPPED.** PATCH removes the merge, not the fetch: the read is still needed for hierarchy validation. No `minVersion` floor, project PATCH works on 2.4.0. `max_permission` is stripped on **both** strategies, not just the v2 one: unlike task/team/filter it is not a v2-only field, and the two APIs disagree on the value (v1 `0`, v2 `PATCH` `null` on 2.4.0/2.5.0), so stripping only v2 would have swapped one caller-visible divergence for another. See `src/tools/projects/update/canonical.ts` |
+| `vikunja_projects archive` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | **SHIPPED.** One-field patch; the read still answers "already archived". Shares `ProjectUpdateContext` with `update`, so it inherits the same `max_permission` stripping on both paths |
+| `vikunja_projects unarchive` | `GET /projects/{id}`; `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | **SHIPPED.** As archive |
+| `vikunja_projects move` | `GET /projects` (fetch-all); `POST /projects/{id}` | `GET`; `PATCH` | **v2 →v1** | **SHIPPED.** `parent_project_id` is always sent, `0` for root, because an omitted parent here means move-to-root |
+| `vikunja_projects update-view` | `GET .../views/{view}`; `POST .../views/{view}` | `PATCH .../views/{view}` | **v2 →v1** | **SHIPPED.** One `PATCH`, no read: the v1 `GET` exists only to survive `ProjectView.Update`'s `Cols(...)` allowlist (`VIKUNJA_API_ISSUES.md` #15), and v2 merges server-side, which also retires the read-modify-write race. No `minVersion` floor — a partial `PATCH` applied, left untouched fields alone and merged nested `filter` keys identically on 2.4.0, 2.5.0 and 2.6.0 (probed live 2026-09-05). A patch that changes nothing answers `304`, which the strategy resolves with a v1 read. `?format=markdown` is not sent: v2 ignores it on `PATCH`, see the read/write asymmetry note at the top. See `src/tools/projects/view-update/` |
+| `vikunja_projects set-done-bucket` | `[GET views]`; `GET .../views/{view}`; `POST .../views/{view}` | `[GET views]`; `PATCH .../views/{view}` | **v2 →v1** | **SHIPPED.** Same view-update strategy pair as the row above: the done bucket is `done_bucket_id` on the **view**, not a field of the bucket, so this is a view update and not a bucket update. Setting the bucket that already holds the role answers `304`; the strategy's re-read then satisfies the existing verify-then-report check rather than failing it. Kanban buckets themselves stay on v1 permanently (see `update-bucket` below) |
 | `vikunja_projects get` | `GET /projects/{id}` | same | **v2 →v1** | |
 | `vikunja_projects list` | `GET /projects` | same | **v2 →v1** | |
 | `vikunja_projects create` | `PUT /projects` | `POST /projects` | v1 (later) | |
@@ -208,20 +229,20 @@ full v2 equivalents.
 
 | MCP function | v1 call(s) | v2 call(s) | Planned | Notes |
 |---|---|---|---|---|
-| `vikunja_labels update` | `PUT /labels/{id}` | `PATCH /labels/{id}` | **v2 →v1** | v2 splits PATCH (partial) / PUT (replace); PATCH matches actual semantics |
+| `vikunja_labels update` | `GET /labels/{id}`; `POST /labels/{id}` | `PATCH /labels/{id}` | **v2 →v1** | **SHIPPED.** No `minVersion` floor: v2 `PATCH` applied the change and preserved every unmentioned field on 2.4.0, 2.5.0 and 2.6.0 alike. The v1 column is corrected from `PUT /labels/{id}`, which `docs/vikunja-openapi.json` declares but which answers **405 on every supported version** — the tool used to send it, so this subcommand was broken before this change. The route the server routes is `POST /labels/{id}`, and it is a full model replace, hence the leading `GET` on the v1 path. See `src/utils/label-update.ts` |
 | `vikunja_labels create` | `PUT /labels` | `POST /labels` | v1 (later) | |
 | `vikunja_labels get` | `GET /labels/{id}` | same | v1 (later) | |
 | `vikunja_labels list` | `GET /labels` | same | v1 (later) | |
 | `vikunja_labels delete` | `DELETE /labels/{id}` | same | v1 (later) | |
 | `vikunja_labels ensure` | `GET /labels?s=`; `PUT /labels` (conditional) | `GET ?q=`; `POST` | v1 (later) | Search param `s`→`q` |
-| `vikunja_filters update` | `GET /filters/{id}`; `POST /filters/{id}` (replace) | `GET`; `PATCH /filters/{filter}` | **v2 →v1** | |
+| `vikunja_filters update` | `GET /filters/{id}`; `POST /filters/{id}` (replace) | `GET`; `PATCH /filters/{filter}` | **v2 →v1** | **SHIPPED.** P3 step 6. One `PATCH` replaces the v1 read-merge-write pair, on **every** supported version: probed on 2.4.0/2.5.0/2.6.0, no `minVersion` floor. `filters` merges per key, so a query-only patch preserves the stored `s`, `sort_by`, `order_by`, `filter_include_nulls`; `is_favorite: false` applies; an invalid query is rejected exactly as v1 rejects it. A no-op answers 304 and is re-read on v1 |
 | `vikunja_filters create` | `PUT /filters` | `POST /filters` | v1 (later) | |
 | `vikunja_filters get` | `GET /filters/{id}` | same | v1 (later) | |
 | `vikunja_filters list` | `GET /projects`; `GET /filters/{id}` per entry | same | v1 (later) | N+1 in both — no list-all-filters endpoint |
 | `vikunja_filters delete` | `GET /filters/{id}`; `DELETE` | same | v1 (later) | |
 | `vikunja_filters build` | (local only) | — | **local** | Pure `FilterBuilder` |
 | `vikunja_filters validate` | (local only) | — | **local** | Pure parse/validate |
-| `vikunja_teams update` | `POST /teams/{id}` | `PATCH /teams/{id}` | **v2 →v1** | |
+| `vikunja_teams update` | `GET /teams/{id}`; `POST /teams/{id}` | `PATCH /teams/{id}` | **v2 →v1** | **SHIPPED.** Two calls become one, and the reason the first one existed disappears. v1's handler binds the body into an empty struct and writes `is_public` with xorm's `UseBool` ([VIKUNJA_API_ISSUES.md §3a](VIKUNJA_API_ISSUES.md)), so an omitted boolean is written as an explicit `false` and a rename silently un-publishes a public team — hence the read-then-merge. v2's `PATCH` has none of that: probed live on 2.4.0, 2.5.0 and 2.6.0, a name-only patch returns 200 and leaves `is_public` and the description untouched, and a description-only patch is accepted rather than rejected by the required-name validator. **No `minVersion` floor**, deliberately: nothing about this route is broken on the floor, unlike task update. A no-op patch answers 304 and falls back to a v1 read. `max_permission` is dropped at the boundary. See `src/tools/teams/update/` |
 | `vikunja_teams create` | `PUT /teams` | `POST /teams` | v1 (later) | |
 | `vikunja_teams get` | `GET /teams/{id}` | same | v1 (later) | |
 | `vikunja_teams list` | `GET /teams` | same | v1 (later) | |
@@ -319,11 +340,12 @@ These affect many rows and are handled centrally rather than per-function:
 | Difference | Handling |
 |---|---|
 | List responses wrapped in `{$schema, items, total, page, per_page, total_pages}` | Envelope unwrapped at the strategy boundary; callers still receive an array |
-| Search parameter renamed `s` → `q` | Translated inside the v2 strategy |
+| Search parameter renamed `s` → `q` | Translated inside the v2 query builder (`src/utils/vikunja-task-reads.ts`). v2 **silently ignores** an unknown `s` and answers 200 with an unfiltered list, so a mis-ported name degrades to "no filter applied" rather than an error |
 | REST verb convention rewritten (v1 `PUT`=create/`POST`=update; v2 `POST`=create/`PATCH`=partial/`PUT`=replace) | Per-row above; most "missing endpoint" appearances are actually verb changes |
 | Errors are `application/problem+json` | Adapted to `MCPError`, preserving Vikunja's numeric `code` and per-field `errors[]` |
 | `ETag` on most single-entity `GET`s | Not yet used. `If-Match` is **not** enforced by the server (verified), so it provides no lost-update protection |
-| `?format=markdown` available for rich text | Planned for P3 reads |
+| `?format=markdown` available for rich text | **Shipped for task reads** (`vikunja_tasks get`/`list`). Honoured on `GET` and ignored on `PATCH`, so update responses stay HTML — see the asymmetry note at the top. Other rich-text reads (projects, labels, teams, comments) adopt it in later P3 steps |
+| `max_permission` on v2 single-entity reads | Dropped at the read boundary. The spec keeps it off P3's tool surface, and surfacing it would be a caller-visible schema change. **Projects are the exception to "v2-only":** v1 returns the field too, with a different value, so project writes strip it on the v1 path as well |
 
 ## Maintenance rule
 

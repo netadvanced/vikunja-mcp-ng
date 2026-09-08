@@ -48,7 +48,14 @@ export interface FilteringArgs {
   filterTimezone?: string;
   /** GET /tasks `filter_include_nulls` param. Same REST-only scope as `orderBy`. */
   filterIncludeNulls?: boolean;
-  /** GET /tasks `expand` param (repeatable). Same REST-only scope as `orderBy`. */
+  /**
+   * The `expand` param (repeatable), honored on BOTH listing shapes since
+   * #184 P3 step 7 — unlike the three fields above. v1 accepts it on
+   * `GET /tasks` and on `GET /projects/{id}/tasks`, verified live on 2.4.0,
+   * 2.5.0 and 2.6.0; the only listing path that cannot carry it is
+   * `ServerSideFilteringStrategy`'s unreachable `GET /tasks/all` branch,
+   * which rejects it explicitly rather than dropping it.
+   */
   expand?: string[];
 }
 

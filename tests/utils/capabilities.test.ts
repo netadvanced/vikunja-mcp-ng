@@ -17,8 +17,31 @@ import { AuthManager } from '../../src/auth/AuthManager';
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
-function mockResponse(ok: boolean, status = 200): Response {
-  return { ok, status } as unknown as Response;
+/**
+ * Builds a fetch response for the v2 probe.
+ *
+ * The defaults mirror what a real v2-capable server answers with, verified
+ * live against 2.4.0/2.5.0/2.6.0 on 2026-09-05: `application/openapi+json`
+ * (NOT `application/json`) and a body whose top-level keys are
+ * `{components, info, openapi, paths, security, servers}`. `contentType:
+ * null` models a response carrying no `Content-Type` header at all.
+ */
+function mockResponse(
+  ok: boolean,
+  status = 200,
+  {
+    contentType = 'application/openapi+json',
+    body = { openapi: '3.1.0', info: {}, paths: {} } as unknown,
+  }: { contentType?: string | null; body?: unknown } = {},
+): Response {
+  return {
+    ok,
+    status,
+    headers: {
+      get: (name: string): string | null => (name === 'content-type' ? contentType : null),
+    },
+    json: (): Promise<unknown> => Promise.resolve(body),
+  } as unknown as Response;
 }
 
 describe('capabilities', () => {
@@ -56,6 +79,79 @@ describe('capabilities', () => {
         'https://vikunja.example.com/api/v2/openapi.json',
         expect.objectContaining({ method: 'GET' }),
       );
+    });
+
+    // The trap this whole hardening pass has to survive. Every supported
+    // Vikunja serves the document as `application/openapi+json`, so an
+    // equality check against `application/json` would reject a genuinely
+    // v2-capable server and silently pin the whole session to v1.
+    it('accepts the application/openapi+json content type real servers send', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse(true, 200, { contentType: 'application/openapi+json' }),
+      );
+      await expect(probeV2Api('https://vikunja.example.com/api/v1')).resolves.toBe(true);
+    });
+
+    it('accepts a plain application/json content type with charset parameters', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse(true, 200, { contentType: 'Application/JSON; charset=utf-8' }),
+      );
+      await expect(probeV2Api('https://vikunja.example.com/api/v1')).resolves.toBe(true);
+    });
+
+    // A reverse proxy or SPA catch-all answering every unmatched path with
+    // 200 + index.html is the false positive that made the old
+    // `response.ok`-only probe unsafe to route on.
+    it('returns false for a 200 that serves HTML rather than a document', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse(true, 200, {
+          contentType: 'text/html; charset=utf-8',
+          body: { openapi: '3.1.0' },
+        }),
+      );
+      await expect(probeV2Api('https://vikunja.example.com/api/v1')).resolves.toBe(false);
+    });
+
+    it('returns false for a 200 carrying no content type at all', async () => {
+      mockFetch.mockResolvedValue(mockResponse(true, 200, { contentType: null }));
+      await expect(probeV2Api('https://vikunja.example.com/api/v1')).resolves.toBe(false);
+    });
+
+    it('returns false for JSON without a top-level openapi key', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse(true, 200, {
+          contentType: 'application/json',
+          body: { message: 'not found' },
+        }),
+      );
+      await expect(probeV2Api('https://vikunja.example.com/api/v1')).resolves.toBe(false);
+    });
+
+    it('returns false when the openapi key is present but not a string', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse(true, 200, { body: { openapi: { version: '3.1.0' } } }),
+      );
+      await expect(probeV2Api('https://vikunja.example.com/api/v1')).resolves.toBe(false);
+    });
+
+    it('returns false for a JSON null body', async () => {
+      mockFetch.mockResolvedValue(mockResponse(true, 200, { body: null }));
+      await expect(probeV2Api('https://vikunja.example.com/api/v1')).resolves.toBe(false);
+    });
+
+    it('returns false for a JSON body that is not an object', async () => {
+      mockFetch.mockResolvedValue(mockResponse(true, 200, { body: 'openapi' }));
+      await expect(probeV2Api('https://vikunja.example.com/api/v1')).resolves.toBe(false);
+    });
+
+    it('returns false and never throws when the body is not parseable JSON', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: { get: (): string => 'application/json' },
+        json: (): Promise<unknown> => Promise.reject(new SyntaxError('Unexpected token <')),
+      } as unknown as Response);
+      await expect(probeV2Api('https://vikunja.example.com/api/v1')).resolves.toBe(false);
     });
 
     it('returns false on a 404 response', async () => {

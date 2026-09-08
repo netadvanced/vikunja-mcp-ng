@@ -10,6 +10,13 @@ import { MCPError } from '../types/errors';
 import { extractHttpStatus } from './http-error-detail';
 
 /**
+ * Vikunja v2's answer to a merge patch that would change nothing: an empty
+ * `304 Not Modified`. Not an error, despite reaching this module through the
+ * error path — see `isClientErrorExcludedFromBreaker`.
+ */
+export const HTTP_NOT_MODIFIED = 304;
+
+/**
  * Simple circuit breaker registry for tracking and managing circuit breakers
  *
  * NOT re-keyed by identity in `oidc-http` mode (docs/OIDC-RESOURCE-SERVER.md
@@ -163,6 +170,10 @@ const OPEN_BREAKER_CODE = 'EOPENBREAKER';
  * breaker, which is exactly the "service looks unhealthy" signal the
  * breaker exists to catch. The one exception is a caller-side cancellation
  * (`details.cancelled`), handled first below.
+ *
+ * A v2 `304 Not Modified` is excluded too, for the strongest version of the
+ * same reason: it is not an error at all, only an error-shaped one. See the
+ * check in the body.
  */
 export function isClientErrorExcludedFromBreaker(error: unknown): boolean {
   // A request the CALLER aborted (the tool-execution deadline elapsed — see
@@ -188,6 +199,18 @@ export function isClientErrorExcludedFromBreaker(error: unknown): boolean {
 
   const status = extractHttpStatus(error);
   if (status === null) return false;
+
+  // A v2 `304 Not Modified`. Vikunja answers a merge patch that would change
+  // nothing with an empty 304 (verified live on 2.4.0, 2.5.0 and 2.6.0), and
+  // `Response.ok` is false for it, so the v2 transport correctly surfaces it as
+  // an `MCPError`. But it is a CORRECT answer to a well-formed request, not a
+  // failure of any kind: counting it would let a caller that re-sends the same
+  // comment (or project title, or label colour) three times in five calls trip
+  // a breaker every other tenant of that endpoint group shares. Callers that
+  // care distinguish it by `details.statusCode === 304` and re-read; see
+  // `updateComment` in src/tools/tasks/comments/CommentOperationsService.ts.
+  if (status === HTTP_NOT_MODIFIED) return true;
+
   if (status === 401) return false;
   return status >= 400 && status < 500;
 }

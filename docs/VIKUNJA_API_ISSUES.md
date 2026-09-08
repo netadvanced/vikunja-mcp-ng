@@ -50,6 +50,8 @@ differently.
 | 22 | 2.6.0 refuses an out-of-scope `expand` with a 401 indistinguishable from a bad token | ⚠️ Open upstream, inference-based guidance shipped |
 | 23 | `models.Project.max_permission` returns `null` while the spec declares it a non-nullable integer | ⚠️ Open upstream (spec bug), no client impact |
 | 24 | `DELETE /projects/{projectID}/users/{userID}` takes a USERNAME, not the documented integer id | ⚠️ Open upstream (spec bug), fixture uses the username |
+| 25 | v2 `PATCH /tasks/{id}` 422s for any subscribed task | ✅ Fixed upstream on 2.5.0; 2.4.0 routes to v1 |
+| 26 | `PUT /labels/{id}` is declared in the v1 spec and answers 405 on every version | ⚠️ Open upstream (spec bug), correct verb shipped |
 
 ## 1. SQL-Like Filter Syntax Not Supported
 
@@ -221,11 +223,38 @@ update, and a team update is consequently non-atomic: a concurrent edit
 between the read and the write is overwritten by the merged snapshot (the same
 trade-off `buildProjectUpdatePayload` has always carried for projects).
 
-**Implementation:** `buildTeamUpdatePayload` (`src/tools/teams.ts`) is the teams
-sibling of `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`), the
+**The v2 route does not have this bug, and the workaround is now scoped to v1
+(2026-09-05, issue #184 P3 step 6).** `PATCH /api/v2/teams/{id}` was probed
+against the live 2.4.0, 2.5.0 and 2.6.0 stacks on a team stored
+`is_public: true` with a description:
+
+| Version | `PATCH {name}` | `is_public` after | `description` after | `PATCH {description}` |
+|---|---|---|---|---|
+| 2.4.0 | 200 | `true` | preserved | 200 |
+| 2.5.0 | 200 | `true` | preserved | 200 |
+| 2.6.0 | 200 | `true` | preserved | 200 |
+
+All three reasons the merge exists are absent on that route: nothing is written
+for a column the body does not mention, so `UseBool` never fires; and the
+required-name validator is not reached by a description-only body. `is_public`
+sent explicitly as `false` or `true` is still applied, so the
+omission-versus-explicit-`false` distinction survives. `vikunja_teams update`
+therefore sends one `PATCH` on a v2-capable server and keeps the fetch-merge
+only where it runs on v1 — under the `forceV1Api` kill switch, against a
+server with no v2 API, or in a session that has not been through capability
+detection. Note the v2 path is also atomic in the way the v1 one is not: it
+never sends fields it did not change, so a concurrent edit is no longer
+clobbered. **This item stays open**, because the v1 handler is unchanged and v1
+remains the floor.
+
+**Implementation:** `buildTeamUpdatePayload`
+(`src/tools/teams/update/V1TeamUpdateStrategy.ts`) is the teams sibling of
+`buildProjectUpdatePayload` (`src/tools/projects/crud.ts`), the
 fetch → merge → POST pattern `docs/ENDPOINT-PLAYBOOK.md` §4 prescribes. The
 spread is deliberate over a hand-maintained allow-list, which would silently
-drop fields a newer server adds.
+drop fields a newer server adds. The v2 sibling is
+`src/tools/teams/update/V2TeamUpdateStrategy.ts` and the routing rule lives in
+`TeamUpdateContext.ts` beside it.
 
 **Not affected: checked, same-shaped but genuinely safe.** The team-membership
 writes. `PUT /teams/{id}/members` is a *create* (`TeamMember.Create`,
@@ -614,11 +643,23 @@ listed-but-omitted field) rather than leaving them untouched.
 e.g. `title` would reset the view's `position` and `filter`.
 
 **Resolution:** `update-view` and the `set-done-bucket` composite
-(`src/tools/projects/views.ts`) fetch the current view first and merge
+(`src/tools/projects/view-update/`) fetch the current view first and merge
 requested changes onto it (`buildViewUpdatePayload`) before POSTing,
 functionally the same shape as a true full-replace fix, even though the
 underlying server-side hazard is a `Cols(...)` allowlist rather than a bare
 struct write.
+
+**v1 only, as of #184 P3 step 6.** The `Cols(...)` write is reached with a
+complete struct on v2 as well, because v2's
+`PATCH /api/v2/projects/{project}/views/{view}` merges the patch onto the
+stored view *before* calling the same model code. Probed live on 2.4.0, 2.5.0
+and 2.6.0 (2026-09-05): a `PATCH` naming only `title` returned 200 with
+`position: 4242` and the view's filter unchanged, and a v1 re-read agreed. So
+on a v2-capable server the client-side fetch-merge is not needed and
+`V2ViewUpdateStrategy` sends the bare partial body; `V1ViewUpdateStrategy`
+keeps the merge, and remains the correct implementation wherever v2 is not
+selected. Bucket updates are unaffected and stay on v1: v2 registers no
+`PATCH` on a bucket at all.
 
 ## 16. Project `is_favorite` Reset By Omission: a Second Mechanism, Not `UseBool`
 
@@ -645,11 +686,24 @@ explicit unfavorite request.
 explicitly resend `isFavorite: true` silently unfavorited a favorited
 project.
 
-**Resolution:** `buildProjectUpdatePayload` (`src/tools/projects/crud.ts`)
-fetches the current project and carries its `isFavorite` value forward
-unless the caller explicitly supplies a different one, the same
-fetch-merge-POST pattern used for #3a, closing both mechanisms with one
-merge despite their different root causes.
+**Resolution:** `buildProjectUpdatePayload`
+(`src/tools/projects/update/V1ProjectUpdateStrategy.ts`, re-exported from
+`src/tools/projects/crud.ts`) fetches the current project and carries its
+`isFavorite` value forward unless the caller explicitly supplies a different
+one, the same fetch-merge-POST pattern used for #3a, closing both mechanisms
+with one merge despite their different root causes.
+
+**Does not apply to the v2 `PATCH` path (probed 2026-09-06, #184 P3 step 6).**
+`PATCH /api/v2/projects/{id}` with a body that omits `is_favorite` returned 200
+and left the project favorited on 2.4.0, 2.5.0 and 2.6.0. The merge patch is
+applied to the stored project before the handler runs, so the omitted field is
+never bound to Go's zero value and `removeFromFavorite` never fires. An
+explicit `{"is_favorite": false}` still unfavorites. The merge therefore stays
+on v1, where the bug is real, and is not carried onto v2, where it would only
+reintroduce the read-modify-write race it was written to work around. Probing
+this rather than assuming it either way was the point: assuming `PATCH` fixes
+it without checking is how you ship a server that unfavorites every project it
+touches.
 
 ## 17. `labels` Filter Matches Label IDs, Not Titles
 
@@ -931,9 +985,16 @@ in the error that it is the LIKELY cause, with the "token really is expired"
 branch named second and a one-line experiment that separates them — the same
 request without `expand`. The inference also sets `details.insufficientScope`,
 which keeps the failure out of the shared circuit breaker and stops the
-cross-project listing strategy from silently falling back (the fallback drops
-`expand` entirely, so falling back turned the refusal into a successful
-listing quietly missing the expanded data).
+cross-project listing strategy from falling back, and stops the per-project
+aggregation from skipping every project in turn.
+
+Both of those refusals originally existed because the fallback dropped
+`expand` entirely, which turned the refusal into a successful listing quietly
+missing the expanded data. Since #184 P3 step 7 the fallback forwards `expand`
+like every other listing path, so the fallback would now hit the same refusal
+per project — one project at a time, reported as "N project(s) could not be
+read" with the scope diagnosis buried. Failing fast is still the right answer,
+for the second reason rather than the first.
 
 ## 23. `Project.max_permission` Returns `null` Where the Spec Says Integer
 
@@ -960,10 +1021,23 @@ returns `null` for every item on all three. So `max_permission` is populated on
 v2 single-entity reads only. A caller cannot list projects and read permissions
 in one call; that still needs a per-project read.
 
-No impact on this project today: nothing in `src/` reads `max_permission`, and
-the generated type already marks it optional. Recorded so a future reader who
-starts consuming the field knows it is nullable on the v1 path and on v2 lists,
-regardless of what the vendored spec says.
+Nothing in `src/` reads `max_permission`, and the generated type already marks
+it optional. It is, however, actively removed rather than merely ignored: the
+project update strategies (`src/tools/projects/update/canonical.ts`) delete it
+on **both** the v1 and the v2 path. A v1 `POST /projects/{id}` answers `0` on
+2.4.0/2.5.0 and `null` on 2.6.0 while a v2 `PATCH` answers `null` on all three,
+so leaving it in place would have made the same logical update render
+differently depending on which API served it. Probed 2026-09-06, one owned
+project per version:
+
+| version | v1 `GET` | v1 `POST` | v2 `GET` | v2 `PATCH` |
+|---------|----------|-----------|----------|------------|
+| 2.4.0   | `0`      | `0`       | `2`      | `null`     |
+| 2.5.0   | `0`      | `0`       | `2`      | `null`     |
+| 2.6.0   | `null`   | `null`    | `2`      | `null`     |
+
+Recorded so a future reader who starts consuming the field knows it is nullable
+on the v1 path and on v2 lists, regardless of what the vendored spec says.
 
 ## 24. `DELETE /projects/{projectID}/users/{userID}` Wants a Username
 
@@ -1066,6 +1140,42 @@ affects.
 - `?format=markdown` is honoured on `GET` but **ignored on `PATCH`**: the parameter is declared on
   `GET`/`POST`/`PUT` only, and a live `PATCH ...?format=markdown` on 2.6.0 returned HTML. A read and
   an update of the same task therefore disagree on the description's format.
+
+## 26. `PUT /api/v1/labels/{id}` Is Declared in the Spec and Answers 405
+
+**Status:** ⚠️ Open upstream (spec bug). Reproduces on **2.4.0, 2.5.0 and 2.6.0**, probed live on
+2026-09-05 while implementing issue #184 P3 step 6.
+
+`docs/vikunja-openapi.json` declares `put` on `/labels/{id}` as the label update operation. No
+supported server routes it:
+
+```
+PUT /api/v1/labels/42     {"title":"Renamed"}
+
+→ 405 Method Not Allowed
+Allow: OPTIONS, DELETE, GET, POST
+{"message":"Method Not Allowed"}
+```
+
+The verb the server routes is `POST /labels/{id}`, matching the convention every other v1 update
+endpoint follows (v1: `PUT` creates, `POST` updates). The vendored spec is wrong, not the server.
+
+**Impact on this client:** `vikunja_labels update` sent the documented `PUT` and therefore failed on
+every call, on every supported version, until it was corrected in #184 P3 step 6. The unit tests did
+not catch it because they mock `fetch` and assert the request the implementation makes, so both
+sides agreed on a verb that does not exist. That is the general lesson worth carrying: a
+spec-derived mock cannot falsify a spec-derived route. Only a live probe can.
+
+**A second, independent finding on the correct route:** `POST /labels/{id}` is a **full model
+replace**. Sending only `{"hex_color":"ff0000"}` returned `{"title":"","description":"", ...}` — the
+unmentioned fields were blanked, not preserved. So the v1 path reads the label and sends the merged
+model, the same fetch-merge-`POST` shape items #13, #15 and #16 document for user settings, project
+views and projects.
+
+**v2 has neither problem.** `PATCH /api/v2/labels/{id}` exists on 2.4.0, 2.5.0 and 2.6.0, is a true
+partial update, and preserves every unmentioned field. Label update therefore carries no
+per-operation `minVersion`, unlike task update (#25). A no-op patch answers `304` with an empty
+body, which is correct HTTP and simply has to be handled.
 
 ## Recommendations for Vikunja Maintainers
 

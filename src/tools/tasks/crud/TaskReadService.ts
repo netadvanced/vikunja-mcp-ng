@@ -11,14 +11,10 @@ import {
   handleStatusCodeError,
 } from '../../../index';
 import type { AuthManager } from '../../../auth/AuthManager';
-import { vikunjaRestRequest } from '../../../utils/vikunja-rest';
+import { requestTaskRead } from '../../../utils/vikunja-task-reads';
 import { validateId } from '../validation';
 import { createTaskResponse } from './TaskResponseFormatter';
 import { formatAorpAsMarkdown } from '../../../utils/response-factory';
-import type { components } from '../../../types/generated/vikunja-openapi';
-
-/** `models.Task` per the OpenAPI spec — GET /tasks/{id}'s response shape. */
-type VikunjaTask = components['schemas']['models.Task'];
 
 export interface GetTaskArgs {
   id?: number;
@@ -38,7 +34,13 @@ export async function getTask(
     }
     validateId(args.id, 'id');
 
-    const task = await vikunjaRestRequest<VikunjaTask>(authManager, 'GET', `/tasks/${args.id}`);
+    // Version-aware since #184 P3 step 3. On a v2-capable server this reads
+    // `GET /api/v2/tasks/{id}?format=markdown`, so the description comes back
+    // as GitHub-flavoured markdown rather than HTML. Nothing else about the
+    // payload changes: the transport's normalizer strips `$schema`, and
+    // `requestTaskRead` drops v2's `max_permission`, which the spec keeps off
+    // P3's tool surface.
+    const task = await requestTaskRead(authManager, args.id);
 
     const response = createTaskResponse(
       'get-task',

@@ -117,9 +117,20 @@ never a clean `Found 0 tasks`.
     - Cross-project listing (no `projectId`, or `allProjects: true`) calls the
       documented `GET /tasks` endpoint directly (one call), falling back to
       per-project aggregation only if that call fails
-    - `orderBy` (`'asc' | 'desc'`), `filterTimezone`, `filterIncludeNulls`,
-      and `expand` (`'subtasks' | 'buckets' | 'reactions' | 'comments'`, can
-      be repeated) are forwarded to `GET /tasks` for cross-project listing
+    - `orderBy` (`'asc' | 'desc'`), `filterTimezone` and `filterIncludeNulls`
+      are forwarded to `GET /tasks` for cross-project listing only. On a
+      single-project listing they are ignored, and the response says so
+    - `expand` (`'subtasks' | 'buckets' | 'reactions' | 'comments'`, can be
+      repeated) is forwarded on **both** listing shapes: to `GET /tasks` for
+      a cross-project listing, to `GET /projects/{id}/tasks` for a
+      single-project one, and to the per-project requests of the
+      cross-project aggregation fallback. It used to be accepted and then
+      dropped on a single-project listing; that was a client-side gap, not
+      an API one. With a `tk_*` API token, `expand=comments` and
+      `expand=reactions` also need the `tasks_comments` / `reactions` token
+      scopes from Vikunja 2.6.0 on — without them the listing fails with a
+      401 rather than returning unexpanded tasks as a success (see
+      [VIKUNJA_API_ISSUES.md §22](VIKUNJA_API_ISSUES.md))
     - **A cross-project listing is paginated through, not sampled.** Vikunja
       clamps `per_page` to its `max_items_per_page` (default 50) on *both*
       `GET /projects/{id}/tasks` and `GET /projects`, so the client-side
@@ -139,8 +150,28 @@ never a clean `Found 0 tasks`.
     - `position` is **rejected** on create, not silently ignored: task position is per-view state written through Vikunja's dedicated Task Position endpoint, which needs a `projectViewId` that has no sensible default for a brand-new task. Create the task, then call `set-position`
     - Validates date format (ISO 8601) and IDs. A date-only value (`2026-09-01`) is normalized to midnight UTC before it is sent, because Vikunja rejects a bare date on this endpoint with HTTP 400 code 2004
   - `get` - Get task details by ID
+    - **Rich text comes back as GitHub-flavoured markdown**, not HTML, when the
+      server exposes Vikunja's v2 API (every supported version does). `description`
+      and the other rich-text fields are rendered as markdown by the server itself
+      (`?format=markdown`), which is what an LLM consumer wants. Against a v1-only
+      server, or with `VIKUNJA_MCP_FORCE_V1_API=true`, they stay HTML. The same
+      applies to `list`
   - `update` - Update existing task
-    - Supports partial updates (GET and merge before POST, since Vikunja replaces the full model)
+    - Supports partial updates: pass only the fields you want to change. How that
+      is met depends on the server. Against Vikunja 2.5.0 or newer the tool sends
+      one `PATCH /api/v2/tasks/{id}` carrying your fields and any assignees
+      together, which touches nothing else and cannot be clobbered by a concurrent
+      update. Against 2.4.0, a v1-only server, or with the `forceV1Api` kill switch
+      on, it reads the task and merges your changes over the whole model before
+      posting it back, because v1 replaces the full model. 2.4.0 is on the v1 path
+      deliberately: its v2 `PATCH` returns 422 for any task carrying a subscription,
+      and assigning a user auto-subscribes them (see
+      [VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) #25)
+    - **The update response's description is HTML even when a read of the same task
+      returns markdown.** Vikunja honours `?format=markdown` on `GET` and ignores it
+      on `PATCH`. Re-reading after every update purely to make the two agree would
+      cost back the round trip `PATCH` saves, so it is not done. Call `get` if you
+      need the markdown form
     - Can update title, description, dueDate, priority, done status, `percentDone`, and `hexColor` (`#RRGGBB`, or `''` to clear; same read-back caveat as `create`)
     - **Known gap: `dueDate`/`startDate`/`endDate` are NOT coerced on this path.** `create`, `bulk-create`, `create-subtask`/`bulk-create-subtasks`, `bulk-update`, and template `instantiate` all normalize a bare date-only value (`2026-09-01`) to midnight UTC before sending it; `update` does not yet share that normalization. Sending a date-only value here reaches Vikunja unchanged and is rejected with **HTTP 400, code 2004** ("Invalid model provided"). Pass a full RFC3339 timestamp (e.g. `2026-09-01T00:00:00Z`) instead. Tracked as an open item (issue #28)
     - Can move tasks between projects with `projectId` (verified after update)
@@ -348,7 +379,7 @@ description.
   - `get` - Get a team by ID
   - `update` - Update a team's name/description/`isPublic` (required: id; at least one of name/description/isPublic)
     - `isPublic` maps to `models.Team.is_public`: "defines whether the team should be publicly discoverable when sharing a project"
-    - **Partial updates are safe: pass only the fields you want to change.** `POST /teams/{id}` is a full-model replace server-side (Vikunja binds the body into an empty model, and writes `is_public` unconditionally via `UseBool`), so the tool reads the team first and merges your changes over the current model before posting it back. Omitting `isPublic` therefore preserves the stored value, and a description-only update is no longer rejected by the server's `required`-name validator. Passing `isPublic: false` explicitly still sets it to false. Omission and an explicit `false` are not conflated. Cost: one extra `GET /teams/{id}` per update. See [VIKUNJA_API_ISSUES.md §3a](VIKUNJA_API_ISSUES.md)
+    - **Partial updates are safe: pass only the fields you want to change.** Omitting `isPublic` preserves the stored value, a description-only update is not rejected by the server's `required`-name validator, and passing `isPublic: false` explicitly still sets it to false. Omission and an explicit `false` are not conflated. How that guarantee is met depends on the server: against a v2-capable Vikunja the tool sends one `PATCH /api/v2/teams/{id}` carrying only your fields, which touches nothing else. Against a v1-only server (or with the `forceV1Api` kill switch on) it reads the team first and merges your changes over the current model before posting it back, because `POST /teams/{id}` is a full-model replace server-side (Vikunja binds the body into an empty model, and writes `is_public` unconditionally via `UseBool`); that path costs one extra `GET /teams/{id}` per update. See [VIKUNJA_API_ISSUES.md §3a](VIKUNJA_API_ISSUES.md)
   - `delete` - Delete a team by ID
   - `members` - Manage team membership (keyed by **username**, not numeric user id; this is deliberate on Vikunja's part to prevent automated/enumerated user-id entry). Use `memberSubcommand`:
     - `list` - List a team's members (read from the team's embedded `members` array; there is no standalone list-members endpoint)
@@ -580,7 +611,8 @@ Vikunja account.
 3. **Pagination**: some endpoints may not fully support pagination parameters due to upstream API limitations. Vikunja also clamps `per_page` to its configured `max_items_per_page` (default 50) on collection endpoints regardless of what you ask for. Cross-project task filtering pages through this rather than sampling the first 50, and says so via `resultComplete` when a budget stops it (see **Response Format**).
 4. **Webhooks are not editable beyond their events**: `Webhook.Update` writes a single column, so `targetUrl`, `secret` and the Basic Auth credentials are create-only in both scopes. `update` rejects them; delete and re-create to change them.
 5. **A task created with `done: true` has no `done_at`**: Vikunja stamps the completion timestamp only when a task is *updated* to done, so a task created done will not match `doneAt` filters. Create it open and update it if you need the timestamp.
-6. **Authentication quirks**: a handful of Vikunja API endpoints have known auth-related rough edges (user endpoints rejecting valid `tk_*` tokens on some server versions, bulk/label/assignee operations occasionally erroring on certain server configurations); see [VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) for the full, current list. Tools surface a clear error message when these occur.
+6. **Rich text comes back in two formats depending on how you fetched it**: a read (`vikunja_tasks get` / `list`) returns GitHub-flavoured markdown against a v2-capable server, while an update response returns HTML, because Vikunja honours `?format=markdown` on `GET` and ignores it on `PATCH`. Deliberate: the alternative was an extra read after every update. Set `VIKUNJA_MCP_FORCE_V1_API=true` for HTML everywhere, or call `get` after an update if you need markdown. See [API-VERSION-MATRIX.md](API-VERSION-MATRIX.md).
+7. **Authentication quirks**: a handful of Vikunja API endpoints have known auth-related rough edges (user endpoints rejecting valid `tk_*` tokens on some server versions, bulk/label/assignee operations occasionally erroring on certain server configurations); see [VIKUNJA_API_ISSUES.md](VIKUNJA_API_ISSUES.md) for the full, current list. Tools surface a clear error message when these occur.
 
 ## Security & Performance
 

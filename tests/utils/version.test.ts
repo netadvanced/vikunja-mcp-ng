@@ -15,7 +15,7 @@ jest.mock('../../src/utils/logger', () => ({
   logger: { warn: mockLoggerWarn },
 }));
 
-import { resolvePackageVersion } from '../../src/utils/version';
+import { compareVersions, resolvePackageVersion, serverAtLeast } from '../../src/utils/version';
 
 describe('resolvePackageVersion', () => {
   beforeEach(() => {
@@ -79,5 +79,64 @@ describe('resolvePackageVersion', () => {
     });
 
     expect(() => resolvePackageVersion('/app/dist')).not.toThrow();
+  });
+});
+
+/**
+ * Server-version comparison, the mechanism behind `resolveApiVersion`'s
+ * per-operation `minVersion` floor (issue #184 P3). These moved here from
+ * scripts/lib/e2e-fixtures.ts, which now re-exports them.
+ */
+describe('compareVersions', () => {
+  it('orders by major, minor, then patch', () => {
+    expect(compareVersions('2.4.0', '2.5.0')).toBeLessThan(0);
+    expect(compareVersions('2.6.0', '2.5.9')).toBeGreaterThan(0);
+    expect(compareVersions('3.0.0', '2.9.9')).toBeGreaterThan(0);
+    expect(compareVersions('2.5.1', '2.5.0')).toBeGreaterThan(0);
+  });
+
+  it('returns 0 for equal versions', () => {
+    expect(compareVersions('2.5.0', '2.5.0')).toBe(0);
+  });
+
+  // `GET /info` reports `v2.6.0` on every supported release, so a comparison
+  // that does not strip the prefix reads the whole string as unparseable.
+  it('tolerates a leading v on either side', () => {
+    expect(compareVersions('v2.6.0', '2.6.0')).toBe(0);
+    expect(compareVersions('v2.4.0', 'v2.5.0')).toBeLessThan(0);
+    expect(compareVersions('2.6.0', 'v2.5.0')).toBeGreaterThan(0);
+  });
+
+  it('treats missing components as 0', () => {
+    expect(compareVersions('2.6', '2.6.0')).toBe(0);
+    expect(compareVersions('2', '2.0.0')).toBe(0);
+    expect(compareVersions('2.6', '2.6.1')).toBeLessThan(0);
+    // The short side on the right too, so neither index fallback goes
+    // untested.
+    expect(compareVersions('2.6.1', '2.6')).toBeGreaterThan(0);
+  });
+
+  it('treats non-numeric components as 0 rather than throwing', () => {
+    expect(compareVersions('2.5.0-rc1', '2.5.0')).toBe(0);
+    expect(compareVersions('unknown', '2.5.0')).toBeLessThan(0);
+    expect(compareVersions('', '0.0.0')).toBe(0);
+  });
+});
+
+describe('serverAtLeast', () => {
+  it('is true at and above the minimum', () => {
+    expect(serverAtLeast('v2.5.0', '2.5.0')).toBe(true);
+    expect(serverAtLeast('v2.6.0', '2.5.0')).toBe(true);
+  });
+
+  it('is false below the minimum', () => {
+    expect(serverAtLeast('v2.4.0', '2.5.0')).toBe(false);
+  });
+
+  // "We could not tell" must never be read as "new enough".
+  it('is false for an undetected version', () => {
+    expect(serverAtLeast(null, '2.5.0')).toBe(false);
+    expect(serverAtLeast(undefined, '2.5.0')).toBe(false);
+    expect(serverAtLeast('', '2.5.0')).toBe(false);
   });
 });

@@ -6,14 +6,27 @@
  * onto `vikunjaRestRequest` + types generated from the vendored OpenAPI
  * spec. See docs/ENDPOINT-PLAYBOOK.md §6.
  *
- * Endpoints (verified against docs/vikunja-openapi.json):
+ * Endpoints (verified against docs/vikunja-openapi.json, then re-verified
+ * against the running 2.4.0/2.5.0/2.6.0 servers on 2026-09-05):
  *   - GET    /labels       list
  *   - PUT    /labels       create
  *   - GET    /labels/{id}  get
- *   - PUT    /labels/{id}  update (models.Label — not full-model-replace;
- *                          the label service's `Update` handler only applies
- *                          fields present on the incoming struct)
  *   - DELETE /labels/{id}  delete
+ *
+ * `update` is the exception and no longer lives here: it needs a v1/v2 pair
+ * (`src/utils/label-update.ts`, #184 P3 step 6). Two live findings drove that,
+ * both of which contradict the vendored v1 spec:
+ *
+ *   - `PUT /labels/{id}`, which this file used to send and which
+ *     `docs/vikunja-openapi.json` declares, answers `405 Method Not Allowed` on
+ *     every supported version. The route the server routes is
+ *     `POST /labels/{id}` (`Allow: OPTIONS, DELETE, GET, POST`).
+ *   - That `POST` is a full model replace, not the partial update the old
+ *     comment here claimed: sending only `hex_color` blanked `title` and
+ *     `description`. So the v1 path reads the label and sends the merged model.
+ *
+ * v2's `PATCH /labels/{id}` is a true partial update on all three versions, so
+ * a v2-capable session sends one call instead of two.
  *
  * `ensure` is a composite, not a distinct REST endpoint: it get-or-creates a
  * label by title (GET /labels?s=<title>, filtered client-side for a
@@ -43,6 +56,7 @@ import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { formatAorpAsMarkdown } from '../utils/response-factory';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import { ensureLabelByTitle } from '../utils/label-ensure';
+import { LabelUpdateContext, type LabelUpdatePayload } from '../utils/label-update';
 import type { components } from '../types/generated/vikunja-openapi';
 // `ResponseData.labels` (src/utils/simple-response.ts) is still typed
 // against this simplified local shape (`title: string`, not optional) — the
@@ -244,19 +258,21 @@ export function registerLabelsTool(
               );
             }
 
-            const updates: VikunjaLabel = {};
+            // One mapping, both strategies. The v1 path lays this over the
+            // label's current state before replacing it; the v2 path sends it
+            // as the merge patch body unchanged.
+            const updates: LabelUpdatePayload = {};
             if (args.title) updates.title = args.title;
             if (args.description !== undefined) updates.description = args.description;
             if (args.hexColor) updates.hex_color = args.hexColor;
 
             let label: VikunjaLabel;
             try {
-              label = await vikunjaRestRequest<VikunjaLabel>(
+              label = await new LabelUpdateContext(authManager).execute({
                 authManager,
-                'PUT',
-                `/labels/${args.id}`,
+                labelId: args.id,
                 updates,
-              );
+              });
             } catch (error) {
               rethrowLabelNotFound(error, args.id);
             }

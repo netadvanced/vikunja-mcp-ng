@@ -2,12 +2,16 @@
  * Vikunja v2 REST transport.
  *
  * A deliberate sibling of `./vikunja-rest` rather than a branch inside it.
- * v1 is the permanent backward-compatible floor (minimum supported Vikunja
- * is 2.3.0, which is v1-only), so v2 support must not put new logic on the
- * code path v1 executes. Shared machinery — the retry loop, the named
- * circuit breaker registry, the retry predicate — is imported, not copied;
- * only URL resolution, breaker naming, request content type, and error
- * parsing differ.
+ * v1 is the permanent backward-compatible floor — per operation, not per
+ * version: every supported Vikunja release has a v2 API, and what keeps an
+ * operation on v1 is that v2 lacks the route, offers nothing over v1, or is
+ * broken below some release (see `./api-version`). So v2 support must not
+ * put new logic on the code path v1 executes. Shared machinery — the retry loop, the named
+ * circuit breaker registry, the retry predicate, and the protections in
+ * `./vikunja-rest-shared` (upstream-text redaction, the tool-execution
+ * deadline's cancellation error, and per-identity auth resolution) — is
+ * imported, not copied; only URL resolution, breaker naming, request content
+ * type, and error parsing differ.
  *
  * See docs/superpowers/specs/2026-07-27-vikunja-v2-transport-design.md.
  */
@@ -26,6 +30,14 @@ import {
   type RetryOptions,
 } from './retry';
 import { resolveV2BaseUrl } from './vikunja-v2-url';
+import { normalizeV2Response } from './vikunja-v2-normalize';
+import {
+  buildCancelledRequestError,
+  describeRequestError,
+  redactUpstreamText,
+  resolveEffectiveAuthManager,
+} from './vikunja-rest-shared';
+import { getExecutionAbortSignal } from '../context/executionContext';
 
 /**
  * Resolves the v2 API base URL for a session, normalizing whether or not
@@ -47,6 +59,18 @@ export { resolveV2BaseUrl };
  * `deriveRestBreakerName` in `./vikunja-rest` but under a distinct
  * `vikunja-rest-v2-` prefix.
  *
+ * The query string is stripped first. That is the same fix v1 got in #254,
+ * and it is not optional here just because the prefix differs: `path` is a
+ * full request path including its query, and P3's first routed operations
+ * (task reads and listings) always carry one (`?format=markdown`, plus
+ * `page`/`expand`/`q` on lists). Without the strip, `/tasks/7?format=markdown`
+ * derives `vikunja-rest-v2-tasks-7?format=markdown` (the id is no longer a
+ * pure numeric segment) and `/tasks?page=1&format=markdown` derives a
+ * different name per distinct query, which is one breaker per listing shape
+ * rather than one per endpoint group. v1's `deriveRestBreakerName` already
+ * strips; this sibling grew up from a copy taken before that fix, the same
+ * class of drift `./vikunja-rest-shared` exists to stop.
+ *
  * The prefix is load-bearing, not cosmetic. Breakers are process-wide and
  * keyed by name in the shared registry in `./retry`; without it, a v2
  * `PATCH /tasks/{id}` and a v1 `POST /tasks/{id}` would both derive
@@ -59,18 +83,16 @@ export { resolveV2BaseUrl };
  * name. If a v1 request path's first non-numeric segment were ever literally
  * `v2` (e.g. a hypothetical v1 route `/v2/...`), it would derive
  * `vikunja-rest-v2-...` and collide with this namespace. No such v1 path
- * exists today — just don't introduce one without revisiting this.
+ * exists today. Do not introduce one without revisiting this.
  */
 export function deriveRestV2BreakerName(path: string): string {
-  const segments = path.split('/').filter((seg) => seg.length > 0 && !/^\d+$/.test(seg));
+  const pathOnly = path.split('?')[0] ?? path;
+  const segments = pathOnly.split('/').filter((seg) => seg.length > 0 && !/^\d+$/.test(seg));
   const group = segments.slice(0, 2).join('-') || 'root';
   return `vikunja-rest-v2-${group}`;
 }
 
 export type HttpMethodV2 = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-
-/** Matches how much of a non-problem+json error body v1 keeps. */
-const MAX_FALLBACK_BODY_LENGTH = 500;
 
 /**
  * The subset of v2's `VikunjaErrorModel` this adapter consumes. Declared
@@ -100,25 +122,91 @@ function readString(value: unknown): string | undefined {
 }
 
 /**
+ * Redacts the `value` an `errors[]` entry echoes back.
+ *
+ * This is the field of a v2 error most likely to carry the CALLER's own
+ * secret. The spec describes it as "the value at the given location", and
+ * measured against a live 2.6.0 server that is literal: a `POST /projects`
+ * with `{"title": 12345, "description": {"nested": "..."}}` answers
+ * `422 application/problem+json` whose `errors[]` echo `"value": 12345` and
+ * `"value": {"nested": "..."}` back verbatim. So anything a caller put in a
+ * request body — a token pasted into the wrong field, a webhook URL with its
+ * shared secret in the path — can reappear here, and this list is carried on
+ * `details.vikunjaError` rather than being dropped.
+ *
+ * A structured value is redacted in its SERIALIZED form rather than walked
+ * key by key, because the name-based rules in `redactSecretsInText`
+ * (`"password": "..."`, `api_key=...`) have to see the key and the value in
+ * one string; walking the tree would hand them a bare `"hunter2"` that
+ * matches nothing. It is parsed back afterwards so callers get the shape they
+ * got before. Redaction can occasionally leave text that is no longer valid
+ * JSON, when replacing a `name: "value` run consumes the opening quote; in
+ * that case the redacted TEXT is returned. Never the original value.
+ *
+ * Redaction is not the only thing this text needs. `redactUpstreamText` is
+ * used rather than a bare `redactSecretsInText` so the result is also bounded
+ * to `ERROR_BODY_DISPLAY_LIMIT`, the same 500 characters v1 has always
+ * applied to upstream error text. Without that, an echoed value that matches
+ * no redaction rule survives at full length on `details.vikunjaError`, a
+ * channel v1 never had. Scanning further than it keeps is exactly why the cap
+ * lives in that helper: a secret straddling the cut cannot be left as a
+ * half-redacted fragment.
+ *
+ * Truncating a serialized object usually makes it unparseable, so a long
+ * structured value comes back as capped TEXT rather than as its original
+ * shape. That is the intended trade: a bounded, redacted string beats an
+ * unbounded faithful echo, and the entry's `location` still says which field
+ * it belonged to.
+ */
+function redactErrorValue(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return redactUpstreamText(value);
+  }
+  if (typeof value !== 'object' || value === null) {
+    // Numbers, booleans, null and an absent field carry no text to redact,
+    // and none of them can be long enough to need bounding.
+    return value;
+  }
+  const redacted = redactUpstreamText(JSON.stringify(value));
+  try {
+    return JSON.parse(redacted) as unknown;
+  } catch {
+    return redacted;
+  }
+}
+
+/**
  * Normalizes the model's `errors[]` list, dropping entries that are not
  * objects. Always returns an array so callers never have to distinguish
  * "absent" from "empty".
+ *
+ * Every string that survives is redacted AND bounded, because this list
+ * leaves the transport twice over: `location`/`message` are composed into the
+ * `MCPError` message, and the whole list is attached to
+ * `details.vikunjaError`. The composed message is redacted and capped again
+ * in `parseVikunjaV2Error`, which is what catches a credential split across
+ * two fields, e.g. `location: "body.password"` with the secret in `message`.
+ * `details.vikunjaError` gets no second pass, so the per-field cap here is
+ * the only thing bounding it, and without it a long echoed field reached
+ * callers at full length on a channel v1 never had.
  */
 function readErrorDetails(value: unknown): ParsedErrorDetail[] {
   if (!Array.isArray(value)) {
     return [];
   }
   return value
-    .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+    .filter(
+      (entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null,
+    )
     .map((entry) => {
       const location = readString(entry.location);
       const message = readString(entry.message);
-      const detail: ParsedErrorDetail = { value: entry.value };
+      const detail: ParsedErrorDetail = { value: redactErrorValue(entry.value) };
       if (location !== undefined) {
-        detail.location = location;
+        detail.location = redactUpstreamText(location);
       }
       if (message !== undefined) {
-        detail.message = message;
+        detail.message = redactUpstreamText(message);
       }
       return detail;
     });
@@ -136,6 +224,17 @@ function buildBaseMessage(
   return `Vikunja REST request failed (${method} ${path}): HTTP ${status} ${statusText}`;
 }
 
+/**
+ * The degraded path: a body we could not read as problem+json, kept as text.
+ *
+ * `redactUpstreamText` is what v1 applies to every error body it renders, and
+ * it is not optional here just because the shape is unusual — this branch
+ * carries the LEAST structured, most attacker-influenced text of the two. A
+ * reverse proxy or WAF sitting in front of Vikunja routinely echoes the
+ * request back, `Authorization` header included, and it is also the branch a
+ * real v2 auth failure takes: measured on a live 2.6.0 server, a 401 answers
+ * with `Content-Type: application/json`, not problem+json.
+ */
 function buildFallbackError(
   method: HttpMethodV2,
   path: string,
@@ -143,7 +242,7 @@ function buildFallbackError(
   statusText: string,
   rawBody: string,
 ): MCPError {
-  const detail = rawBody.slice(0, MAX_FALLBACK_BODY_LENGTH);
+  const detail = redactUpstreamText(rawBody);
   const base = buildBaseMessage(method, path, status, statusText);
   return new MCPError(ErrorCode.API_ERROR, detail ? `${base} — ${detail}` : base, {
     statusCode: status,
@@ -196,11 +295,22 @@ export function parseVikunjaV2Error(
         .filter((entry) => entry.length > 0);
       const fieldSuffix = fields.length > 0 ? `[${fields.join('; ')}]` : '';
       const rawSuffix = [summary, fieldSuffix].filter((part) => part.length > 0).join(' ');
-      // Bounds the composed suffix the same way buildFallbackError bounds its
-      // raw body: a server or proxy can return an oversized `detail` or an
-      // `errors[]` list with thousands of entries, and without this cap that
-      // would produce an unbounded MCP error message.
-      const suffix = rawSuffix.slice(0, MAX_FALLBACK_BODY_LENGTH);
+      // Redacts and bounds the composed suffix exactly the way
+      // buildFallbackError treats its raw body. Both halves matter.
+      //
+      // Redaction: `title` and `detail` are free-form server text and a
+      // gateway can author either, so they carry the same risk as any other
+      // upstream body. Running it over the COMPOSED string rather than field
+      // by field is deliberate — it is the only way the name-based rules see
+      // a credential whose name and value landed in different fields, e.g.
+      // `location: "body.api_key"` with the key itself in `message`.
+      //
+      // Bounding: a server or proxy can return an oversized `detail` or an
+      // `errors[]` list with thousands of entries, and without the cap that
+      // would produce an unbounded MCP error message. `redactUpstreamText`
+      // scans further than it keeps so a secret straddling the cut cannot
+      // survive as a half-redacted fragment.
+      const suffix = redactUpstreamText(rawSuffix);
       const base = buildBaseMessage(method, path, status, statusText);
 
       error = new MCPError(ErrorCode.API_ERROR, suffix ? `${base} — ${suffix}` : base, {
@@ -226,14 +336,14 @@ export type PatchFormat = 'merge' | 'json-patch';
 /**
  * Extends `VikunjaRestRequestOptions` (v1's option shape) rather than
  * defining an unrelated interface, which means a `VikunjaRestV2RequestOptions`
- * object — including one carrying `patchFormat` — is structurally assignable
+ * object (including one carrying `patchFormat`) is structurally assignable
  * to v1's `vikunjaRestRequest`. v1 has no notion of PATCH body format and
- * will silently ignore `patchFormat` if passed to it. That is harmless today
- * only because nothing routes through v2 yet (this phase wires up no
- * operation). In P3, if a call site builds one options object and passes it
- * to whichever transport `resolveApiVersion` picks, an accidental v1 fallback
- * carrying `patchFormat: 'json-patch'` would silently send a JSON-Patch array
- * body to v1's full-model POST/PUT — a corrupt update, not an error. Callers
+ * will silently ignore `patchFormat` if passed to it. That is no longer a
+ * dormant hazard: P3 routes real operations through v2, so if a call site
+ * builds one options object and passes it to whichever transport
+ * `resolveApiVersion` picks, an accidental v1 fallback carrying
+ * `patchFormat: 'json-patch'` would silently send a JSON-Patch array body
+ * to v1's full-model POST/PUT, a corrupt update, not an error. Callers
  * must construct/pass options per-transport rather than sharing one object
  * across both.
  */
@@ -251,6 +361,24 @@ export interface VikunjaRestV2RequestOptions extends VikunjaRestRequestOptions {
    * comment above for the concrete P3 failure mode.
    */
   patchFormat?: PatchFormat;
+
+  /**
+   * Whether to run the response through `normalizeV2Response` (unwrap the
+   * pagination envelope, strip `$schema`). Defaults to `true`, which is what
+   * makes a v2 response indistinguishable from a v1 one downstream.
+   *
+   * Set it to `false` only in a v2 strategy that needs the raw envelope, for
+   * example to page through a list on `total_pages` before handing callers one
+   * flat array. The escape hatch exists because P3's later steps add
+   * per-operation strategies, and a normalizer that cannot be bypassed would
+   * force such a strategy to go around the transport entirely.
+   *
+   * v1-unaware in the same way as `patchFormat`: `vikunjaRestRequest` has no
+   * notion of this flag and silently ignores it. Harmless in that direction,
+   * since v1 responses need no normalization, but it is one more reason to
+   * build options per-transport rather than sharing one object.
+   */
+  normalize?: boolean;
 }
 
 /**
@@ -290,6 +418,14 @@ async function vikunjaRestV2RequestRaw(
   const session = authManager.getSession();
   const url = `${resolveV2BaseUrl(session.apiUrl)}${path}`;
 
+  // The tool-execution deadline, when one applies (see
+  // `src/context/executionContext.ts`). Handled exactly as `./vikunja-rest`
+  // handles it, deliberately: a v2 request must not outlive a deadline that
+  // would have bounded the same operation on v1 (LOW-20, #296). The key is
+  // omitted entirely when there is no deadline, so calls made outside a
+  // rate-limited tool execution send byte-for-byte the previous request.
+  const signal = getExecutionAbortSignal();
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -299,13 +435,20 @@ async function vikunjaRestV2RequestRaw(
         'Content-Type': resolveContentType(method, patchFormat),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      ...(signal ? { signal } : {}),
     });
   } catch (error) {
+    // An abort is not a network failure: it is retried by nobody and counts
+    // against no breaker (`details.cancelled` is what
+    // `isClientErrorExcludedFromBreaker` reads). Checking the signal rather
+    // than the rejection's name matches v1 and avoids depending on how the
+    // runtime words an AbortError.
+    if (signal?.aborted) {
+      throw buildCancelledRequestError(method, path);
+    }
     throw new MCPError(
       ErrorCode.API_ERROR,
-      `Vikunja REST request failed (${method} ${path}): ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Vikunja REST request failed (${method} ${path}): ${describeRequestError(error)}`,
       { transient: isTransientNetworkError(error) },
     );
   }
@@ -349,9 +492,23 @@ async function vikunjaRestV2RequestRaw(
  * assumptions — route through `resolveApiVersion` in ./api-version so the
  * v1 fallback stays honest.
  *
+ * The resolved body is normalized by `normalizeV2Response` before it is
+ * returned, so a list comes back as the bare array a v1 caller expects and no
+ * `$schema` key survives. Pass `normalize: false` to get the raw v2 body,
+ * envelope included.
+ *
+ * Everything the error carries out of the transport, the message and the
+ * `errors[]` list on `details.vikunjaError` alike, has been through
+ * `redactUpstreamText`: redacted, because a v2 error echoes the caller's own
+ * request values back, and capped at v1's 500-character display limit, so
+ * neither channel is an unbounded echo (see `redactErrorValue`).
+ *
  * @throws MCPError with `details.statusCode` set from the final attempt;
  *         for problem+json responses `details.vikunjaError` also carries
- *         Vikunja's numeric code and the per-field `errors[]` list.
+ *         Vikunja's numeric code and the per-field `errors[]` list. When the
+ *         tool-execution deadline aborts the request the error is instead a
+ *         `TIMEOUT_ERROR` carrying `details.cancelled`, which is neither
+ *         retried nor counted against the circuit breaker.
  */
 export async function vikunjaRestV2Request<T = unknown>(
   authManager: AuthManager,
@@ -367,13 +524,22 @@ export async function vikunjaRestV2Request<T = unknown>(
     shouldRetry: defaultRestShouldRetry,
     ...options?.retry,
   };
+  // Resolve the caller's identity exactly as v1 does. In `oidc-http` mode the
+  // manager a tool handler passes is the process-global closure one, which is
+  // never authenticated there; the credential to use lives on the per-identity
+  // manager bound in the ALS request context. v1 has done this since the OIDC
+  // work and v2 was reading the passed manager directly, so every operation
+  // #184 routed to v2 would have used the wrong identity. Invisible in `stdio`
+  // mode, where the resolver returns the passed manager unchanged, which is
+  // why the whole suite and all six live lanes stayed green.
+  const effectiveAuthManager = resolveEffectiveAuthManager(authManager, options);
   const breaker = createCircuitBreaker(vikunjaRestV2RequestRaw, breakerName, retryOptions);
   const result = await withRetry(
     () =>
-      breaker.fire(authManager, method, path, body, patchFormat).catch((error: unknown) => {
+      breaker.fire(effectiveAuthManager, method, path, body, patchFormat).catch((error: unknown) => {
         throw rewordBreakerOpenError(error);
       }),
     retryOptions,
   );
-  return result as T;
+  return options?.normalize === false ? (result as T) : normalizeV2Response<T>(result);
 }

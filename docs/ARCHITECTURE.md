@@ -111,25 +111,99 @@ Each tool is one Vikunja domain, registered once in `src/tools/index.ts`:
 ### API Version Handling (v1 / v2)
 
 Vikunja exposes two API versions, and this server treats version as a **per-operation property**
-rather than a global mode. Mixed-version operation is permanent by design: several functions have
-no v2 equivalent at all, so a single global switch could never be correct.
+rather than a global mode. There is no "the server is in v2 mode": each operation resolves its own
+version, and any operation can be on a different version from its neighbour. Mixed-version
+operation is permanent by design, not a transitional state, so a single global switch could never
+be correct.
 
-- **v1 transport** (`src/utils/vikunja-rest.ts`) — the permanent backward-compatible floor. Every
-  operation is served by v1 unless a v2 strategy explicitly takes it over, and several never can.
-- **v2 transport** (`src/utils/vikunja-rest-v2.ts`) — a deliberate sibling, not a branch inside the
+**Three distinct reasons keep an operation on v1**, and only the third is version-shaped:
+
+1. **No v2 equivalent exists at all**, on any version. `vikunja_admin list-users` and the two
+   Unsplash background functions. Permanently v1.
+2. **v2 offers nothing over v1** for that operation. Bulk task update routes into the same
+   server-side model code and wipes assignees identically; `expand` has the same value set on both.
+   v1 by default, not by necessity.
+3. **v2 is broken on some supported versions and fine on others.** `vikunja_tasks update` is v1 on
+   2.4.0 and v2 from 2.5.0. This is what `minVersion` exists for, and it resolves itself as the
+   support window rolls forward.
+
+The moving parts:
+
+- **v1 transport** (`src/utils/vikunja-rest.ts`): the permanent floor. Every operation is served
+  by v1 unless a v2 path explicitly takes it over, and several never can.
+- **v2 transport** (`src/utils/vikunja-rest-v2.ts`): a deliberate sibling, not a branch inside the
   v1 helper, so new logic never executes on the path that must not regress. Shares the retry loop
   and breaker registry from `retry.ts`, but under a distinct `vikunja-rest-v2-` breaker namespace:
   breakers are process-wide and keyed by name, so a shared name would let one API surface's
-  failures trip the other's.
-- **Routing** (`src/utils/api-version.ts`) — `resolveApiVersion` is the single decision point.
+  failures trip the other's. Sends RFC 7386 merge-patch by default on `PATCH`.
+- **Shared transport rules** (`src/utils/vikunja-rest-shared.ts`): the protections both transports
+  must apply identically, so they cannot drift: upstream error text redaction before a body reaches
+  an `MCPError`, and the execution abort signal that bounds a request's lifetime.
+- **Routing** (`src/utils/api-version.ts`): `resolveApiVersion` is the single decision point.
   Synchronous and network-free; it consults the session's cached capability probe and returns `v2`
-  only on positive evidence, defaulting to `v1` everywhere else. The `featureFlags.forceV1Api` kill
-  switch overrides it entirely.
-- **Error convergence** — v2 returns `application/problem+json`; the adapter maps it onto the same
-  `MCPError` shape v1 produces, preserving Vikunja's numeric `code` and per-field `errors[]`. Every
-  catch block in the codebase is therefore version-blind.
+  only on positive evidence, defaulting to `v1` everywhere else. It accepts a per-operation
+  `minVersion`, so an operation can declare its own server floor and keep v1 below it. An
+  *undetected* server version resolves to v1: "we could not tell" is not evidence a server is new
+  enough. The `featureFlags.forceV1Api` kill switch overrides all of it.
+- **Capability probe** (`src/utils/capabilities.ts`): `probeV2Api` validates that
+  `/api/v2/openapi.json` is a real OpenAPI document (content type plus a top-level `openapi` key)
+  rather than trusting an HTTP 200, so a reverse proxy or SPA catch-all cannot fake v2 support on a
+  v1-only server.
 
-The same convergence principle extends to response bodies as v2 adoption proceeds: v2's pagination
-envelope is unwrapped and `$schema` stripped **before a result leaves the transport/strategy
-layer**, so formatters, tools, and tests never learn which version ran. See
-[API-VERSION-MATRIX.md](API-VERSION-MATRIX.md) for per-function coverage.
+#### The strategy pair
+
+Where an operation's v1 and v2 forms are genuinely different algorithms, not the same call with a
+different URL, the two live as separate strategies behind a context. This mirrors the existing
+`FilteringContext` pattern in `src/utils/filtering/`:
+
+```
+TaskUpdateContext
+  ├─ V1TaskUpdateStrategy   GET (fetch) → POST (full model) → assignees → labels
+  └─ V2TaskUpdateStrategy   labels → PATCH (fields + assignees inline)
+                            selected only when the server is >= 2.5.0
+```
+
+Both satisfy one interface and return the same canonical shape. The point is to keep v1 frozen (it
+is the permanent floor) while letting v2 be genuinely different: different call counts, different
+ordering, different bodies. Interleaving them in one function with `if (v2)` branches guarantees
+drift, and every new v2 optimisation makes it worse.
+
+Not every operation needs a pair. Where the only difference is the URL prefix and the envelope, the
+normalizer alone suffices, and a plain version dispatcher is enough. `vikunja_task_comments update`
+is that case: v1's update already replaced only the comment text, so there was no fetch-merge to
+retire.
+
+Live pairs today: `src/tools/tasks/crud/update/`, `src/tools/projects/update/`,
+`src/tools/projects/view-update/`, `src/tools/filters/update/`, `src/tools/teams/update/`, and
+`src/utils/label-update.ts`.
+
+#### The normalization boundary
+
+This is the load-bearing decision, and it is what makes mixed-mode cheap. Every v2 response is
+normalized to the canonical internal shape **before it leaves the transport or strategy layer**:
+
+- the pagination envelope is unwrapped to the bare array callers expect
+  (`src/utils/vikunja-v2-normalize.ts`), with `total`/`page`/`per_page`/`total_pages` kept in a
+  `WeakMap` side table rather than changing the return type
+- `$schema` is stripped
+- v2-only fields the tool surface does not carry, chiefly `max_permission`, are stripped at the
+  strategy boundary. Projects are the exception worth knowing about: **both** versions return
+  `max_permission` there and disagree on the value, so it is stripped on the v1 path too, which is
+  the one place this milestone changed a response schema (see
+  `src/tools/projects/update/canonical.ts`)
+- the search parameter is spelled `q` inside the v2 query builder, never `s`. v2 silently ignores
+  an unknown `s` and answers 200 with an unfiltered list, so a mis-ported name degrades to "no
+  filter applied" rather than an error
+- errors converge on `MCPError`: v2's `application/problem+json` is adapted to the same shape v1
+  produces, preserving Vikunja's numeric `code` and per-field `errors[]`
+
+Downstream, formatters, tool handlers and tests never learn which version ran. That principle was
+established for errors first, which is why every catch block in the codebase is already
+version-blind, and response bodies get the same treatment.
+
+**One content difference is deliberately visible.** A rich-text field read over v2 comes back as
+GitHub-flavoured markdown where v1 returns HTML, because v2 honours `?format=markdown`. It ignores
+that parameter on `PATCH`, so an update response still carries HTML. Reads take markdown because
+that is where an LLM consumes descriptions; adding a re-read after every update to make the two
+agree would cost back the round trip `PATCH` exists to save. See
+[API-VERSION-MATRIX.md](API-VERSION-MATRIX.md) for per-function coverage and the full note.

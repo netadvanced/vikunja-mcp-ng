@@ -39,6 +39,11 @@
  * `build`/`validate` are unchanged: pure local utilities for constructing
  * or checking a filter query string. They never read or write a saved
  * filter and require no authentication.
+ *
+ * `update` is the one action that is version-aware (#184 P3 step 6). From
+ * 2.4.0 upward, v2's `PATCH /filters/{filter}` replaces the v1 fetch-merge-
+ * POST pair with a single partial write; the strategy pair and the reasons
+ * live in `./filters/update`. Everything else here still runs on v1.
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -50,11 +55,9 @@ import {
   FilterBuilder,
   validateFilterExpression,
   parseFilterString,
-  expressionToString,
   apiFilterStringToDslString,
   FILTER_FIELD_ALIASES,
 } from '../utils/filters';
-import type { FilterField, FilterOperator } from '../types/filters';
 import { logger } from '../utils/logger';
 import { createStandardResponse } from '../types';
 import { ErrorCode, MCPError } from '../types';
@@ -63,8 +66,11 @@ import { formatAorpAsMarkdown, createAorpErrorResponse } from '../utils/response
 import { vikunjaRestRequest } from '../utils/vikunja-rest';
 import { assertWriteAllowed, getToolAnnotations, withReadOnlyNote } from '../utils/read-only';
 import type { components } from '../types/generated/vikunja-openapi';
+import { buildFilterStringFromConditions, translateFilterString } from './filters/query';
+import { fetchSavedFilterOrThrow } from './filters/saved-filter-api';
+import type { SavedFilterApi } from './filters/saved-filter-api';
+import { SavedFilterUpdateContext, resolveSavedFilterAffectedFields } from './filters/update';
 
-type SavedFilterApi = components['schemas']['models.SavedFilter'];
 type ProjectApi = components['schemas']['models.Project'];
 
 /**
@@ -188,10 +194,13 @@ const CreateFilterSchema = z
   );
 
 /**
- * Schema for updating a filter. Vikunja's `POST /filters/{id}` is a
- * full-model-replace endpoint (no PATCH variant exists) — the handler
- * fetches the current filter and merges these fields onto it before
- * writing the whole object back, per docs/ENDPOINT-PLAYBOOK.md §4.
+ * Schema for updating a filter. How these fields reach the server depends on
+ * the API version the session resolves to (see `./filters/update`): v1's
+ * `POST /filters/{id}` is a full-model-replace endpoint, so that path fetches
+ * the current filter and merges these fields onto it before writing the whole
+ * object back, per docs/ENDPOINT-PLAYBOOK.md §4; v2 has a real
+ * `PATCH /filters/{filter}` and sends only what changed. The arguments and the
+ * response are identical either way.
  */
 const UpdateFilterSchema = z.object({
   id: FilterIdSchema,
@@ -224,99 +233,6 @@ const BuildFilterSchema = z.object({
 const ValidateFilterSchema = z.object({
   filter: z.string().describe('Filter query string to validate'),
 });
-
-type ConditionInput = {
-  field: FilterField;
-  operator: FilterOperator;
-  value: string | number | boolean | (string | number)[];
-};
-
-/**
- * Parses, validates, and translates a caller-supplied DSL filter string into
- * the snake_case query string Vikunja's API expects.
- *
- * This is the "existing validated pipeline" the filters tool must route
- * through: `parseFilterString` (secure Zod-backed parser - accepts both
- * canonical camelCase field names and their snake_case aliases, see
- * `FILTER_FIELD_ALIASES`), `validateFilterExpression` (field/operator/value
- * semantics), and `expressionToString` (applies `FILTER_FIELD_TO_API_FIELD`,
- * e.g. `dueDate` -> `due_date`) — see src/utils/filters.ts. Without the
- * last step, a DSL field name sent verbatim is not a Task field Vikunja
- * recognizes.
- *
- * @throws {MCPError} VALIDATION_ERROR when the filter fails to parse/validate
- */
-function translateFilterString(filterStr: string): string {
-  const parseResult = parseFilterString(filterStr);
-  if (!parseResult.expression) {
-    throw createValidationError(
-      `Invalid filter: ${parseResult.error?.message || 'Invalid filter syntax'}`,
-    );
-  }
-  const validation = validateFilterExpression(parseResult.expression);
-  if (!validation.valid) {
-    throw createValidationError(`Invalid filter: ${validation.errors.join('; ')}`);
-  }
-  return expressionToString(parseResult.expression);
-}
-
-/**
- * Builds, validates, and translates a filter query string from structured
- * `conditions` (the same pipeline as `translateFilterString`, entered via
- * `FilterBuilder` instead of the string parser).
- *
- * @throws {MCPError} VALIDATION_ERROR when the built expression fails
- *         semantic validation (e.g. an operator incompatible with a field)
- */
-function buildFilterStringFromConditions(
-  conditions: ConditionInput[],
-  groupOperator?: '&&' | '||',
-): string {
-  const builder = new FilterBuilder();
-  conditions.forEach((condition, index) => {
-    if (index > 0 && groupOperator === '||') {
-      builder.or();
-    }
-    builder.where(condition.field, condition.operator, condition.value);
-  });
-  const expression = builder.build();
-  const validation = validateFilterExpression(expression);
-  if (!validation.valid) {
-    throw createValidationError(`Invalid filter: ${validation.errors.join('; ')}`);
-  }
-  return expressionToString(expression);
-}
-
-/**
- * Fetches a saved filter by id, mapping the API's 403/404 (Vikunja returns
- * 403 for both "doesn't exist" and "no access", per the spec's
- * `models.SavedFilter` responses) to a single honest NOT_FOUND error rather
- * than leaking the ambiguity to the caller as a raw HTTP error.
- */
-async function fetchSavedFilterOrThrow(
-  authManager: AuthManager,
-  id: number,
-): Promise<SavedFilterApi> {
-  try {
-    return await vikunjaRestRequest<SavedFilterApi>(authManager, 'GET', `/filters/${id}`);
-  } catch (error) {
-    throw mapNotFound(error, id);
-  }
-}
-
-/** Maps a 403/404 REST error to NOT_FOUND; re-throws anything else as-is. */
-function mapNotFound(error: unknown, id: number): unknown {
-  if (error instanceof MCPError) {
-    const statusCode = error.details?.statusCode;
-    if (statusCode === 403 || statusCode === 404) {
-      return new MCPError(
-        ErrorCode.NOT_FOUND,
-        `Filter with id ${id} not found (or you do not have access to it)`,
-      );
-    }
-  }
-  return error;
-}
 
 /** Shapes a `models.SavedFilter` API object into the tool's response shape. */
 function mapSavedFilterForResponse(filter: SavedFilterApi): Record<string, unknown> {
@@ -590,66 +506,20 @@ export function registerFiltersTool(
             const params = UpdateFilterSchema.parse(parameters);
             logger.debug(`Updating filter with id: ${params.id}`);
 
-            const current = await fetchSavedFilterOrThrow(authManager, params.id);
+            // Which call shape applies the change is the strategy's business:
+            // v1 reads the filter and POSTs the whole model back because
+            // `POST /filters/{id}` replaces the resource, while v2 sends one
+            // `PATCH /filters/{filter}` with the changed fields only. The
+            // result is the same `models.SavedFilter` either way. See
+            // ./filters/update.
+            const { id: filterId, ...updateParams } = params;
+            const affectedFields = resolveSavedFilterAffectedFields(updateParams);
 
-            let filterQuery = current.filters?.filter;
-            // Track which of filter/conditions actually drove a change to
-            // filterQuery, using the same truthy checks the merge itself
-            // uses — params.filter === '' or params.conditions === [] are
-            // both `!== undefined` but change nothing here (LOW-4: the old
-            // affectedFields reporting below used an undefined-check while
-            // this merge uses a truthy-check, so it reported "filter" as
-            // changed even when an empty string left filterQuery untouched).
-            let filterFieldChanged = false;
-            let conditionsFieldChanged = false;
-            if (params.filter) {
-              filterQuery = translateFilterString(params.filter);
-              filterFieldChanged = true;
-            } else if (params.conditions && params.conditions.length > 0) {
-              filterQuery = buildFilterStringFromConditions(
-                params.conditions,
-                params.groupOperator,
-              );
-              conditionsFieldChanged = true;
-            }
-
-            const affectedFields = (['title', 'description', 'isFavorite'] as const).filter(
-              (key) => params[key] !== undefined,
-            ) as ('title' | 'description' | 'filter' | 'conditions' | 'isFavorite')[];
-            if (filterFieldChanged) affectedFields.push('filter');
-            if (conditionsFieldChanged) affectedFields.push('conditions');
-
-            const mergedDescription = params.description ?? current.description;
-            const mergedIsFavorite = params.isFavorite ?? current.is_favorite;
-
-            // POST /filters/{id} replaces the whole resource (no PATCH
-            // variant exists - see docs/ENDPOINT-PLAYBOOK.md §4), so every
-            // field not explicitly supplied is carried forward from the
-            // fetch above rather than omitted. Fields are only assigned when
-            // defined (rather than via a bare `?? current.x`) because
-            // `exactOptionalPropertyTypes` treats an explicit `undefined`
-            // assignment differently from omitting the key entirely.
-            const payload: SavedFilterApi = {
-              title: params.title ?? current.title ?? '',
-              ...(mergedDescription !== undefined ? { description: mergedDescription } : {}),
-              ...(mergedIsFavorite !== undefined ? { is_favorite: mergedIsFavorite } : {}),
-              filters: {
-                ...current.filters,
-                ...(filterQuery !== undefined ? { filter: filterQuery } : {}),
-              },
-            };
-
-            let updated: SavedFilterApi;
-            try {
-              updated = await vikunjaRestRequest<SavedFilterApi>(
-                authManager,
-                'POST',
-                `/filters/${params.id}`,
-                payload,
-              );
-            } catch (error) {
-              throw mapNotFound(error, params.id);
-            }
+            const updated = await new SavedFilterUpdateContext(authManager).execute({
+              authManager,
+              filterId,
+              params: updateParams,
+            });
 
             const response = createStandardResponse(
               'update-saved-filter',

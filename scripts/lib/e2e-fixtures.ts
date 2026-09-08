@@ -27,44 +27,14 @@
  */
 
 /**
- * Compares two plain `X.Y.Z` version strings. Returns a negative number when
- * `a` sorts before `b`, 0 when equal, positive when after. Leading `v` is
- * accepted on either side (`GET /info` reports `v2.6.0`).
- *
- * Non-numeric or missing components sort as 0, so `2.6` compares equal to
- * `2.6.0` rather than throwing — a server reporting something unexpected
- * must not crash a harness whose real job is elsewhere.
+ * `compareVersions`/`serverAtLeast` now live in `src/utils/version.ts` and are
+ * re-exported here so the harness and the shipped routing gate cannot drift.
+ * They started in this file, but `resolveApiVersion`'s per-operation
+ * `minVersion` (issue #184 P3) needs the same leading-`v`-tolerant comparison
+ * in shipped code, and two copies of a version comparison is exactly the kind
+ * of thing that quietly disagrees.
  */
-export function compareVersions(a: string, b: string): number {
-  const parse = (v: string): number[] =>
-    v
-      .replace(/^v/, '')
-      .split('.')
-      .map((part) => {
-        const n = Number.parseInt(part, 10);
-        return Number.isFinite(n) ? n : 0;
-      });
-  const pa = parse(a);
-  const pb = parse(b);
-  for (let i = 0; i < 3; i++) {
-    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-}
-
-/**
- * True when the detected server version is `min` or newer.
- *
- * An UNDETECTED version (`null`) returns `false` — "we could not tell" must
- * never be read as "new enough", or a harness silently asserts the new
- * behaviour against an old server and reports a failure that is really a
- * missing `GET /info`.
- */
-export function serverAtLeast(detected: string | null, min: string): boolean {
-  if (!detected) return false;
-  return compareVersions(detected, min) >= 0;
-}
+export { compareVersions, serverAtLeast } from '../../src/utils/version';
 
 /** The first Vikunja release that checks `expand` values against token scopes. */
 export const EXPAND_SCOPE_CHECK_VERSION = '2.6.0';

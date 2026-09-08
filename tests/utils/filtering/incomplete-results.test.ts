@@ -50,7 +50,7 @@ import { vikunjaRestRequest } from '../../../src/utils/vikunja-rest';
 import { conditionToString, expressionToString } from '../../../src/utils/filters';
 
 const restMock = vikunjaRestRequest as jest.Mock;
-const authManager = {} as AuthManager;
+const authManager = { getCapabilities: () => undefined } as unknown as AuthManager;
 
 /** An auth manager whose cached `GET /info` reports the server's page clamp. */
 const authManagerWithPageCap = (max: number): AuthManager =>

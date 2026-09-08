@@ -46,7 +46,8 @@ import { vikunjaRestRequest } from '../../src/utils/vikunja-rest';
 describe('Tasks CRUD - Final Coverage', () => {
   let mockClient: MockVikunjaClient;
   const { getClientFromContext, getAuthManagerFromContext } = require('../../src/client');
-  const mockAuthManager = {} as AuthManager;
+  // See tasks-crud-edge-cases.test.ts: undefined capabilities resolves to v1.
+  const mockAuthManager = { getCapabilities: () => undefined } as unknown as AuthManager;
   const mockRest = vikunjaRestRequest as jest.Mock;
 
   beforeEach(() => {

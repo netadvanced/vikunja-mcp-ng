@@ -445,10 +445,12 @@ conservatively:
 ### Forcing the v1 API
 
 The server detects once per session whether the Vikunja instance exposes the v2
-API. Today that detection result is surfaced only for reporting (see
-`vikunja_auth`'s `activeApiVersion` below) — no operation routes through v2
-yet. Once per-endpoint v2 support lands, this flag will let you force every
-operation onto the v1 API regardless of what was detected.
+API, and then picks a version **per operation**: some operations run on v2 where
+it is genuinely better, the rest stay on v1. This flag forces every operation
+onto v1 regardless of what was detected.
+
+Setting it is the supported way to rule the v2 path out when you are diagnosing
+something, or to pin behaviour if a v2 route misbehaves on your server.
 
 - **Config file key**: `featureFlags.forceV1Api` (boolean, default `false`)
 - **Env override**: `VIKUNJA_MCP_FORCE_V1_API` (`true`/`false`) — as with every
@@ -458,10 +460,21 @@ operation onto the v1 API regardless of what was detected.
 VIKUNJA_MCP_FORCE_V1_API=true
 ```
 
-With this set, behaviour is identical to running against a v1-only Vikunja
-server (2.3.0 and earlier). `vikunja_auth status` reports `activeApiVersion:
-"v1"`. Use it to rule the v2 path out when diagnosing a problem, or to pin
-behaviour if a v2 route misbehaves on your server.
+With this set, behaviour is identical to running against a Vikunja server that
+has no v2 API at all, and `vikunja_auth status` reports `activeApiVersion:
+"v1"`.
+
+**What you give up by setting it.** The visible one is rich text: task
+descriptions and other rich-text fields come back as **HTML** instead of
+GitHub-flavoured markdown, because markdown rendering is a v2 feature
+(`?format=markdown`). Task and entity updates also go back to the
+read-modify-write sequences v2's `PATCH` replaced, which costs extra calls and
+reopens the window in which two concurrent updates can clobber each other's
+untouched fields. Nothing breaks: v1 is a fully supported permanent floor and
+every operation has a working v1 path.
+
+Which functions use which version, and why, is listed per function in
+[API-VERSION-MATRIX.md](API-VERSION-MATRIX.md).
 
 ## Templates Persistence
 
