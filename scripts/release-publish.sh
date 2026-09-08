@@ -6,7 +6,7 @@
 #   scripts/release-publish.sh [--dry-run] [--push]
 #
 # Run this with the release tag checked out (e.g. `git checkout vX.Y.Z`, or right after
-# scripts/release-tag.sh while still on main at the tagged commit). See docs/RELEASING.md.
+# scripts/release-tag.sh while still on main or dev at the tagged commit). See docs/RELEASING.md.
 #
 # Flags:
 #   --dry-run   Use `npm publish --dry-run`, skip creating the GitHub release, and only print
@@ -18,9 +18,13 @@
 # What it does:
 #   1. Verifies HEAD is exactly the annotated tag matching package.json's version.
 #   2. Runs the full gate suite (lint, typecheck, tests, coverage).
-#   3. npm publish --access public (or --dry-run).
-#   4. docker build, tagged :X.Y.Z and :latest; pushed only with --push.
-#   5. gh release create vX.Y.Z using the CHANGELOG.md section as notes (skipped on --dry-run).
+#   3. npm publish --access public --tag <channel> (or --dry-run). The channel is derived from
+#      the version string exactly as .github/workflows/release.yml does — `latest` for a bare
+#      X.Y.Z, the prerelease identifier (e.g. `beta`) for X.Y.Z-beta.N — so this fallback can
+#      never hand `latest` to a beta cut from `dev` just because it forgot to ask.
+#   4. docker build, tagged :X.Y.Z and :<channel>; pushed only with --push.
+#   5. gh release create vX.Y.Z using the CHANGELOG.md section as notes (skipped on --dry-run),
+#      marked --prerelease when the channel isn't `latest`.
 #
 # Idempotency: skips npm publish if the version is already on the registry, skips the GitHub
 # release if it already exists, and skips docker push per-tag if that tag is already present
@@ -53,6 +57,22 @@ echo "==> dry-run: $DRY_RUN, push docker images: $DO_PUSH"
 VERSION="$(node -pe "require('./package.json').version")"
 TAG_NAME="v${VERSION}"
 echo "==> package.json version: $VERSION"
+
+# Dist-tag/channel, mirrored from .github/workflows/release.yml's own derivation (never
+# inferred from the branch — a prerelease version is a prerelease no matter which of `main`/
+# `dev` happens to be checked out). npm rejects a dist-tag that itself parses as a version, so
+# a purely numeric identifier (`0.7.0-1`) falls back to `next`, same as the workflow.
+IS_PRERELEASE=false
+DIST_TAG="latest"
+if [[ "$VERSION" == *-* ]]; then
+  IS_PRERELEASE=true
+  DIST_TAG="${VERSION#*-}"
+  DIST_TAG="${DIST_TAG%%.*}"
+  if [[ -z "$DIST_TAG" || "$DIST_TAG" =~ ^[0-9]+$ ]]; then
+    DIST_TAG="next"
+  fi
+fi
+echo "==> Channel: $DIST_TAG (prerelease: $IS_PRERELEASE)"
 
 if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
   echo "ERROR: tag $TAG_NAME does not exist. Run scripts/release-tag.sh first." >&2
@@ -106,11 +126,11 @@ fi
 if [[ "$ALREADY_PUBLISHED" == true && "$DRY_RUN" == false ]]; then
   echo "==> ${PACKAGE_NAME}@${VERSION} is already on the npm registry — skipping publish (idempotent)."
 elif [[ "$DRY_RUN" == true ]]; then
-  echo "==> [dry-run] npm publish --access public --dry-run"
-  npm publish --access public --dry-run
+  echo "==> [dry-run] npm publish --access public --tag $DIST_TAG --dry-run"
+  npm publish --access public --tag "$DIST_TAG" --dry-run
 else
-  echo "==> npm publish --access public"
-  npm publish --access public
+  echo "==> npm publish --access public --tag $DIST_TAG"
+  npm publish --access public --tag "$DIST_TAG"
 fi
 
 # ---------------------------------------------------------------------------
@@ -119,7 +139,7 @@ fi
 
 IMAGE_BASE="ghcr.io/netadvanced/vikunja-mcp-ng"
 IMAGE_VERSION_TAG="${IMAGE_BASE}:${VERSION}"
-IMAGE_LATEST_TAG="${IMAGE_BASE}:latest"
+IMAGE_CHANNEL_TAG="${IMAGE_BASE}:${DIST_TAG}"
 
 # Vikunja compatibility tag — single source of truth is the vendored OpenAPI spec, never
 # hand-typed. See scripts/lib/vikunja-compat-version.sh and docs/RELEASING.md "Vikunja
@@ -138,20 +158,20 @@ if [[ ! -f Dockerfile ]]; then
   exit 1
 fi
 
-echo "==> docker build -t ${IMAGE_VERSION_TAG} -t ${IMAGE_LATEST_TAG} -t ${IMAGE_COMPAT_TAG}"
+echo "==> docker build -t ${IMAGE_VERSION_TAG} -t ${IMAGE_CHANNEL_TAG} -t ${IMAGE_COMPAT_TAG}"
 docker build \
   --label "org.opencontainers.image.version=${VERSION}" \
   --label "io.vikunja.compat=${VIKUNJA_COMPAT_VERSION}" \
   -t "$IMAGE_VERSION_TAG" \
-  -t "$IMAGE_LATEST_TAG" \
+  -t "$IMAGE_CHANNEL_TAG" \
   -t "$IMAGE_COMPAT_TAG" \
   .
 
 if [[ "$DO_PUSH" == true ]]; then
   echo "==> docker push ${IMAGE_VERSION_TAG}"
   docker push "$IMAGE_VERSION_TAG"
-  echo "==> docker push ${IMAGE_LATEST_TAG}"
-  docker push "$IMAGE_LATEST_TAG"
+  echo "==> docker push ${IMAGE_CHANNEL_TAG}"
+  docker push "$IMAGE_CHANNEL_TAG"
   echo "==> docker push ${IMAGE_COMPAT_TAG}"
   docker push "$IMAGE_COMPAT_TAG"
 else
@@ -189,21 +209,29 @@ if gh release view "$TAG_NAME" --repo netadvanced/vikunja-mcp-ng >/dev/null 2>&1
   RELEASE_EXISTS=true
 fi
 
+# --prerelease keeps a beta off the repository's "Latest" badge — same reasoning and same flag
+# as .github/workflows/release.yml's release job.
+GH_RELEASE_EXTRA_ARGS=()
+if [[ "$IS_PRERELEASE" == true ]]; then
+  GH_RELEASE_EXTRA_ARGS+=(--prerelease)
+fi
+
 if [[ "$RELEASE_EXISTS" == true ]]; then
   echo "==> GitHub release $TAG_NAME already exists — skipping (idempotent)."
 elif [[ "$DRY_RUN" == true ]]; then
   echo "==> [dry-run] Would run:"
-  echo "    gh release create $TAG_NAME --repo netadvanced/vikunja-mcp-ng --title \"$TAG_NAME\" --notes-file <changelog section>"
+  echo "    gh release create $TAG_NAME --repo netadvanced/vikunja-mcp-ng --title \"$TAG_NAME\" --notes-file <changelog section> ${GH_RELEASE_EXTRA_ARGS[*]+"${GH_RELEASE_EXTRA_ARGS[*]}"}"
   echo "----- notes preview -----"
   cat "$NOTES_FILE"
   echo "--------------------------"
 else
-  echo "==> gh release create $TAG_NAME"
-  gh release create "$TAG_NAME" --repo netadvanced/vikunja-mcp-ng --title "$TAG_NAME" --notes-file "$NOTES_FILE"
+  echo "==> gh release create $TAG_NAME ${GH_RELEASE_EXTRA_ARGS[*]+"${GH_RELEASE_EXTRA_ARGS[*]}"}"
+  gh release create "$TAG_NAME" --repo netadvanced/vikunja-mcp-ng --title "$TAG_NAME" \
+    --notes-file "$NOTES_FILE" "${GH_RELEASE_EXTRA_ARGS[@]+"${GH_RELEASE_EXTRA_ARGS[@]}"}"
 fi
 
 echo ""
 echo "=================================================================="
-echo "  Publish complete for ${TAG_NAME} (dry-run: $DRY_RUN, docker push: $DO_PUSH)"
+echo "  Publish complete for ${TAG_NAME} (channel: $DIST_TAG, dry-run: $DRY_RUN, docker push: $DO_PUSH)"
 echo "  Vikunja compatibility: ${VIKUNJA_COMPAT_VERSION} (image tag: ${COMPAT_TAG})"
 echo "=================================================================="

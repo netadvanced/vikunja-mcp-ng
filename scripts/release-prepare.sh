@@ -5,21 +5,35 @@
 # Usage:
 #   scripts/release-prepare.sh patch|minor|preminor|prerelease [--preid=<id>]
 #
-# The `pre*` scopes cut a prerelease (`--preid` defaults to `beta`):
-#   preminor   0.6.2        -> 0.7.0-beta.0    start a beta line for the next minor
-#   prerelease 0.7.0-beta.0 -> 0.7.0-beta.1    advance an existing beta line
-#   minor      0.7.0-beta.3 -> 0.7.0           promote the beta line to stable
-# The release workflow reads the channel back off the tag, so publishing to the `beta`
-# dist-tag instead of `latest` needs no further decision — see docs/RELEASING.md.
+# TWO CHANNELS, each its own branch, run from that branch (auto-detected, no flag):
+#   - `main` — the stable channel. Only `patch` and `minor` are valid here. Ordinary hotfix
+#     PRs land on `main` directly; this is what `npm install vikunja-mcp-ng` (dist-tag
+#     `latest`) gets.
+#   - `dev` — the next-generation/beta channel. Only `preminor` and `prerelease` are valid
+#     here (`--preid` defaults to `beta`). Feature work for the next minor (e.g. the v2
+#     adoption epic) lands on `dev`, not `main`, while `main` keeps shipping patches to the
+#     already-released line independently.
+#       preminor   0.6.2        -> 0.7.0-beta.0    start a beta line for the next minor
+#       prerelease 0.7.0-beta.0 -> 0.7.0-beta.1    advance the beta line
+#   Promoting a beta line to stable is a `main`-side act, not a `dev`-side one: merge `dev`
+#   into `main` first (bringing its `0.7.0-beta.N` package.json version along), THEN run
+#   `release-prepare.sh minor` on `main` — `minor` on a same-version prerelease drops the
+#   suffix (`0.7.0-beta.3` -> `0.7.0`) rather than bumping further, by design (see
+#   docs/RELEASING.md). Reset `dev` from the just-promoted `main` afterward so the next beta
+#   line starts clean.
+# The release workflow reads the npm/GHCR channel back off the TAG's version string, not the
+# branch, so publishing to `beta` vs. `latest` needs no further decision either way — see
+# docs/RELEASING.md.
 #
 # What it does (see docs/RELEASING.md for the full policy):
-#   1. Verifies the working tree is clean and we're on an up-to-date `main`.
-#   2. Creates a fresh `release/vX.Y.Z` branch off `main`.
+#   1. Verifies the working tree is clean and we're on an up-to-date `main` or `dev`, with a
+#      bump kind valid for that branch (see above).
+#   2. Creates a fresh `release/vX.Y.Z` branch off it.
 #   3. Runs the full gate suite (lint, typecheck, tests, coverage) — a release never starts red.
 #   4. Bumps package.json / package-lock.json via `npm version <bump> --no-git-tag-version`
 #      (no git tag yet — that's scripts/release-tag.sh, run after the release PR merges).
-#   5. Generates a draft changelog section from conventional commits since the last tag and
-#      inserts it into CHANGELOG.md under [Unreleased].
+#   5. Generates a draft changelog section from conventional commits since the last tag
+#      reachable from that branch, and inserts it into CHANGELOG.md under [Unreleased].
 #   6. Commits everything as `release: vX.Y.Z` and prints the next steps.
 #
 # This script never pushes and never opens a PR — that's a manual step so a human reviews the
@@ -67,8 +81,10 @@ case "$BUMP" in
     echo "A major (1.0.0) bump is a deliberate, hand-run 'npm version major' as part of a" >&2
     echo "declared-stable release, not something this script automates." >&2
     echo "" >&2
-    echo "Prereleases: 'preminor' starts a beta line (0.6.2 -> 0.7.0-beta.0), 'prerelease'" >&2
-    echo "advances it (-> beta.1), and a later 'minor' promotes it to stable (-> 0.7.0)." >&2
+    echo "Two channels, one branch each (auto-detected from your current checkout):" >&2
+    echo "  main: patch or minor only (stable hotfixes, or promoting a merged-in dev prerelease)." >&2
+    echo "  dev:  preminor or prerelease only (starts/advances a beta line, e.g. 0.6.2 ->" >&2
+    echo "        0.7.0-beta.0 -> 0.7.0-beta.1)." >&2
     exit 1
     ;;
 esac
@@ -80,7 +96,8 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 1. Preconditions: clean tree, on main, up to date with origin/main
+# 1. Preconditions: clean tree, on main or dev, bump valid for that channel,
+#    up to date with its origin
 # ---------------------------------------------------------------------------
 
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -91,23 +108,75 @@ fi
 echo "==> Working tree is clean"
 
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [[ "$CURRENT_BRANCH" != "main" ]]; then
-  echo "ERROR: must run this from 'main' (currently on '$CURRENT_BRANCH')." >&2
-  echo "       git checkout main && git pull" >&2
+case "$CURRENT_BRANCH" in
+  main | dev) BASE_BRANCH="$CURRENT_BRANCH" ;;
+  *)
+    echo "ERROR: must run this from 'main' (stable channel) or 'dev' (beta channel)." >&2
+    echo "       Currently on '$CURRENT_BRANCH'. git checkout main (or dev) && git pull" >&2
+    exit 1
+    ;;
+esac
+echo "==> Channel: $BASE_BRANCH"
+
+case "$BASE_BRANCH" in
+  main)
+    case "$BUMP" in
+      patch | minor) ;;
+      *)
+        echo "ERROR: '$BUMP' is not valid on 'main' — the stable channel only ships 'patch' or" >&2
+        echo "       'minor'. A beta line ('preminor'/'prerelease') belongs on 'dev' instead." >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  dev)
+    case "$BUMP" in
+      preminor | prerelease) ;;
+      *)
+        echo "ERROR: '$BUMP' is not valid on 'dev' — the beta channel only ships 'preminor' or" >&2
+        echo "       'prerelease'. To promote this line to stable: merge dev into main first," >&2
+        echo "       then run 'release-prepare.sh minor' on main (see docs/RELEASING.md)." >&2
+        exit 1
+        ;;
+    esac
+    # 'preminor' STARTS a new beta line (bumps the minor, resets to .0) and 'prerelease'
+    # ADVANCES an existing one (bumps only the prerelease number) — picking the wrong one
+    # for dev's current state doesn't error, it silently produces the wrong version (e.g.
+    # 'prerelease' on a still-stable dev gives 0.7.1-beta.0 instead of starting 0.8.0-beta.0,
+    # a patch-shaped version on the branch that's supposed to never ship patches).
+    CURRENT_VERSION_FOR_BUMP_CHECK="$(node -pe "require('./package.json').version")"
+    if [[ "$CURRENT_VERSION_FOR_BUMP_CHECK" != *-* && "$BUMP" == "prerelease" ]]; then
+      echo "ERROR: 'dev' is at $CURRENT_VERSION_FOR_BUMP_CHECK, a stable version — 'prerelease'" >&2
+      echo "       would bump the patch and tack on a prerelease suffix (e.g. 0.7.1-beta.0)," >&2
+      echo "       not start the next beta line. Use 'preminor' instead (e.g. 0.7.0 -> 0.8.0-beta.0)." >&2
+      exit 1
+    fi
+    if [[ "$CURRENT_VERSION_FOR_BUMP_CHECK" == *-* && "$BUMP" == "preminor" ]]; then
+      echo "ERROR: 'dev' is already at a prerelease ($CURRENT_VERSION_FOR_BUMP_CHECK) —" >&2
+      echo "       'preminor' would bump the minor AGAIN on top of it (skipping ahead a whole" >&2
+      echo "       minor). Use 'prerelease' instead to advance the existing beta line." >&2
+      exit 1
+    fi
+    ;;
+esac
+
+echo "==> Fetching origin/$BASE_BRANCH"
+if ! git fetch origin "$BASE_BRANCH" --quiet; then
+  echo "ERROR: could not fetch origin/$BASE_BRANCH — does that branch exist on origin yet?" >&2
+  if [[ "$BASE_BRANCH" == "dev" ]]; then
+    echo "       Create it once with: git checkout -b dev main && git push -u origin dev" >&2
+  fi
   exit 1
 fi
 
-echo "==> Fetching origin/main"
-git fetch origin main --quiet
-
-LOCAL_SHA="$(git rev-parse main)"
-REMOTE_SHA="$(git rev-parse origin/main)"
+LOCAL_SHA="$(git rev-parse "$BASE_BRANCH")"
+REMOTE_SHA="$(git rev-parse "origin/$BASE_BRANCH")"
 if [[ "$LOCAL_SHA" != "$REMOTE_SHA" ]]; then
-  echo "ERROR: local main ($LOCAL_SHA) does not match origin/main ($REMOTE_SHA)." >&2
+  echo "ERROR: local $BASE_BRANCH ($LOCAL_SHA) does not match origin/$BASE_BRANCH ($REMOTE_SHA)." >&2
   echo "       git pull --ff-only" >&2
   exit 1
 fi
-echo "==> main is up to date with origin/main ($LOCAL_SHA)"
+echo "==> $BASE_BRANCH is up to date with origin/$BASE_BRANCH ($LOCAL_SHA)"
 
 # ---------------------------------------------------------------------------
 # 2. Compute the target version (before bumping, so we can name the branch)
@@ -210,10 +279,10 @@ echo "==> Generating draft changelog section"
 
 LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' "${LOCAL_SHA}" 2>/dev/null || true)"
 if [[ -n "$LAST_TAG" ]]; then
-  echo "==> Last tag reachable from main: $LAST_TAG"
+  echo "==> Last tag reachable from $BASE_BRANCH: $LAST_TAG"
   COMMIT_RANGE="${LAST_TAG}..${LOCAL_SHA}"
 else
-  echo "==> No prior v* tag reachable from main — this is the first tagged release; using full history"
+  echo "==> No prior v* tag reachable from $BASE_BRANCH — this is the first tagged release; using full history"
   COMMIT_RANGE="${LOCAL_SHA}"
 fi
 
@@ -314,7 +383,7 @@ echo ""
 echo "Next steps:"
 echo "  1. Review and curate the generated CHANGELOG.md section (it's a draft)."
 echo "  2. git push -u origin ${RELEASE_BRANCH}"
-echo "  3. gh pr create --repo netadvanced/vikunja-mcp-ng --base main \\"
+echo "  3. gh pr create --repo netadvanced/vikunja-mcp-ng --base ${BASE_BRANCH} \\"
 echo "       --title \"release: v${TARGET_VERSION}\" --body \"See CHANGELOG.md\""
-echo "  4. After merge: git checkout main && git pull && npm run release:tag"
+echo "  4. After merge: git checkout ${BASE_BRANCH} && git pull && npm run release:tag"
 echo ""
