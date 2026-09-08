@@ -131,10 +131,12 @@ interface VikunjaInfoResponse {
  * Once both round trips succeed, this also runs (and caches on the session)
  * the one-time capability/version detection described in
  * `src/utils/capabilities.ts` — the `GET /info` payload already fetched
- * above plus a best-effort `GET /api/v2/openapi.json` probe. This is
- * read-only groundwork for a future v2 migration: it never throws (a failed
- * probe just caches `hasV2Api: false`) and doesn't change what `connect`
- * requires to succeed.
+ * above plus a best-effort `GET /api/v2/openapi.json` probe. The probe is
+ * load-bearing now rather than groundwork: `resolveApiVersion` reads its
+ * cached result to decide, per operation, whether a request goes to v1 or v2
+ * (#184 P3). It still never throws (a failed probe just caches
+ * `hasV2Api: false`, which resolves every operation to v1) and still doesn't
+ * change what `connect` requires to succeed.
  */
 async function verifyConnection(
   authManager: AuthManager,
