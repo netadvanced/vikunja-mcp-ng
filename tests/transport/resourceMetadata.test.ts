@@ -17,7 +17,7 @@ import {
 import type { HttpConfig } from '../../src/config/types';
 
 function httpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
-  return { host: '127.0.0.1', port: 8765, path: '/mcp', ...overrides };
+  return { host: '127.0.0.1', port: 8765, path: '/mcp', authMode: 'oidc', ...overrides };
 }
 
 function fakeRequest(headers: Record<string, string | string[]> = {}): IncomingMessage {

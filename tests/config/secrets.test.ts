@@ -61,4 +61,8 @@ describe('readSecretEnv', () => {
   it('lists VIKUNJA_API_TOKEN as a sensitive env var', () => {
     expect(SENSITIVE_ENV_VARS).toContain('VIKUNJA_API_TOKEN');
   });
+
+  it('lists the gateway token (VIKUNJA_MCP_HTTP_AUTH_TOKEN) as a sensitive env var', () => {
+    expect(SENSITIVE_ENV_VARS).toContain('VIKUNJA_MCP_HTTP_AUTH_TOKEN');
+  });
 });

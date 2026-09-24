@@ -50,6 +50,7 @@ function baseHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
     host: '127.0.0.1',
     port: allocatePort(),
     path: '/mcp',
+    authMode: 'oidc',
     ...overrides,
   };
 }
