@@ -770,8 +770,9 @@ The operator answered the open questions before implementation started:
   SDK's documented argument.) The body reader settles exactly once, removes its
   listeners when it does, and checks `req.destroyed` after attaching them, so a request
   destroyed in between cannot leave it pending. On a complete body `end` always came
-  before `close` (about 1,200 requests per Node version, with and without a delayed
-  reader); a `close` first is treated as an abort, which only happens when Node itself
+  before `close` (in manual probes of about 1,200 requests per Node version, with and
+  without a delayed reader; the suite repeats a 40-request version with slow auth); a
+  `close` first is treated as an abort, which only happens when Node itself
   destroys the request, e.g. on a client half-close, and then no answer can be sent.
 - **Bind safety (§4.4) applies to oidc mode too.** The documented OIDC examples bind
   `127.0.0.1` or set an explicit allow-list, so none of them breaks. An oidc deployment
