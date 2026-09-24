@@ -34,10 +34,14 @@ module.exports = {
       // mode (docs/GATEWAY-TOKEN-MODE.md): honest numbers are
       // 87.99 branches / 86.57 functions / 95.55 lines / 95.38 statements.
       // Same per-axis buffer as the 2026-09-02 raise.
-      branches: 86.8,
-      functions: 85.48,
-      lines: 94.41,
-      statements: 94.58,
+      // Raised again 2026-09-24 (was 86.8/85.48/94.41/94.58) after the
+      // 0.8.0-beta.0 review fixes (#391-#393): honest numbers are
+      // 88.03 branches / 86.79 functions / 95.59 lines / 95.42 statements.
+      // Same per-axis buffer as the 2026-09-02 raise.
+      branches: 86.84,
+      functions: 85.7,
+      lines: 94.45,
+      statements: 94.62,
     },
   },
   // --- "A worker process has failed to exit gracefully" (T4 investigation, 2026-07-21) ---
