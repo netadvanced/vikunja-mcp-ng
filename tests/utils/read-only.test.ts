@@ -277,6 +277,59 @@ describe('read-only.ts', () => {
       expect(() => assertWriteAllowed('vikunja_tasks', 'list', 'write')).toThrow(MCPError);
     });
 
+    describe('vikunja_auth connect/disconnect under read-only mode', () => {
+      function loadConfig(sources: Record<string, unknown>): void {
+        ConfigurationManager.reset();
+        ConfigurationManager.getInstance({ sources });
+      }
+
+      it('stdio: stay allowed, so a read-only stdio server can still authenticate', () => {
+        loadConfig({ readOnly: true });
+        expect(() => assertWriteAllowed('vikunja_auth', 'connect')).not.toThrow();
+        expect(() => assertWriteAllowed('vikunja_auth', 'disconnect')).not.toThrow();
+      });
+
+      it('oidc-http: stay allowed (unchanged)', () => {
+        loadConfig({ readOnly: true, transport: 'http', http: { authMode: 'oidc' } });
+        expect(() => assertWriteAllowed('vikunja_auth', 'connect')).not.toThrow();
+        expect(() => assertWriteAllowed('vikunja_auth', 'disconnect')).not.toThrow();
+      });
+
+      // Defense in depth: the tool handler has its own gateway-token gate,
+      // but the read-only layer alone must also refuse to repoint or clear
+      // the operator's process-global credential.
+      it.each(['connect', 'disconnect'])(
+        "gateway-token mode: the read-only layer alone rejects '%s'",
+        (subcommand) => {
+          loadConfig({ readOnly: true, transport: 'http', http: { authMode: 'token' } });
+
+          expect(() => assertWriteAllowed('vikunja_auth', subcommand)).toThrow(MCPError);
+          expect(() => assertWriteAllowed('vikunja_auth', subcommand)).toThrow(
+            /read-only mode: 'vikunja_auth' subcommand/,
+          );
+        },
+      );
+
+      it('fails safe (does not throw) when configuration loading fails', () => {
+        ConfigurationManager.reset();
+        const spy = jest
+          .spyOn(ConfigurationManager.prototype, 'loadConfiguration')
+          .mockImplementation(() => {
+            throw new Error('boom: broken config file');
+          });
+
+        expect(() => assertWriteAllowed('vikunja_auth', 'connect')).not.toThrow();
+
+        spy.mockRestore();
+      });
+
+      it('gateway-token mode: info and refresh stay allowed', () => {
+        loadConfig({ readOnly: true, transport: 'http', http: { authMode: 'token' } });
+        expect(() => assertWriteAllowed('vikunja_auth', 'info')).not.toThrow();
+        expect(() => assertWriteAllowed('vikunja_auth', 'refresh')).not.toThrow();
+      });
+    });
+
     it('rejects an unrecognized subcommand (fail-closed default) when read-only', () => {
       setReadOnly(true);
       expect(() => assertWriteAllowed('vikunja_tasks', 'not-a-real-subcommand')).toThrow(MCPError);

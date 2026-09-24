@@ -264,6 +264,18 @@ export class ConfigurationManager {
   }
 
   /**
+   * Whether this server runs in gateway-token mode (`transport=http` with
+   * `http.authMode=token`, docs/GATEWAY-TOKEN-MODE.md). The config
+   * refinement already rejects `token` under stdio; checking the transport
+   * too keeps this false there by construction. Synchronous for the same
+   * reason as `isReadOnly()`.
+   */
+  public isGatewayTokenMode(): boolean {
+    const config = this.loadConfiguration();
+    return config.transport === 'http' && config.http.authMode === 'token';
+  }
+
+  /**
    * Whether the v2 API fast path is force-disabled. Synchronous for the same
    * reason as `isReadOnly()` above: `loadConfiguration()` is synchronous and
    * cached after the first call, and `resolveApiVersion` sits on a
