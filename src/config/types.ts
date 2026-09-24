@@ -245,7 +245,15 @@ export function tokenModeOidcConflict(rawConfig: unknown): boolean {
 // always on for `http` mode); when unset, it defaults to `host:port` so the
 // default loopback binding gets working protection out of the box.
 export const HttpConfigSchema = z.object({
-  host: z.string().min(1).default('127.0.0.1'),
+  // A bind address, not a URL authority: `::1`, never `[::1]`. `listen()` and
+  // the loopback check both take the bare form, so brackets are refused here.
+  host: z
+    .string()
+    .min(1)
+    .refine((host) => !host.includes('[') && !host.includes(']'), {
+      message: 'write an IPv6 bind host without brackets, e.g. ::1 (brackets belong in URLs)',
+    })
+    .default('127.0.0.1'),
   port: z.number().int().positive().max(65535).default(8765),
   path: z.string().min(1).default('/mcp'),
   authMode: HttpAuthModeSchema.default('oidc'),

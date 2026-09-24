@@ -814,6 +814,26 @@ describe('ConfigurationManager', () => {
       );
     });
 
+    it.each(['[::1]', '[::]', '[::1', '::1]'])(
+      'rejects a bracketed bind host (%s) and says to write it bare',
+      (host) => {
+        // Brackets belong in URLs and Host headers, not in a bind address:
+        // `[::1]` is not an IP literal to net.isIP or listen().
+        process.env.VIKUNJA_MCP_HTTP_HOST = host;
+
+        const load = (): unknown => ConfigurationManager.getInstance().loadConfiguration();
+        expect(load).toThrow(ConfigurationError);
+        expect(load).toThrow(/http\.host.*without brackets.*::1/);
+      },
+    );
+
+    it('accepts a bare IPv6 bind host', async () => {
+      process.env.VIKUNJA_MCP_HTTP_HOST = '::1';
+
+      const httpConfig = await ConfigurationManager.getInstance().getHttpConfig();
+      expect(httpConfig.host).toBe('::1');
+    });
+
     it('exposes the http config section via getHttpConfig', async () => {
       process.env.VIKUNJA_MCP_HTTP_HOST = '0.0.0.0';
 
