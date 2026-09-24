@@ -457,9 +457,7 @@ interface RequestHandlerContext {
 
 /** Outcome of reading a request body under the cap. */
 type BodyReadResult =
-  | { status: 'ok'; body: Buffer }
-  | { status: 'too_large' }
-  | { status: 'aborted' };
+  { status: 'ok'; body: Buffer } | { status: 'too_large' } | { status: 'aborted' };
 
 /**
  * Request-body cap for the MCP path (docs/GATEWAY-TOKEN-MODE.md §4.1).
@@ -469,8 +467,16 @@ type BodyReadResult =
  * caller hands the SDK the parsed body (`handleRequest`'s `parsedBody`
  * argument), so the SDK never reads the stream and the cap does not depend
  * on how it would have. `aborted` means the client went away mid-body.
+ *
+ * Settles exactly once, and removes its listeners when it does. `end`
+ * decides `ok`; a `close` or `error` before it is an abort. On a complete
+ * body Node emits `close` only after `end` (the request auto-destroys once
+ * it ends; checked on Node 22 and 25). The one way `close` comes first with
+ * every byte sent is Node destroying the request itself, for example on a
+ * client half-close, and then the socket is gone and no answer could be
+ * delivered anyway. Exported for tests.
  */
-function readBodyWithinCap(
+export function readBodyWithinCap(
   req: http.IncomingMessage,
   maxBodyBytes: number,
 ): Promise<BodyReadResult> {
@@ -478,15 +484,15 @@ function readBodyWithinCap(
   if (declaredLength !== undefined && Number(declaredLength) > maxBodyBytes) {
     return Promise.resolve({ status: 'too_large' });
   }
-  // The client may have left while authentication ran: a destroyed request
-  // emits no further events, so waiting on it would never settle.
-  if (req.destroyed) {
-    return Promise.resolve({ status: 'aborted' });
-  }
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let received = 0;
+    let settled = false;
     const settle = (result: BodyReadResult): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       req.removeListener('data', onData);
       req.removeListener('end', onEnd);
       req.removeListener('error', onAbort);
@@ -507,6 +513,13 @@ function readBodyWithinCap(
     req.on('end', onEnd);
     req.on('error', onAbort);
     req.on('close', onAbort);
+    // A request destroyed before this point (the client left while
+    // authentication ran) emits no further events. Checked after the
+    // listeners are attached, so no `close` can fall between the check and
+    // the listener that would have seen it.
+    if (req.destroyed) {
+      settle({ status: 'aborted' });
+    }
   });
 }
 

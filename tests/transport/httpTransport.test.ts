@@ -11,6 +11,7 @@
  * past them.
  */
 
+import { EventEmitter } from 'node:events';
 import * as http from 'node:http';
 import * as net from 'node:net';
 import * as os from 'node:os';
@@ -22,6 +23,7 @@ import {
   resolveAllowedHosts,
   bindSafetyProblems,
   formatHostPort,
+  readBodyWithinCap,
   resolveBindTarget,
   type HttpTransportHandle,
 } from '../../src/transport/httpTransport';
@@ -1284,6 +1286,32 @@ describe('httpTransport: gateway-token mode', () => {
       expect(res.statusCode).toBe(406);
     });
 
+    it('answers every complete body even when authentication is slow (end always precedes close)', async () => {
+      // Confirming-review question: could `close` beat `end` on a complete
+      // body and turn a good request into a silent abort? Not observed on
+      // Node 22 or 25; this pins it on real sockets with a delayed reader.
+      setOidcAuthMiddleware(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return true;
+      });
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 4096,
+      });
+      const port = getPort(handle);
+
+      const statuses = await Promise.all(
+        Array.from({ length: 40 }, () =>
+          request(port, {
+            method: 'POST',
+            headers: { ...mcpHeaders(), Connection: 'close' },
+            body: INITIALIZE_BODY,
+          }).then((res) => res.statusCode),
+        ),
+      );
+
+      expect(statuses).toEqual(Array.from({ length: 40 }, () => 200));
+    });
+
     it('passes GET to the SDK without a parsed body', async () => {
       setupStaticTokenAuth(TOKEN);
       const sdkHandle = jest.spyOn(StreamableHTTPServerTransport.prototype, 'handleRequest');
@@ -1756,5 +1784,110 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     await expect(startHttpTransport(newServer, baseHttpConfig())).rejects.toThrow(
       /VIKUNJA_MCP_HTTP_AUTH_MODE set to token/,
     );
+  });
+});
+
+describe('readBodyWithinCap', () => {
+  type FakeRequest = EventEmitter & { headers: http.IncomingHttpHeaders; destroyed: boolean };
+
+  function fakeRequest(): FakeRequest {
+    return Object.assign(new EventEmitter(), { headers: {}, destroyed: false });
+  }
+
+  function read(req: FakeRequest, cap = 1024): ReturnType<typeof readBodyWithinCap> {
+    return readBodyWithinCap(req as unknown as http.IncomingMessage, cap);
+  }
+
+  /** Resolves to 'pending' when `promise` has not settled within `ms`. */
+  function settledWithin<T>(promise: Promise<T>, ms = 200): Promise<T | 'pending'> {
+    return Promise.race([
+      promise,
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), ms)),
+    ]);
+  }
+
+  function listenerTotal(req: FakeRequest): number {
+    return ['data', 'end', 'error', 'close'].reduce(
+      (total, event) => total + req.listenerCount(event),
+      0,
+    );
+  }
+
+  it('settles as aborted when the request is destroyed while the listeners are being attached', async () => {
+    // Confirming-review finding: a `close` that lands after the destroyed
+    // check but before the close listener exists is never seen again, and
+    // the read would wait forever. Modelled here by a request that is
+    // destroyed (and emits close) as soon as the data listener attaches.
+    const req = fakeRequest();
+    const attach = req.on.bind(req);
+    req.on = ((event: string, listener: (...args: unknown[]) => void) => {
+      attach(event, listener);
+      if (event === 'data') {
+        req.destroyed = true;
+        req.emit('close');
+      }
+      return req;
+    }) as FakeRequest['on'];
+
+    await expect(settledWithin(read(req))).resolves.toEqual({ status: 'aborted' });
+    expect(listenerTotal(req)).toBe(0);
+  });
+
+  it('settles as aborted, without listening, when the request is already destroyed', async () => {
+    const req = fakeRequest();
+    req.destroyed = true;
+
+    await expect(settledWithin(read(req))).resolves.toEqual({ status: 'aborted' });
+    expect(listenerTotal(req)).toBe(0);
+  });
+
+  it('settles once: a close or error after end does not change the result', async () => {
+    const req = fakeRequest();
+    const result = read(req);
+
+    req.emit('data', Buffer.from('ab'));
+    req.emit('end');
+    req.emit('close');
+    req.emit('data', Buffer.from('late'));
+
+    await expect(result).resolves.toEqual({ status: 'ok', body: Buffer.from('ab') });
+    expect(listenerTotal(req)).toBe(0);
+  });
+
+  it('counts a close before end as an abort', async () => {
+    // Never observed on a complete body (Node emits close after end). The
+    // one way it happens is Node destroying the request, e.g. on a client
+    // half-close, and then the socket is gone and no answer can be sent.
+    const req = fakeRequest();
+    const result = read(req);
+
+    req.emit('data', Buffer.from('ab'));
+    req.emit('close');
+    req.emit('end');
+
+    await expect(result).resolves.toEqual({ status: 'aborted' });
+    expect(listenerTotal(req)).toBe(0);
+  });
+
+  it('stops at the cap and ignores whatever follows', async () => {
+    const req = fakeRequest();
+    const result = read(req, 4);
+
+    req.emit('data', Buffer.from('abc'));
+    req.emit('data', Buffer.from('de'));
+    req.emit('end');
+
+    await expect(result).resolves.toEqual({ status: 'too_large' });
+    expect(listenerTotal(req)).toBe(0);
+  });
+
+  it('treats a stream error as an abort', async () => {
+    const req = fakeRequest();
+    const result = read(req);
+
+    req.emit('error', new Error('aborted'));
+
+    await expect(result).resolves.toEqual({ status: 'aborted' });
+    expect(listenerTotal(req)).toBe(0);
   });
 });
