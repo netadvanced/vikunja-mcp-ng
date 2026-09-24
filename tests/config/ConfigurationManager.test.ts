@@ -12,6 +12,7 @@ import {
   ConfigurationError,
   isModuleEnabled,
 } from '../../src/config';
+import { tokenModeOidcConflict } from '../../src/config/types';
 
 describe('ConfigurationManager', () => {
   let originalEnv: NodeJS.ProcessEnv;
@@ -53,6 +54,8 @@ describe('ConfigurationManager', () => {
     delete process.env.VIKUNJA_MCP_HTTP_PATH;
     delete process.env.VIKUNJA_MCP_HTTP_ALLOWED_HOSTS;
     delete process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL;
+    delete process.env.VIKUNJA_MCP_HTTP_AUTH_MODE;
+    delete process.env.VIKUNJA_MCP_VAULT_PATH;
     delete process.env.VIKUNJA_MCP_OIDC_ISSUER;
     delete process.env.VIKUNJA_MCP_OIDC_AUDIENCE;
     delete process.env.VIKUNJA_MCP_OIDC_JWKS_URI;
@@ -689,7 +692,12 @@ describe('ConfigurationManager', () => {
     it('defaults to stdio transport with default http settings', async () => {
       const config = await ConfigurationManager.getInstance().getConfiguration();
       expect(config.transport).toBe('stdio');
-      expect(config.http).toEqual({ host: '127.0.0.1', port: 8765, path: '/mcp' });
+      expect(config.http).toEqual({
+        host: '127.0.0.1',
+        port: 8765,
+        path: '/mcp',
+        authMode: 'oidc',
+      });
     });
 
     it('is settable to http via VIKUNJA_MCP_TRANSPORT', async () => {
@@ -737,6 +745,7 @@ describe('ConfigurationManager', () => {
         host: '0.0.0.0',
         port: 9000,
         path: '/api/mcp',
+        authMode: 'oidc',
         allowedHosts: ['example.com:9000', 'other.example.com:9000'],
       });
     });
@@ -815,6 +824,135 @@ describe('ConfigurationManager', () => {
       process.env.VIKUNJA_MCP_TRANSPORT = 'http';
 
       expect(ConfigurationManager.getInstance().getTransportMode()).toBe('http');
+    });
+  });
+
+  describe('HTTP auth mode (gateway-token, docs/GATEWAY-TOKEN-MODE.md §4.2)', () => {
+    it('defaults http.authMode to oidc', async () => {
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.authMode).toBe('oidc');
+    });
+
+    it('reads http.authMode from VIKUNJA_MCP_HTTP_AUTH_MODE', async () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_AUTH_MODE = 'token';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.transport).toBe('http');
+      expect(config.http.authMode).toBe('token');
+    });
+
+    it('reads http.authMode from the config file', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ transport: 'http', http: { authMode: 'token' } }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.authMode).toBe('token');
+    });
+
+    it('lets VIKUNJA_MCP_HTTP_AUTH_MODE win over the config file value', async () => {
+      const configPath = path.join(tempDir, 'vikunja-mcp.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ transport: 'http', http: { authMode: 'token' } }));
+      process.env.VIKUNJA_MCP_CONFIG = configPath;
+      process.env.VIKUNJA_MCP_HTTP_AUTH_MODE = 'oidc';
+
+      const config = await ConfigurationManager.getInstance().getConfiguration();
+      expect(config.http.authMode).toBe('oidc');
+    });
+
+    it('rejects an unknown auth mode', () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_AUTH_MODE = 'none';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        ConfigurationError,
+      );
+    });
+
+    it('rejects token mode under stdio (meaningless there)', () => {
+      process.env.VIKUNJA_MCP_HTTP_AUTH_MODE = 'token';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        /Gateway-token mode \(VIKUNJA_MCP_HTTP_AUTH_MODE set to token\) requires VIKUNJA_MCP_TRANSPORT=http/,
+      );
+    });
+
+    it('rejects token mode combined with an oidc block, naming the conflict', () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_AUTH_MODE = 'token';
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+      process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+      process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+
+      let message = '';
+      try {
+        ConfigurationManager.getInstance().loadConfiguration();
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(/Gateway-token mode .* and the OIDC settings \(VIKUNJA_MCP_OIDC_\*\)/);
+      // Reported once, although both the refinement and the early-failure
+      // path know about it.
+      expect(message.split('the OIDC settings').length - 1).toBe(1);
+    });
+
+    it('names the conflict even when the oidc block is incomplete (e.g. only the issuer)', () => {
+      // Zod skips the cross-field refinement when the oidc block itself fails
+      // to parse; the conflict must still be reported, not hidden behind
+      // "oidc.audience: Invalid input".
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_AUTH_MODE = 'token';
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        /http\.authMode: Gateway-token mode .* and the OIDC settings/,
+      );
+    });
+
+    it('does not report the conflict for an incomplete oidc block in oidc mode', () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        expect.objectContaining({ message: expect.not.stringContaining('Gateway-token mode') }),
+      );
+    });
+
+    it('tokenModeOidcConflict tolerates a non-object raw config', () => {
+      expect(tokenModeOidcConflict(undefined)).toBe(false);
+      expect(tokenModeOidcConflict(null)).toBe(false);
+      expect(tokenModeOidcConflict({ http: { authMode: 'token' } })).toBe(false);
+      expect(tokenModeOidcConflict({ http: { authMode: 'token' }, oidc: {} })).toBe(true);
+    });
+
+    it('rejects token mode combined with SSO enrollment', () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_AUTH_MODE = 'token';
+      process.env.VIKUNJA_MCP_HTTP_PUBLIC_URL = 'https://mcp.example.test/mcp';
+      process.env.VIKUNJA_MCP_ENROLL_ENABLED = 'true';
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        /Gateway-token mode .* SSO enrollment/,
+      );
+    });
+
+    it('rejects token mode combined with a vault path (nothing would ever be written there)', () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_AUTH_MODE = 'token';
+      process.env.VIKUNJA_MCP_VAULT_PATH = path.join(tempDir, 'vault.json');
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
+        /Gateway-token mode .* VIKUNJA_MCP_VAULT_PATH/,
+      );
+    });
+
+    it('accepts oidc auth mode with a vault path (unchanged oidc-http shape)', () => {
+      process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+      process.env.VIKUNJA_MCP_HTTP_AUTH_MODE = 'oidc';
+      process.env.VIKUNJA_MCP_VAULT_PATH = path.join(tempDir, 'vault.json');
+
+      expect(() => ConfigurationManager.getInstance().loadConfiguration()).not.toThrow();
     });
   });
 

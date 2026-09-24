@@ -4,14 +4,34 @@
 #
 # Multi-stage build: compile TypeScript in a full node image, then ship only
 # the compiled dist/ plus production dependencies in a slim, non-root
-# runtime image. The server speaks MCP over stdio (see src/index.ts) — run
-# it with `docker run -i`, not as a long-lived network service.
+# runtime image. By default the server speaks MCP over stdio (see
+# src/index.ts): run it with `docker run -i`. With VIKUNJA_MCP_TRANSPORT=http
+# it is a network service on port 8765 instead (oidc or gateway-token auth,
+# see docs/CONFIGURATION.md "Transport Mode").
 #
 # Build:
 #   docker build -t ghcr.io/netadvanced/vikunja-mcp-ng:dev .
 #
 # Run (stdio transport — pipe JSON-RPC in/out):
 #   docker run -i --rm \
+#     -e VIKUNJA_URL=https://vikunja.example.com/api/v1 \
+#     -e VIKUNJA_API_TOKEN=tk_xxx \
+#     ghcr.io/netadvanced/vikunja-mcp-ng:dev
+#
+# Run (http transport, gateway-token mode: one user behind a gateway such
+# as IBM Context Forge, docs/GATEWAY-TOKEN-MODE.md). A non-loopback bind
+# needs an explicit Host allow-list or the server refuses to start. Generate
+# the gateway token first and keep it: the gateway's registration needs the
+# same value.
+#   openssl rand -hex 32 > gateway_token.txt && chmod 600 gateway_token.txt
+#   docker run -d --rm -p 127.0.0.1:8765:8765 \
+#     -v "$PWD/gateway_token.txt:/run/secrets/gateway_token:ro" \
+#     -e VIKUNJA_MCP_TRANSPORT=http \
+#     -e VIKUNJA_MCP_HTTP_AUTH_MODE=token \
+#     -e VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE=/run/secrets/gateway_token \
+#     -e VIKUNJA_MCP_HTTP_HOST=0.0.0.0 \
+#     -e VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=localhost:8765,127.0.0.1:8765 \
+#     -e VIKUNJA_MCP_READ_ONLY=true \
 #     -e VIKUNJA_URL=https://vikunja.example.com/api/v1 \
 #     -e VIKUNJA_API_TOKEN=tk_xxx \
 #     ghcr.io/netadvanced/vikunja-mcp-ng:dev
@@ -57,7 +77,9 @@ COPY --from=build --chown=vikunja-mcp:vikunja-mcp /app/dist ./dist
 
 USER vikunja-mcp
 
-# No EXPOSE — this is a stdio MCP server, not a network listener.
+# The default (stdio) transport opens no port. 8765 is the http transport's
+# default port (VIKUNJA_MCP_TRANSPORT=http, VIKUNJA_MCP_HTTP_PORT).
+EXPOSE 8765
 # VIKUNJA_URL / VIKUNJA_API_TOKEN (or VIKUNJA_API_TOKEN_FILE) and
 # VIKUNJA_MCP_CONFIG are supplied at `docker run` / compose time; see
 # docs/CONFIGURATION.md.

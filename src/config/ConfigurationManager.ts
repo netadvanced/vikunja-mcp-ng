@@ -18,7 +18,13 @@ import type {
   HttpConfig,
   TransportMode,
 } from './types';
-import { Environment, ConfigurationError, ApplicationConfigSchema } from './types';
+import {
+  Environment,
+  ConfigurationError,
+  ApplicationConfigSchema,
+  TOKEN_MODE_WITH_OIDC_MESSAGE,
+  tokenModeOidcConflict,
+} from './types';
 import { readSecretEnv } from './secrets';
 import { logger } from '../utils/logger';
 
@@ -560,6 +566,10 @@ export class ConfigurationManager {
     this.assignEnvValue(http, 'host', process.env.VIKUNJA_MCP_HTTP_HOST, false);
     this.assignEnvValue(http, 'port', process.env.VIKUNJA_MCP_HTTP_PORT, true);
     this.assignEnvValue(http, 'path', process.env.VIKUNJA_MCP_HTTP_PATH, false);
+    // HTTP auth scheme (`oidc` default, or `token` for gateway-token mode,
+    // docs/GATEWAY-TOKEN-MODE.md). The token itself is a secret and is read
+    // by src/index.ts through readSecretEnv, never through this config.
+    this.assignEnvValue(http, 'authMode', process.env.VIKUNJA_MCP_HTTP_AUTH_MODE, false);
     // Canonical public MCP URL for RFC 9728 discovery (`http.publicUrl`) —
     // recommended behind a reverse proxy; derived from the request's Host
     // header when unset. See src/transport/resourceMetadata.ts.
@@ -728,6 +738,20 @@ export class ConfigurationManager {
           received: 'received' in err ? err.received : 'unknown',
           expected: 'expected' in err ? err.expected : 'unknown',
         }));
+        // See tokenModeOidcConflict: when the oidc block itself fails to
+        // parse, the cross-field refinement never ran, so report the
+        // conflict here instead of letting it hide behind the oidc errors.
+        if (
+          tokenModeOidcConflict(rawConfig) &&
+          !errors.some((e) => e.message === TOKEN_MODE_WITH_OIDC_MESSAGE)
+        ) {
+          errors.unshift({
+            path: 'http.authMode',
+            message: TOKEN_MODE_WITH_OIDC_MESSAGE,
+            received: 'token',
+            expected: 'unknown',
+          });
+        }
 
         throw new ConfigurationError(
           'validation',
@@ -775,6 +799,7 @@ export class ConfigurationManager {
               host: this.config.http.host,
               port: this.config.http.port,
               path: this.config.http.path,
+              authMode: this.config.http.authMode,
               allowedHostsConfigured: !!this.config.http.allowedHosts,
               // Presence only — never the issuer/audience/JWKS values
               // themselves, which are non-secret but noisy; the boolean is

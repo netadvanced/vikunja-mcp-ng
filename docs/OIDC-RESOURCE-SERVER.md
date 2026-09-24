@@ -105,6 +105,31 @@ We introduce a single top-level **transport mode** switch. The current behaviour
 
 **Selection rule:** `oidc-http` mode activates only when **all** of `transport=http`, `oidc.issuer`, `oidc.audience`, and a vault key are present. Any missing → hard startup error (fail loud, never silently downgrade a hosted deployment to no-auth). `transport=stdio` (or unset) → today's path, no OIDC code loaded, no HTTP listener.
 
+> **Amendment (2026-09-24, gateway-token mode): a third mode, and the selection rule
+> restated.** A single-user HTTP mode now exists alongside Mode B. Full design:
+> [`GATEWAY-TOKEN-MODE.md`](GATEWAY-TOKEN-MODE.md). The locked decisions above are
+> unchanged; Mode B's code and behaviour are unchanged.
+>
+> | | **Mode C: `gateway-token` (opt-in)** |
+> |---|---|
+> | Transport | `StreamableHTTPServerTransport` (stateless, D5, same as Mode B) |
+> | Tenancy | Single-user (one process = one person, reached through one gateway) |
+> | Identity | None. A static bearer (`VIKUNJA_MCP_HTTP_AUTH_TOKEN`) authenticates the gateway, not a person; no `RequestContext` is attached, so no ALS scope opens |
+> | Vikunja credential | The one static token (`VIKUNJA_API_TOKEN`), as in Mode A. **Required** in this mode |
+> | Who runs it | One person behind a gateway with no OIDC relationship to this server |
+>
+> Mode C is selected explicitly with `http.authMode=token` (`VIKUNJA_MCP_HTTP_AUTH_MODE`),
+> never inferred from a missing `oidc` block. It is rejected together with an `oidc`
+> block, SSO enrollment, a vault path, or `transport=stdio`.
+>
+> The selection rule is therefore restated as **never serve unauthenticated HTTP**,
+> rather than "always OIDC": `transport=http` starts only with exactly one complete auth
+> scheme (Mode B's `oidc` block + vault, or Mode C's gateway token of 32+ characters +
+> Vikunja credential). Anything missing is still a hard startup error. In both modes, a
+> non-loopback bind now also requires an explicit `http.allowedHosts` (this revisits the
+> §3a bind decision's "cross-host gateway deployments must set `http.host=0.0.0.0` +
+> explicit `allowedHosts`" from advice into a startup check).
+
 ### 2.1 Proposed config keys
 
 The existing config engine (`src/config/ConfigurationManager.ts`) already does layered `defaults → vikunja-mcp.config.json → env (wins)` with Zod validation, plus the `_FILE` Docker-secrets convention (`src/config/secrets.ts`, `SENSITIVE_ENV_VARS`). We extend it, not replace it. New sections `http` and `oidc`, plus a `vault` section; `transport` is top-level (like `readOnly`).

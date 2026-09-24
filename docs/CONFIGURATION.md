@@ -536,6 +536,15 @@ byte-for-byte unchanged. `transport=http` opts into a **Streamable HTTP** transp
 deployment sitting behind an OIDC-aware gateway (e.g. IBM MCP Context Forge in front of
 Keycloak); see `docs/OIDC-RESOURCE-SERVER.md` for the full design and threat model.
 
+HTTP mode has two auth schemes, picked explicitly with `http.authMode`:
+
+- **`oidc`** (default): per-user OIDC bearer tokens and a per-user credential vault.
+  The multi-user mode, described in the rest of this section.
+- **`token`**: one static bearer token shared between a gateway and this server, in
+  front of the single Vikunja credential that stdio mode uses. For one user behind a
+  gateway. See [Gateway-token mode](#gateway-token-mode-single-user-behind-a-gateway)
+  below and `docs/GATEWAY-TOKEN-MODE.md`.
+
 - **Config key**: `transport` in `vikunja-mcp.config.json` (`"stdio"` or `"http"`).
 - **Env var**: `VIKUNJA_MCP_TRANSPORT`, which wins over the config file, as usual.
 - **Unset (default)**: `stdio`, identical to every prior release.
@@ -548,19 +557,87 @@ When `transport=http`, additional settings apply under the `http` config section
 | Bind host | `http.host` | `VIKUNJA_MCP_HTTP_HOST` | `127.0.0.1` (loopback; fails closed rather than exposing an unauthenticated-looking port to the LAN) |
 | Port | `http.port` | `VIKUNJA_MCP_HTTP_PORT` | `8765` |
 | Request path | `http.path` | `VIKUNJA_MCP_HTTP_PATH` | `/mcp` |
+| Auth scheme | `http.authMode` | `VIKUNJA_MCP_HTTP_AUTH_MODE` | `oidc` (the other value is `token`, see [Gateway-token mode](#gateway-token-mode-single-user-behind-a-gateway)) |
 | Allowed `Host` headers | `http.allowedHosts` | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` (comma list) | `<host>:<port>`, used for the SDK transport's built-in DNS-rebinding protection, which is always on in `http` mode |
 
 Two endpoints are always served unauthenticated, outside the MCP path and any
-authentication middleware: `GET /healthz` (liveness) and `GET /readyz`. `/readyz` checks
-both JWKS reachability (cached for 5s per listener) and vault-file openability, returning
-`503` with a `checks` breakdown when either is unhealthy — unlike `/healthz`, a `200` from
-it is evidence the vault loaded and the IdP is reachable (see `docs/OIDC-SETUP.md` §11).
+authentication middleware: `GET /healthz` (liveness) and `GET /readyz`. In `oidc` auth
+mode, `/readyz` checks both JWKS reachability (cached for 5s per listener) and vault-file
+openability, returning `503` with a `checks` breakdown when either is unhealthy. Unlike
+`/healthz`, a `200` from it is evidence the vault loaded and the IdP is reachable (see
+`docs/OIDC-SETUP.md` §11). In `token` auth mode there is no vault and no IdP: `/readyz`
+returns `200` when the Vikunja credential is configured and
+`503 {"status":"not_ready","checks":{"credential":"missing"}}` otherwise. It never calls
+Vikunja.
 
-**`transport=http` refuses to start without a complete OIDC + vault configuration.** The
-server must never serve unauthenticated HTTP, so `http` mode requires ALL of: the `oidc`
-config block (below) AND a usable credential vault (a file path and a master key,
-below). Any one missing is a hard startup error, never a silent downgrade to
-no-auth. `transport=stdio` (the default) never reads any of this.
+The MCP path caps the request body at `rateLimiting.default.maxRequestSize` (1 MiB by
+default). A larger body gets `413 {"error":"payload_too_large"}`, after authentication.
+
+**`transport=http` refuses to start without a complete auth configuration.** The
+server must never serve unauthenticated HTTP. What "complete" means depends on the
+auth mode:
+
+- `oidc` mode requires ALL of: the `oidc` config block (below) AND a usable credential
+  vault (a file path and a master key, below).
+- `token` mode requires ALL of: `VIKUNJA_MCP_HTTP_AUTH_TOKEN` (at least 32 characters)
+  AND a Vikunja credential (`VIKUNJA_URL` + `VIKUNJA_API_TOKEN`).
+
+Any one missing is a hard startup error, never a silent downgrade to no-auth.
+`transport=stdio` (the default) never reads any of this.
+
+**A non-loopback bind needs an explicit `Host` allow-list, in both auth modes.** When
+`http.host` is anything other than `127.0.0.1`, `localhost` or `::1` (for example
+`0.0.0.0` in a container), the server refuses to start unless
+`VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` is set explicitly. Without it, the allow-list defaults
+to the bind address itself (`0.0.0.0:8765`), a `Host` header no real client sends, so
+every request would be refused with `403` anyway. The startup error names the variable
+to set. This rule is new in the release that added gateway-token mode and also applies
+to existing `oidc` deployments.
+
+### Gateway-token mode (single user behind a gateway)
+
+Set `VIKUNJA_MCP_HTTP_AUTH_MODE=token` (with `VIKUNJA_MCP_TRANSPORT=http`) to run the
+HTTP transport for exactly one person behind a gateway such as IBM Context Forge,
+without an OIDC relationship. Full design: `docs/GATEWAY-TOKEN-MODE.md`. Gateway
+registration: [`docs/CONTEXT-FORGE.md`](CONTEXT-FORGE.md#single-user-gateway-token-mode).
+
+| Setting | Config key | Env var | Notes |
+|---|---|---|---|
+| Auth scheme | `http.authMode` | `VIKUNJA_MCP_HTTP_AUTH_MODE` | `token` |
+| Gateway token (required, sensitive) | *(never in the config file)* | `VIKUNJA_MCP_HTTP_AUTH_TOKEN` / `VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE` | At least 32 characters; generate with `openssl rand -hex 32`. The gateway sends it as `Authorization: Bearer <token>` |
+| Vikunja URL (required) | `auth.vikunjaUrl` | `VIKUNJA_URL` | Same as stdio mode |
+| Vikunja credential (required, sensitive) | *(never in the config file)* | `VIKUNJA_API_TOKEN` / `VIKUNJA_API_TOKEN_FILE` | Same as stdio mode. Every request runs as this one Vikunja user |
+
+How it works:
+
+- The gateway token authenticates **the gateway**, not a person. It carries no identity.
+  Every MCP request runs as the one Vikunja credential above, exactly as in stdio mode.
+- A missing or wrong bearer gets `401 {"error":"invalid_token"}` with
+  `WWW-Authenticate: Bearer`. The body is the same for every failure; the reason is only
+  logged server-side.
+- The token is compared in constant time (sha256 of both sides, then `timingSafeEqual`).
+- There is no vault, no enrollment and no RFC 9728 discovery document. The
+  `/.well-known/oauth-protected-resource` and `/enroll` paths return `404`.
+- `vikunja_auth connect`, `disconnect`, `status`, `provision` and `deprovision` return a
+  structured error: the Vikunja credential is configured by the operator in this mode.
+  `vikunja_auth info` and `refresh` still work.
+- The mode refuses to start together with any `VIKUNJA_MCP_OIDC_*` variable, with
+  `VIKUNJA_MCP_ENROLL_ENABLED=true`, with `VIKUNJA_MCP_VAULT_PATH`, or under
+  `transport=stdio`.
+
+**Blast radius, in one sentence: anyone holding the static token can do anything the
+configured Vikunja token can do.** That is acceptable only because the token's one holder
+is a gateway on a private network and the instance serves one person. If a second user
+appears, move to `oidc` mode rather than sharing the token.
+
+**Strongly recommended: set `VIKUNJA_MCP_READ_ONLY=true`** for a gateway deployment unless
+you explicitly want writes (see [Global Read-Only Safety Mode](#global-read-only-safety-mode)).
+It is the cheapest way to bound the blast radius above. It is not forced on.
+
+The Vikunja credential type decides which tools the gateway sees, as in stdio mode: a
+`tk_*` API token hides the JWT-only tools (`vikunja_users`, `vikunja_export`, and the
+opt-in admin-class modules); an `eyJ*` JWT shows them but expires within hours. See
+[Composing with Auth-Type Gating](#composing-with-auth-type-gating).
 
 ### OIDC resource-server settings
 
@@ -870,6 +947,7 @@ Currently sensitive variables (audited against every `process.env.*` read under 
 |---|---|
 | `VIKUNJA_API_TOKEN` | `VIKUNJA_API_TOKEN_FILE` |
 | `VIKUNJA_MCP_VAULT_KEY` (oidc-http mode's credential vault master key) | `VIKUNJA_MCP_VAULT_KEY_FILE` |
+| `VIKUNJA_MCP_HTTP_AUTH_TOKEN` (gateway-token mode's shared gateway token) | `VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE` |
 
 Behavior:
 
@@ -981,7 +1059,9 @@ VIKUNJA_MCP_TRANSPORT=stdio                  # stdio (default) | http; see Trans
 VIKUNJA_MCP_HTTP_HOST=127.0.0.1              # http mode only; default 127.0.0.1
 VIKUNJA_MCP_HTTP_PORT=8765                   # http mode only; default 8765
 VIKUNJA_MCP_HTTP_PATH=/mcp                   # http mode only; default /mcp
-VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=host:port,other:port   # http mode only; comma list, default <host>:<port>
+VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=host:port,other:port   # http mode only; comma list, default <host>:<port>; required for a non-loopback bind
+VIKUNJA_MCP_HTTP_AUTH_MODE=oidc              # http mode only; oidc (default) | token (gateway-token mode)
+VIKUNJA_MCP_HTTP_AUTH_TOKEN=<random, 32+ chars>   # token mode only, required, sensitive; or VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE
 ```
 
 ### OIDC Resource-Server Variables (http mode only)

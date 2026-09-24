@@ -18,6 +18,15 @@
  * before `startHttpTransport()` is invoked. This module stays a pure seam
  * (types + get/set) rather than importing that implementation directly, so
  * `httpTransport.ts` never has to know which auth scheme registered it.
+ *
+ * **A second, non-OIDC scheme registers here too** (2026-09-24,
+ * docs/GATEWAY-TOKEN-MODE.md): in `http.authMode=token`,
+ * `src/transport/staticTokenAuth.ts` registers a static gateway-token
+ * middleware instead. It attaches no `RequestContext` and no `req.auth`.
+ * Exactly one scheme is ever registered: the config refinement rejects
+ * `token` together with an `oidc` block. The exported names keep their
+ * OIDC-era spelling to avoid churn; `TransportAuthMiddleware` is the
+ * scheme-neutral alias for new code.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -38,6 +47,9 @@ export type OidcAuthMiddleware = (
   req: HttpRequestWithAuth,
   res: ServerResponse
 ) => Promise<boolean>;
+
+/** Scheme-neutral name for {@link OidcAuthMiddleware} (OIDC or gateway token). */
+export type TransportAuthMiddleware = OidcAuthMiddleware;
 
 let registeredMiddleware: OidcAuthMiddleware | undefined;
 

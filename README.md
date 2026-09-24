@@ -83,6 +83,8 @@ docker pull ghcr.io/netadvanced/vikunja-mcp-ng:latest
 
 For Docker Desktop's MCP Toolkit rather than a bare `docker run`, there is a step-by-step path in the [Docker Desktop guide](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/DOCKER-DESKTOP-MCP.md).
 
+The same image also runs as an HTTP service on port 8765 (`VIKUNJA_MCP_TRANSPORT=http`) behind an MCP gateway such as IBM Context Forge. Several users with their own Vikunja accounts use OIDC mode ([OIDC setup](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/OIDC-SETUP.md)). One user behind a gateway, with no OIDC in between, uses gateway-token mode: a static bearer token shared with the gateway, in front of one Vikunja credential ([gateway-token mode](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/GATEWAY-TOKEN-MODE.md), [Context Forge guide](https://github.com/netadvanced/vikunja-mcp-ng/blob/main/docs/CONTEXT-FORGE.md#single-user-gateway-token-mode)). `docker-compose.example.yml` has a service for it.
+
 ## Release lines
 
 | npm tag | Version | What you get |
@@ -140,6 +142,8 @@ Subcommand-by-subcommand reference: [`docs/TOOLS.md`](https://github.com/netadva
 ## Safety
 
 Every entity group is a toggle you can switch off in config. The four sensitive tools ship disabled, and `vikunja_admin`, `vikunja_caldav_tokens` and `vikunja_user_deletion` additionally require an active JWT session. Read-only mode rejects every write and destructive subcommand while reads keep working.
+
+Over HTTP the server never starts without authentication, and refuses a non-loopback bind unless the allowed `Host` headers are listed explicitly. In gateway-token mode, whoever holds the static token can do anything the configured Vikunja token can do, so pair it with read-only mode unless the gateway should write.
 
 Ambiguous writes are handled conservatively. A create that fails without a clear answer is not retried, so a flaky network will not leave you with two copies of a task.
 

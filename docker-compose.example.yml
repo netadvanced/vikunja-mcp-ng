@@ -19,6 +19,12 @@
 # For a Docker Swarm deployment with `configs:`/`secrets:` instead of bind
 # mounts, see docs/CONFIGURATION.md#docker-swarm-example — the module-gating
 # config file shape is identical either way.
+#
+# The second service, `vikunja-mcp-gateway`, is the opposite shape: a
+# long-running HTTP service in gateway-token mode, for exactly one user
+# behind a gateway such as IBM Context Forge (docs/GATEWAY-TOKEN-MODE.md,
+# docs/CONTEXT-FORGE.md "Single-user gateway-token mode"). Start it with
+# `docker compose -f docker-compose.example.yml up -d vikunja-mcp-gateway`.
 
 services:
   vikunja-mcp:
@@ -41,3 +47,38 @@ services:
       - ./vikunja-mcp.config.json:/etc/vikunja-mcp/vikunja-mcp.config.json:ro
       # Token file — keep this out of source control (see .gitignore).
       - ./secrets/vikunja_api_token.txt:/run/secrets/vikunja_api_token:ro
+
+  vikunja-mcp-gateway:
+    image: ghcr.io/netadvanced/vikunja-mcp-ng:latest
+    # build: .
+    environment:
+      VIKUNJA_MCP_TRANSPORT: http
+      VIKUNJA_MCP_HTTP_AUTH_MODE: token
+      # Shared with the gateway (its registration's authToken). At least 32
+      # characters: `openssl rand -hex 32 > secrets/vikunja_mcp_gateway_token.txt`.
+      VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE: /run/secrets/vikunja_mcp_gateway_token
+      # Reachable from the gateway's network, so the Host allow-list is
+      # mandatory: list the Host header the gateway actually sends.
+      VIKUNJA_MCP_HTTP_HOST: "0.0.0.0"
+      VIKUNJA_MCP_HTTP_ALLOWED_HOSTS: "vikunja-mcp-gateway:8765"
+      # Strongly recommended: the static token can do anything the Vikunja
+      # token below can do. Drop this only if the gateway should write.
+      VIKUNJA_MCP_READ_ONLY: "true"
+      # The one Vikunja credential every request runs as (required here).
+      VIKUNJA_URL: "https://vikunja.example.com/api/v1"
+      VIKUNJA_API_TOKEN_FILE: /run/secrets/vikunja_api_token
+    volumes:
+      - ./secrets/vikunja_mcp_gateway_token.txt:/run/secrets/vikunja_mcp_gateway_token:ro
+      - ./secrets/vikunja_api_token.txt:/run/secrets/vikunja_api_token:ro
+    # No `ports:` on purpose: only the gateway, on the same network, should
+    # reach this service.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8765/healthz').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

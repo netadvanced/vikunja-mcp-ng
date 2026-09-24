@@ -49,9 +49,15 @@ import {
   runWithRequestContext,
   getCurrentIdentity,
   getEffectiveSessionId,
+  getEffectiveAuthType,
   identityKey,
+  resolveIdentityAuthManager,
+  takeAttachedRequestContext,
   type Identity,
 } from '../../src/context/requestContext';
+import { createStaticTokenAuthMiddleware } from '../../src/transport/staticTokenAuth';
+import type { HttpRequestWithAuth } from '../../src/transport/oidcMiddlewareSeam';
+import type { ServerResponse } from 'node:http';
 import {
   createOidcAuthRequiredError,
   VaultCredentialSource,
@@ -402,6 +408,43 @@ describe('Cross-user leak test matrix (§3d)', () => {
       await expect(getAuthManagerFromContext()).rejects.toEqual(
         expect.objectContaining({ code: ErrorCode.AUTH_REQUIRED }),
       );
+    });
+  });
+
+  describe('gateway-token mode (docs/GATEWAY-TOKEN-MODE.md §4.3): no identities, no ALS scope', () => {
+    it('an authorized token-mode request carries no context, so resolution is the process-global manager', async () => {
+      const gatewayToken = `gw_${'d4'.repeat(20)}`;
+      const middleware = createStaticTokenAuthMiddleware({ token: gatewayToken });
+      const req = { headers: { authorization: `Bearer ${gatewayToken}` } } as unknown as HttpRequestWithAuth;
+
+      await expect(middleware(req, {} as ServerResponse)).resolves.toBe(true);
+      expect(takeAttachedRequestContext(req)).toBeUndefined();
+
+      // What httpTransport.ts then does with no attached context: nothing.
+      // Outside any scope every accessor resolves the process-global manager.
+      const processGlobal = authManagerFor('operator');
+      expect(getCurrentIdentity()).toBeUndefined();
+      expect(resolveIdentityAuthManager(processGlobal)).toBe(processGlobal);
+      expect(getEffectiveAuthType(processGlobal)).toBe('api-token');
+    });
+
+    it("a concurrent oidc identity's scope never leaks into a scope-less (token-mode) resolution", async () => {
+      const processGlobal = authManagerFor('operator');
+      const identityManager = authManagerFor('user-a');
+
+      const [insideScope, outsideScope] = await Promise.all([
+        runWithRequestContext({ identity: identityA, authManager: identityManager }, async () => {
+          await new Promise((resolve) => setImmediate(resolve));
+          return resolveIdentityAuthManager(processGlobal);
+        }),
+        (async () => {
+          await new Promise((resolve) => setImmediate(resolve));
+          return resolveIdentityAuthManager(processGlobal);
+        })(),
+      ]);
+
+      expect(insideScope).toBe(identityManager);
+      expect(outsideScope).toBe(processGlobal);
     });
   });
 

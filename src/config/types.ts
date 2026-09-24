@@ -203,6 +203,39 @@ export const TransportModeSchema = z.enum(['stdio', 'http']);
 
 export type TransportMode = z.infer<typeof TransportModeSchema>;
 
+// HTTP auth scheme (`http.authMode` / `VIKUNJA_MCP_HTTP_AUTH_MODE`), only
+// consulted when `transport=http`. `oidc` (default) is the multi-user
+// resource-server mode (docs/OIDC-RESOURCE-SERVER.md). `token` is the
+// single-user gateway mode (docs/GATEWAY-TOKEN-MODE.md): a static bearer
+// shared with the gateway (`VIKUNJA_MCP_HTTP_AUTH_TOKEN[_FILE]`, never a
+// config-file key) in front of the process-global Vikunja credential that
+// stdio uses. Explicit, never inferred from a missing `oidc` block: a
+// fat-fingered OIDC variable must be a startup error, not a weaker server.
+export const HttpAuthModeSchema = z.enum(['oidc', 'token']);
+
+export type HttpAuthMode = z.infer<typeof HttpAuthModeSchema>;
+
+// Operator-facing messages name the mode as "VIKUNJA_MCP_HTTP_AUTH_MODE set to
+// token", never `...AUTH_MODE=token`: the log sanitizer masks the value of any
+// NAME=value pair whose name looks sensitive (src/utils/security.ts), which
+// would turn the startup error into "[REDACTED]".
+export const TOKEN_MODE_WITH_OIDC_MESSAGE =
+  'Gateway-token mode (VIKUNJA_MCP_HTTP_AUTH_MODE set to token) and the OIDC settings ' +
+  '(VIKUNJA_MCP_OIDC_*) are both set. Pick one auth scheme: remove the VIKUNJA_MCP_OIDC_* ' +
+  'variables for gateway-token mode, or unset VIKUNJA_MCP_HTTP_AUTH_MODE for oidc mode.';
+
+/**
+ * Whether a raw (not yet validated) config asks for gateway-token mode and
+ * also carries an `oidc` block. Zod skips `superRefine` when the base object
+ * fails to parse, so an incomplete `oidc` block (e.g. only the issuer) would
+ * otherwise hide this conflict behind "oidc.audience: Invalid input";
+ * `ConfigurationManager` reports it from the raw config in that case.
+ */
+export function tokenModeOidcConflict(rawConfig: unknown): boolean {
+  const raw = rawConfig as { http?: { authMode?: unknown }; oidc?: unknown } | null | undefined;
+  return raw?.http?.authMode === 'token' && raw.oidc !== undefined;
+}
+
 // HTTP transport configuration (docs/OIDC-RESOURCE-SERVER.md §2.1, §3a).
 //
 // Host binding defaults to loopback (`127.0.0.1`) — a misconfigured
@@ -215,6 +248,7 @@ export const HttpConfigSchema = z.object({
   host: z.string().min(1).default('127.0.0.1'),
   port: z.number().int().positive().max(65535).default(8765),
   path: z.string().min(1).default('/mcp'),
+  authMode: HttpAuthModeSchema.default('oidc'),
   allowedHosts: z.array(z.string()).optional(),
   // Canonical public URL of the MCP endpoint (`http.publicUrl` /
   // `VIKUNJA_MCP_HTTP_PUBLIC_URL`), e.g. `https://mcp-vikunja.example.ch/mcp`.
@@ -399,6 +433,49 @@ export const ApplicationConfigSchema = z.object({
   // operator who set VIKUNJA_MCP_ENROLL_ENABLED=true and got no /enroll
   // endpoints would otherwise debug a ghost.
   .superRefine((config, ctx) => {
+    // gateway-token mode (docs/GATEWAY-TOKEN-MODE.md §4.2): refuse every
+    // combination where a setting would be silently ignored or where two
+    // auth schemes compete. Picking a winner would be a silent downgrade.
+    if (config.http.authMode === 'token') {
+      if (config.transport !== 'http') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['http', 'authMode'],
+          message:
+            'Gateway-token mode (VIKUNJA_MCP_HTTP_AUTH_MODE set to token) requires ' +
+            'VIKUNJA_MCP_TRANSPORT=http. It is meaningless under stdio, which has no HTTP ' +
+            'listener to protect.',
+        });
+      }
+      if (config.oidc !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['http', 'authMode'],
+          message: TOKEN_MODE_WITH_OIDC_MESSAGE,
+        });
+      }
+      if (config.enroll.enabled) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['enroll', 'enabled'],
+          message:
+            'Gateway-token mode (VIKUNJA_MCP_HTTP_AUTH_MODE set to token) cannot be combined ' +
+            'with SSO enrollment (VIKUNJA_MCP_ENROLL_ENABLED): enrollment links per-user ' +
+            'identities, and gateway-token mode has none.',
+        });
+      }
+      if (config.vault.path !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['vault', 'path'],
+          message:
+            'Gateway-token mode (VIKUNJA_MCP_HTTP_AUTH_MODE set to token) has no credential ' +
+            'vault, so VIKUNJA_MCP_VAULT_PATH would be silently ignored. Remove it, or use ' +
+            'oidc mode.',
+        });
+      }
+    }
+
     if (!config.enroll.enabled) {
       return;
     }

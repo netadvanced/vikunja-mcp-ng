@@ -13,11 +13,16 @@
 
 import * as http from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { logger } from '../../src/utils/logger';
 import {
   startHttpTransport,
   resolveAllowedHosts,
+  bindSafetyProblems,
+  isLoopbackHost,
   type HttpTransportHandle,
 } from '../../src/transport/httpTransport';
+import { setupStaticTokenAuth } from '../../src/transport/staticTokenAuth';
 import {
   setOidcAuthMiddleware,
   type HttpRequestWithAuth,
@@ -50,6 +55,7 @@ function baseHttpConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
     host: '127.0.0.1',
     port: allocatePort(),
     path: '/mcp',
+    authMode: 'oidc',
     ...overrides,
   };
 }
@@ -678,5 +684,534 @@ describe('httpTransport', () => {
       // Prevent the afterEach hook from closing an already-closed server.
       handle = undefined as unknown as HttpTransportHandle;
     });
+  });
+});
+
+/**
+ * gateway-token mode (docs/GATEWAY-TOKEN-MODE.md §4.3 to §4.6, §7.1): a
+ * static bearer shared with the gateway, no ALS scope, mode-aware /readyz,
+ * the non-loopback bind-safety rule, and the request-body cap.
+ */
+describe('httpTransport: gateway-token mode', () => {
+  const TOKEN = `gw_${'a1'.repeat(20)}`;
+  let handle: HttpTransportHandle | undefined;
+
+  const INITIALIZE_BODY = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2025-03-26',
+      capabilities: {},
+      clientInfo: { name: 'token-mode-test', version: '0.0.0' },
+    },
+  });
+
+  function tokenConfig(overrides: Partial<HttpConfig> = {}): HttpConfig {
+    return baseHttpConfig({ authMode: 'token', ...overrides });
+  }
+
+  function mcpHeaders(authorization?: string): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+    };
+    if (authorization !== undefined) {
+      headers.Authorization = authorization;
+    }
+    return headers;
+  }
+
+  function chunkedRequest(
+    port: number,
+    headers: Record<string, string>,
+    chunks: string[],
+  ): Promise<RawResponse> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        { host: '127.0.0.1', port, method: 'POST', path: '/mcp', headers },
+        (res) => {
+          const received: Buffer[] = [];
+          res.on('data', (chunk) => received.push(chunk));
+          res.on('end', () => {
+            resolve({
+              statusCode: res.statusCode ?? 0,
+              headers: res.headers,
+              body: Buffer.concat(received).toString('utf-8'),
+            });
+          });
+        },
+      );
+      // The server may close the socket once it has answered 413; that is
+      // the point of the cap, not a test failure.
+      req.on('error', (error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ECONNRESET' && error.code !== 'EPIPE') {
+          reject(error);
+        }
+      });
+      for (const chunk of chunks) {
+        req.write(chunk);
+      }
+      req.end();
+    });
+  }
+
+  afterEach(async () => {
+    if (handle) {
+      await handle.close();
+      handle = undefined;
+    }
+    setOidcAuthMiddleware(undefined);
+    setActiveVaultStore(undefined);
+    setActiveEnrollmentService(undefined);
+    jest.restoreAllMocks();
+  });
+
+  describe('MCP path', () => {
+    it('a POST /mcp with the right bearer reaches the MCP layer (initialize succeeds)', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        isCredentialConfigured: () => true,
+      });
+      const port = getPort(handle);
+
+      const res = await request(port, {
+        method: 'POST',
+        headers: mcpHeaders(`Bearer ${TOKEN}`),
+        body: INITIALIZE_BODY,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('"serverInfo"');
+      expect(res.body).toContain('"test-server"');
+    });
+
+    it('opens no ALS scope for the request: the server factory sees no identity', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const observed: Array<string | undefined> = [];
+      handle = await startHttpTransport(
+        () => {
+          observed.push(getCurrentIdentity()?.sub);
+          return newServer();
+        },
+        tokenConfig(),
+      );
+      const port = getPort(handle);
+
+      await request(port, {
+        method: 'POST',
+        headers: mcpHeaders(`Bearer ${TOKEN}`),
+        body: INITIALIZE_BODY,
+      });
+
+      expect(observed).toEqual([undefined]);
+    });
+
+    it('rejects a missing and a wrong bearer with byte-identical 401 bodies', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig());
+      const port = getPort(handle);
+
+      const missing = await request(port, {
+        method: 'POST',
+        headers: mcpHeaders(),
+        body: INITIALIZE_BODY,
+      });
+      const wrong = await request(port, {
+        method: 'POST',
+        headers: mcpHeaders(`Bearer ${'z'.repeat(TOKEN.length)}`),
+        body: INITIALIZE_BODY,
+      });
+
+      expect(missing.statusCode).toBe(401);
+      expect(wrong.statusCode).toBe(401);
+      expect(missing.headers['www-authenticate']).toBe('Bearer');
+      expect(wrong.headers['www-authenticate']).toBe('Bearer');
+      expect(wrong.body).toBe(missing.body);
+      expect(missing.body).toBe('{"error":"invalid_token"}');
+      expect(missing.body).not.toContain(TOKEN);
+    });
+
+    it('rejects a Host header outside the allowlist with 403', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig());
+      const port = getPort(handle);
+
+      const res = await request(port, {
+        method: 'POST',
+        headers: { ...mcpHeaders(`Bearer ${TOKEN}`), Host: `evil.example.com:${port}` },
+        body: INITIALIZE_BODY,
+      });
+
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe('health and readiness', () => {
+    it('/healthz is 200 without any Authorization header', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig());
+
+      const res = await request(getPort(handle), { path: '/healthz' });
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ status: 'ok' });
+    });
+
+    it('/readyz is 200 when the Vikunja credential is configured, with no vault at all', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const fetchSpy = jest.spyOn(global, 'fetch');
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        isCredentialConfigured: () => true,
+      });
+
+      const res = await request(getPort(handle), { path: '/readyz' });
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ status: 'ok' });
+      // Never an outbound call from an unauthenticated probe (#373).
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('/readyz is 503 with checks.credential=missing when no Vikunja credential is configured', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        isCredentialConfigured: () => false,
+      });
+
+      const res = await request(getPort(handle), { path: '/readyz' });
+
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body)).toEqual({
+        status: 'not_ready',
+        checks: { credential: 'missing' },
+      });
+    });
+
+    it('/readyz fails closed (503) in token mode when no credential check was supplied', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig());
+
+      const res = await request(getPort(handle), { path: '/readyz' });
+
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body)).toEqual({
+        status: 'not_ready',
+        checks: { credential: 'missing' },
+      });
+    });
+
+    it('oidc-mode /readyz is unchanged: the credential check is ignored, the vault still decides', async () => {
+      setOidcAuthMiddleware(async () => false);
+      setActiveVaultStore({ isDegraded: () => false } as unknown as VaultFileStore);
+      handle = await startHttpTransport(newServer, baseHttpConfig(), undefined, {
+        isCredentialConfigured: () => false,
+      });
+
+      const res = await request(getPort(handle), { path: '/readyz' });
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ status: 'ok' });
+    });
+  });
+
+  describe('OIDC-only endpoints are absent', () => {
+    it('/.well-known/oauth-protected-resource is 404', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig());
+      const port = getPort(handle);
+
+      for (const wellKnown of [
+        '/.well-known/oauth-protected-resource',
+        '/.well-known/oauth-protected-resource/mcp',
+      ]) {
+        const res = await request(port, { path: wellKnown });
+        expect(res.statusCode).toBe(404);
+      }
+    });
+
+    it('/enroll is 404', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig());
+      const port = getPort(handle);
+
+      for (const enrollPath of ['/enroll', '/enroll/callback']) {
+        const res = await request(port, { path: enrollPath });
+        expect(res.statusCode).toBe(404);
+        expect(JSON.parse(res.body)).toEqual({ error: 'not_found' });
+      }
+    });
+  });
+
+  describe('request-body cap', () => {
+    it('answers 413 when Content-Length exceeds the cap, without building an MCP server', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+
+      const res = await request(getPort(handle), {
+        method: 'POST',
+        headers: { ...mcpHeaders(`Bearer ${TOKEN}`), 'Content-Length': '1025' },
+        body: 'x'.repeat(1025),
+      });
+
+      expect(res.statusCode).toBe(413);
+      expect(JSON.parse(res.body)).toEqual({ error: 'payload_too_large' });
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it('answers 413 when a chunked body (no Content-Length) grows past the cap', async () => {
+      setupStaticTokenAuth(TOKEN);
+      jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+
+      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
+        'x'.repeat(600),
+        'x'.repeat(600),
+        'x'.repeat(600),
+      ]);
+
+      expect(res.statusCode).toBe(413);
+      expect(JSON.parse(res.body)).toEqual({ error: 'payload_too_large' });
+    });
+
+    it('never dispatches a valid over-cap chunked message, even when it arrives in one read', async () => {
+      // Review finding: nothing guarantees the deferred req.destroy() runs
+      // before the SDK finishes reading the body, parses it and dispatches
+      // the message. Simulate the worst case (the destroy never lands) and
+      // require that the tool still never runs.
+      setupStaticTokenAuth(TOKEN);
+      jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      jest
+        .spyOn(http.IncomingMessage.prototype, 'destroy')
+        .mockImplementation(function (this: http.IncomingMessage) {
+          return this;
+        });
+      const handler = jest.fn(async () => ({ content: [{ type: 'text' as const, text: 'ran' }] }));
+      handle = await startHttpTransport(
+        () => {
+          const server = newServer();
+          server.tool('probe_write', {}, handler);
+          return server;
+        },
+        tokenConfig(),
+        undefined,
+        { maxBodyBytes: 1024 },
+      );
+      const call = JSON.stringify({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { name: 'probe_write', arguments: {} },
+      });
+      // Valid JSON: trailing whitespace pads it past the cap.
+      const padded = call + ' '.repeat(2048);
+
+      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [padded]);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(res.statusCode).toBe(413);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('does not log an error when the SDK writes after a chunked over-cap 413', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+      jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+
+      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
+        INITIALIZE_BODY + ' '.repeat(2048),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(res.statusCode).toBe(413);
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('still logs (and answers 500) when handleRequest fails for any other reason', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+      jest
+        .spyOn(StreamableHTTPServerTransport.prototype, 'handleRequest')
+        .mockRejectedValue(new Error('boom'));
+      handle = await startHttpTransport(newServer, tokenConfig());
+
+      const res = await request(getPort(handle), {
+        method: 'POST',
+        headers: mcpHeaders(`Bearer ${TOKEN}`),
+        body: INITIALIZE_BODY,
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Unhandled error while handling HTTP MCP request:',
+        expect.objectContaining({ message: 'boom' }),
+      );
+    });
+
+    it('lets a chunked body under the cap through intact to the SDK', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 4096,
+      });
+      const half = Math.floor(INITIALIZE_BODY.length / 2);
+
+      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
+        INITIALIZE_BODY.slice(0, half),
+        INITIALIZE_BODY.slice(half),
+      ]);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('"serverInfo"');
+    });
+
+    it('defaults the cap to 1 MiB (rateLimiting.default.maxRequestSize)', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig());
+      const port = getPort(handle);
+
+      const over = await request(port, {
+        method: 'POST',
+        headers: mcpHeaders(`Bearer ${TOKEN}`),
+        body: 'x'.repeat(1048577),
+      });
+
+      expect(over.statusCode).toBe(413);
+    });
+
+    it('does not apply the cap before authentication: an unauthenticated oversize POST is a 401', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, { maxBodyBytes: 16 });
+
+      const res = await request(getPort(handle), {
+        method: 'POST',
+        headers: mcpHeaders(),
+        body: 'x'.repeat(64),
+      });
+
+      expect(res.statusCode).toBe(401);
+    });
+  });
+});
+
+describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => {
+  afterEach(() => {
+    setOidcAuthMiddleware(undefined);
+    jest.restoreAllMocks();
+  });
+
+  it('treats 127.0.0.1, localhost and ::1 as loopback, and nothing else', () => {
+    expect(isLoopbackHost('127.0.0.1')).toBe(true);
+    expect(isLoopbackHost('localhost')).toBe(true);
+    expect(isLoopbackHost('::1')).toBe(true);
+    expect(isLoopbackHost('0.0.0.0')).toBe(false);
+    expect(isLoopbackHost('::')).toBe(false);
+    expect(isLoopbackHost('10.123.0.7')).toBe(false);
+  });
+
+  it('a loopback bind has no extra requirements, even with no auth and no allowedHosts', () => {
+    expect(bindSafetyProblems(baseHttpConfig(), false)).toEqual([]);
+  });
+
+  it('a non-loopback bind with auth but no explicit allowedHosts names VIKUNJA_MCP_HTTP_ALLOWED_HOSTS', () => {
+    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), true);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
+  });
+
+  it('an explicitly empty allowedHosts list counts as not set', () => {
+    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0', allowedHosts: [] }), true);
+    expect(problems).toHaveLength(1);
+  });
+
+  it('a non-loopback bind with neither names both the allow-list and the auth credential', () => {
+    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), false);
+    expect(problems).toHaveLength(2);
+    expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
+    expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_AUTH_TOKEN/);
+  });
+
+  it('a non-loopback bind with both has no problems', () => {
+    expect(
+      bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0', allowedHosts: ['vikunja-mcp:8765'] }), true),
+    ).toEqual([]);
+  });
+
+  it('startHttpTransport refuses 0.0.0.0 with a token but no allowedHosts, before listen()', async () => {
+    setupStaticTokenAuth(`gw_${'b2'.repeat(20)}`);
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
+
+    const attempt = startHttpTransport(newServer, baseHttpConfig({ host: '0.0.0.0', authMode: 'token' }));
+
+    await expect(attempt).rejects.toThrow(ConfigurationError);
+    await expect(attempt).rejects.toThrow(
+      /Refusing to listen on 0\.0\.0\.0: .*VIKUNJA_MCP_HTTP_ALLOWED_HOSTS is not set/,
+    );
+    expect(listenSpy).not.toHaveBeenCalled();
+  });
+
+  it('startHttpTransport refuses 0.0.0.0 with neither, naming both, before listen()', async () => {
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
+
+    const attempt = startHttpTransport(newServer, baseHttpConfig({ host: '0.0.0.0' }));
+
+    await expect(attempt).rejects.toThrow(ConfigurationError);
+    await expect(attempt).rejects.toThrow(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
+    await expect(attempt).rejects.toThrow(/VIKUNJA_MCP_HTTP_AUTH_TOKEN/);
+    expect(listenSpy).not.toHaveBeenCalled();
+  });
+
+  it('with an allow-list but no auth, the refusal points at the auth scheme, not the allow-list', async () => {
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
+
+    const attempt = startHttpTransport(
+      newServer,
+      baseHttpConfig({ host: '0.0.0.0', allowedHosts: ['vikunja-mcp:8765'] }),
+    );
+
+    await expect(attempt).rejects.toThrow(/no HTTP auth credential is configured/);
+    await expect(attempt).rejects.toThrow(/Configure an auth scheme, or bind to 127\.0\.0\.1/);
+    await expect(attempt).rejects.not.toThrow(/Set VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=/);
+    expect(listenSpy).not.toHaveBeenCalled();
+  });
+
+  it('applies to oidc mode too: an OIDC middleware on 0.0.0.0 without allowedHosts is refused', async () => {
+    setOidcAuthMiddleware(async () => true);
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
+
+    await expect(
+      startHttpTransport(newServer, baseHttpConfig({ host: '0.0.0.0' })),
+    ).rejects.toThrow(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
+    expect(listenSpy).not.toHaveBeenCalled();
+  });
+
+  it('startHttpTransport starts on 0.0.0.0 with a token and an explicit allowedHosts list', async () => {
+    setupStaticTokenAuth(`gw_${'c3'.repeat(20)}`);
+    // Stub the bind itself: the assertion is that the listener is reached
+    // with the requested host, without opening a wildcard socket on the
+    // developer machine.
+    const listenSpy = jest
+      .spyOn(http.Server.prototype, 'listen')
+      .mockImplementation(function (this: http.Server, ...args: unknown[]) {
+        const callback = args.find((arg) => typeof arg === 'function') as () => void;
+        callback();
+        return this;
+      });
+
+    const handle = await startHttpTransport(
+      newServer,
+      baseHttpConfig({ host: '0.0.0.0', authMode: 'token', allowedHosts: ['vikunja-mcp:8765'] }),
+    );
+
+    expect(listenSpy).toHaveBeenCalledWith(expect.any(Number), '0.0.0.0', expect.any(Function));
+    expect(handle.httpServer).toBeInstanceOf(http.Server);
+  });
+
+  it('the no-middleware refusal names both auth schemes', async () => {
+    await expect(startHttpTransport(newServer, baseHttpConfig())).rejects.toThrow(
+      /VIKUNJA_MCP_HTTP_AUTH_MODE set to token/,
+    );
   });
 });
