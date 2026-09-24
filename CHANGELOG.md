@@ -45,6 +45,22 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 - The startup error for `transport=http` with no auth configured now names both schemes
   (OIDC and gateway token).
 
+### Fixed
+
+- **HTTP mode bound to `::1` refused every MCP request with `403`.** The default `Host`
+  allow-list was built as `::1:8765`, but clients send `Host: [::1]:8765`. IPv6 bind hosts are
+  now bracketed in the default allow-list (which also backs the `/enroll` Host check), in the
+  "listening on" log line, and in the RFC 9728 resource URL fallback, which had produced an
+  invalid `http://::1:8765/mcp`. IPv4 hosts and names are unchanged, and the default list is not
+  otherwise widened.
+- **`npm run test:e2e:oidc` failed since 0.7.0.** Its mock JWKS was served over plain
+  `http://127.0.0.1`, which the `https://`-only `oidc.jwksUri` rule rightly rejects, so the
+  spawned server exited before binding. The lane now serves the JWKS over https with a one-day
+  self-signed certificate generated at runtime (`openssl` CLI, nothing committed) and passes
+  `NODE_EXTRA_CA_CERTS` to the child. The production rule is unchanged. The lane also takes an
+  OS-assigned free port instead of a random one that could collide with the e2e stacks'
+  published ports.
+
 ## [0.7.0] - 2026-09-08
 
 Promotes the `0.7.0-beta.x` line to stable: OIDC HTTP transport support and the August hardening

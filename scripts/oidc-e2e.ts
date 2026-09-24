@@ -7,7 +7,9 @@
  *
  *   1. Builds the project (`npm run build`).
  *   2. Starts an in-process, loopback-only **mock OIDC issuer**: a real RSA
- *      keypair + a tiny HTTP server serving its JWKS document (reusing the
+ *      keypair + a tiny HTTPS server serving its JWKS document over a
+ *      throwaway self-signed certificate that the child trusts through
+ *      NODE_EXTRA_CA_CERTS, since `oidc.jwksUri` must be https:// (reusing the
  *      exact same signing/JWKS helpers the unit/integration test suites use
  *      — `tests/auth/oidc/helpers.ts` — per design decision D9, "e2e identity
  *      provider = mock OIDC issuer as the CI default").
@@ -44,11 +46,14 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import * as net from 'node:net';
 import {
+  generateSelfSignedCert,
   generateTestKey,
   signTestToken,
   startMockJwksServer,
   type MockJwksServer,
+  type SelfSignedCert,
   type TestKey,
 } from '../tests/auth/oidc/helpers';
 import { startMockOidcIdp, type MockOidcIdp } from './lib/mock-oidc-idp';
@@ -241,13 +246,36 @@ async function callTool(
   return { statusCode, isError: withResult.result.isError, text };
 }
 
+/**
+ * An OS-assigned free loopback port. A random port in a fixed range can land
+ * on one of the e2e stacks' published ports (8xxx/9xxx) and silently talk to
+ * a Vikunja container instead of the spawned server.
+ */
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      probe.close(() => {
+        if (address === null || typeof address === 'string') {
+          reject(new Error('could not determine a free port'));
+        } else {
+          resolve(address.port);
+        }
+      });
+    });
+  });
+}
+
 async function waitForHealthz(port: number, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
   while (Date.now() < deadline) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/healthz`);
-      if (res.ok) {
+      // Match this server's exact liveness body, not just any 200.
+      if (res.ok && (await res.text()) === '{"status":"ok"}') {
         return;
       }
     } catch (error) {
@@ -354,6 +382,7 @@ async function main(): Promise<void> {
   // forever (the hang this structure was introduced to fix).
   let idp: MockOidcIdp | undefined;
   let jwks: MockJwksServer | undefined;
+  let tlsCert: SelfSignedCert | undefined;
   let vaultDir: string | undefined;
   let child: ChildProcess | undefined;
   const carolSub = `oidc-e2e-carol-${Date.now()}`;
@@ -380,14 +409,19 @@ async function main(): Promise<void> {
 
     const realApiToken = await getRealVikunjaApiToken();
 
-    log('Starting the in-process mock OIDC issuer (RSA keypair + loopback JWKS server)...');
+    // oidc.jwksUri must be https:// (src/config/types.ts), so the JWKS is
+    // served over TLS with a throwaway self-signed certificate, and the
+    // spawned server trusts it through NODE_EXTRA_CA_CERTS (honoured by the
+    // global fetch that jose's createRemoteJWKSet and /readyz use).
+    log('Starting the in-process mock OIDC issuer (RSA keypair + loopback https JWKS server)...');
     const key: TestKey = await generateTestKey('oidc-e2e-key-1');
-    jwks = await startMockJwksServer([key.jwk]);
+    tlsCert = generateSelfSignedCert();
+    jwks = await startMockJwksServer([key.jwk], { tls: tlsCert });
 
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vikunja-oidc-e2e-vault-'));
     const vaultPath = path.join(vaultDir, 'vault.json');
     const vaultKey = crypto.randomBytes(32).toString('hex');
-    const port = 8877 + Math.floor(Math.random() * 500);
+    const port = await findFreePort();
 
     log(`Spawning dist/index.js in oidc-http mode on 127.0.0.1:${port}...`);
     const childEnv: NodeJS.ProcessEnv = { ...process.env };
@@ -404,6 +438,7 @@ async function main(): Promise<void> {
       VIKUNJA_MCP_OIDC_JWKS_URI: jwks.url,
       VIKUNJA_MCP_VAULT_PATH: vaultPath,
       VIKUNJA_MCP_VAULT_KEY: vaultKey,
+      NODE_EXTRA_CA_CERTS: tlsCert.certPath,
     });
     if (RUN_ENROLLMENT) {
       // One-click SSO enrollment (issue #220): the /enroll endpoints + the
@@ -781,6 +816,7 @@ async function main(): Promise<void> {
     if (jwks) {
       await jwks.close();
     }
+    tlsCert?.cleanup();
     if (vaultDir) {
       fs.rmSync(vaultDir, { recursive: true, force: true });
     }
