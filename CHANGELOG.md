@@ -8,26 +8,43 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+## [0.8.0-beta.0] - 2026-09-24
+
+Starts the `0.8.0` beta line on the `dev` channel. The headline is **gateway-token HTTP auth
+mode**, a way to run the HTTP transport for a single user behind an MCP gateway such as IBM
+Context Forge without setting up OIDC. It ships as a beta: install with
+`npm install vikunja-mcp-ng@beta` or pull `ghcr.io/netadvanced/vikunja-mcp-ng:0.8.0-beta.0`.
+`latest` stays on `0.7.0`.
+
+**One behavior change for existing OIDC deployments:** a non-loopback bind now needs an explicit
+`VIKUNJA_MCP_HTTP_ALLOWED_HOSTS`, or the server refuses to start. See Changed below. stdio mode
+is unaffected.
+
 ### Added
 
-- **gateway-token HTTP auth mode**, for exactly one user behind an MCP gateway such as IBM
+- **Gateway-token HTTP auth mode**, for exactly one user behind an MCP gateway such as IBM
   Context Forge, with no OIDC relationship between the gateway and this server. Opt in with
   `VIKUNJA_MCP_TRANSPORT=http` plus `VIKUNJA_MCP_HTTP_AUTH_MODE=token` and a shared
   `VIKUNJA_MCP_HTTP_AUTH_TOKEN` (or `_FILE`, at least 32 characters). The token authenticates
   the gateway only. Every request runs as the single `VIKUNJA_URL` + `VIKUNJA_API_TOKEN`
   credential, exactly as in stdio mode, and the server refuses to start without it. Wrong or
   missing tokens get the same opaque `401 {"error":"invalid_token"}`, compared in constant
-  time. No vault, no enrollment, no RFC 9728 metadata in this mode, and it refuses to start
-  alongside any OIDC, enrollment or vault setting. `vikunja_auth connect`, `disconnect`,
+  time, and a too-short configured token is rejected at startup without its length appearing
+  in the error. No vault, no enrollment, no RFC 9728 metadata in this mode, and it refuses to
+  start alongside any OIDC, enrollment or vault setting. `vikunja_auth connect`, `disconnect`,
   `status`, `provision` and `deprovision` return a structured error in this mode; `info` and
   `refresh` still work. Anyone holding the token can do anything the Vikunja token can do, so
   the docs strongly recommend `VIKUNJA_MCP_READ_ONLY=true` for this deployment. See
   `docs/GATEWAY-TOKEN-MODE.md` and the new section in `docs/CONTEXT-FORGE.md`.
 - `/readyz` is mode-aware: in gateway-token mode it reports whether the Vikunja credential is
   configured (`checks.credential`), without calling Vikunja.
-- The HTTP transport caps the MCP request body at `rateLimiting.default.maxRequestSize`
-  (1 MiB by default) and answers `413` above it, in both auth modes.
-- The HTTP transport closes its listener cleanly on `SIGINT`/`SIGTERM`.
+- **Request body cap.** The HTTP transport caps the MCP request body at
+  `rateLimiting.default.maxRequestSize` (1 MiB by default) and answers `413` above it, in both
+  auth modes. A chunked body that crosses the cap is never dispatched to a tool, even if the
+  client keeps sending after the `413`.
+- **Signal handling.** On `SIGINT`/`SIGTERM` (what `docker stop` sends) the HTTP transport closes
+  its listener and exits 0 instead of being killed by the signal. This is not a drain: in-flight
+  requests are cut, so shutdown cannot hang.
 - The Docker image declares `EXPOSE 8765`, and `docker-compose.example.yml` has a
   gateway-token service with a `/healthz` healthcheck.
 - `npm run test:e2e:token`, a real-process e2e lane for the new mode.
@@ -43,7 +60,9 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
   bind `0.0.0.0` without `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS`, set it to the `Host` header your
   gateway sends before upgrading. The documented examples already did.
 - The startup error for `transport=http` with no auth configured now names both schemes
-  (OIDC and gateway token).
+  (OIDC and gateway token). Startup errors about the auth mode are worded so the log
+  sanitizer no longer masks them to `[REDACTED]`, and a token-mode/OIDC conflict is reported
+  as a conflict instead of an unrelated `oidc.audience` validation error.
 
 ### Fixed
 
@@ -60,6 +79,13 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
   `NODE_EXTRA_CA_CERTS` to the child. The production rule is unchanged. The lane also takes an
   OS-assigned free port instead of a random one that could collide with the e2e stacks'
   published ports.
+
+### Internal
+
+- Releases are split into two channels, `main` (stable, `patch`/`minor`) and `dev` (beta,
+  `preminor`/`prerelease`); the release scripts enforce which bump each branch may ship. This
+  is the first release cut from `dev`. See `docs/RELEASING.md` §1.
+- The coverage ratchet was raised after the gateway-token work landed.
 
 ## [0.7.0] - 2026-09-08
 
