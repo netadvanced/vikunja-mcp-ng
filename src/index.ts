@@ -153,12 +153,30 @@ async function main(): Promise<void> {
       // the Vikunja credential every tool call would fail with
       // AUTH_REQUIRED, which looks like a gateway problem.
       setupStaticTokenAuth(readSecretEnv('VIKUNJA_MCP_HTTP_AUTH_TOKEN'));
+      // The auto-connect above only reads the VIKUNJA_URL env var, as stdio
+      // always has. Token mode also honors auth.vikunjaUrl from the config
+      // file (env still wins through the config layering). The token itself
+      // only ever comes from VIKUNJA_API_TOKEN(_FILE): it is a secret and
+      // never read from the config file.
+      const vikunjaUrl = appConfig.auth.vikunjaUrl;
+      if (!authManager.isAuthenticated() && vikunjaUrl && vikunjaApiToken) {
+        logger.info(
+          `Auto-authenticating: ${createSecureConnectionMessage(vikunjaUrl, vikunjaApiToken)}`,
+        );
+        authManager.connect(vikunjaUrl, vikunjaApiToken);
+      }
       if (!authManager.isAuthenticated()) {
+        const fileTokenHint =
+          appConfig.auth.vikunjaToken && !vikunjaApiToken
+            ? ' auth.vikunjaToken in the config file is ignored: the token is a secret and ' +
+              'is only read from the environment.'
+            : '';
         throw new ConfigurationError(
           'http.authMode',
           'Gateway-token mode (VIKUNJA_MCP_HTTP_AUTH_MODE set to token) serves the single ' +
             'Vikunja credential the operator configures, and none is set. Set VIKUNJA_URL ' +
-            'and VIKUNJA_API_TOKEN (or VIKUNJA_API_TOKEN_FILE).',
+            '(or auth.vikunjaUrl in the config file) and VIKUNJA_API_TOKEN (or ' +
+            `VIKUNJA_API_TOKEN_FILE).${fileTokenHint}`,
         );
       }
     } else if (appConfig.oidc) {

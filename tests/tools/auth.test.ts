@@ -1714,6 +1714,19 @@ describe('Auth Tool', () => {
       expect(result.content[0].text).toContain('Token refresh not required');
     });
 
+    it("'refresh' on a JWT tells the caller the operator rotates it, not to call connect", async () => {
+      mockAuthManager.getAuthType.mockReturnValue('jwt');
+
+      const result = await callTool('refresh');
+
+      const markdown = result.content[0].text;
+      expect(markdown).toContain('JWT tokens expire');
+      expect(markdown).toMatch(/operator/);
+      expect(markdown).toMatch(/VIKUNJA_API_TOKEN/);
+      expect(markdown).toMatch(/restart/);
+      expect(markdown).not.toContain('vikunja_auth connect');
+    });
+
     it("'info' still works against the operator's credential (read-only)", async () => {
       mockAuthManager.isAuthenticated.mockReturnValue(true);
 

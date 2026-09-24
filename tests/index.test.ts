@@ -791,6 +791,104 @@ describe('Main Server Entry Point (index.ts)', () => {
         expect(MockStdioServerTransport).not.toHaveBeenCalled();
       });
 
+      it('trims a trailing newline from the plain VIKUNJA_MCP_HTTP_AUTH_TOKEN, like the _FILE form', async () => {
+        setTokenModeEnv();
+        process.env.VIKUNJA_MCP_HTTP_AUTH_TOKEN = `${GATEWAY_TOKEN}\n`;
+        mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+        const indexModule = require('../src/index');
+        const seam = require('../src/transport/oidcMiddlewareSeam');
+
+        await indexModule.main();
+
+        // The gateway sends the token without the newline; it must match.
+        const res = { headersSent: false, setHeader: jest.fn(), writeHead: jest.fn(), end: jest.fn() };
+        await expect(
+          seam.getOidcAuthMiddleware()({ headers: { authorization: `Bearer ${GATEWAY_TOKEN}` } }, res),
+        ).resolves.toBe(true);
+      });
+
+      describe('Vikunja URL from the config file (auth.vikunjaUrl)', () => {
+        let tempDir: string;
+
+        function writeConfigFile(auth: Record<string, string>): void {
+          tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vikunja-mcp-token-cfg-'));
+          const configFile = path.join(tempDir, 'vikunja-mcp.config.json');
+          fs.writeFileSync(configFile, JSON.stringify({ auth }));
+          process.env.VIKUNJA_MCP_CONFIG = configFile;
+        }
+
+        // The module-level auto-connect is stubbed; make isAuthenticated
+        // follow the connect calls so main()'s check sees the real outcome.
+        function trackConnect(): void {
+          let connected = false;
+          mockAuthManager.connect.mockImplementation(() => {
+            connected = true;
+          });
+          mockAuthManager.isAuthenticated.mockImplementation(() => connected);
+        }
+
+        afterEach(() => {
+          delete process.env.VIKUNJA_MCP_CONFIG;
+          mockAuthManager.connect.mockReset();
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        });
+
+        it('connects to auth.vikunjaUrl from the file with the env VIKUNJA_API_TOKEN', async () => {
+          setTokenModeEnv();
+          delete process.env.VIKUNJA_URL;
+          writeConfigFile({ vikunjaUrl: 'http://127.0.0.1:8241/api/v1' });
+          trackConnect();
+          mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+          const indexModule = require('../src/index');
+
+          await indexModule.main();
+
+          expect(mockAuthManager.connect).toHaveBeenCalledTimes(1);
+          expect(mockAuthManager.connect).toHaveBeenCalledWith(
+            'http://127.0.0.1:8241/api/v1',
+            'tk_operator-token-1234567890',
+          );
+          expect(mockStartHttpTransport).toHaveBeenCalledTimes(1);
+        });
+
+        it('lets VIKUNJA_URL win over auth.vikunjaUrl from the file', async () => {
+          setTokenModeEnv();
+          writeConfigFile({ vikunjaUrl: 'http://127.0.0.1:8241/api/v1' });
+          trackConnect();
+          mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+          const indexModule = require('../src/index');
+
+          await indexModule.main();
+
+          expect(mockAuthManager.connect).toHaveBeenCalledTimes(1);
+          expect(mockAuthManager.connect).toHaveBeenCalledWith(
+            'http://127.0.0.1:8240/api/v1',
+            'tk_operator-token-1234567890',
+          );
+        });
+
+        it('never takes the Vikunja token from auth.vikunjaToken in the file', async () => {
+          setTokenModeEnv();
+          delete process.env.VIKUNJA_URL;
+          delete process.env.VIKUNJA_API_TOKEN;
+          writeConfigFile({
+            vikunjaUrl: 'http://127.0.0.1:8241/api/v1',
+            vikunjaToken: 'tk_file-token-1234567890',
+          });
+          trackConnect();
+          const indexModule = require('../src/index');
+
+          const error = await indexModule.main().catch((caught: unknown) => caught);
+
+          expect(error).toBeInstanceOf(Error);
+          expect((error as Error).message).toMatch(/VIKUNJA_API_TOKEN/);
+          expect((error as Error).message).toMatch(/auth\.vikunjaToken in the config file is ignored/);
+          expect((error as Error).message).not.toContain('tk_file-token');
+          expect(mockAuthManager.connect).not.toHaveBeenCalled();
+          expect(mockStartHttpTransport).not.toHaveBeenCalled();
+        });
+      });
+
       it('SIGTERM closes the listener (and its open connections) and exits 0', async () => {
         setTokenModeEnv();
         const close = jest.fn().mockResolvedValue(undefined);

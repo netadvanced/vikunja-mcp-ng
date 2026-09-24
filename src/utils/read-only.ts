@@ -49,7 +49,10 @@
  * persisted credential-vault record, a real account-level mutation, so they
  * are classified 'write'/'destructive' respectively and DO get rejected by
  * global read-only mode — `vikunja_auth` as a whole is therefore no longer
- * `readOnlyHint: true` (see tests/utils/read-only.test.ts).
+ * `readOnlyHint: true` (see tests/utils/read-only.test.ts). In gateway-token
+ * mode connect/disconnect are writes too, since the session they touch is
+ * the operator's shared credential (see
+ * GATEWAY_TOKEN_MODE_AUTH_CLASSIFICATIONS below).
  */
 
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
@@ -526,6 +529,28 @@ export function isReadOnlyModeActive(): boolean {
 }
 
 /**
+ * `vikunja_auth` subcommands reclassified in gateway-token mode. connect and
+ * disconnect only touch the local session, so they are 'read' in the AUTH
+ * table and a read-only stdio server can still authenticate. In
+ * gateway-token mode that session is the operator's credential, shared by
+ * every caller, so repointing or clearing it counts as a write here too: a
+ * backstop behind the tool handler's own gate (src/tools/auth.ts).
+ */
+const GATEWAY_TOKEN_MODE_AUTH_CLASSIFICATIONS: ClassificationTable = {
+  connect: 'write',
+  disconnect: 'destructive',
+};
+
+/** Same fail-safe as `isReadOnlyModeActive`: a config load failure reads as false. */
+function isGatewayTokenModeActive(): boolean {
+  try {
+    return ConfigurationManager.getInstance().isGatewayTokenMode();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The single shared guard every tool dispatcher calls once — right after
  * its existing auth check, before routing to a subcommand handler — instead
  * of duplicating a read-only check per subcommand.
@@ -546,7 +571,14 @@ export function assertWriteAllowed(
   subcommand: string,
   classificationOverride?: SubcommandClassification,
 ): void {
-  const classification = classificationOverride ?? classifySubcommand(toolName, subcommand);
+  let classification = classificationOverride ?? classifySubcommand(toolName, subcommand);
+  if (
+    toolName === 'vikunja_auth' &&
+    subcommand in GATEWAY_TOKEN_MODE_AUTH_CLASSIFICATIONS &&
+    isGatewayTokenModeActive()
+  ) {
+    classification = GATEWAY_TOKEN_MODE_AUTH_CLASSIFICATIONS[subcommand] as SubcommandClassification;
+  }
   if (classification === 'read') {
     return;
   }

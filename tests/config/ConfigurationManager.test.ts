@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { inspect } from 'util';
 import {
   ConfigurationManager,
   Environment,
@@ -868,6 +869,48 @@ describe('ConfigurationManager', () => {
       expect(() => ConfigurationManager.getInstance().loadConfiguration()).toThrow(
         ConfigurationError,
       );
+    });
+
+    describe('never echoes a rejected enum value (a misplaced secret)', () => {
+      // An operator who swaps VIKUNJA_MCP_HTTP_AUTH_MODE and ..._AUTH_TOKEN
+      // puts the gateway token in an enum field. Zod's default message
+      // quotes the received value, and startup logs the error.
+      const GATEWAY_TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
+
+      function captureLoadError(): ConfigurationError {
+        try {
+          ConfigurationManager.getInstance().loadConfiguration();
+        } catch (error) {
+          return error as ConfigurationError;
+        }
+        throw new Error('expected loadConfiguration to throw');
+      }
+
+      it.each([
+        ['http.authMode', 'VIKUNJA_MCP_HTTP_AUTH_MODE', /http\.authMode: .*Expected 'oidc' \| 'token'/],
+        ['transport', 'VIKUNJA_MCP_TRANSPORT', /transport: .*Expected 'stdio' \| 'http'/],
+      ])('%s: keeps the field and allowed values, drops the received value', (_field, envVar, useful) => {
+        process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+        process.env[envVar] = GATEWAY_TOKEN;
+
+        const error = captureLoadError();
+
+        expect(error).toBeInstanceOf(ConfigurationError);
+        expect(error.message).toMatch(useful);
+        expect(error.message).not.toContain(GATEWAY_TOKEN);
+        expect(inspect(error, { depth: Infinity })).not.toContain(GATEWAY_TOKEN);
+        expect(JSON.stringify(error.value)).not.toContain(GATEWAY_TOKEN);
+      });
+
+      it('does not carry the merged raw config (and so the Vikunja token) on the error', () => {
+        process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+        process.env.VIKUNJA_MCP_HTTP_AUTH_MODE = GATEWAY_TOKEN;
+        process.env.VIKUNJA_API_TOKEN = 'tk_operator-secret-1234567890';
+
+        const error = captureLoadError();
+
+        expect(inspect(error, { depth: Infinity })).not.toContain('tk_operator-secret');
+      });
     });
 
     it('rejects token mode under stdio (meaningless there)', () => {

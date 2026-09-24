@@ -32,6 +32,23 @@ import { logger } from '../utils/logger';
 const DEFAULT_CONFIG_FILE_NAME = 'vikunja-mcp.config.json';
 
 /**
+ * Zod's default enum message ends with `received '<value>'`. An operator who
+ * swaps two variables (the gateway token into VIKUNJA_MCP_HTTP_AUTH_MODE)
+ * would get the secret printed in the startup error, so enum issues keep
+ * the allowed values and drop the received one. Zod's other default
+ * messages name types or limits, never the value.
+ */
+const configErrorMap: z.ZodErrorMap = (issue, ctx) => {
+  if (issue.code === z.ZodIssueCode.invalid_enum_value) {
+    const allowed = issue.options
+      .map((option) => (typeof option === 'string' ? `'${option}'` : String(option)))
+      .join(' | ');
+    return { message: `Invalid enum value. Expected ${allowed}` };
+  }
+  return { message: ctx.defaultError };
+};
+
+/**
  * Environment-specific configuration overrides
  */
 type EnvironmentProfile = {
@@ -244,6 +261,18 @@ export class ConfigurationManager {
    */
   public isReadOnly(): boolean {
     return this.loadConfiguration().readOnly;
+  }
+
+  /**
+   * Whether this server runs in gateway-token mode (`transport=http` with
+   * `http.authMode=token`, docs/GATEWAY-TOKEN-MODE.md). The config
+   * refinement already rejects `token` under stdio; checking the transport
+   * too keeps this false there by construction. Synchronous for the same
+   * reason as `isReadOnly()`.
+   */
+  public isGatewayTokenMode(): boolean {
+    const config = this.loadConfiguration();
+    return config.transport === 'http' && config.http.authMode === 'token';
   }
 
   /**
@@ -728,14 +757,15 @@ export class ConfigurationManager {
    */
   private validateConfiguration(rawConfig: unknown): ApplicationConfig {
     try {
-      return ApplicationConfigSchema.parse(rawConfig);
+      return ApplicationConfigSchema.parse(rawConfig, { errorMap: configErrorMap });
     } catch (error) {
       if (error instanceof z.ZodError) {
-        // Provide detailed validation errors
+        // Provide detailed validation errors. No received value and no raw
+        // config: either can hold a secret (a misplaced token, the merged
+        // VIKUNJA_API_TOKEN), and this error is logged at startup.
         const errors = error.errors.map((err) => ({
           path: err.path.join('.'),
           message: err.message,
-          received: 'received' in err ? err.received : 'unknown',
           expected: 'expected' in err ? err.expected : 'unknown',
         }));
         // See tokenModeOidcConflict: when the oidc block itself fails to
@@ -748,7 +778,6 @@ export class ConfigurationManager {
           errors.unshift({
             path: 'http.authMode',
             message: TOKEN_MODE_WITH_OIDC_MESSAGE,
-            received: 'token',
             expected: 'unknown',
           });
         }
@@ -756,7 +785,7 @@ export class ConfigurationManager {
         throw new ConfigurationError(
           'validation',
           `Configuration validation failed:\n${errors.map((e) => `  - ${e.path}: ${e.message}`).join('\n')}`,
-          { errors, rawConfig },
+          { errors },
         );
       }
       throw error;

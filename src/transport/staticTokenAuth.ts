@@ -96,8 +96,13 @@ export function createStaticTokenAuthMiddleware(deps: { token: string }): OidcAu
  * port is bound. The token value never appears in an error message. The
  * error field is `http.authMode`, not the variable name: the log sanitizer
  * would mask the text after a sensitive-looking `NAME:` prefix.
+ *
+ * Surrounding whitespace is trimmed whatever the source: the `_FILE` form is
+ * already trimmed, and an env injection with a trailing newline would
+ * otherwise start fine and then reject every request with a bare 401.
  */
-export function setupStaticTokenAuth(token: string | undefined): void {
+export function setupStaticTokenAuth(rawToken: string | undefined): void {
+  const token = rawToken?.trim();
   if (token === undefined || token === '') {
     throw new ConfigurationError(
       'http.authMode',

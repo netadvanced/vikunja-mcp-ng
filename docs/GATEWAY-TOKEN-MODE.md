@@ -95,8 +95,8 @@ That last fact drives most of §5.
 
 `docs/CONTEXT-FORGE.md`'s existing registration recipe still applies verbatim except for
 the auth column: `transport: STREAMABLEHTTP`, upstream URL `http://<service>:8765/mcp`,
-health check `/healthz`, and the `TOOL_DESCRIPTION_FORBIDDEN_PATTERNS_ENABLED=false`
-warning about silently-dropped tools. In token mode the registration becomes the *simple*
+health check `/healthz`, and the `TOOL_DESCRIPTION_FORBIDDEN_PATTERNS` note about
+silently-dropped tools (`vikunja_filters`, whose description contains `&&` and `||`). In token mode the registration becomes the *simple*
 Context Forge case: `authType: bearer` with a **fixed** `authToken`, `oneTimeAuth: false`,
 and **no** `passthroughHeaders`. The gateway calls the upstream with its own credential,
 which is exactly the behaviour `CONTEXT-FORGE.md` warns against for multi-user OIDC and

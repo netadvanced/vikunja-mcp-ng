@@ -206,6 +206,26 @@ describe('staticTokenAuth', () => {
       expect(getOidcAuthMiddleware()).toBeUndefined();
     });
 
+    it('trims surrounding whitespace, so a newline-terminated env value still matches', async () => {
+      setupStaticTokenAuth(`  ${TOKEN}\n`);
+
+      const out = fakeResponse();
+      await expect(
+        getOidcAuthMiddleware()!(fakeRequest(`Bearer ${TOKEN}`), out.res),
+      ).resolves.toBe(true);
+    });
+
+    it('treats a whitespace-only token as missing', () => {
+      expect(() => setupStaticTokenAuth(' \n\t ')).toThrow(/VIKUNJA_MCP_HTTP_AUTH_TOKEN \(or/);
+      expect(getOidcAuthMiddleware()).toBeUndefined();
+    });
+
+    it('counts the minimum length after trimming', () => {
+      const padded = `${'a'.repeat(MIN_GATEWAY_TOKEN_LENGTH - 1)}\n`;
+
+      expect(() => setupStaticTokenAuth(padded)).toThrow(/too short/);
+    });
+
     it(`refuses a token shorter than ${MIN_GATEWAY_TOKEN_LENGTH} characters`, () => {
       const short = 'a'.repeat(MIN_GATEWAY_TOKEN_LENGTH - 1);
 

@@ -176,13 +176,32 @@ and JWKS reachability and returns `503` when either is unhealthy, so use it
 for a readiness probe or manual diagnosis instead
 ([`OIDC-SETUP.md`](OIDC-SETUP.md) §11), not as the gateway's liveness check.
 
-**Verify the registration actually worked**: the response should report
-`"reachable": true` and an **empty** `skippedTools` array. A non-empty
-`skippedTools` means Context Forge's content filter rejected some tool
-descriptions — several of this server's descriptions contain `>` or `;` as
-ordinary punctuation, which the strict filter refuses, silently dropping
-those tools from the catalog. The knob is
-`TOOL_DESCRIPTION_FORBIDDEN_PATTERNS_ENABLED=false`.
+**Verify the registration actually worked**: the `POST /gateways` response
+should report `"reachable": true` and an **empty** `skippedTools` array.
+`skippedTools` exists only in that registration response (Context Forge does
+not store it, so a later `GET` of the gateway will not show it); otherwise
+the only trace is a warning in Context Forge's own log.
+
+A non-empty `skippedTools` means Context Forge's tool-description filter
+rejected a tool and left it out of the catalog. In Context Forge v1.0.10 the
+filter checks each tool's top-level description for the substrings in
+`TOOL_DESCRIPTION_FORBIDDEN_PATTERNS`, which default to `&&`, `||` and `$(`,
+and refuses the tool because `VALIDATION_STRICT` defaults to `true`.
+Parameter descriptions are not checked. On this server that catches
+**`vikunja_filters`**: its description documents the filter syntax, which
+combines conditions with `&&` and `||`. Two ways to keep it, in Context
+Forge's `.env`:
+
+```bash
+# Narrow (recommended): keep only the command-substitution check
+TOOL_DESCRIPTION_FORBIDDEN_PATTERNS='["$("]'
+
+# Blunt: turn the description filter off entirely
+TOOL_DESCRIPTION_FORBIDDEN_PATTERNS_ENABLED=false
+```
+
+`VALIDATION_STRICT=false` also lets the tool through (as a logged warning),
+but it relaxes Context Forge's other strict checks too.
 
 ## Provisioning walkthrough (end users)
 
@@ -353,11 +372,11 @@ to `oidc` mode (the rest of this guide) instead of sharing the token.
 |---|---|---|
 | Transport mode | `VIKUNJA_MCP_TRANSPORT` | `http` |
 | Auth scheme | `VIKUNJA_MCP_HTTP_AUTH_MODE` | `token` |
-| Gateway token | `VIKUNJA_MCP_HTTP_AUTH_TOKEN` (or `_FILE`) | At least 32 characters: `openssl rand -hex 32`. Prefer `_FILE` with a Docker secret |
+| Gateway token | `VIKUNJA_MCP_HTTP_AUTH_TOKEN` (or `_FILE`) | At least 32 characters: `openssl rand -hex 32`. Prefer `_FILE` with a Docker secret. A trailing newline is trimmed from either form |
 | Bind host | `VIKUNJA_MCP_HTTP_HOST` | `0.0.0.0` inside the gateway's private overlay network |
 | Allowed `Host` headers | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` | Required for a non-loopback bind: the `Host` header Context Forge actually sends, e.g. `vikunja-mcp:8765` for a Swarm service called `vikunja-mcp` |
-| Vikunja URL | `VIKUNJA_URL` | e.g. `https://vikunja.example.com/api/v1` |
-| Vikunja credential | `VIKUNJA_API_TOKEN` (or `_FILE`) | **Required** in this mode. The server refuses to start without it |
+| Vikunja URL | `VIKUNJA_URL` | e.g. `https://vikunja.example.com/api/v1`. `auth.vikunjaUrl` in the config file works too; the env var wins |
+| Vikunja credential | `VIKUNJA_API_TOKEN` (or `_FILE`) | **Required** in this mode. The server refuses to start without it. Env only: `auth.vikunjaToken` in the config file is ignored |
 | Read-only (strongly recommended) | `VIKUNJA_MCP_READ_ONLY` | `true`, unless you explicitly want the gateway to write to Vikunja. Cheapest way to bound the blast radius above |
 
 Do **not** set any `VIKUNJA_MCP_OIDC_*` variable, `VIKUNJA_MCP_VAULT_PATH` or
@@ -403,14 +422,18 @@ curl -s -X POST https://context-forge.example.com/v1/gateways \
 
 Health check path: `/healthz`. `/readyz` works too in this mode: it returns `200` when
 the Vikunja credential is configured and never calls Vikunja. The
-`TOOL_DESCRIPTION_FORBIDDEN_PATTERNS_ENABLED=false` warning above applies unchanged:
-check that registration reports `"reachable": true` and an empty `skippedTools`.
+`TOOL_DESCRIPTION_FORBIDDEN_PATTERNS` note above applies unchanged: check that the
+registration response reports `"reachable": true` and an empty `skippedTools`.
 
 ### What changes for the user
 
 - `vikunja_auth connect`, `disconnect`, `status`, `provision` and `deprovision` return a
   structured error explaining that the Vikunja credential is configured by the operator
-  in this mode. `vikunja_auth info` and `refresh` still work.
+  in this mode. `vikunja_auth info` and `refresh` still work. With a JWT credential,
+  `refresh` tells the user the operator has to rotate it (new `VIKUNJA_API_TOKEN`, then
+  a restart).
+- With `VIKUNJA_MCP_READ_ONLY=true`, read-only mode also rejects `connect` and
+  `disconnect` in this mode, as a second check behind the one above.
 - There is no enrollment and no per-user vault. The provisioning walkthrough above does
   not apply.
 
@@ -419,7 +442,14 @@ check that registration reports `"reachable": true` and an empty `skippedTools`.
 - **Container exits at startup naming `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS`:** the bind is
   not loopback and no allow-list is set. Set it to the `Host` header the gateway sends.
 - **Container exits naming `VIKUNJA_MCP_HTTP_AUTH_TOKEN` or `VIKUNJA_API_TOKEN`:** the
-  gateway token (32+ characters) or the Vikunja credential is missing.
+  gateway token (32+ characters) or the Vikunja credential is missing. The Vikunja
+  credential needs both a URL (`VIKUNJA_URL` or `auth.vikunjaUrl`) and
+  `VIKUNJA_API_TOKEN` from the environment.
+- **Container exits with `Invalid enum value` for `http.authMode`:** the value of
+  `VIKUNJA_MCP_HTTP_AUTH_MODE` is not `token` or `oidc`. A common cause is swapping it
+  with `VIKUNJA_MCP_HTTP_AUTH_TOKEN`; the error never prints the rejected value.
+- **`vikunja_filters` missing from the gateway catalog:** Context Forge's description
+  filter skipped it; see the `TOOL_DESCRIPTION_FORBIDDEN_PATTERNS` note above.
 - **`401 {"error":"invalid_token"}` on every call:** the registration's `authToken`
   does not match `VIKUNJA_MCP_HTTP_AUTH_TOKEN`. The response never says why; the server
   log has a `Gateway request rejected (static token check)` line with the reason.
