@@ -1666,6 +1666,77 @@ describe('Auth Tool', () => {
     });
   });
 
+  describe('gateway-token mode (transport=http, http.authMode=token)', () => {
+    // docs/GATEWAY-TOKEN-MODE.md §5.3 and resolved decision 5: the single
+    // process-global Vikunja credential is the operator's, so nothing a
+    // caller does through the tool may repoint, clear or "provision" it.
+    beforeEach(() => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({
+        sources: { transport: 'http', http: { authMode: 'token' } },
+      });
+      mockHasRequestContext.mockReturnValue(false);
+    });
+
+    afterEach(() => {
+      ConfigurationManager.reset();
+    });
+
+    it.each(['connect', 'disconnect', 'status', 'provision', 'deprovision'])(
+      "'%s' returns a structured gateway-token-mode error and touches nothing",
+      async (subcommand) => {
+        const { clearGlobalClientFactory } = jest.requireMock('../../src/client') as {
+          clearGlobalClientFactory: jest.Mock;
+        };
+
+        const error = await callTool(subcommand, {
+          apiUrl: 'https://attacker.example.com/api/v1',
+          apiToken: 'tk_attacker-token-1234567890',
+        }).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(MCPError);
+        expect((error as MCPError).message).toMatch(/gateway-token mode/);
+        expect((error as MCPError).message).toMatch(/configured by the operator/);
+        expect((error as MCPError).message).not.toContain('tk_attacker');
+        expect(mockAuthManager.connect).not.toHaveBeenCalled();
+        expect(mockAuthManager.disconnect).not.toHaveBeenCalled();
+        expect(clearGlobalClientFactory).not.toHaveBeenCalled();
+        expect(getActiveVaultStore).not.toHaveBeenCalled();
+      },
+    );
+
+    it("'refresh' still reports on the operator's credential (read-only)", async () => {
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+      const result = await callTool('refresh');
+
+      expect(result.content[0].text).toContain('Token refresh not required');
+    });
+
+    it("'info' still works against the operator's credential (read-only)", async () => {
+      mockAuthManager.isAuthenticated.mockReturnValue(true);
+
+      const result = await callTool('info');
+
+      expect(result.content[0].text).toContain('Vikunja server info retrieved successfully');
+    });
+
+    it('does not affect oidc auth mode: stdio-style connect still works when authMode=oidc', async () => {
+      ConfigurationManager.reset();
+      ConfigurationManager.getInstance({ sources: { transport: 'http', http: { authMode: 'oidc' } } });
+      mockAuthManager.getStatus.mockReturnValue({ authenticated: false });
+      mockAuthManager.getAuthType.mockReturnValue('api-token');
+
+      const result = await callTool('connect', {
+        apiUrl: 'https://vikunja.example.com',
+        apiToken: 'tk_valid-token-1234567890',
+      });
+
+      expect(mockAuthManager.connect).toHaveBeenCalled();
+      expect(result.content[0].text).toContain('Successfully connected');
+    });
+  });
+
   describe('active API version reporting', () => {
     afterEach(() => {
       delete process.env.VIKUNJA_MCP_FORCE_V1_API;

@@ -23,6 +23,7 @@ const mockDotenvConfig = jest.fn();
 const mockAuthManager = {
   connect: jest.fn(),
   getAuthType: jest.fn(),
+  isAuthenticated: jest.fn(),
 };
 const MockAuthManager = jest.fn().mockImplementation(() => mockAuthManager);
 
@@ -533,6 +534,9 @@ describe('Main Server Entry Point (index.ts)', () => {
         // Third arg: the oidc config (RFC 9728 discovery) — undefined here
         // since no OIDC env vars are set in this test.
         undefined,
+        // Fourth arg (gateway-token mode, docs/GATEWAY-TOKEN-MODE.md): the
+        // body cap and the /readyz credential check, passed in every http mode.
+        expect.objectContaining({ maxBodyBytes: 1048576 }),
       );
       expect(MockStdioServerTransport).not.toHaveBeenCalled();
       expect(mockMcpServer.connect).not.toHaveBeenCalledWith(mockStdioServerTransport);
@@ -645,6 +649,208 @@ describe('Main Server Entry Point (index.ts)', () => {
       expect(mockLogger.info).not.toHaveBeenCalledWith(
         'Vikunja MCP server started (http transport)',
       );
+    });
+
+    describe('gateway-token mode (docs/GATEWAY-TOKEN-MODE.md §4.3, §5)', () => {
+      const GATEWAY_TOKEN = `gw_${'e5'.repeat(20)}`;
+      const shutdownSignals = ['SIGINT', 'SIGTERM'] as const;
+      let baselineListeners: Map<string, Function[]>;
+
+      function removeListenersAddedByMain(): void {
+        for (const signal of shutdownSignals) {
+          for (const listener of process.listeners(signal)) {
+            if (!baselineListeners.get(signal)?.includes(listener)) {
+              process.removeListener(signal, listener as (...args: unknown[]) => void);
+            }
+          }
+        }
+      }
+
+      function setTokenModeEnv(): void {
+        process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+        process.env.VIKUNJA_MCP_HTTP_AUTH_MODE = 'token';
+        process.env.VIKUNJA_MCP_HTTP_AUTH_TOKEN = GATEWAY_TOKEN;
+        process.env.VIKUNJA_URL = 'http://127.0.0.1:8240/api/v1';
+        process.env.VIKUNJA_API_TOKEN = 'tk_operator-token-1234567890';
+      }
+
+      beforeEach(() => {
+        baselineListeners = new Map(
+          shutdownSignals.map((signal) => [signal, [...process.listeners(signal)]]),
+        );
+        delete process.env.VIKUNJA_MCP_HTTP_AUTH_TOKEN;
+        delete process.env.VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE;
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+      });
+
+      afterEach(() => {
+        removeListenersAddedByMain();
+        mockAuthManager.isAuthenticated.mockReset();
+      });
+
+      it('registers the static token middleware, not OIDC or enrollment, before the listener', async () => {
+        setTokenModeEnv();
+        mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+        const indexModule = require('../src/index');
+        const seam = require('../src/transport/oidcMiddlewareSeam');
+
+        await indexModule.main();
+
+        expect(mockSetupOidcHttpAuth).not.toHaveBeenCalled();
+        expect(mockSetupEnrollment).not.toHaveBeenCalled();
+        expect(mockStartHttpTransport).toHaveBeenCalledTimes(1);
+        expect(mockStartHttpTransport).toHaveBeenCalledWith(
+          expect.any(Function),
+          expect.objectContaining({ authMode: 'token' }),
+          undefined,
+          expect.objectContaining({
+            maxBodyBytes: 1048576,
+            isCredentialConfigured: expect.any(Function),
+          }),
+        );
+        // The registered middleware accepts exactly the configured token.
+        const middleware = seam.getOidcAuthMiddleware();
+        expect(middleware).toBeDefined();
+        const res = { headersSent: false, setHeader: jest.fn(), writeHead: jest.fn(), end: jest.fn() };
+        await expect(
+          middleware({ headers: { authorization: `Bearer ${GATEWAY_TOKEN}` } }, res),
+        ).resolves.toBe(true);
+        await expect(
+          middleware({ headers: { authorization: 'Bearer wrong' } }, res),
+        ).resolves.toBe(false);
+        expect(mockLogger.info).toHaveBeenCalledWith('Vikunja MCP server started (http transport)');
+        expect(MockStdioServerTransport).not.toHaveBeenCalled();
+      });
+
+      it('passes a /readyz credential check backed by the process-global AuthManager', async () => {
+        setTokenModeEnv();
+        mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+        const indexModule = require('../src/index');
+
+        await indexModule.main();
+
+        const options = mockStartHttpTransport.mock.calls[0][3] as {
+          isCredentialConfigured: () => boolean;
+        };
+        mockAuthManager.isAuthenticated.mockReturnValue(false);
+        expect(options.isCredentialConfigured()).toBe(false);
+        mockAuthManager.isAuthenticated.mockReturnValue(true);
+        expect(options.isCredentialConfigured()).toBe(true);
+      });
+
+      it('reads the gateway token from VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE', async () => {
+        setTokenModeEnv();
+        delete process.env.VIKUNJA_MCP_HTTP_AUTH_TOKEN;
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vikunja-mcp-gw-token-'));
+        const tokenFile = path.join(tempDir, 'gateway-token');
+        fs.writeFileSync(tokenFile, `${GATEWAY_TOKEN}\n`);
+        process.env.VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE = tokenFile;
+        mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+        try {
+          const indexModule = require('../src/index');
+          const seam = require('../src/transport/oidcMiddlewareSeam');
+
+          await indexModule.main();
+
+          const res = { headersSent: false, setHeader: jest.fn(), writeHead: jest.fn(), end: jest.fn() };
+          await expect(
+            seam.getOidcAuthMiddleware()({ headers: { authorization: `Bearer ${GATEWAY_TOKEN}` } }, res),
+          ).resolves.toBe(true);
+        } finally {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+      });
+
+      it('refuses to start without VIKUNJA_MCP_HTTP_AUTH_TOKEN, before any listener', async () => {
+        setTokenModeEnv();
+        delete process.env.VIKUNJA_MCP_HTTP_AUTH_TOKEN;
+        const indexModule = require('../src/index');
+
+        await expect(indexModule.main()).rejects.toThrow(/VIKUNJA_MCP_HTTP_AUTH_TOKEN/);
+        expect(mockStartHttpTransport).not.toHaveBeenCalled();
+        expect(MockStdioServerTransport).not.toHaveBeenCalled();
+      });
+
+      it('refuses to start when both the token and its _FILE form are set', async () => {
+        setTokenModeEnv();
+        process.env.VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE = '/does/not/matter';
+        const indexModule = require('../src/index');
+
+        await expect(indexModule.main()).rejects.toThrow(/VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE/);
+        expect(mockStartHttpTransport).not.toHaveBeenCalled();
+      });
+
+      it('refuses to start without an authenticated Vikunja credential, before any listener', async () => {
+        setTokenModeEnv();
+        delete process.env.VIKUNJA_API_TOKEN;
+        mockAuthManager.isAuthenticated.mockReturnValue(false);
+        const indexModule = require('../src/index');
+
+        await expect(indexModule.main()).rejects.toThrow(/VIKUNJA_API_TOKEN/);
+        expect(mockStartHttpTransport).not.toHaveBeenCalled();
+        expect(MockStdioServerTransport).not.toHaveBeenCalled();
+      });
+
+      it('SIGTERM closes the listener (and its open connections) and exits 0', async () => {
+        setTokenModeEnv();
+        const close = jest.fn().mockResolvedValue(undefined);
+        const closeAllConnections = jest.fn();
+        mockStartHttpTransport.mockResolvedValueOnce({ httpServer: { closeAllConnections }, close });
+        mockProcessExit.mockImplementation((() => undefined) as never);
+        const indexModule = require('../src/index');
+
+        await indexModule.main();
+        const handlers = process.listeners('SIGTERM').filter(
+          (listener) => !baselineListeners.get('SIGTERM')?.includes(listener),
+        );
+        expect(handlers).toHaveLength(1);
+        (handlers[0] as (signal: string) => void)('SIGTERM');
+        // A second signal while closing is ignored rather than double-closing.
+        (handlers[0] as (signal: string) => void)('SIGTERM');
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(closeAllConnections).toHaveBeenCalledTimes(1);
+        expect(mockProcessExit).toHaveBeenCalledWith(0);
+      });
+
+      it('exits 1 when closing the listener fails on SIGINT', async () => {
+        setTokenModeEnv();
+        const close = jest.fn().mockRejectedValue(new Error('close failed'));
+        mockStartHttpTransport.mockResolvedValueOnce({
+          httpServer: { closeAllConnections: jest.fn() },
+          close,
+        });
+        mockProcessExit.mockImplementation((() => undefined) as never);
+        const indexModule = require('../src/index');
+
+        await indexModule.main();
+        const handlers = process.listeners('SIGINT').filter(
+          (listener) => !baselineListeners.get('SIGINT')?.includes(listener),
+        );
+        expect(handlers).toHaveLength(1);
+        (handlers[0] as (signal: string) => void)('SIGINT');
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(mockProcessExit).toHaveBeenCalledWith(1);
+      });
+
+      it('oidc auth mode is unchanged: no static middleware is registered', async () => {
+        process.env.VIKUNJA_MCP_TRANSPORT = 'http';
+        process.env.VIKUNJA_MCP_OIDC_ISSUER = 'https://idp.example.test/realms/h1';
+        process.env.VIKUNJA_MCP_OIDC_AUDIENCE = 'vikunja-mcp-ng';
+        process.env.VIKUNJA_MCP_OIDC_JWKS_URI = 'https://idp.example.test/certs';
+        mockSetupOidcHttpAuth.mockResolvedValueOnce(undefined);
+        mockStartHttpTransport.mockResolvedValueOnce({ httpServer: {}, close: jest.fn() });
+        const indexModule = require('../src/index');
+        const seam = require('../src/transport/oidcMiddlewareSeam');
+
+        await indexModule.main();
+
+        expect(mockSetupOidcHttpAuth).toHaveBeenCalledTimes(1);
+        // setupOidcHttpAuth is mocked here, so nothing real registered.
+        expect(seam.getOidcAuthMiddleware()).toBeUndefined();
+      });
     });
 
     it('config parsing: an invalid transport value fails configuration validation before any transport is chosen', async () => {

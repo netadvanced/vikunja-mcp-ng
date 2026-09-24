@@ -20,8 +20,10 @@ import {
 } from './client';
 import { readSecretEnv } from './config/secrets';
 import { ConfigurationManager } from './config/ConfigurationManager';
-import { startHttpTransport } from './transport/httpTransport';
+import { ConfigurationError } from './config/types';
+import { startHttpTransport, type HttpTransportHandle } from './transport/httpTransport';
 import { setupOidcHttpAuth } from './transport/oidcHttpAuth';
+import { setupStaticTokenAuth } from './transport/staticTokenAuth';
 import { setupEnrollment } from './transport/enrollment';
 import { resolvePackageVersion } from './utils/version';
 
@@ -89,6 +91,33 @@ if (process.env.VIKUNJA_URL && vikunjaApiToken) {
 }
 
 /**
+ * Close the HTTP listener on SIGINT/SIGTERM (a Swarm `docker stop` sends
+ * SIGTERM) instead of dying mid-response. `closeAllConnections()` also ends
+ * idle keep-alive sockets and any open stream, so shutdown cannot hang.
+ */
+function installShutdownHandlers(handle: HttpTransportHandle): void {
+  let closing = false;
+  const shutdown = (signal: NodeJS.Signals): void => {
+    if (closing) {
+      return;
+    }
+    closing = true;
+    logger.info(`Received ${signal}, closing the HTTP listener`);
+    const closed = handle.close();
+    handle.httpServer.closeAllConnections();
+    closed.then(
+      () => process.exit(0),
+      (error: unknown) => {
+        logger.error('Failed to close the HTTP listener cleanly:', error);
+        process.exit(1);
+      },
+    );
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+}
+
+/**
  * Transport mode selection (docs/OIDC-RESOURCE-SERVER.md §2 "Modes").
  *
  * `stdio` is the default and MUST remain byte-for-byte behaviorally
@@ -104,9 +133,10 @@ if (process.env.VIKUNJA_URL && vikunjaApiToken) {
  *
  * `http` mode is new and opt-in (`transport=http` / `VIKUNJA_MCP_TRANSPORT`)
  * and starts the Streamable HTTP transport instead of stdio — see
- * `src/transport/httpTransport.ts`. Without the OIDC middleware seam
- * registered (item H1b, parallel), it refuses to start rather than serve
- * unauthenticated HTTP.
+ * `src/transport/httpTransport.ts`. Its auth scheme is `http.authMode`:
+ * `oidc` (default, per-user) or `token` (single-user gateway mode,
+ * docs/GATEWAY-TOKEN-MODE.md). Without an auth middleware registered on the
+ * seam, it refuses to start rather than serve unauthenticated HTTP.
  */
 async function main(): Promise<void> {
   await factoryInitializationPromise;
@@ -114,12 +144,29 @@ async function main(): Promise<void> {
   const appConfig = ConfigurationManager.getInstance().loadConfiguration();
 
   if (appConfig.transport === 'http') {
-    // Build and register the OIDC JWT-validation middleware on the transport
-    // auth seam BEFORE starting the listener (docs/OIDC-RESOURCE-SERVER.md
-    // §3b). When no `oidc` config is present we deliberately skip this — and
-    // `startHttpTransport` then refuses to start rather than serve
-    // unauthenticated HTTP (deny-mixed-mode, §2 "Selection rule").
-    if (appConfig.oidc) {
+    if (appConfig.http.authMode === 'token') {
+      // gateway-token mode (docs/GATEWAY-TOKEN-MODE.md §4.3, §5): a static
+      // bearer authenticates the gateway, and every request runs as the
+      // process-global Vikunja credential above, exactly as in stdio. No
+      // vault, no enrollment. Both secrets are required up front: without
+      // the Vikunja credential every tool call would fail with
+      // AUTH_REQUIRED, which looks like a gateway problem.
+      setupStaticTokenAuth(readSecretEnv('VIKUNJA_MCP_HTTP_AUTH_TOKEN'));
+      if (!authManager.isAuthenticated()) {
+        throw new ConfigurationError(
+          'auth',
+          'VIKUNJA_MCP_HTTP_AUTH_MODE=token serves the single Vikunja credential the ' +
+            'operator configures, and none is set. Set VIKUNJA_URL and VIKUNJA_API_TOKEN ' +
+            '(or VIKUNJA_API_TOKEN_FILE).',
+        );
+      }
+    } else if (appConfig.oidc) {
+      // Build and register the OIDC JWT-validation middleware on the
+      // transport auth seam BEFORE starting the listener
+      // (docs/OIDC-RESOURCE-SERVER.md §3b). When no `oidc` config is present
+      // we deliberately skip this, and `startHttpTransport` then refuses to
+      // start rather than serve unauthenticated HTTP (deny-mixed-mode, §2
+      // "Selection rule").
       await setupOidcHttpAuth(appConfig.oidc, appConfig.vault, appConfig.http);
       // One-click SSO enrollment (issue #220): opt-in, and only meaningful
       // once the vault exists — hence strictly after setupOidcHttpAuth. A
@@ -131,7 +178,7 @@ async function main(): Promise<void> {
     // requests; a shared server cannot back concurrent per-request
     // transports — see src/transport/httpTransport.ts). The module-level
     // `server` above stays the stdio-mode server and is left unconnected here.
-    await startHttpTransport(
+    const handle = await startHttpTransport(
       () => {
         const requestServer = new McpServer({
           name: 'vikunja-mcp-ng',
@@ -142,7 +189,12 @@ async function main(): Promise<void> {
       },
       appConfig.http,
       appConfig.oidc,
+      {
+        maxBodyBytes: appConfig.rateLimiting.default.maxRequestSize,
+        isCredentialConfigured: () => authManager.isAuthenticated(),
+      },
     );
+    installShutdownHandlers(handle);
     logger.info('Vikunja MCP server started (http transport)');
     return;
   }

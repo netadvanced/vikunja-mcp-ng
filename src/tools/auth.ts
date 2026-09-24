@@ -53,6 +53,43 @@ function createStdioModeProvisioningError(subcommand: string): MCPError {
 }
 
 /**
+ * `vikunja_auth` subcommands that are disabled in gateway-token mode
+ * (docs/GATEWAY-TOKEN-MODE.md §5.3, resolved decision 5): `connect` and
+ * `disconnect` would repoint or clear the server-wide credential for every
+ * caller, and `provision`/`status`/`deprovision` are credential-vault
+ * operations with no vault behind them. `refresh` and `info` only read the
+ * operator's credential and stay available.
+ */
+const GATEWAY_TOKEN_MODE_DISABLED_SUBCOMMANDS: ReadonlySet<AuthArgs['subcommand']> = new Set([
+  'connect',
+  'disconnect',
+  'status',
+  'provision',
+  'deprovision',
+]);
+
+/**
+ * Whether this server runs in gateway-token mode (`transport=http` with
+ * `http.authMode=token`). The config refinement already rejects `token`
+ * under stdio; checking the transport too keeps this false there by
+ * construction.
+ */
+function isGatewayTokenMode(): boolean {
+  const config = ConfigurationManager.getInstance().loadConfiguration();
+  return config.transport === 'http' && config.http.authMode === 'token';
+}
+
+function createGatewayTokenModeError(subcommand: string): MCPError {
+  return new MCPError(
+    ErrorCode.NOT_IMPLEMENTED,
+    `vikunja_auth ${subcommand} is not available in gateway-token mode: the server's ` +
+      'Vikunja credential is configured by the operator in this mode (VIKUNJA_URL and ' +
+      'VIKUNJA_API_TOKEN), and there is no per-user credential vault. vikunja_auth info ' +
+      'and refresh still report on that credential.',
+  );
+}
+
+/**
  * Length-safe, constant-time comparison of a stored session token against a
  * caller-supplied one (#276's reconnect check). `timingSafeEqual` throws on
  * unequal lengths, so length is compared first — that leaks only the length,
@@ -234,6 +271,9 @@ export function registerAuthTool(
     getToolAnnotations('vikunja_auth'),
     applyRateLimiting('vikunja_auth', async (args: AuthArgs) => {
       try {
+        if (GATEWAY_TOKEN_MODE_DISABLED_SUBCOMMANDS.has(args.subcommand) && isGatewayTokenMode()) {
+          throw createGatewayTokenModeError(args.subcommand);
+        }
         assertWriteAllowed('vikunja_auth', args.subcommand);
         switch (args.subcommand) {
           case 'connect': {
