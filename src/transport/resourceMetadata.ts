@@ -26,6 +26,7 @@
 
 import type { IncomingMessage } from 'node:http';
 import type { HttpConfig } from '../config/types';
+import { formatHostPort } from './hostPort';
 
 /** RFC 9728 §3 well-known path for protected resource metadata. */
 export const WELL_KNOWN_PROTECTED_RESOURCE_PATH = '/.well-known/oauth-protected-resource';
@@ -92,7 +93,7 @@ export function resolveResourceUrl(
     typeof hostHeader === 'string' &&
     hostHeader.length > 0 &&
     (allowedHosts === undefined || allowedHosts.includes(hostHeader));
-  const host = hostHeaderTrusted ? hostHeader : `${httpConfig.host}:${httpConfig.port}`;
+  const host = hostHeaderTrusted ? hostHeader : formatHostPort(httpConfig.host, httpConfig.port);
   const forwardedProto = hostHeaderTrusted ? req?.headers['x-forwarded-proto'] : undefined;
   const protoRaw = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
   const protoCandidate = protoRaw?.split(',')[0]?.trim().toLowerCase();

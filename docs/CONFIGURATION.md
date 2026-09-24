@@ -558,7 +558,7 @@ When `transport=http`, additional settings apply under the `http` config section
 | Port | `http.port` | `VIKUNJA_MCP_HTTP_PORT` | `8765` |
 | Request path | `http.path` | `VIKUNJA_MCP_HTTP_PATH` | `/mcp` |
 | Auth scheme | `http.authMode` | `VIKUNJA_MCP_HTTP_AUTH_MODE` | `oidc` (the other value is `token`, see [Gateway-token mode](#gateway-token-mode-single-user-behind-a-gateway)) |
-| Allowed `Host` headers | `http.allowedHosts` | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` (comma list) | `<host>:<port>`, used for the SDK transport's built-in DNS-rebinding protection, which is always on in `http` mode |
+| Allowed `Host` headers | `http.allowedHosts` | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` (comma list) | `<host>:<port>` (an IPv6 host is bracketed, e.g. `[::1]:8765`), used for the SDK transport's built-in DNS-rebinding protection, which is always on in `http` mode |
 
 Two endpoints are always served unauthenticated, outside the MCP path and any
 authentication middleware: `GET /healthz` (liveness) and `GET /readyz`. In `oidc` auth

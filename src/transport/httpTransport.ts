@@ -63,6 +63,9 @@ import {
   isProtectedResourceMetadataPath,
 } from './resourceMetadata';
 import { getOidcAuthMiddleware } from './oidcMiddlewareSeam';
+import { formatHostPort } from './hostPort';
+
+export { formatHostPort };
 import { getActiveEnrollmentService } from './enrollment';
 import { getActiveVaultStore } from '../storage/vaultFileStore';
 import { runWithRequestContext, takeAttachedRequestContext } from '../context/requestContext';
@@ -109,7 +112,8 @@ export interface HttpTransportHandle {
 /**
  * Resolve the effective `allowedHosts` list used for the SDK transport's
  * DNS-rebinding protection. When `http.allowedHosts` isn't explicitly
- * configured, defaults to the bind `host:port` pair so the default loopback
+ * configured, defaults to the bind `host:port` pair (IPv6 literals bracketed,
+ * `[::1]:8765`, the form clients send in `Host`) so the default loopback
  * binding gets working protection out of the box (§3a "Host binding /
  * DNS-rebinding stance").
  */
@@ -117,7 +121,7 @@ export function resolveAllowedHosts(httpConfig: HttpConfig): string[] {
   if (httpConfig.allowedHosts && httpConfig.allowedHosts.length > 0) {
     return httpConfig.allowedHosts;
   }
-  return [`${httpConfig.host}:${httpConfig.port}`];
+  return [formatHostPort(httpConfig.host, httpConfig.port)];
 }
 
 const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'];
@@ -249,7 +253,7 @@ export async function startHttpTransport(
   });
 
   logger.info(
-    `Vikunja MCP HTTP transport listening on ${httpConfig.host}:${httpConfig.port}${requestPath}`,
+    `Vikunja MCP HTTP transport listening on ${formatHostPort(httpConfig.host, httpConfig.port)}${requestPath}`,
   );
 
   return {

@@ -12,6 +12,7 @@
  */
 
 import * as http from 'node:http';
+import * as os from 'node:os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { logger } from '../../src/utils/logger';
@@ -19,6 +20,7 @@ import {
   startHttpTransport,
   resolveAllowedHosts,
   bindSafetyProblems,
+  formatHostPort,
   isLoopbackHost,
   type HttpTransportHandle,
 } from '../../src/transport/httpTransport';
@@ -1094,6 +1096,102 @@ describe('httpTransport: gateway-token mode', () => {
       expect(res.statusCode).toBe(401);
     });
   });
+});
+
+const IPV6_LOOPBACK_AVAILABLE = Object.values(os.networkInterfaces())
+  .flat()
+  .some((iface) => iface?.address === '::1');
+
+describe('httpTransport: IPv6 bind hosts', () => {
+  let handle: HttpTransportHandle | undefined;
+
+  afterEach(async () => {
+    if (handle) {
+      await handle.close();
+      handle = undefined;
+    }
+    setOidcAuthMiddleware(undefined);
+    jest.restoreAllMocks();
+  });
+
+  it('formatHostPort brackets IPv6 literals and leaves IPv4 and names alone', () => {
+    expect(formatHostPort('::1', 8765)).toBe('[::1]:8765');
+    expect(formatHostPort('::', 8765)).toBe('[::]:8765');
+    expect(formatHostPort('127.0.0.1', 8765)).toBe('127.0.0.1:8765');
+    expect(formatHostPort('vikunja-mcp', 8765)).toBe('vikunja-mcp:8765');
+  });
+
+  it('defaults the allow-list to the bracketed form clients send in Host for a ::1 bind', () => {
+    expect(resolveAllowedHosts(baseHttpConfig({ host: '::1', port: 8765 }))).toEqual([
+      '[::1]:8765',
+    ]);
+  });
+
+  it('does not widen the default list (no localhost, no IPv4 alias)', () => {
+    expect(resolveAllowedHosts(baseHttpConfig({ host: '::1', port: 8765 }))).toHaveLength(1);
+    expect(resolveAllowedHosts(baseHttpConfig({ host: '127.0.0.1', port: 8765 }))).toEqual([
+      '127.0.0.1:8765',
+    ]);
+  });
+
+  (IPV6_LOOPBACK_AVAILABLE ? it : it.skip)(
+    'a real listener bound to ::1 accepts a POST /mcp with Host: [::1]:<port> and logs the bracketed address',
+    async () => {
+      const token = `gw_${'f6'.repeat(20)}`;
+      setupStaticTokenAuth(token);
+      const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+      const config = baseHttpConfig({ host: '::1', authMode: 'token' });
+      handle = await startHttpTransport(newServer, config);
+
+      const res = await new Promise<RawResponse>((resolve, reject) => {
+        const req = http.request(
+          {
+            host: '::1',
+            port: config.port,
+            method: 'POST',
+            path: '/mcp',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json, text/event-stream',
+              Authorization: `Bearer ${token}`,
+            },
+          },
+          (response) => {
+            const chunks: Buffer[] = [];
+            response.on('data', (chunk: Buffer) => chunks.push(chunk));
+            response.on('end', () =>
+              resolve({
+                statusCode: response.statusCode ?? 0,
+                headers: response.headers,
+                body: Buffer.concat(chunks).toString('utf-8'),
+              }),
+            );
+          },
+        );
+        req.on('error', reject);
+        // Node sends the bracketed form itself; asserted, not assumed.
+        expect(req.getHeader('host')).toBe(`[::1]:${config.port}`);
+        req.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'initialize',
+            params: {
+              protocolVersion: '2025-03-26',
+              capabilities: {},
+              clientInfo: { name: 'ipv6-test', version: '0.0.0' },
+            },
+          }),
+        );
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('"serverInfo"');
+      expect(infoSpy).toHaveBeenCalledWith(
+        `Vikunja MCP HTTP transport listening on [::1]:${config.port}/mcp`,
+      );
+    },
+  );
 });
 
 describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => {

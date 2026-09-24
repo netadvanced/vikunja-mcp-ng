@@ -42,6 +42,12 @@ describe('resolveResourceUrl', () => {
     expect(resolveResourceUrl(httpConfig(), fakeRequest())).toBe('http://127.0.0.1:8765/mcp');
   });
 
+  it('brackets an IPv6 bind host in the fallback URL', () => {
+    expect(resolveResourceUrl(httpConfig({ host: '::1' }), fakeRequest())).toBe(
+      'http://[::1]:8765/mcp'
+    );
+  });
+
   it('falls back to the configured host:port when the Host header is empty', () => {
     expect(resolveResourceUrl(httpConfig(), fakeRequest({ host: '' }))).toBe(
       'http://127.0.0.1:8765/mcp'
