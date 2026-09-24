@@ -332,7 +332,10 @@ type; `src/index.ts`'s top-level `main().catch()` already logs and `process.exit
 
 Rules, in `http` mode, regardless of `authMode`:
 
-- bind host is loopback (`127.0.0.1` / `localhost` / `::1`) → no extra requirements;
+- bind host is loopback → no extra requirements. An IP literal counts when it is in
+  `127.0.0.0/8`, `::1` or `::ffff:127.0.0.0/104`. A name such as `localhost` is resolved
+  first (`listen()` binds whatever it resolves to) and counts only when **every** address
+  it resolves to is loopback; a name that does not resolve does not count;
 - bind host is anything else → **both** of:
   - an auth credential is configured (`http.authMode === 'oidc'` with a complete `oidc`
     block, **or** `authMode === 'token'` with a non-empty token), **and**
@@ -727,6 +730,13 @@ The operator answered the open questions before implementation started:
   `127.0.0.1` or set an explicit allow-list, so none of them breaks. An oidc deployment
   binding `0.0.0.0` without `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` now fails at startup instead
   of answering every request with `403`; the CHANGELOG calls this out.
+- **Loopback is decided by address, not by spelling.** `localhost` used to count as
+  loopback because of its name. If `/etc/hosts` (or a container `extra_hosts`) maps it to
+  a routable address, `listen()` binds that address while bind safety skipped the
+  allow-list; this was reproduced in a `node:22-alpine` container with `localhost` mapped
+  to its own `172.17.0.x` address (found in independent review). `bindSafetyProblems()`
+  is now async and resolves the bind host (`dns.lookup` with `all: true`) before
+  `listen()`; IP literals are still classified without DNS.
 - **"Loopback bind with no token → starts" (§7.1)** is read as "bind safety adds no
   requirement on loopback". A listener still never starts without an auth middleware.
 - **§9 item 18's second half** (`/readyz` → `503` with `VIKUNJA_API_TOKEN` cleared) cannot

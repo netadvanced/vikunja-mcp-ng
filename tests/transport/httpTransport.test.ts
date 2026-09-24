@@ -791,13 +791,10 @@ describe('httpTransport: gateway-token mode', () => {
     it('opens no ALS scope for the request: the server factory sees no identity', async () => {
       setupStaticTokenAuth(TOKEN);
       const observed: Array<string | undefined> = [];
-      handle = await startHttpTransport(
-        () => {
-          observed.push(getCurrentIdentity()?.sub);
-          return newServer();
-        },
-        tokenConfig(),
-      );
+      handle = await startHttpTransport(() => {
+        observed.push(getCurrentIdentity()?.sub);
+        return newServer();
+      }, tokenConfig());
       const port = getPort(handle);
 
       await request(port, {
@@ -965,7 +962,9 @@ describe('httpTransport: gateway-token mode', () => {
     it('answers 413 when a chunked body (no Content-Length) grows past the cap', async () => {
       setupStaticTokenAuth(TOKEN);
       jest.spyOn(console, 'error').mockImplementation(() => undefined);
-      handle = await startHttpTransport(newServer, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 1024,
+      });
 
       const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
         'x'.repeat(600),
@@ -984,11 +983,11 @@ describe('httpTransport: gateway-token mode', () => {
       // require that the tool still never runs.
       setupStaticTokenAuth(TOKEN);
       jest.spyOn(console, 'error').mockImplementation(() => undefined);
-      jest
-        .spyOn(http.IncomingMessage.prototype, 'destroy')
-        .mockImplementation(function (this: http.IncomingMessage) {
-          return this;
-        });
+      jest.spyOn(http.IncomingMessage.prototype, 'destroy').mockImplementation(function (
+        this: http.IncomingMessage,
+      ) {
+        return this;
+      });
       const handler = jest.fn(async () => ({ content: [{ type: 'text' as const, text: 'ran' }] }));
       handle = await startHttpTransport(
         () => {
@@ -1020,7 +1019,9 @@ describe('httpTransport: gateway-token mode', () => {
       setupStaticTokenAuth(TOKEN);
       const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
       jest.spyOn(console, 'error').mockImplementation(() => undefined);
-      handle = await startHttpTransport(newServer, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 1024,
+      });
 
       const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
         INITIALIZE_BODY + ' '.repeat(2048),
@@ -1200,48 +1201,118 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     jest.restoreAllMocks();
   });
 
-  it('treats 127.0.0.1, localhost and ::1 as loopback, and nothing else', () => {
-    expect(isLoopbackHost('127.0.0.1')).toBe(true);
-    expect(isLoopbackHost('localhost')).toBe(true);
-    expect(isLoopbackHost('::1')).toBe(true);
-    expect(isLoopbackHost('0.0.0.0')).toBe(false);
-    expect(isLoopbackHost('::')).toBe(false);
-    expect(isLoopbackHost('10.123.0.7')).toBe(false);
+  /** A DNS stand-in: every name resolves to the given addresses, and no literal ever reaches it. */
+  function resolvesTo(...addresses: string[]): jest.Mock {
+    return jest.fn(async () =>
+      addresses.map((address) => ({ address, family: address.includes(':') ? 6 : 4 })),
+    );
+  }
+
+  it('classifies loopback literals without DNS, and nothing else', async () => {
+    const lookup = resolvesTo('10.0.0.1');
+    for (const host of ['127.0.0.1', '127.9.8.7', '::1', '0:0:0:0:0:0:0:1', '::ffff:127.0.0.1']) {
+      await expect(isLoopbackHost(host, lookup)).resolves.toBe(true);
+    }
+    for (const host of ['0.0.0.0', '::', '::ffff:0.0.0.0', '10.123.0.7', '::ffff:10.0.0.1']) {
+      await expect(isLoopbackHost(host, lookup)).resolves.toBe(false);
+    }
+    expect(lookup).not.toHaveBeenCalled();
   });
 
-  it('a loopback bind has no extra requirements, even with no auth and no allowedHosts', () => {
-    expect(bindSafetyProblems(baseHttpConfig(), false)).toEqual([]);
+  it('treats a name as loopback only when every address it resolves to is loopback', async () => {
+    await expect(isLoopbackHost('localhost', resolvesTo('127.0.0.1', '::1'))).resolves.toBe(true);
+    // Review finding: /etc/hosts (or a container extra_hosts) can map
+    // `localhost` to a routable address, and listen() binds that address.
+    await expect(isLoopbackHost('localhost', resolvesTo('172.17.0.4'))).resolves.toBe(false);
+    await expect(isLoopbackHost('localhost', resolvesTo('127.0.0.1', '10.0.0.1'))).resolves.toBe(
+      false,
+    );
+    await expect(isLoopbackHost('localhost', resolvesTo())).resolves.toBe(false);
   });
 
-  it('a non-loopback bind with auth but no explicit allowedHosts names VIKUNJA_MCP_HTTP_ALLOWED_HOSTS', () => {
-    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), true);
+  it('fails closed when the bind host does not resolve', async () => {
+    const lookup = jest.fn(async () => {
+      throw Object.assign(new Error('getaddrinfo ENOTFOUND nowhere'), { code: 'ENOTFOUND' });
+    });
+    await expect(isLoopbackHost('nowhere.invalid', lookup)).resolves.toBe(false);
+    await expect(isLoopbackHost('[::1]', lookup)).resolves.toBe(false);
+  });
+
+  it('resolves localhost with the real resolver on this machine', async () => {
+    // Every mainstream /etc/hosts maps localhost to loopback; this pins the
+    // default lookup wiring (all addresses, not just the first).
+    await expect(isLoopbackHost('localhost')).resolves.toBe(true);
+  });
+
+  it('a loopback bind has no extra requirements, even with no auth and no allowedHosts', async () => {
+    await expect(bindSafetyProblems(baseHttpConfig(), false)).resolves.toEqual([]);
+  });
+
+  it('a localhost bind that resolves off-box needs the allow-list and auth like any other', async () => {
+    const problems = await bindSafetyProblems(
+      baseHttpConfig({ host: 'localhost' }),
+      false,
+      resolvesTo('172.17.0.4'),
+    );
+    expect(problems).toHaveLength(2);
+    expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
+  });
+
+  it('startHttpTransport refuses a localhost bind that resolves off-box, before listen()', async () => {
+    setupStaticTokenAuth(`gw_${'d4'.repeat(20)}`);
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
+
+    const attempt = startHttpTransport(
+      newServer,
+      baseHttpConfig({ host: 'localhost', authMode: 'token' }),
+      undefined,
+      { lookupHost: resolvesTo('172.17.0.4') },
+    );
+
+    await expect(attempt).rejects.toThrow(
+      /Refusing to listen on localhost: .*VIKUNJA_MCP_HTTP_ALLOWED_HOSTS is not set/,
+    );
+    expect(listenSpy).not.toHaveBeenCalled();
+  });
+
+  it('a non-loopback bind with auth but no explicit allowedHosts names VIKUNJA_MCP_HTTP_ALLOWED_HOSTS', async () => {
+    const problems = await bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), true);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
   });
 
-  it('an explicitly empty allowedHosts list counts as not set', () => {
-    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0', allowedHosts: [] }), true);
+  it('an explicitly empty allowedHosts list counts as not set', async () => {
+    const problems = await bindSafetyProblems(
+      baseHttpConfig({ host: '0.0.0.0', allowedHosts: [] }),
+      true,
+    );
     expect(problems).toHaveLength(1);
   });
 
-  it('a non-loopback bind with neither names both the allow-list and the auth credential', () => {
-    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), false);
+  it('a non-loopback bind with neither names both the allow-list and the auth credential', async () => {
+    const problems = await bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), false);
     expect(problems).toHaveLength(2);
     expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
     expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_AUTH_TOKEN/);
   });
 
-  it('a non-loopback bind with both has no problems', () => {
-    expect(
-      bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0', allowedHosts: ['vikunja-mcp:8765'] }), true),
-    ).toEqual([]);
+  it('a non-loopback bind with both has no problems', async () => {
+    await expect(
+      bindSafetyProblems(
+        baseHttpConfig({ host: '0.0.0.0', allowedHosts: ['vikunja-mcp:8765'] }),
+        true,
+      ),
+    ).resolves.toEqual([]);
   });
 
   it('startHttpTransport refuses 0.0.0.0 with a token but no allowedHosts, before listen()', async () => {
     setupStaticTokenAuth(`gw_${'b2'.repeat(20)}`);
     const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
 
-    const attempt = startHttpTransport(newServer, baseHttpConfig({ host: '0.0.0.0', authMode: 'token' }));
+    const attempt = startHttpTransport(
+      newServer,
+      baseHttpConfig({ host: '0.0.0.0', authMode: 'token' }),
+    );
 
     await expect(attempt).rejects.toThrow(ConfigurationError);
     await expect(attempt).rejects.toThrow(
@@ -1290,13 +1361,14 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     // Stub the bind itself: the assertion is that the listener is reached
     // with the requested host, without opening a wildcard socket on the
     // developer machine.
-    const listenSpy = jest
-      .spyOn(http.Server.prototype, 'listen')
-      .mockImplementation(function (this: http.Server, ...args: unknown[]) {
-        const callback = args.find((arg) => typeof arg === 'function') as () => void;
-        callback();
-        return this;
-      });
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen').mockImplementation(function (
+      this: http.Server,
+      ...args: unknown[]
+    ) {
+      const callback = args.find((arg) => typeof arg === 'function') as () => void;
+      callback();
+      return this;
+    });
 
     const handle = await startHttpTransport(
       newServer,

@@ -52,7 +52,9 @@
  * `src/index.ts`'s `main()` — only `registerTools` itself runs per request).
  */
 
+import * as dns from 'node:dns';
 import * as http from 'node:http';
+import * as net from 'node:net';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -98,6 +100,8 @@ export interface HttpTransportOptions {
    * token mode, readiness fails closed.
    */
   isCredentialConfigured?: () => boolean;
+  /** Resolves the bind host for the loopback check. Defaults to the system resolver. */
+  lookupHost?: HostLookup;
 }
 
 /** Default request-body cap: `rateLimiting.default.maxRequestSize`'s default (1 MiB). */
@@ -124,11 +128,46 @@ export function resolveAllowedHosts(httpConfig: HttpConfig): string[] {
   return [formatHostPort(httpConfig.host, httpConfig.port)];
 }
 
-const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'];
+/** Resolves a host name to every address it maps to (the shape of `dns.promises.lookup` with `all: true`). */
+export type HostLookup = (host: string) => Promise<Array<{ address: string }>>;
 
-/** Whether a bind host only accepts connections from this machine (or container). */
-export function isLoopbackHost(host: string): boolean {
-  return LOOPBACK_HOSTS.includes(host);
+const lookupAllAddresses: HostLookup = (host) => dns.promises.lookup(host, { all: true });
+
+const LOOPBACK_ADDRESSES = new net.BlockList();
+LOOPBACK_ADDRESSES.addSubnet('127.0.0.0', 8, 'ipv4');
+LOOPBACK_ADDRESSES.addAddress('::1', 'ipv6');
+
+function isLoopbackAddress(address: string): boolean {
+  const family = net.isIP(address);
+  if (family === 0) {
+    return false;
+  }
+  // BlockList matches IPv4-mapped IPv6 (`::ffff:127.0.0.1`) against the IPv4 subnet.
+  return LOOPBACK_ADDRESSES.check(address, family === 4 ? 'ipv4' : 'ipv6');
+}
+
+/**
+ * Whether a bind host only accepts connections from this machine (or
+ * container). An IP literal is checked directly (127.0.0.0/8, `::1`,
+ * `::ffff:127.x.x.x`). A name such as `localhost` is resolved, because
+ * `listen()` binds whatever it resolves to and `/etc/hosts` may map it to a
+ * routable address: it counts as loopback only when every address it
+ * resolves to is loopback. A name that does not resolve is not loopback.
+ */
+export async function isLoopbackHost(
+  host: string,
+  lookup: HostLookup = lookupAllAddresses,
+): Promise<boolean> {
+  if (net.isIP(host) !== 0) {
+    return isLoopbackAddress(host);
+  }
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await lookup(host);
+  } catch {
+    return false;
+  }
+  return addresses.length > 0 && addresses.every(({ address }) => isLoopbackAddress(address));
 }
 
 /**
@@ -139,8 +178,12 @@ export function isLoopbackHost(host: string): boolean {
  * falls back to the bind address itself (e.g. `0.0.0.0:8765`), a `Host`
  * header no real client sends. Returns an empty list when the bind is safe.
  */
-export function bindSafetyProblems(httpConfig: HttpConfig, authConfigured: boolean): string[] {
-  if (isLoopbackHost(httpConfig.host)) {
+export async function bindSafetyProblems(
+  httpConfig: HttpConfig,
+  authConfigured: boolean,
+  lookup?: HostLookup,
+): Promise<string[]> {
+  if (await isLoopbackHost(httpConfig.host, lookup)) {
     return [];
   }
   const problems: string[] = [];
@@ -192,7 +235,11 @@ export async function startHttpTransport(
 ): Promise<HttpTransportHandle> {
   const authMiddleware = getOidcAuthMiddleware();
 
-  const bindProblems = bindSafetyProblems(httpConfig, authMiddleware !== undefined);
+  const bindProblems = await bindSafetyProblems(
+    httpConfig,
+    authMiddleware !== undefined,
+    options.lookupHost,
+  );
   if (bindProblems.length > 0) {
     const allowListMissing = !httpConfig.allowedHosts || httpConfig.allowedHosts.length === 0;
     const fix = allowListMissing
