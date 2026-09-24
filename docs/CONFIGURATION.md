@@ -558,7 +558,7 @@ When `transport=http`, additional settings apply under the `http` config section
 
 | Setting | Config key | Env var | Default |
 |---|---|---|---|
-| Bind host | `http.host` | `VIKUNJA_MCP_HTTP_HOST` | `127.0.0.1` (loopback; fails closed rather than exposing an unauthenticated-looking port to the LAN) |
+| Bind host | `http.host` | `VIKUNJA_MCP_HTTP_HOST` | `127.0.0.1` (loopback; fails closed rather than exposing an unauthenticated-looking port to the LAN). An IP address or a name. Write IPv6 without brackets (`::1`, not `[::1]`): brackets belong in URLs and `Host` headers, and a bracketed value is refused at startup |
 | Port | `http.port` | `VIKUNJA_MCP_HTTP_PORT` | `8765` |
 | Request path | `http.path` | `VIKUNJA_MCP_HTTP_PATH` | `/mcp` |
 | Auth scheme | `http.authMode` | `VIKUNJA_MCP_HTTP_AUTH_MODE` | `oidc` (the other value is `token`, see [Gateway-token mode](#gateway-token-mode-single-user-behind-a-gateway)) |
@@ -595,11 +595,16 @@ refuses to start unless `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` is set explicitly. With
 the allow-list defaults to the bind address itself (`0.0.0.0:8765`), a `Host` header no
 real client sends, so every request would be refused with `403` anyway. The startup
 error names the variable to set. Loopback means `127.0.0.0/8`, `::1` or
-`::ffff:127.x.x.x`. A host name such as `localhost` is resolved at startup and counts as
-loopback only when every address it resolves to is loopback, so a `localhost` that
-`/etc/hosts` maps to a routable address needs the allow-list like any other bind. This
-rule is new in the release that added gateway-token mode and also applies to existing
-`oidc` deployments.
+`::ffff:127.x.x.x`. A host name such as `localhost` is resolved once at startup and
+counts as loopback only when every address it resolves to is loopback, so a `localhost`
+that `/etc/hosts` maps to a routable address needs the allow-list like any other bind.
+The listener then binds the first address the name resolved to (the same address
+`listen()` would have picked), not the name, so what was checked is what is bound; the
+startup log shows both, e.g. `listening on 127.0.0.1:8765/mcp (http.host localhost)`.
+The default `Host` allow-list still uses the name (`localhost:8765`), which is what
+clients send. A name that does not resolve, or does not answer within 5 seconds, stops
+startup with an error naming `VIKUNJA_MCP_HTTP_HOST`. This rule is new in the release
+that added gateway-token mode and also applies to existing `oidc` deployments.
 
 ### Gateway-token mode (single user behind a gateway)
 

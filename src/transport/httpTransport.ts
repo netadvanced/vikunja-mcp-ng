@@ -146,28 +146,73 @@ function isLoopbackAddress(address: string): boolean {
   return LOOPBACK_ADDRESSES.check(address, family === 4 ? 'ipv4' : 'ipv6');
 }
 
+/** How long the bind host lookup may take before startup fails (§4.4). */
+export const BIND_LOOKUP_TIMEOUT_MS = 5000;
+
+/** Where the listener binds, and whether that address only accepts local connections. */
+export interface BindTarget {
+  /** The IP literal handed to `listen()`, or `http.host` itself when it is already one. */
+  listenAddress: string;
+  /** Every address the host maps to is loopback (127.0.0.0/8, `::1`, `::ffff:127.x.x.x`). */
+  loopback: boolean;
+}
+
+function lookupWithin(
+  host: string,
+  lookup: HostLookup,
+  timeoutMs: number,
+): Promise<Array<{ address: string }>> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer within ${timeoutMs} ms`)), timeoutMs);
+  });
+  // Called inside a promise so a lookup that throws synchronously still
+  // settles the race and clears the timer.
+  const answer = Promise.resolve().then(() => lookup(host));
+  return Promise.race([answer, timeout]).finally(() => clearTimeout(timer));
+}
+
 /**
- * Whether a bind host only accepts connections from this machine (or
- * container). An IP literal is checked directly (127.0.0.0/8, `::1`,
- * `::ffff:127.x.x.x`). A name such as `localhost` is resolved, because
- * `listen()` binds whatever it resolves to and `/etc/hosts` may map it to a
- * routable address: it counts as loopback only when every address it
- * resolves to is loopback. A name that does not resolve is not loopback.
+ * Resolves `http.host` once, for both the bind-safety check and `listen()`
+ * (docs/GATEWAY-TOKEN-MODE.md §4.4). An IP literal is used as is, without
+ * DNS. A name such as `localhost` is looked up (all addresses) and counts as
+ * loopback only when every address is loopback, because `/etc/hosts` may map
+ * it to a routable address. The listener then binds the first address, the
+ * one `listen(port, name)` would have picked itself, so the address that was
+ * checked is the address that is bound: nothing is resolved a second time.
+ * A lookup that fails, returns nothing or takes longer than `timeoutMs`
+ * stops startup with a `ConfigurationError` instead of guessing.
  */
-export async function isLoopbackHost(
+export async function resolveBindTarget(
   host: string,
   lookup: HostLookup = lookupAllAddresses,
-): Promise<boolean> {
+  timeoutMs: number = BIND_LOOKUP_TIMEOUT_MS,
+): Promise<BindTarget> {
   if (net.isIP(host) !== 0) {
-    return isLoopbackAddress(host);
+    return { listenAddress: host, loopback: isLoopbackAddress(host) };
   }
   let addresses: Array<{ address: string }>;
   try {
-    addresses = await lookup(host);
-  } catch {
-    return false;
+    addresses = await lookupWithin(host, lookup, timeoutMs);
+  } catch (error) {
+    throw unresolvedBindHost(host, error instanceof Error ? error.message : String(error));
   }
-  return addresses.length > 0 && addresses.every(({ address }) => isLoopbackAddress(address));
+  const [first] = addresses;
+  if (first === undefined) {
+    throw unresolvedBindHost(host, 'no addresses');
+  }
+  return {
+    listenAddress: first.address,
+    loopback: addresses.every(({ address }) => isLoopbackAddress(address)),
+  };
+}
+
+function unresolvedBindHost(host: string, reason: string): ConfigurationError {
+  return new ConfigurationError(
+    'http.host',
+    `Could not resolve the bind host ${host}: ${reason}. Set VIKUNJA_MCP_HTTP_HOST to an ` +
+      'IP address (127.0.0.1 for loopback) or a name this machine can resolve.',
+  );
 }
 
 /**
@@ -176,14 +221,15 @@ export async function isLoopbackHost(
  * reachable from outside this container and needs both an auth credential
  * and an explicit `Host` allow-list: without the list, `resolveAllowedHosts`
  * falls back to the bind address itself (e.g. `0.0.0.0:8765`), a `Host`
- * header no real client sends. Returns an empty list when the bind is safe.
+ * header no real client sends. `loopback` comes from `resolveBindTarget`.
+ * Returns an empty list when the bind is safe.
  */
-export async function bindSafetyProblems(
+export function bindSafetyProblems(
   httpConfig: HttpConfig,
   authConfigured: boolean,
-  lookup?: HostLookup,
-): Promise<string[]> {
-  if (await isLoopbackHost(httpConfig.host, lookup)) {
+  loopback: boolean,
+): string[] {
+  if (loopback) {
     return [];
   }
   const problems: string[] = [];
@@ -235,10 +281,11 @@ export async function startHttpTransport(
 ): Promise<HttpTransportHandle> {
   const authMiddleware = getOidcAuthMiddleware();
 
-  const bindProblems = await bindSafetyProblems(
+  const bindTarget = await resolveBindTarget(httpConfig.host, options.lookupHost);
+  const bindProblems = bindSafetyProblems(
     httpConfig,
     authMiddleware !== undefined,
-    options.lookupHost,
+    bindTarget.loopback,
   );
   if (bindProblems.length > 0) {
     const allowListMissing = !httpConfig.allowedHosts || httpConfig.allowedHosts.length === 0;
@@ -293,15 +340,18 @@ export async function startHttpTransport(
       reject(error);
     };
     httpServer.once('error', onError);
-    httpServer.listen(httpConfig.port, httpConfig.host, () => {
+    // The resolved address, never the name: resolving again here could bind
+    // something other than what the check above approved.
+    httpServer.listen(httpConfig.port, bindTarget.listenAddress, () => {
       httpServer.removeListener('error', onError);
       resolve();
     });
   });
 
-  logger.info(
-    `Vikunja MCP HTTP transport listening on ${formatHostPort(httpConfig.host, httpConfig.port)}${requestPath}`,
-  );
+  const boundTo = formatHostPort(bindTarget.listenAddress, httpConfig.port);
+  const configuredAs =
+    bindTarget.listenAddress === httpConfig.host ? '' : ` (http.host ${httpConfig.host})`;
+  logger.info(`Vikunja MCP HTTP transport listening on ${boundTo}${requestPath}${configuredAs}`);
 
   return {
     httpServer,
@@ -410,9 +460,7 @@ interface RequestHandlerContext {
 
 /** Outcome of reading a request body under the cap. */
 type BodyReadResult =
-  | { status: 'ok'; body: Buffer }
-  | { status: 'too_large' }
-  | { status: 'aborted' };
+  { status: 'ok'; body: Buffer } | { status: 'too_large' } | { status: 'aborted' };
 
 /**
  * Request-body cap for the MCP path (docs/GATEWAY-TOKEN-MODE.md §4.1).
@@ -422,8 +470,16 @@ type BodyReadResult =
  * caller hands the SDK the parsed body (`handleRequest`'s `parsedBody`
  * argument), so the SDK never reads the stream and the cap does not depend
  * on how it would have. `aborted` means the client went away mid-body.
+ *
+ * Settles exactly once, and removes its listeners when it does. `end`
+ * decides `ok`; a `close` or `error` before it is an abort. On a complete
+ * body Node emits `close` only after `end` (the request auto-destroys once
+ * it ends; checked on Node 22 and 25). The one way `close` comes first with
+ * every byte sent is Node destroying the request itself, for example on a
+ * client half-close, and then the socket is gone and no answer could be
+ * delivered anyway. Exported for tests.
  */
-function readBodyWithinCap(
+export function readBodyWithinCap(
   req: http.IncomingMessage,
   maxBodyBytes: number,
 ): Promise<BodyReadResult> {
@@ -431,15 +487,15 @@ function readBodyWithinCap(
   if (declaredLength !== undefined && Number(declaredLength) > maxBodyBytes) {
     return Promise.resolve({ status: 'too_large' });
   }
-  // The client may have left while authentication ran: a destroyed request
-  // emits no further events, so waiting on it would never settle.
-  if (req.destroyed) {
-    return Promise.resolve({ status: 'aborted' });
-  }
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let received = 0;
+    let settled = false;
     const settle = (result: BodyReadResult): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       req.removeListener('data', onData);
       req.removeListener('end', onEnd);
       req.removeListener('error', onAbort);
@@ -460,6 +516,13 @@ function readBodyWithinCap(
     req.on('end', onEnd);
     req.on('error', onAbort);
     req.on('close', onAbort);
+    // A request destroyed before this point (the client left while
+    // authentication ran) emits no further events. Checked after the
+    // listeners are attached, so no `close` can fall between the check and
+    // the listener that would have seen it.
+    if (req.destroyed) {
+      settle({ status: 'aborted' });
+    }
   });
 }
 

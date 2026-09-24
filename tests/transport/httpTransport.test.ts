@@ -11,18 +11,22 @@
  * past them.
  */
 
+import { EventEmitter } from 'node:events';
 import * as http from 'node:http';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { z } from 'zod';
 import { logger } from '../../src/utils/logger';
 import {
   startHttpTransport,
   resolveAllowedHosts,
   bindSafetyProblems,
   formatHostPort,
-  isLoopbackHost,
+  readBodyWithinCap,
+  resolveBindTarget,
   type HttpTransportHandle,
 } from '../../src/transport/httpTransport';
 import { setupStaticTokenAuth } from '../../src/transport/staticTokenAuth';
@@ -83,7 +87,12 @@ interface RawResponse {
 
 function request(
   port: number,
-  options: { method?: string; path?: string; headers?: Record<string, string>; body?: string } = {},
+  options: {
+    method?: string;
+    path?: string;
+    headers?: Record<string, string>;
+    body?: string | Buffer;
+  } = {},
 ): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     const req = http.request(
@@ -1284,6 +1293,207 @@ describe('httpTransport: gateway-token mode', () => {
       expect(res.statusCode).toBe(406);
     });
 
+    /**
+     * What the SDK answers on its own, reading the body itself (no
+     * `parsedBody`), as this server did before the pre-read. Used as the
+     * reference the pre-read path must match.
+     */
+    async function sdkBaseline(
+      createServer: () => McpServer,
+      headers: Record<string, string>,
+      body: string | Buffer,
+    ): Promise<RawResponse> {
+      const baseline = http.createServer((req, res) => {
+        void (async (): Promise<void> => {
+          const transport = new StreamableHTTPServerTransport({});
+          const server = createServer();
+          await server.connect(transport as unknown as Transport);
+          await transport.handleRequest(req, res);
+          await server.close();
+        })();
+      });
+      await new Promise<void>((resolve) => baseline.listen(0, '127.0.0.1', resolve));
+      try {
+        const address = baseline.address() as net.AddressInfo;
+        return await request(address.port, { method: 'POST', headers, body });
+      } finally {
+        await new Promise<void>((resolve) => baseline.close(() => resolve()));
+      }
+    }
+
+    it('rejects a POST whose Content-Type is not JSON exactly as the SDK does without parsedBody', async () => {
+      // Confirming-review question: does handing the SDK a parsedBody skip
+      // its Content-Type check? In SDK 1.30.0 handlePostRequest checks
+      // Accept, then Content-Type, and only then looks at parsedBody.
+      setupStaticTokenAuth(TOKEN);
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 4096 });
+      const headers = { ...mcpHeaders(`Bearer ${TOKEN}`), 'Content-Type': 'text/plain' };
+
+      const ours = await request(getPort(handle), {
+        method: 'POST',
+        headers,
+        body: INITIALIZE_BODY,
+      });
+      const reference = await sdkBaseline(newServer, headers, INITIALIZE_BODY);
+
+      expect(reference.statusCode).toBe(415);
+      expect(ours.statusCode).toBe(reference.statusCode);
+      expect(JSON.parse(ours.body)).toEqual(JSON.parse(reference.body));
+      expect(ours.body).toContain('Content-Type must be application/json');
+    });
+
+    describe('body decoding matches the SDK reading the body itself', () => {
+      function echoServer(): McpServer {
+        const server = newServer();
+        server.tool('echo', { text: z.string() }, async ({ text }) => ({
+          content: [{ type: 'text' as const, text }],
+        }));
+        return server;
+      }
+
+      function toolsCall(textBytes: Buffer): Buffer {
+        const [before, after] = JSON.stringify({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: 'echo', arguments: { text: 'SLOT' } },
+        }).split('SLOT');
+        return Buffer.concat([Buffer.from(before ?? ''), textBytes, Buffer.from(after ?? '')]);
+      }
+
+      // Non-fatal UTF-8 decoding (invalid bytes become U+FFFD) and BOM
+      // stripping, the WHATWG "UTF-8 decode" that Request.json() uses too.
+      it.each([
+        ['invalid UTF-8 bytes', toolsCall(Buffer.from([0x61, 0xff, 0xfe, 0xc3, 0x62]))],
+        ['a Latin-1 encoded character', toolsCall(Buffer.from('café', 'latin1'))],
+        [
+          'a leading BOM',
+          Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), toolsCall(Buffer.from('ok'))]),
+        ],
+      ])('%s', async (_label, body) => {
+        setupStaticTokenAuth(TOKEN);
+        handle = await startHttpTransport(echoServer, tokenConfig(), undefined, {
+          maxBodyBytes: 4096,
+        });
+        const headers = mcpHeaders(`Bearer ${TOKEN}`);
+
+        const ours = await request(getPort(handle), { method: 'POST', headers, body });
+        const reference = await sdkBaseline(echoServer, headers, body);
+
+        expect(ours.statusCode).toBe(reference.statusCode);
+        expect(ours.body).toBe(reference.body);
+      });
+
+      it.each([
+        ['a UTF-16LE body', Buffer.from(toolsCall(Buffer.from('ok')).toString('utf-8'), 'utf16le')],
+        ['text that is not JSON', Buffer.from('{not json')],
+      ])('%s: same status and JSON-RPC code, different message text', async (_label, body) => {
+        // Documented difference: with parsedBody the SDK reports a string it
+        // cannot validate as "Invalid JSON-RPC message"; reading the body
+        // itself it said "Invalid JSON". Status and code are what clients act on.
+        setupStaticTokenAuth(TOKEN);
+        handle = await startHttpTransport(echoServer, tokenConfig(), undefined, {
+          maxBodyBytes: 4096,
+        });
+        const headers = mcpHeaders(`Bearer ${TOKEN}`);
+
+        const ours = await request(getPort(handle), { method: 'POST', headers, body });
+        const reference = await sdkBaseline(echoServer, headers, body);
+
+        expect(reference.statusCode).toBe(400);
+        expect(ours.statusCode).toBe(400);
+        expect(JSON.parse(reference.body)).toMatchObject({
+          error: { code: -32700, message: 'Parse error: Invalid JSON' },
+        });
+        expect(JSON.parse(ours.body)).toMatchObject({
+          error: { code: -32700, message: 'Parse error: Invalid JSON-RPC message' },
+        });
+      });
+
+      it('replaces invalid bytes with U+FFFD rather than rejecting the call', async () => {
+        setupStaticTokenAuth(TOKEN);
+        handle = await startHttpTransport(echoServer, tokenConfig(), undefined, {
+          maxBodyBytes: 4096,
+        });
+
+        const res = await request(getPort(handle), {
+          method: 'POST',
+          headers: mcpHeaders(`Bearer ${TOKEN}`),
+          body: toolsCall(Buffer.from([0x61, 0xff, 0x62])),
+        });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.body).toContain('"text":"a�b"');
+      });
+    });
+
+    it.each([
+      'Content-Length: abc',
+      'Content-Length: 5\r\nContent-Length: 6',
+      'Content-Length: 5\r\nContent-Length: 5',
+      'Content-Length: 5, 5',
+      'Content-Length: -1',
+      'Content-Length: 1e3',
+      'Content-Length: +5',
+      'Content-Length: ',
+      'Content-Length: 5\r\nTransfer-Encoding: chunked',
+    ])(
+      'Node rejects a malformed Content-Length (%j) with 400 before this server runs',
+      async (header) => {
+        // readBodyWithinCap compares Number(content-length) with the cap; NaN
+        // would fall through to the byte counter. This pins that such a
+        // header never reaches it: llhttp answers 400 first.
+        const middleware = jest.fn(async () => true);
+        setOidcAuthMiddleware(middleware);
+        handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+          maxBodyBytes: 1024,
+        });
+        const port = getPort(handle);
+
+        const response = await new Promise<string>((resolve) => {
+          let received = '';
+          const socket = net.connect(port, '127.0.0.1', () => {
+            socket.write(rawHead(port, `${header}\r\n`) + 'hello');
+          });
+          socket.on('data', (chunk: Buffer) => {
+            received += chunk.toString('utf-8');
+          });
+          socket.on('error', () => undefined);
+          socket.on('close', () => resolve(received));
+        });
+
+        expect(response).toMatch(/^HTTP\/1\.1 400 /);
+        expect(middleware).not.toHaveBeenCalled();
+      },
+    );
+
+    it('answers every complete body even when authentication is slow (end always precedes close)', async () => {
+      // Confirming-review question: could `close` beat `end` on a complete
+      // body and turn a good request into a silent abort? Not observed on
+      // Node 22 or 25; this pins it on real sockets with a delayed reader.
+      setOidcAuthMiddleware(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return true;
+      });
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 4096,
+      });
+      const port = getPort(handle);
+
+      const statuses = await Promise.all(
+        Array.from({ length: 40 }, () =>
+          request(port, {
+            method: 'POST',
+            headers: { ...mcpHeaders(), Connection: 'close' },
+            body: INITIALIZE_BODY,
+          }).then((res) => res.statusCode),
+        ),
+      );
+
+      expect(statuses).toEqual(Array.from({ length: 40 }, () => 200));
+    });
+
     it('passes GET to the SDK without a parsed body', async () => {
       setupStaticTokenAuth(TOKEN);
       const sdkHandle = jest.spyOn(StreamableHTTPServerTransport.prototype, 'handleRequest');
@@ -1452,53 +1662,106 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     );
   }
 
-  it('classifies loopback literals without DNS, and nothing else', async () => {
+  it('classifies loopback literals without DNS, and listens on the literal itself', async () => {
     const lookup = resolvesTo('10.0.0.1');
     for (const host of ['127.0.0.1', '127.9.8.7', '::1', '0:0:0:0:0:0:0:1', '::ffff:127.0.0.1']) {
-      await expect(isLoopbackHost(host, lookup)).resolves.toBe(true);
+      await expect(resolveBindTarget(host, lookup)).resolves.toEqual({
+        listenAddress: host,
+        loopback: true,
+      });
     }
     for (const host of ['0.0.0.0', '::', '::ffff:0.0.0.0', '10.123.0.7', '::ffff:10.0.0.1']) {
-      await expect(isLoopbackHost(host, lookup)).resolves.toBe(false);
+      await expect(resolveBindTarget(host, lookup)).resolves.toEqual({
+        listenAddress: host,
+        loopback: false,
+      });
     }
     expect(lookup).not.toHaveBeenCalled();
   });
 
   it('treats a name as loopback only when every address it resolves to is loopback', async () => {
-    await expect(isLoopbackHost('localhost', resolvesTo('127.0.0.1', '::1'))).resolves.toBe(true);
+    await expect(resolveBindTarget('localhost', resolvesTo('127.0.0.1', '::1'))).resolves.toEqual({
+      listenAddress: '127.0.0.1',
+      loopback: true,
+    });
     // Review finding: /etc/hosts (or a container extra_hosts) can map
     // `localhost` to a routable address, and listen() binds that address.
-    await expect(isLoopbackHost('localhost', resolvesTo('172.17.0.4'))).resolves.toBe(false);
-    await expect(isLoopbackHost('localhost', resolvesTo('127.0.0.1', '10.0.0.1'))).resolves.toBe(
-      false,
-    );
-    await expect(isLoopbackHost('localhost', resolvesTo())).resolves.toBe(false);
-    await expect(isLoopbackHost('localhost', resolvesTo('not-an-ip'))).resolves.toBe(false);
+    await expect(resolveBindTarget('localhost', resolvesTo('172.17.0.4'))).resolves.toEqual({
+      listenAddress: '172.17.0.4',
+      loopback: false,
+    });
+    await expect(
+      resolveBindTarget('localhost', resolvesTo('127.0.0.1', '10.0.0.1')),
+    ).resolves.toMatchObject({ loopback: false });
+    await expect(resolveBindTarget('localhost', resolvesTo('not-an-ip'))).resolves.toMatchObject({
+      loopback: false,
+    });
   });
 
-  it('fails closed when the bind host does not resolve', async () => {
-    const lookup = jest.fn(async () => {
-      throw Object.assign(new Error('getaddrinfo ENOTFOUND nowhere'), { code: 'ENOTFOUND' });
+  it('listens on the first resolved address, the one listen(name) would have picked', async () => {
+    await expect(resolveBindTarget('localhost', resolvesTo('::1', '127.0.0.1'))).resolves.toEqual({
+      listenAddress: '::1',
+      loopback: true,
     });
-    await expect(isLoopbackHost('nowhere.invalid', lookup)).resolves.toBe(false);
-    await expect(isLoopbackHost('[::1]', lookup)).resolves.toBe(false);
+  });
+
+  it('fails closed with a ConfigurationError when the bind host does not resolve', async () => {
+    const lookup = jest.fn(async () => {
+      throw Object.assign(new Error('getaddrinfo ENOTFOUND nowhere.invalid'), {
+        code: 'ENOTFOUND',
+      });
+    });
+    const attempt = resolveBindTarget('nowhere.invalid', lookup);
+    await expect(attempt).rejects.toThrow(ConfigurationError);
+    await expect(attempt).rejects.toThrow(
+      /Could not resolve the bind host nowhere\.invalid: getaddrinfo ENOTFOUND/,
+    );
+  });
+
+  it('fails closed when a name resolves to nothing', async () => {
+    await expect(resolveBindTarget('localhost', resolvesTo())).rejects.toThrow(
+      /Could not resolve the bind host localhost: no addresses/,
+    );
+  });
+
+  it('fails closed instead of hanging when the resolver never answers', async () => {
+    const lookup = jest.fn(() => new Promise<Array<{ address: string }>>(() => undefined));
+    const started = Date.now();
+
+    await expect(resolveBindTarget('slow.example', lookup, 30)).rejects.toThrow(
+      /Could not resolve the bind host slow\.example: no answer within 30 ms/,
+    );
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('fails closed, and clears its timer, when the lookup throws synchronously', async () => {
+    jest.useFakeTimers();
+    try {
+      const lookup = jest.fn((): Promise<Array<{ address: string }>> => {
+        throw new Error('resolver exploded');
+      });
+
+      await expect(resolveBindTarget('broken.example', lookup)).rejects.toThrow(
+        /Could not resolve the bind host broken\.example: resolver exploded/,
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('resolves localhost with the real resolver on this machine', async () => {
     // Every mainstream /etc/hosts maps localhost to loopback; this pins the
     // default lookup wiring (all addresses, not just the first).
-    await expect(isLoopbackHost('localhost')).resolves.toBe(true);
+    await expect(resolveBindTarget('localhost')).resolves.toMatchObject({ loopback: true });
   });
 
-  it('a loopback bind has no extra requirements, even with no auth and no allowedHosts', async () => {
-    await expect(bindSafetyProblems(baseHttpConfig(), false)).resolves.toEqual([]);
+  it('a loopback bind has no extra requirements, even with no auth and no allowedHosts', () => {
+    expect(bindSafetyProblems(baseHttpConfig(), false, true)).toEqual([]);
   });
 
-  it('a localhost bind that resolves off-box needs the allow-list and auth like any other', async () => {
-    const problems = await bindSafetyProblems(
-      baseHttpConfig({ host: 'localhost' }),
-      false,
-      resolvesTo('172.17.0.4'),
-    );
+  it('a localhost bind that resolves off-box needs the allow-list and auth like any other', () => {
+    const problems = bindSafetyProblems(baseHttpConfig({ host: 'localhost' }), false, false);
     expect(problems).toHaveLength(2);
     expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
   });
@@ -1520,34 +1783,125 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     expect(listenSpy).not.toHaveBeenCalled();
   });
 
-  it('a non-loopback bind with auth but no explicit allowedHosts names VIKUNJA_MCP_HTTP_ALLOWED_HOSTS', async () => {
-    const problems = await bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), true);
+  it('startHttpTransport refuses a bind host that does not resolve, before listen()', async () => {
+    setupStaticTokenAuth(`gw_${'d5'.repeat(20)}`);
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
+    const lookup = jest.fn(async () => {
+      throw new Error('getaddrinfo ENOTFOUND nowhere.invalid');
+    });
+
+    await expect(
+      startHttpTransport(
+        newServer,
+        baseHttpConfig({ host: 'nowhere.invalid', authMode: 'token' }),
+        undefined,
+        { lookupHost: lookup },
+      ),
+    ).rejects.toThrow(ConfigurationError);
+    expect(listenSpy).not.toHaveBeenCalled();
+  });
+
+  it('checks and binds the same address: a loopback name is resolved once and listen() gets the address', async () => {
+    // Confirming-review finding: listen(port, name) resolved the name a
+    // second time, so the check and the bind could disagree.
+    setupStaticTokenAuth(`gw_${'e5'.repeat(20)}`);
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
+    const lookup = resolvesTo('127.0.0.1', '::1');
+    const config = baseHttpConfig({ host: 'localhost', authMode: 'token' });
+
+    const handle = await startHttpTransport(newServer, config, undefined, { lookupHost: lookup });
+    try {
+      expect(lookup).toHaveBeenCalledTimes(1);
+      expect(listenSpy).toHaveBeenCalledWith(config.port, '127.0.0.1', expect.any(Function));
+      expect(infoSpy).toHaveBeenCalledWith(
+        `Vikunja MCP HTTP transport listening on 127.0.0.1:${config.port}/mcp (http.host localhost)`,
+      );
+      // The default allow-list keeps the name clients send in Host.
+      expect(resolveAllowedHosts(config)).toEqual([`localhost:${config.port}`]);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('a real localhost bind answers a client that sends Host: localhost:<port>', async () => {
+    const token = `gw_${'e6'.repeat(20)}`;
+    setupStaticTokenAuth(token);
+    jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const config = baseHttpConfig({ host: 'localhost', authMode: 'token' });
+
+    const handle = await startHttpTransport(newServer, config);
+    try {
+      const address = handle.httpServer.address() as net.AddressInfo;
+      const res = await new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          {
+            host: 'localhost',
+            port: address.port,
+            method: 'POST',
+            path: '/mcp',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json, text/event-stream',
+              Authorization: `Bearer ${token}`,
+            },
+          },
+          (response) => {
+            response.resume();
+            resolve(response.statusCode ?? 0);
+          },
+        );
+        req.on('error', reject);
+        expect(req.getHeader('host')).toBe(`localhost:${config.port}`);
+        req.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'initialize',
+            params: {
+              protocolVersion: '2025-03-26',
+              capabilities: {},
+              clientInfo: { name: 'localhost-test', version: '0.0.0' },
+            },
+          }),
+        );
+      });
+      expect(res).toBe(200);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('a non-loopback bind with auth but no explicit allowedHosts names VIKUNJA_MCP_HTTP_ALLOWED_HOSTS', () => {
+    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), true, false);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
   });
 
-  it('an explicitly empty allowedHosts list counts as not set', async () => {
-    const problems = await bindSafetyProblems(
+  it('an explicitly empty allowedHosts list counts as not set', () => {
+    const problems = bindSafetyProblems(
       baseHttpConfig({ host: '0.0.0.0', allowedHosts: [] }),
       true,
+      false,
     );
     expect(problems).toHaveLength(1);
   });
 
-  it('a non-loopback bind with neither names both the allow-list and the auth credential', async () => {
-    const problems = await bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), false);
+  it('a non-loopback bind with neither names both the allow-list and the auth credential', () => {
+    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), false, false);
     expect(problems).toHaveLength(2);
     expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
     expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_AUTH_TOKEN/);
   });
 
-  it('a non-loopback bind with both has no problems', async () => {
-    await expect(
+  it('a non-loopback bind with both has no problems', () => {
+    expect(
       bindSafetyProblems(
         baseHttpConfig({ host: '0.0.0.0', allowedHosts: ['vikunja-mcp:8765'] }),
         true,
+        false,
       ),
-    ).resolves.toEqual([]);
+    ).toEqual([]);
   });
 
   it('startHttpTransport refuses 0.0.0.0 with a token but no allowedHosts, before listen()', async () => {
@@ -1628,5 +1982,110 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     await expect(startHttpTransport(newServer, baseHttpConfig())).rejects.toThrow(
       /VIKUNJA_MCP_HTTP_AUTH_MODE set to token/,
     );
+  });
+});
+
+describe('readBodyWithinCap', () => {
+  type FakeRequest = EventEmitter & { headers: http.IncomingHttpHeaders; destroyed: boolean };
+
+  function fakeRequest(): FakeRequest {
+    return Object.assign(new EventEmitter(), { headers: {}, destroyed: false });
+  }
+
+  function read(req: FakeRequest, cap = 1024): ReturnType<typeof readBodyWithinCap> {
+    return readBodyWithinCap(req as unknown as http.IncomingMessage, cap);
+  }
+
+  /** Resolves to 'pending' when `promise` has not settled within `ms`. */
+  function settledWithin<T>(promise: Promise<T>, ms = 200): Promise<T | 'pending'> {
+    return Promise.race([
+      promise,
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), ms)),
+    ]);
+  }
+
+  function listenerTotal(req: FakeRequest): number {
+    return ['data', 'end', 'error', 'close'].reduce(
+      (total, event) => total + req.listenerCount(event),
+      0,
+    );
+  }
+
+  it('settles as aborted when the request is destroyed while the listeners are being attached', async () => {
+    // Confirming-review finding: a `close` that lands after the destroyed
+    // check but before the close listener exists is never seen again, and
+    // the read would wait forever. Modelled here by a request that is
+    // destroyed (and emits close) as soon as the data listener attaches.
+    const req = fakeRequest();
+    const attach = req.on.bind(req);
+    req.on = ((event: string, listener: (...args: unknown[]) => void) => {
+      attach(event, listener);
+      if (event === 'data') {
+        req.destroyed = true;
+        req.emit('close');
+      }
+      return req;
+    }) as FakeRequest['on'];
+
+    await expect(settledWithin(read(req))).resolves.toEqual({ status: 'aborted' });
+    expect(listenerTotal(req)).toBe(0);
+  });
+
+  it('settles as aborted, without listening, when the request is already destroyed', async () => {
+    const req = fakeRequest();
+    req.destroyed = true;
+
+    await expect(settledWithin(read(req))).resolves.toEqual({ status: 'aborted' });
+    expect(listenerTotal(req)).toBe(0);
+  });
+
+  it('settles once: a close or error after end does not change the result', async () => {
+    const req = fakeRequest();
+    const result = read(req);
+
+    req.emit('data', Buffer.from('ab'));
+    req.emit('end');
+    req.emit('close');
+    req.emit('data', Buffer.from('late'));
+
+    await expect(result).resolves.toEqual({ status: 'ok', body: Buffer.from('ab') });
+    expect(listenerTotal(req)).toBe(0);
+  });
+
+  it('counts a close before end as an abort', async () => {
+    // Never observed on a complete body (Node emits close after end). The
+    // one way it happens is Node destroying the request, e.g. on a client
+    // half-close, and then the socket is gone and no answer can be sent.
+    const req = fakeRequest();
+    const result = read(req);
+
+    req.emit('data', Buffer.from('ab'));
+    req.emit('close');
+    req.emit('end');
+
+    await expect(result).resolves.toEqual({ status: 'aborted' });
+    expect(listenerTotal(req)).toBe(0);
+  });
+
+  it('stops at the cap and ignores whatever follows', async () => {
+    const req = fakeRequest();
+    const result = read(req, 4);
+
+    req.emit('data', Buffer.from('abc'));
+    req.emit('data', Buffer.from('de'));
+    req.emit('end');
+
+    await expect(result).resolves.toEqual({ status: 'too_large' });
+    expect(listenerTotal(req)).toBe(0);
+  });
+
+  it('treats a stream error as an abort', async () => {
+    const req = fakeRequest();
+    const result = read(req);
+
+    req.emit('error', new Error('aborted'));
+
+    await expect(result).resolves.toEqual({ status: 'aborted' });
+    expect(listenerTotal(req)).toBe(0);
   });
 });

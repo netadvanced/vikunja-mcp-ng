@@ -334,8 +334,11 @@ Rules, in `http` mode, regardless of `authMode`:
 
 - bind host is loopback → no extra requirements. An IP literal counts when it is in
   `127.0.0.0/8`, `::1` or `::ffff:127.0.0.0/104`. A name such as `localhost` is resolved
-  first (`listen()` binds whatever it resolves to) and counts only when **every** address
-  it resolves to is loopback; a name that does not resolve does not count;
+  once (`resolveBindTarget()`, all addresses, 5 s timeout) and counts only when **every**
+  address it resolves to is loopback. `listen()` is then given the first resolved address,
+  never the name, so the check and the bind see the same address. A name that does not
+  resolve, resolves to nothing or times out stops startup with a `ConfigurationError`.
+  A bracketed IPv6 host (`[::1]`) is refused by config validation; write `::1`;
 - bind host is anything else → **both** of:
   - an auth credential is configured (`http.authMode === 'oidc'` with a complete `oidc`
     block, **or** `authMode === 'token'` with a non-empty token), **and**
@@ -740,12 +743,37 @@ The operator answered the open questions before implementation started:
   chunked request, since the SDK no longer runs for one.
 
   The same review suspected a Content-Length `413` left the socket open until
-  `requestTimeout`. Measured with a raw socket that declares 1 GB and keeps trickling,
-  on Node 22.23 (`node:22-alpine`) and 25.9: the `413` arrives and Node closes the
-  socket within 10 ms, because of `Connection: close`. Duplicate, list-valued, negative
-  or non-numeric `Content-Length`, and `Content-Length` together with
-  `Transfer-Encoding`, are all rejected with `400` by Node's parser before this server
-  sees the request. Tests pin the socket close for both framings.
+  `requestTimeout`. It does not: with `Connection: close` on the `413`, Node closes the
+  socket once the response is written, even while the client is still sending. In manual
+  runs with a raw socket that declares 1 GB and keeps trickling (Node 22.23 in
+  `node:22-alpine`, and 25.9), the close came within 10 ms of the `413`; that figure is
+  an observation, not a guarantee. What the tests guarantee, for both framings, is a
+  `413` and a closed socket within 1 s, far below the 5 minute `requestTimeout` the
+  finding was about. Duplicate (equal or not), list-valued, empty, signed, negative,
+  exponent or non-numeric `Content-Length`, and `Content-Length` together with
+  `Transfer-Encoding`, are all rejected with `400` by Node's parser (llhttp) before this
+  server sees the request; a real-socket test sends each one and checks that the auth
+  middleware never runs, so `Number(content-length)` never sees `NaN`.
+
+  Confirming review (round 2) checked the pre-read against the SDK. `handleRequest`'s
+  `parsedBody` does not skip the SDK's own checks: in 1.30.0 `handlePostRequest` checks
+  `Accept` (`406`), then `Content-Type` (`415`), and only then looks at `parsedBody`.
+  A test sends the same `text/plain` POST to this server and to a bare SDK transport
+  that reads the body itself and requires identical answers. Body decoding also matches:
+  `TextDecoder` (non-fatal UTF-8, BOM stripped) is the WHATWG "UTF-8 decode" that the
+  SDK's `req.json()` uses, and the same differential test shows identical responses for
+  invalid UTF-8, Latin-1 bytes and a leading BOM. One difference remains and is pinned:
+  a body that is not JSON (including a UTF-16 body) still gets `400` / `-32700`, but the
+  message now reads "Invalid JSON-RPC message" instead of "Invalid JSON".
+  (`@hono/node-server` would accept a pre-read `req.rawBody` and give byte-identical
+  errors, but that is internal behaviour of a transitive dependency; `parsedBody` is the
+  SDK's documented argument.) The body reader settles exactly once, removes its
+  listeners when it does, and checks `req.destroyed` after attaching them, so a request
+  destroyed in between cannot leave it pending. On a complete body `end` always came
+  before `close` (in manual probes of about 1,200 requests per Node version, with and
+  without a delayed reader; the suite repeats a 40-request version with slow auth); a
+  `close` first is treated as an abort, which only happens when Node itself
+  destroys the request, e.g. on a client half-close, and then no answer can be sent.
 - **Bind safety (§4.4) applies to oidc mode too.** The documented OIDC examples bind
   `127.0.0.1` or set an explicit allow-list, so none of them breaks. An oidc deployment
   binding `0.0.0.0` without `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` now fails at startup instead
@@ -754,9 +782,13 @@ The operator answered the open questions before implementation started:
   loopback because of its name. If `/etc/hosts` (or a container `extra_hosts`) maps it to
   a routable address, `listen()` binds that address while bind safety skipped the
   allow-list; this was reproduced in a `node:22-alpine` container with `localhost` mapped
-  to its own `172.17.0.x` address (found in independent review). `bindSafetyProblems()`
-  is now async and resolves the bind host (`dns.lookup` with `all: true`) before
-  `listen()`; IP literals are still classified without DNS.
+  to its own `172.17.0.x` address (found in independent review). `resolveBindTarget()`
+  now resolves the bind host once (`dns.lookup` with `all: true`, 5 s timeout) before
+  `listen()`, and `listen()` gets the first resolved address instead of the name, so a
+  second lookup cannot disagree with the check (confirming review, round 2). The first
+  address is the one `listen(port, name)` picked on its own, so a `localhost` bind lands
+  where it did before; the default allow-list keeps `localhost:<port>`, the `Host`
+  clients send. IP literals are still classified and bound without DNS.
 - **"Loopback bind with no token → starts" (§7.1)** is read as "bind safety adds no
   requirement on loopback". A listener still never starts without an auth middleware.
 - **§9 item 18's second half** (`/readyz` → `503` with `VIKUNJA_API_TOKEN` cleared) cannot
