@@ -210,8 +210,17 @@ describe('staticTokenAuth', () => {
       const short = 'a'.repeat(MIN_GATEWAY_TOKEN_LENGTH - 1);
 
       expect(() => setupStaticTokenAuth(short)).toThrow(ConfigurationError);
-      expect(() => setupStaticTokenAuth(short)).toThrow(new RegExp(`${MIN_GATEWAY_TOKEN_LENGTH}`));
+      expect(() => setupStaticTokenAuth(short)).toThrow(
+        new RegExp(`too short; the minimum is ${MIN_GATEWAY_TOKEN_LENGTH} characters`),
+      );
       expect(getOidcAuthMiddleware()).toBeUndefined();
+    });
+
+    it('does not reveal the rejected token\'s length', () => {
+      const short = 'a'.repeat(5);
+      expect(() => setupStaticTokenAuth(short)).toThrow(
+        expect.objectContaining({ message: expect.not.stringMatching(/\b5\b/) }),
+      );
     });
 
     it('never puts the rejected token value into the error message', () => {

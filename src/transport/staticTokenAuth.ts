@@ -111,8 +111,8 @@ export function setupStaticTokenAuth(token: string | undefined): void {
   if (token.length < MIN_GATEWAY_TOKEN_LENGTH) {
     throw new ConfigurationError(
       'http.authMode',
-      `VIKUNJA_MCP_HTTP_AUTH_TOKEN is ${token.length} characters long; the minimum is ` +
-        `${MIN_GATEWAY_TOKEN_LENGTH}. Generate one with \`openssl rand -hex 32\`.`,
+      `VIKUNJA_MCP_HTTP_AUTH_TOKEN is too short; the minimum is ${MIN_GATEWAY_TOKEN_LENGTH} ` +
+        'characters. Generate one with `openssl rand -hex 32`.',
     );
   }
   setOidcAuthMiddleware(createStaticTokenAuthMiddleware({ token }));
