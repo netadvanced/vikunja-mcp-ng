@@ -28,7 +28,7 @@ Worked examples, each paired with the exact tool call and the resulting Vikunja 
 | | Version | Notes |
 |---|---|---|
 | npm `latest` | 0.7.0 | Single-user `stdio` server, plus opt-in OIDC resource-server mode: Streamable HTTP transport, per-user identity, MCP auth discovery, SSO enrollment. `stdio` is unchanged and still the default |
-| npm `beta` | — | No active beta line right now |
+| npm `beta` | 0.8.0-beta.0 | Adds opt-in gateway-token HTTP auth mode: single-user HTTP behind an MCP gateway such as IBM Context Forge, no OIDC needed. A non-loopback HTTP bind now requires `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` |
 
 OIDC mode is off by default and stable as of `0.7.0` after several beta releases. It has been exercised against a real gateway, identity provider and Vikunja through the beta line, but is newly stable and has not yet seen sustained production use at scale. See the [OIDC setup manual](../docs/OIDC-SETUP.md) and the [resource-server design and threat model](../docs/OIDC-RESOURCE-SERVER.md).
 

@@ -90,7 +90,7 @@ The same image also runs as an HTTP service on port 8765 (`VIKUNJA_MCP_TRANSPORT
 | npm tag | Version | What you get |
 |---|---|---|
 | `latest` | 0.7.0 | The single-user stdio server (the quick start above), plus an opt-in OIDC resource-server mode |
-| `beta` | — | No active beta line right now |
+| `beta` | 0.8.0-beta.0 | Everything in `latest`, plus gateway-token HTTP auth mode: a single-user HTTP deployment behind an MCP gateway such as IBM Context Forge, no OIDC needed. Note: a non-loopback HTTP bind now requires `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` |
 
 OIDC resource-server mode makes the server a hosted, multi-user deployment: a Streamable HTTP transport, per-user identity taken from a validated OIDC access token, MCP authorization discovery, and an enrollment flow where each user links their own Vikunja token once. It is off by default and stable as of `0.7.0` after several beta releases; installing the package changes nothing until you turn it on, and the stdio transport behaves as it always has.
 
