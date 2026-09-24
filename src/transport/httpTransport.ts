@@ -166,7 +166,10 @@ function lookupWithin(
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error(`no answer within ${timeoutMs} ms`)), timeoutMs);
   });
-  return Promise.race([lookup(host), timeout]).finally(() => clearTimeout(timer));
+  // Called inside a promise so a lookup that throws synchronously still
+  // settles the race and clears the timer.
+  const answer = Promise.resolve().then(() => lookup(host));
+  return Promise.race([answer, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**

@@ -1734,6 +1734,22 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
+  it('fails closed, and clears its timer, when the lookup throws synchronously', async () => {
+    jest.useFakeTimers();
+    try {
+      const lookup = jest.fn((): Promise<Array<{ address: string }>> => {
+        throw new Error('resolver exploded');
+      });
+
+      await expect(resolveBindTarget('broken.example', lookup)).rejects.toThrow(
+        /Could not resolve the bind host broken\.example: resolver exploded/,
+      );
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('resolves localhost with the real resolver on this machine', async () => {
     // Every mainstream /etc/hosts maps localhost to loopback; this pins the
     // default lookup wiring (all addresses, not just the first).
