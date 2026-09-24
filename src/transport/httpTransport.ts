@@ -52,7 +52,9 @@
  * `src/index.ts`'s `main()` — only `registerTools` itself runs per request).
  */
 
+import * as dns from 'node:dns';
 import * as http from 'node:http';
+import * as net from 'node:net';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -87,8 +89,8 @@ export interface HttpTransportOptions {
   /**
    * Request-body cap on the MCP path, in bytes; larger bodies get `413`.
    * `src/index.ts` passes `rateLimiting.default.maxRequestSize`. The SDK's
-   * `StreamableHTTPServerTransport` (1.30.0) has no size option of its own
-   * and reads the whole body with `req.json()`.
+   * `StreamableHTTPServerTransport` (1.30.0) has no size option of its own,
+   * so this server reads the body itself (`readBodyWithinCap`).
    */
   maxBodyBytes?: number;
   /**
@@ -98,6 +100,8 @@ export interface HttpTransportOptions {
    * token mode, readiness fails closed.
    */
   isCredentialConfigured?: () => boolean;
+  /** Resolves the bind host for the loopback check. Defaults to the system resolver. */
+  lookupHost?: HostLookup;
 }
 
 /** Default request-body cap: `rateLimiting.default.maxRequestSize`'s default (1 MiB). */
@@ -124,11 +128,46 @@ export function resolveAllowedHosts(httpConfig: HttpConfig): string[] {
   return [formatHostPort(httpConfig.host, httpConfig.port)];
 }
 
-const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'];
+/** Resolves a host name to every address it maps to (the shape of `dns.promises.lookup` with `all: true`). */
+export type HostLookup = (host: string) => Promise<Array<{ address: string }>>;
 
-/** Whether a bind host only accepts connections from this machine (or container). */
-export function isLoopbackHost(host: string): boolean {
-  return LOOPBACK_HOSTS.includes(host);
+const lookupAllAddresses: HostLookup = (host) => dns.promises.lookup(host, { all: true });
+
+const LOOPBACK_ADDRESSES = new net.BlockList();
+LOOPBACK_ADDRESSES.addSubnet('127.0.0.0', 8, 'ipv4');
+LOOPBACK_ADDRESSES.addAddress('::1', 'ipv6');
+
+function isLoopbackAddress(address: string): boolean {
+  const family = net.isIP(address);
+  if (family === 0) {
+    return false;
+  }
+  // BlockList matches IPv4-mapped IPv6 (`::ffff:127.0.0.1`) against the IPv4 subnet.
+  return LOOPBACK_ADDRESSES.check(address, family === 4 ? 'ipv4' : 'ipv6');
+}
+
+/**
+ * Whether a bind host only accepts connections from this machine (or
+ * container). An IP literal is checked directly (127.0.0.0/8, `::1`,
+ * `::ffff:127.x.x.x`). A name such as `localhost` is resolved, because
+ * `listen()` binds whatever it resolves to and `/etc/hosts` may map it to a
+ * routable address: it counts as loopback only when every address it
+ * resolves to is loopback. A name that does not resolve is not loopback.
+ */
+export async function isLoopbackHost(
+  host: string,
+  lookup: HostLookup = lookupAllAddresses,
+): Promise<boolean> {
+  if (net.isIP(host) !== 0) {
+    return isLoopbackAddress(host);
+  }
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await lookup(host);
+  } catch {
+    return false;
+  }
+  return addresses.length > 0 && addresses.every(({ address }) => isLoopbackAddress(address));
 }
 
 /**
@@ -139,8 +178,12 @@ export function isLoopbackHost(host: string): boolean {
  * falls back to the bind address itself (e.g. `0.0.0.0:8765`), a `Host`
  * header no real client sends. Returns an empty list when the bind is safe.
  */
-export function bindSafetyProblems(httpConfig: HttpConfig, authConfigured: boolean): string[] {
-  if (isLoopbackHost(httpConfig.host)) {
+export async function bindSafetyProblems(
+  httpConfig: HttpConfig,
+  authConfigured: boolean,
+  lookup?: HostLookup,
+): Promise<string[]> {
+  if (await isLoopbackHost(httpConfig.host, lookup)) {
     return [];
   }
   const problems: string[] = [];
@@ -192,7 +235,11 @@ export async function startHttpTransport(
 ): Promise<HttpTransportHandle> {
   const authMiddleware = getOidcAuthMiddleware();
 
-  const bindProblems = bindSafetyProblems(httpConfig, authMiddleware !== undefined);
+  const bindProblems = await bindSafetyProblems(
+    httpConfig,
+    authMiddleware !== undefined,
+    options.lookupHost,
+  );
   if (bindProblems.length > 0) {
     const allowListMissing = !httpConfig.allowedHosts || httpConfig.allowedHosts.length === 0;
     const fix = allowListMissing
@@ -361,60 +408,75 @@ interface RequestHandlerContext {
   isCredentialConfigured: () => boolean;
 }
 
-/** Whether a chunked body has passed the cap (set by `enforceBodyLimit`). */
-interface BodyLimitState {
-  exceeded: boolean;
-}
+/** Outcome of reading a request body under the cap. */
+type BodyReadResult =
+  | { status: 'ok'; body: Buffer }
+  | { status: 'too_large' }
+  | { status: 'aborted' };
 
 /**
  * Request-body cap for the MCP path (docs/GATEWAY-TOKEN-MODE.md §4.1).
- * Returns `undefined` after answering `413` when the declared
- * `Content-Length` is over the cap. For a chunked body (no `Content-Length`;
- * Node's parser already enforces a declared length), it counts bytes as the
- * SDK reads them, answers `413` once the count passes the cap, and sets
- * `exceeded` on the returned state. The caller must then drop any message
- * the SDK still parses: the counter runs before the body's `end`, but
- * nothing guarantees the socket is torn down before the SDK dispatches.
- *
- * The counter attaches only when the SDK attaches its own `data` listener
- * (`newListener`), in the same tick. Attaching earlier would either start
- * the stream flowing before the SDK reads (chunks lost to it) or, with an
- * explicit `pause()`, leave it paused for good: `@hono/node-server`'s body
- * reader relies on `on('data')` auto-resuming the stream.
+ * Reads the whole body before the SDK sees the request, counting every
+ * byte whatever the framing, and stops at the cap. A declared
+ * `Content-Length` over the cap is refused without reading at all. The
+ * caller hands the SDK the parsed body (`handleRequest`'s `parsedBody`
+ * argument), so the SDK never reads the stream and the cap does not depend
+ * on how it would have. `aborted` means the client went away mid-body.
  */
-function enforceBodyLimit(
+function readBodyWithinCap(
   req: http.IncomingMessage,
-  res: http.ServerResponse,
   maxBodyBytes: number,
-): BodyLimitState | undefined {
-  const state: BodyLimitState = { exceeded: false };
+): Promise<BodyReadResult> {
   const declaredLength = req.headers['content-length'];
-  if (declaredLength !== undefined) {
-    if (Number(declaredLength) > maxBodyBytes) {
-      sendJson(res, 413, { error: 'payload_too_large' }, { Connection: 'close' });
-      return undefined;
-    }
-    return state;
+  if (declaredLength !== undefined && Number(declaredLength) > maxBodyBytes) {
+    return Promise.resolve({ status: 'too_large' });
   }
-  let received = 0;
-  const countBytes = (chunk: Buffer): void => {
-    received += chunk.length;
-    if (received > maxBodyBytes) {
-      state.exceeded = true;
-      req.removeListener('data', countBytes);
-      sendJson(res, 413, { error: 'payload_too_large' }, { Connection: 'close' });
-      // Stop reading the rest of the body once the answer is on the wire.
-      res.once('finish', () => req.destroy());
-    }
-  };
-  const startCounting = (event: string | symbol): void => {
-    if (event === 'data') {
-      req.removeListener('newListener', startCounting);
-      req.on('data', countBytes);
-    }
-  };
-  req.on('newListener', startCounting);
-  return state;
+  // The client may have left while authentication ran: a destroyed request
+  // emits no further events, so waiting on it would never settle.
+  if (req.destroyed) {
+    return Promise.resolve({ status: 'aborted' });
+  }
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let received = 0;
+    const settle = (result: BodyReadResult): void => {
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onAbort);
+      req.removeListener('close', onAbort);
+      resolve(result);
+    };
+    const onData = (chunk: Buffer): void => {
+      received += chunk.length;
+      if (received > maxBodyBytes) {
+        settle({ status: 'too_large' });
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = (): void => settle({ status: 'ok', body: Buffer.concat(chunks) });
+    const onAbort = (): void => settle({ status: 'aborted' });
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onAbort);
+    req.on('close', onAbort);
+  });
+}
+
+/**
+ * The body as the SDK's `parsedBody`. Text that is not JSON is passed as
+ * the raw string, which the SDK rejects as `400` / `-32700` after its own
+ * `Accept` and `Content-Type` checks, the same order it uses when it reads
+ * the body itself.
+ */
+function parseJsonBody(body: Buffer): unknown {
+  // TextDecoder strips a leading byte order mark, as the SDK's `req.json()` does.
+  const text = new TextDecoder().decode(body);
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
 }
 
 async function handleIncomingRequest(
@@ -532,10 +594,19 @@ async function handleIncomingRequest(
 
   // Only authenticated callers get this far, so an unauthenticated caller
   // always sees 401, never 413.
-  const bodyLimit = enforceBodyLimit(req, res, ctx.maxBodyBytes);
-  if (bodyLimit === undefined) {
+  const bodyRead = await readBodyWithinCap(req, ctx.maxBodyBytes);
+  if (bodyRead.status === 'too_large') {
+    // `Connection: close` makes Node close the socket once the 413 is
+    // written, even while the client is still sending (measured on Node 22
+    // and 25; the tests pin it).
+    sendJson(res, 413, { error: 'payload_too_large' }, { Connection: 'close' });
     return;
   }
+  if (bodyRead.status === 'aborted') {
+    return;
+  }
+  // Only POST carries JSON-RPC messages; the SDK reads no body for GET or DELETE.
+  const parsedBody = req.method === 'POST' ? parseJsonBody(bodyRead.body) : undefined;
 
   // Fresh transport + server per request (stateless mode requires it — see
   // the module header). `sessionIdGenerator` is deliberately omitted (not
@@ -572,15 +643,7 @@ async function handleIncomingRequest(
       // a functional mismatch (see other `as unknown as` casts in this codebase
       // for the same accommodation pattern).
       await mcpServer.connect(transport as unknown as Transport);
-      // Never dispatch a message whose body passed the cap: the caller has
-      // already been told 413, so running the tool would be a silent write.
-      const dispatch = transport.onmessage;
-      transport.onmessage = (message, extra): void => {
-        if (!bodyLimit.exceeded) {
-          dispatch?.(message, extra);
-        }
-      };
-      await transport.handleRequest(req, res);
+      await transport.handleRequest(req, res, parsedBody);
     } finally {
       // Tear down this request's server. `handleRequest` has already fully
       // written the response (including any SSE stream) by the time it

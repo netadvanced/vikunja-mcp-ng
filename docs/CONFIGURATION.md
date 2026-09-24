@@ -590,13 +590,16 @@ Any one missing is a hard startup error, never a silent downgrade to no-auth.
 `transport=stdio` (the default) never reads any of this.
 
 **A non-loopback bind needs an explicit `Host` allow-list, in both auth modes.** When
-`http.host` is anything other than `127.0.0.1`, `localhost` or `::1` (for example
-`0.0.0.0` in a container), the server refuses to start unless
-`VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` is set explicitly. Without it, the allow-list defaults
-to the bind address itself (`0.0.0.0:8765`), a `Host` header no real client sends, so
-every request would be refused with `403` anyway. The startup error names the variable
-to set. This rule is new in the release that added gateway-token mode and also applies
-to existing `oidc` deployments.
+`http.host` is not a loopback address (for example `0.0.0.0` in a container), the server
+refuses to start unless `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` is set explicitly. Without it,
+the allow-list defaults to the bind address itself (`0.0.0.0:8765`), a `Host` header no
+real client sends, so every request would be refused with `403` anyway. The startup
+error names the variable to set. Loopback means `127.0.0.0/8`, `::1` or
+`::ffff:127.x.x.x`. A host name such as `localhost` is resolved at startup and counts as
+loopback only when every address it resolves to is loopback, so a `localhost` that
+`/etc/hosts` maps to a routable address needs the allow-list like any other bind. This
+rule is new in the release that added gateway-token mode and also applies to existing
+`oidc` deployments.
 
 ### Gateway-token mode (single user behind a gateway)
 

@@ -12,6 +12,7 @@
  */
 
 import * as http from 'node:http';
+import * as net from 'node:net';
 import * as os from 'node:os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -791,13 +792,10 @@ describe('httpTransport: gateway-token mode', () => {
     it('opens no ALS scope for the request: the server factory sees no identity', async () => {
       setupStaticTokenAuth(TOKEN);
       const observed: Array<string | undefined> = [];
-      handle = await startHttpTransport(
-        () => {
-          observed.push(getCurrentIdentity()?.sub);
-          return newServer();
-        },
-        tokenConfig(),
-      );
+      handle = await startHttpTransport(() => {
+        observed.push(getCurrentIdentity()?.sub);
+        return newServer();
+      }, tokenConfig());
       const port = getPort(handle);
 
       await request(port, {
@@ -965,7 +963,9 @@ describe('httpTransport: gateway-token mode', () => {
     it('answers 413 when a chunked body (no Content-Length) grows past the cap', async () => {
       setupStaticTokenAuth(TOKEN);
       jest.spyOn(console, 'error').mockImplementation(() => undefined);
-      handle = await startHttpTransport(newServer, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 1024,
+      });
 
       const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
         'x'.repeat(600),
@@ -978,17 +978,16 @@ describe('httpTransport: gateway-token mode', () => {
     });
 
     it('never dispatches a valid over-cap chunked message, even when it arrives in one read', async () => {
-      // Review finding: nothing guarantees the deferred req.destroy() runs
-      // before the SDK finishes reading the body, parses it and dispatches
-      // the message. Simulate the worst case (the destroy never lands) and
-      // require that the tool still never runs.
+      // Earlier review finding: the tool must never run for a body the
+      // caller was told is too large, even if the connection is never torn
+      // down. Simulate that worst case (destroy does nothing).
       setupStaticTokenAuth(TOKEN);
       jest.spyOn(console, 'error').mockImplementation(() => undefined);
-      jest
-        .spyOn(http.IncomingMessage.prototype, 'destroy')
-        .mockImplementation(function (this: http.IncomingMessage) {
-          return this;
-        });
+      jest.spyOn(http.IncomingMessage.prototype, 'destroy').mockImplementation(function (
+        this: http.IncomingMessage,
+      ) {
+        return this;
+      });
       const handler = jest.fn(async () => ({ content: [{ type: 'text' as const, text: 'ran' }] }));
       handle = await startHttpTransport(
         () => {
@@ -1014,21 +1013,6 @@ describe('httpTransport: gateway-token mode', () => {
 
       expect(res.statusCode).toBe(413);
       expect(handler).not.toHaveBeenCalled();
-    });
-
-    it('does not log an error when the SDK writes after a chunked over-cap 413', async () => {
-      setupStaticTokenAuth(TOKEN);
-      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
-      jest.spyOn(console, 'error').mockImplementation(() => undefined);
-      handle = await startHttpTransport(newServer, tokenConfig(), undefined, { maxBodyBytes: 1024 });
-
-      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
-        INITIALIZE_BODY + ' '.repeat(2048),
-      ]);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect(res.statusCode).toBe(413);
-      expect(errorSpy).not.toHaveBeenCalled();
     });
 
     it('still logs (and answers 500) when handleRequest fails for any other reason', async () => {
@@ -1067,6 +1051,267 @@ describe('httpTransport: gateway-token mode', () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.body).toContain('"serverInfo"');
+    });
+
+    /**
+     * Raw-socket POST: sends `head` (request line + headers, no body), then
+     * keeps trickling one body byte every 50 ms until the server closes the
+     * socket or `giveUpMs` passes. Reports what came back and when.
+     */
+    function trickle(
+      port: number,
+      head: string,
+      giveUpMs = 2000,
+    ): Promise<{ response: string; closedAfterMs: number | undefined }> {
+      return new Promise((resolve) => {
+        const started = Date.now();
+        let response = '';
+        let timer: NodeJS.Timeout | undefined;
+        const socket = net.connect(port, '127.0.0.1', () => {
+          socket.write(head);
+          timer = setInterval(() => {
+            if (!socket.destroyed) socket.write('x');
+          }, 50);
+        });
+        const giveUp = setTimeout(() => {
+          clearInterval(timer);
+          socket.destroy();
+          resolve({ response, closedAfterMs: undefined });
+        }, giveUpMs);
+        socket.on('data', (chunk: Buffer) => {
+          response += chunk.toString('utf-8');
+        });
+        socket.on('error', () => undefined);
+        socket.on('close', () => {
+          clearInterval(timer);
+          clearTimeout(giveUp);
+          resolve({ response, closedAfterMs: Date.now() - started });
+        });
+      });
+    }
+
+    function rawHead(port: number, extraHeaders: string): string {
+      return (
+        `POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nAuthorization: Bearer ${TOKEN}\r\n` +
+        'Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\n' +
+        `${extraHeaders}\r\n`
+      );
+    }
+
+    it('closes the connection after a Content-Length 413 while the client is still sending', async () => {
+      // Review finding 1: the claim was that the socket stays open until
+      // requestTimeout. Measured on Node 22 and 25 it does not; this pins it.
+      setupStaticTokenAuth(TOKEN);
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      const port = getPort(handle);
+
+      const { response, closedAfterMs } = await trickle(
+        port,
+        rawHead(port, 'Content-Length: 1000000000\r\n'),
+      );
+
+      expect(response).toMatch(/^HTTP\/1\.1 413 /);
+      expect(response).toContain('{"error":"payload_too_large"}');
+      expect(closedAfterMs).toBeDefined();
+      expect(closedAfterMs).toBeLessThan(1000);
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it('closes the connection after a chunked 413 while the client is still sending', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      const port = getPort(handle);
+
+      const { response, closedAfterMs } = await trickle(
+        port,
+        rawHead(port, 'Transfer-Encoding: chunked\r\n') + `800\r\n${'x'.repeat(0x800)}\r\n`,
+      );
+
+      expect(response).toMatch(/^HTTP\/1\.1 413 /);
+      expect(response).toContain('{"error":"payload_too_large"}');
+      expect(closedAfterMs).toBeDefined();
+      expect(closedAfterMs).toBeLessThan(1000);
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it('builds no MCP server when the client hangs up mid-body', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      const port = getPort(handle);
+
+      await new Promise<void>((resolve) => {
+        const socket = net.connect(port, '127.0.0.1', () => {
+          socket.write(rawHead(port, 'Content-Length: 100\r\n') + 'x'.repeat(10));
+          setTimeout(() => socket.destroy(), 50);
+        });
+        socket.on('close', () => resolve());
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it('does not wait on a body whose client left while authentication was running', async () => {
+      // Verifier finding: once the request is destroyed, no data, end or
+      // close event ever comes again, so a reader attached after that would
+      // wait forever (the listeners stay on the request).
+      let seen: http.IncomingMessage | undefined;
+      setOidcAuthMiddleware(async (req) => {
+        seen = req;
+        await new Promise<void>((resolve) => {
+          const poll = setInterval(() => {
+            if (req.destroyed) {
+              clearInterval(poll);
+              resolve();
+            }
+          }, 5);
+        });
+        return true;
+      });
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      const port = getPort(handle);
+
+      await new Promise<void>((resolve) => {
+        const socket = net.connect(port, '127.0.0.1', () => {
+          socket.write(rawHead(port, 'Content-Length: 5\r\n') + 'hello');
+          setTimeout(() => socket.destroy(), 50);
+        });
+        socket.on('close', () => resolve());
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(seen?.listenerCount('data')).toBe(0);
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it('accepts a JSON body that starts with a UTF-8 byte order mark', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 4096,
+      });
+
+      const res = await request(getPort(handle), {
+        method: 'POST',
+        headers: mcpHeaders(`Bearer ${TOKEN}`),
+        body: `\uFEFF${INITIALIZE_BODY}`,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('"serverInfo"');
+    });
+
+    it('caps the body no matter how the SDK reads it (no data listener ever attached)', async () => {
+      // Review finding 2: the old counter only started when the SDK attached
+      // a `data` listener. A reader that uses async iteration (as a web
+      // stream adapter might) never does, so the cap silently disappeared.
+      setupStaticTokenAuth(TOKEN);
+      const sdkRead = jest
+        .spyOn(StreamableHTTPServerTransport.prototype, 'handleRequest')
+        .mockImplementation(async (req, res) => {
+          let bytes = 0;
+          for await (const chunk of req) {
+            bytes += (chunk as Buffer).length;
+          }
+          if (!res.headersSent) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ bytes }));
+          }
+        });
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 1024,
+      });
+
+      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
+        'x'.repeat(600),
+        'x'.repeat(600),
+        'x'.repeat(600),
+      ]);
+
+      expect(res.statusCode).toBe(413);
+      expect(JSON.parse(res.body)).toEqual({ error: 'payload_too_large' });
+      expect(sdkRead).not.toHaveBeenCalled();
+    });
+
+    it('never hands a chunked over-cap request to the SDK, so nothing is printed to stderr', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      // After startup: the logger writes its own INFO lines to console.error too.
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
+        INITIALIZE_BODY + ' '.repeat(2048),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(res.statusCode).toBe(413);
+      expect(factory).not.toHaveBeenCalled();
+      expect(consoleError).not.toHaveBeenCalled();
+    });
+
+    it('answers an under-cap body that is not JSON with the SDK parse error', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 1024,
+      });
+
+      const res = await request(getPort(handle), {
+        method: 'POST',
+        headers: mcpHeaders(`Bearer ${TOKEN}`),
+        body: '{not json',
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toMatchObject({ jsonrpc: '2.0', error: { code: -32700 } });
+    });
+
+    it('still checks Accept before parsing the body, as the SDK does', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 1024,
+      });
+
+      const res = await request(getPort(handle), {
+        method: 'POST',
+        headers: { ...mcpHeaders(`Bearer ${TOKEN}`), Accept: 'application/json' },
+        body: '{not json',
+      });
+
+      expect(res.statusCode).toBe(406);
+    });
+
+    it('passes GET to the SDK without a parsed body', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const sdkHandle = jest.spyOn(StreamableHTTPServerTransport.prototype, 'handleRequest');
+      handle = await startHttpTransport(newServer, tokenConfig());
+      const port = getPort(handle);
+
+      // A GET may open a long-lived SSE stream: read the status line only.
+      const statusCode = await new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          {
+            host: '127.0.0.1',
+            port,
+            method: 'GET',
+            path: '/mcp',
+            headers: mcpHeaders(`Bearer ${TOKEN}`),
+          },
+          (res) => {
+            resolve(res.statusCode ?? 0);
+            req.destroy();
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+
+      expect(statusCode).not.toBe(413);
+      expect(sdkHandle).toHaveBeenCalledTimes(1);
+      expect(sdkHandle.mock.calls[0]?.[2]).toBeUndefined();
     });
 
     it('defaults the cap to 1 MiB (rateLimiting.default.maxRequestSize)', async () => {
@@ -1200,48 +1445,119 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     jest.restoreAllMocks();
   });
 
-  it('treats 127.0.0.1, localhost and ::1 as loopback, and nothing else', () => {
-    expect(isLoopbackHost('127.0.0.1')).toBe(true);
-    expect(isLoopbackHost('localhost')).toBe(true);
-    expect(isLoopbackHost('::1')).toBe(true);
-    expect(isLoopbackHost('0.0.0.0')).toBe(false);
-    expect(isLoopbackHost('::')).toBe(false);
-    expect(isLoopbackHost('10.123.0.7')).toBe(false);
+  /** A DNS stand-in: every name resolves to the given addresses, and no literal ever reaches it. */
+  function resolvesTo(...addresses: string[]): jest.Mock {
+    return jest.fn(async () =>
+      addresses.map((address) => ({ address, family: address.includes(':') ? 6 : 4 })),
+    );
+  }
+
+  it('classifies loopback literals without DNS, and nothing else', async () => {
+    const lookup = resolvesTo('10.0.0.1');
+    for (const host of ['127.0.0.1', '127.9.8.7', '::1', '0:0:0:0:0:0:0:1', '::ffff:127.0.0.1']) {
+      await expect(isLoopbackHost(host, lookup)).resolves.toBe(true);
+    }
+    for (const host of ['0.0.0.0', '::', '::ffff:0.0.0.0', '10.123.0.7', '::ffff:10.0.0.1']) {
+      await expect(isLoopbackHost(host, lookup)).resolves.toBe(false);
+    }
+    expect(lookup).not.toHaveBeenCalled();
   });
 
-  it('a loopback bind has no extra requirements, even with no auth and no allowedHosts', () => {
-    expect(bindSafetyProblems(baseHttpConfig(), false)).toEqual([]);
+  it('treats a name as loopback only when every address it resolves to is loopback', async () => {
+    await expect(isLoopbackHost('localhost', resolvesTo('127.0.0.1', '::1'))).resolves.toBe(true);
+    // Review finding: /etc/hosts (or a container extra_hosts) can map
+    // `localhost` to a routable address, and listen() binds that address.
+    await expect(isLoopbackHost('localhost', resolvesTo('172.17.0.4'))).resolves.toBe(false);
+    await expect(isLoopbackHost('localhost', resolvesTo('127.0.0.1', '10.0.0.1'))).resolves.toBe(
+      false,
+    );
+    await expect(isLoopbackHost('localhost', resolvesTo())).resolves.toBe(false);
+    await expect(isLoopbackHost('localhost', resolvesTo('not-an-ip'))).resolves.toBe(false);
   });
 
-  it('a non-loopback bind with auth but no explicit allowedHosts names VIKUNJA_MCP_HTTP_ALLOWED_HOSTS', () => {
-    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), true);
+  it('fails closed when the bind host does not resolve', async () => {
+    const lookup = jest.fn(async () => {
+      throw Object.assign(new Error('getaddrinfo ENOTFOUND nowhere'), { code: 'ENOTFOUND' });
+    });
+    await expect(isLoopbackHost('nowhere.invalid', lookup)).resolves.toBe(false);
+    await expect(isLoopbackHost('[::1]', lookup)).resolves.toBe(false);
+  });
+
+  it('resolves localhost with the real resolver on this machine', async () => {
+    // Every mainstream /etc/hosts maps localhost to loopback; this pins the
+    // default lookup wiring (all addresses, not just the first).
+    await expect(isLoopbackHost('localhost')).resolves.toBe(true);
+  });
+
+  it('a loopback bind has no extra requirements, even with no auth and no allowedHosts', async () => {
+    await expect(bindSafetyProblems(baseHttpConfig(), false)).resolves.toEqual([]);
+  });
+
+  it('a localhost bind that resolves off-box needs the allow-list and auth like any other', async () => {
+    const problems = await bindSafetyProblems(
+      baseHttpConfig({ host: 'localhost' }),
+      false,
+      resolvesTo('172.17.0.4'),
+    );
+    expect(problems).toHaveLength(2);
+    expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
+  });
+
+  it('startHttpTransport refuses a localhost bind that resolves off-box, before listen()', async () => {
+    setupStaticTokenAuth(`gw_${'d4'.repeat(20)}`);
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
+
+    const attempt = startHttpTransport(
+      newServer,
+      baseHttpConfig({ host: 'localhost', authMode: 'token' }),
+      undefined,
+      { lookupHost: resolvesTo('172.17.0.4') },
+    );
+
+    await expect(attempt).rejects.toThrow(
+      /Refusing to listen on localhost: .*VIKUNJA_MCP_HTTP_ALLOWED_HOSTS is not set/,
+    );
+    expect(listenSpy).not.toHaveBeenCalled();
+  });
+
+  it('a non-loopback bind with auth but no explicit allowedHosts names VIKUNJA_MCP_HTTP_ALLOWED_HOSTS', async () => {
+    const problems = await bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), true);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
   });
 
-  it('an explicitly empty allowedHosts list counts as not set', () => {
-    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0', allowedHosts: [] }), true);
+  it('an explicitly empty allowedHosts list counts as not set', async () => {
+    const problems = await bindSafetyProblems(
+      baseHttpConfig({ host: '0.0.0.0', allowedHosts: [] }),
+      true,
+    );
     expect(problems).toHaveLength(1);
   });
 
-  it('a non-loopback bind with neither names both the allow-list and the auth credential', () => {
-    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), false);
+  it('a non-loopback bind with neither names both the allow-list and the auth credential', async () => {
+    const problems = await bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), false);
     expect(problems).toHaveLength(2);
     expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
     expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_AUTH_TOKEN/);
   });
 
-  it('a non-loopback bind with both has no problems', () => {
-    expect(
-      bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0', allowedHosts: ['vikunja-mcp:8765'] }), true),
-    ).toEqual([]);
+  it('a non-loopback bind with both has no problems', async () => {
+    await expect(
+      bindSafetyProblems(
+        baseHttpConfig({ host: '0.0.0.0', allowedHosts: ['vikunja-mcp:8765'] }),
+        true,
+      ),
+    ).resolves.toEqual([]);
   });
 
   it('startHttpTransport refuses 0.0.0.0 with a token but no allowedHosts, before listen()', async () => {
     setupStaticTokenAuth(`gw_${'b2'.repeat(20)}`);
     const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
 
-    const attempt = startHttpTransport(newServer, baseHttpConfig({ host: '0.0.0.0', authMode: 'token' }));
+    const attempt = startHttpTransport(
+      newServer,
+      baseHttpConfig({ host: '0.0.0.0', authMode: 'token' }),
+    );
 
     await expect(attempt).rejects.toThrow(ConfigurationError);
     await expect(attempt).rejects.toThrow(
@@ -1290,13 +1606,14 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     // Stub the bind itself: the assertion is that the listener is reached
     // with the requested host, without opening a wildcard socket on the
     // developer machine.
-    const listenSpy = jest
-      .spyOn(http.Server.prototype, 'listen')
-      .mockImplementation(function (this: http.Server, ...args: unknown[]) {
-        const callback = args.find((arg) => typeof arg === 'function') as () => void;
-        callback();
-        return this;
-      });
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen').mockImplementation(function (
+      this: http.Server,
+      ...args: unknown[]
+    ) {
+      const callback = args.find((arg) => typeof arg === 'function') as () => void;
+      callback();
+      return this;
+    });
 
     const handle = await startHttpTransport(
       newServer,

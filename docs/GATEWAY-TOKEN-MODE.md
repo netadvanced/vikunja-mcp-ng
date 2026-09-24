@@ -332,7 +332,10 @@ type; `src/index.ts`'s top-level `main().catch()` already logs and `process.exit
 
 Rules, in `http` mode, regardless of `authMode`:
 
-- bind host is loopback (`127.0.0.1` / `localhost` / `::1`) → no extra requirements;
+- bind host is loopback → no extra requirements. An IP literal counts when it is in
+  `127.0.0.0/8`, `::1` or `::ffff:127.0.0.0/104`. A name such as `localhost` is resolved
+  first (`listen()` binds whatever it resolves to) and counts only when **every** address
+  it resolves to is loopback; a name that does not resolve does not count;
 - bind host is anything else → **both** of:
   - an auth credential is configured (`http.authMode === 'oidc'` with a complete `oidc`
     block, **or** `authMode === 'token'` with a non-empty token), **and**
@@ -711,22 +714,49 @@ The operator answered the open questions before implementation started:
 
 - **Body-size cap (§4.1).** `@modelcontextprotocol/sdk` 1.30.0 (the installed version)
   has no body-size option on `StreamableHTTPServerTransportOptions`; its web-standard
-  transport reads the body with an unbounded `req.json()`. So the cap is the fallback
-  the table describes: a `Content-Length` precheck, plus a byte counter for chunked
-  bodies. The counter cannot simply attach a `data` listener and `pause()`:
-  `@hono/node-server` (which the SDK uses to adapt the Node request) reads the body by
-  attaching its own `data` listener and relies on that auto-resuming the stream, so an
-  explicit pause hangs every chunked request. The counter therefore attaches on the
-  request's `newListener` event, in the same tick as the SDK's own reader. The cap runs
-  after authentication, so an unauthenticated caller only ever sees `401`. When the
-  counter trips it also flags the request, and the transport's `onmessage` drops every
-  message of a flagged request: nothing guarantees the socket is torn down before the
-  SDK finishes reading and dispatches (found in independent review; the test simulates
-  a late teardown).
+  transport reads the body with an unbounded `req.json()`. So after authentication the
+  server reads the body itself (`readBodyWithinCap`): a declared `Content-Length` over
+  the cap is refused without reading, and otherwise every byte is counted as it arrives,
+  whatever the framing, until the body ends or the count passes the cap. Over the cap,
+  the answer is `413 {"error":"payload_too_large"}` with `Connection: close`, the MCP
+  server is never built and the SDK never sees the request. Under the cap, a POST body
+  is handed to the SDK as `handleRequest(req, res, parsedBody)`, the SDK's documented
+  pre-parsed body argument, so the SDK never reads the stream. Text that is not JSON is
+  passed as the raw string, which the SDK answers with `400` / `-32700` after its own
+  `Accept` and `Content-Type` checks, as before (a leading UTF-8 byte order mark is
+  stripped, as the SDK's own `req.json()` did). GET and DELETE carry no JSON-RPC body
+  and get no `parsedBody`. A client that disconnects while authentication is still
+  running (a slow JWKS fetch in oidc mode) is dropped without waiting on its body: a
+  destroyed request emits no further events.
+
+  This replaces the first implementation, which hooked a byte counter onto the SDK's
+  own `data` listener (via `newListener`) and dropped any message the SDK still parsed
+  after a `413`. Independent review pointed out that the cap then depended on how the
+  SDK happens to read the body: a reader that uses async iteration or a web stream never
+  attaches `data`, and the cap silently disappears. A unit test now stubs the SDK with
+  such a reader and requires the `413`. §4.1 advised against pre-reading only to avoid
+  restructuring for its own sake; robustness is a reason. The pre-read also removed the
+  `ERR_HTTP_HEADERS_SENT` line `@hono/node-server` printed to stderr for every over-cap
+  chunked request, since the SDK no longer runs for one.
+
+  The same review suspected a Content-Length `413` left the socket open until
+  `requestTimeout`. Measured with a raw socket that declares 1 GB and keeps trickling,
+  on Node 22.23 (`node:22-alpine`) and 25.9: the `413` arrives and Node closes the
+  socket within 10 ms, because of `Connection: close`. Duplicate, list-valued, negative
+  or non-numeric `Content-Length`, and `Content-Length` together with
+  `Transfer-Encoding`, are all rejected with `400` by Node's parser before this server
+  sees the request. Tests pin the socket close for both framings.
 - **Bind safety (§4.4) applies to oidc mode too.** The documented OIDC examples bind
   `127.0.0.1` or set an explicit allow-list, so none of them breaks. An oidc deployment
   binding `0.0.0.0` without `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` now fails at startup instead
   of answering every request with `403`; the CHANGELOG calls this out.
+- **Loopback is decided by address, not by spelling.** `localhost` used to count as
+  loopback because of its name. If `/etc/hosts` (or a container `extra_hosts`) maps it to
+  a routable address, `listen()` binds that address while bind safety skipped the
+  allow-list; this was reproduced in a `node:22-alpine` container with `localhost` mapped
+  to its own `172.17.0.x` address (found in independent review). `bindSafetyProblems()`
+  is now async and resolves the bind host (`dns.lookup` with `all: true`) before
+  `listen()`; IP literals are still classified without DNS.
 - **"Loopback bind with no token → starts" (§7.1)** is read as "bind safety adds no
   requirement on loopback". A listener still never starts without an auth middleware.
 - **§9 item 18's second half** (`/readyz` → `503` with `VIKUNJA_API_TOKEN` cleared) cannot
@@ -737,19 +767,6 @@ The operator answered the open questions before implementation started:
   credential, so item 7 names `VIKUNJA_MCP_HTTP_AUTH_TOKEN` even when both are missing.
 - `startHttpTransport` takes an optional 4th `options` argument (`maxBodyBytes`,
   `isCredentialConfigured`) rather than reading application config itself.
-- **Expected stderr noise when a chunked body trips the cap.** The 413 is written from
-  the byte counter while the SDK is still handling the request. `@hono/node-server`
-  (the SDK's Node adapter) then tries to write the SDK's own response, `writeHead`
-  throws `ERR_HTTP_HEADERS_SENT`, and hono catches that itself in
-  `handleResponseError` and prints it with a bare `console.error`: one error object per
-  over-cap chunked request, without this server's `[ERROR]` log prefix. It never reaches
-  this server's code (`transport.handleRequest` resolves normally, measured 50 of 50),
-  so it cannot be caught or downgraded here, and the SDK exposes no error hook for its
-  adapter. It is harmless: nothing hangs, the message is not dispatched, no secret is
-  printed, and the client already has its 413. The design is kept on purpose: requiring
-  `Content-Length` instead would break chunked clients, and the cap also applies in
-  oidc mode. Tests pin that this server's own logger stays silent in this case and that
-  a genuine `handleRequest` failure is still logged and answered with `500`.
 - **Token plus an incomplete OIDC block (§9 item 10).** Zod skips `superRefine` when the
   `oidc` block itself fails to parse, so with only `VIKUNJA_MCP_OIDC_ISSUER` set the
   conflict was hidden behind "oidc.audience: Invalid input". `ConfigurationManager`
