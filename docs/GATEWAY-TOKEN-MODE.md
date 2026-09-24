@@ -714,7 +714,11 @@ The operator answered the open questions before implementation started:
   attaching its own `data` listener and relies on that auto-resuming the stream, so an
   explicit pause hangs every chunked request. The counter therefore attaches on the
   request's `newListener` event, in the same tick as the SDK's own reader. The cap runs
-  after authentication, so an unauthenticated caller only ever sees `401`.
+  after authentication, so an unauthenticated caller only ever sees `401`. When the
+  counter trips it also flags the request, and the transport's `onmessage` drops every
+  message of a flagged request: nothing guarantees the socket is torn down before the
+  SDK finishes reading and dispatches (found in independent review; the test simulates
+  a late teardown).
 - **Bind safety (§4.4) applies to oidc mode too.** The documented OIDC examples bind
   `127.0.0.1` or set an explicit allow-list, so none of them breaks. An oidc deployment
   binding `0.0.0.0` without `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` now fails at startup instead
