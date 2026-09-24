@@ -274,9 +274,13 @@ The middleware:
 
 1. reads `req.headers.authorization`, strips a case-insensitive `Bearer ` prefix;
 2. compares via the sha256-then-`timingSafeEqual` helper;
-3. on mismatch or absence: `res.setHeader('WWW-Authenticate', 'Bearer')`, write
-   `401 {"error":"invalid_token"}`, return `false`. Same opaque body the OIDC middleware
-   uses. **Never** say which check failed (`tests/oidc/threat-model.test.ts` is the
+3. on mismatch or absence: write `401 {"error":"invalid_token"}` with a bare
+   `WWW-Authenticate: Bearer` header, and return `false`. The body and headers are
+   byte-identical for every token-mode failure (as in §4.6). This is deliberately
+   **not** the OIDC middleware's response, which adds an `error_description` and a
+   parameterised challenge (`src/transport/oidcHttpAuth.ts`): a static token has no
+   expiry or scope to describe, so any extra field could only leak which check failed.
+   **Never** say which check failed (`tests/oidc/threat-model.test.ts` is the
    precedent);
 4. on match: attach **nothing** (no `RequestContext`, no `req.auth`) and return `true`.
 
@@ -733,6 +737,14 @@ The operator answered the open questions before implementation started:
   credential, so item 7 names `VIKUNJA_MCP_HTTP_AUTH_TOKEN` even when both are missing.
 - `startHttpTransport` takes an optional 4th `options` argument (`maxBodyBytes`,
   `isCredentialConfigured`) rather than reading application config itself.
+- **Expected stderr noise when a chunked body trips the cap.** The 413 is written from
+  the byte counter while the SDK is still handling the request. When the SDK then tries
+  to write its own response, Node throws `ERR_HTTP_HEADERS_SENT`, which reaches the
+  listener's catch and is logged as "Unhandled error while handling HTTP MCP request"
+  with a stack trace. It is harmless: nothing hangs, the message is not dispatched, no
+  secret is logged, and the client already has its 413. The design is kept on purpose:
+  requiring `Content-Length` instead would break chunked clients, and the cap also
+  applies in oidc mode.
 - **Token plus an incomplete OIDC block (§9 item 10).** Zod skips `superRefine` when the
   `oidc` block itself fails to parse, so with only `VIKUNJA_MCP_OIDC_ISSUER` set the
   conflict was hidden behind "oidc.audience: Invalid input". `ConfigurationManager`

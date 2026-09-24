@@ -20,11 +20,15 @@
 #
 # Run (http transport, gateway-token mode: one user behind a gateway such
 # as IBM Context Forge, docs/GATEWAY-TOKEN-MODE.md). A non-loopback bind
-# needs an explicit Host allow-list or the server refuses to start:
+# needs an explicit Host allow-list or the server refuses to start. Generate
+# the gateway token first and keep it: the gateway's registration needs the
+# same value.
+#   openssl rand -hex 32 > gateway_token.txt && chmod 600 gateway_token.txt
 #   docker run -d --rm -p 127.0.0.1:8765:8765 \
+#     -v "$PWD/gateway_token.txt:/run/secrets/gateway_token:ro" \
 #     -e VIKUNJA_MCP_TRANSPORT=http \
 #     -e VIKUNJA_MCP_HTTP_AUTH_MODE=token \
-#     -e VIKUNJA_MCP_HTTP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+#     -e VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE=/run/secrets/gateway_token \
 #     -e VIKUNJA_MCP_HTTP_HOST=0.0.0.0 \
 #     -e VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=localhost:8765,127.0.0.1:8765 \
 #     -e VIKUNJA_MCP_READ_ONLY=true \
