@@ -1695,6 +1695,7 @@ describe('Auth Tool', () => {
         }).catch((caught: unknown) => caught);
 
         expect(error).toBeInstanceOf(MCPError);
+        expect((error as MCPError).code).toBe(ErrorCode.NOT_IMPLEMENTED);
         expect((error as MCPError).message).toMatch(/gateway-token mode/);
         expect((error as MCPError).message).toMatch(/configured by the operator/);
         expect((error as MCPError).message).not.toContain('tk_attacker');

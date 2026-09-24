@@ -92,8 +92,9 @@ if (process.env.VIKUNJA_URL && vikunjaApiToken) {
 
 /**
  * Close the HTTP listener on SIGINT/SIGTERM (a Swarm `docker stop` sends
- * SIGTERM) instead of dying mid-response. `closeAllConnections()` also ends
- * idle keep-alive sockets and any open stream, so shutdown cannot hang.
+ * SIGTERM) and exit 0 instead of being killed by the signal. This is not a
+ * drain: `closeAllConnections()` also cuts in-flight requests and any open
+ * stream, so shutdown cannot hang. Requests here are short stateless calls.
  */
 function installShutdownHandlers(handle: HttpTransportHandle): void {
   let closing = false;

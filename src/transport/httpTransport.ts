@@ -190,12 +190,16 @@ export async function startHttpTransport(
 
   const bindProblems = bindSafetyProblems(httpConfig, authMiddleware !== undefined);
   if (bindProblems.length > 0) {
+    const allowListMissing = !httpConfig.allowedHosts || httpConfig.allowedHosts.length === 0;
+    const fix = allowListMissing
+      ? `Set VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=vikunja-mcp:${httpConfig.port} (the Host ` +
+        'header the gateway actually sends)'
+      : 'Configure an auth scheme';
     throw new ConfigurationError(
       'http.host',
       `Refusing to listen on ${httpConfig.host}: ${bindProblems.join('; ')}. A server ` +
         'reachable from outside this container needs a Host allow-list and an auth ' +
-        `credential. Set VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=vikunja-mcp:${httpConfig.port} ` +
-        '(the Host header the gateway actually sends), or bind to 127.0.0.1.',
+        `credential. ${fix}, or bind to 127.0.0.1.`,
     );
   }
 
@@ -353,12 +357,20 @@ interface RequestHandlerContext {
   isCredentialConfigured: () => boolean;
 }
 
+/** Whether a chunked body has passed the cap (set by `enforceBodyLimit`). */
+interface BodyLimitState {
+  exceeded: boolean;
+}
+
 /**
  * Request-body cap for the MCP path (docs/GATEWAY-TOKEN-MODE.md §4.1).
- * Returns `false` after answering `413` when the declared `Content-Length`
- * is over the cap. For a chunked body (no `Content-Length`; Node's parser
- * already enforces a declared length), it counts bytes as the SDK reads
- * them and answers `413` once the count passes the cap.
+ * Returns `undefined` after answering `413` when the declared
+ * `Content-Length` is over the cap. For a chunked body (no `Content-Length`;
+ * Node's parser already enforces a declared length), it counts bytes as the
+ * SDK reads them, answers `413` once the count passes the cap, and sets
+ * `exceeded` on the returned state. The caller must then drop any message
+ * the SDK still parses: the counter runs before the body's `end`, but
+ * nothing guarantees the socket is torn down before the SDK dispatches.
  *
  * The counter attaches only when the SDK attaches its own `data` listener
  * (`newListener`), in the same tick. Attaching earlier would either start
@@ -370,19 +382,21 @@ function enforceBodyLimit(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   maxBodyBytes: number,
-): boolean {
+): BodyLimitState | undefined {
+  const state: BodyLimitState = { exceeded: false };
   const declaredLength = req.headers['content-length'];
   if (declaredLength !== undefined) {
     if (Number(declaredLength) > maxBodyBytes) {
       sendJson(res, 413, { error: 'payload_too_large' }, { Connection: 'close' });
-      return false;
+      return undefined;
     }
-    return true;
+    return state;
   }
   let received = 0;
   const countBytes = (chunk: Buffer): void => {
     received += chunk.length;
     if (received > maxBodyBytes) {
+      state.exceeded = true;
       req.removeListener('data', countBytes);
       sendJson(res, 413, { error: 'payload_too_large' }, { Connection: 'close' });
       // Stop reading the rest of the body once the answer is on the wire.
@@ -396,7 +410,7 @@ function enforceBodyLimit(
     }
   };
   req.on('newListener', startCounting);
-  return true;
+  return state;
 }
 
 async function handleIncomingRequest(
@@ -514,7 +528,8 @@ async function handleIncomingRequest(
 
   // Only authenticated callers get this far, so an unauthenticated caller
   // always sees 401, never 413.
-  if (!enforceBodyLimit(req, res, ctx.maxBodyBytes)) {
+  const bodyLimit = enforceBodyLimit(req, res, ctx.maxBodyBytes);
+  if (bodyLimit === undefined) {
     return;
   }
 
@@ -553,6 +568,14 @@ async function handleIncomingRequest(
       // a functional mismatch (see other `as unknown as` casts in this codebase
       // for the same accommodation pattern).
       await mcpServer.connect(transport as unknown as Transport);
+      // Never dispatch a message whose body passed the cap: the caller has
+      // already been told 413, so running the tool would be a silent write.
+      const dispatch = transport.onmessage;
+      transport.onmessage = (message, extra): void => {
+        if (!bodyLimit.exceeded) {
+          dispatch?.(message, extra);
+        }
+      };
       await transport.handleRequest(req, res);
     } finally {
       // Tear down this request's server. `handleRequest` has already fully

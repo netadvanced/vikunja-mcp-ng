@@ -973,6 +973,45 @@ describe('httpTransport: gateway-token mode', () => {
       expect(JSON.parse(res.body)).toEqual({ error: 'payload_too_large' });
     });
 
+    it('never dispatches a valid over-cap chunked message, even when it arrives in one read', async () => {
+      // Review finding: nothing guarantees the deferred req.destroy() runs
+      // before the SDK finishes reading the body, parses it and dispatches
+      // the message. Simulate the worst case (the destroy never lands) and
+      // require that the tool still never runs.
+      setupStaticTokenAuth(TOKEN);
+      jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      jest
+        .spyOn(http.IncomingMessage.prototype, 'destroy')
+        .mockImplementation(function (this: http.IncomingMessage) {
+          return this;
+        });
+      const handler = jest.fn(async () => ({ content: [{ type: 'text' as const, text: 'ran' }] }));
+      handle = await startHttpTransport(
+        () => {
+          const server = newServer();
+          server.tool('probe_write', {}, handler);
+          return server;
+        },
+        tokenConfig(),
+        undefined,
+        { maxBodyBytes: 1024 },
+      );
+      const call = JSON.stringify({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { name: 'probe_write', arguments: {} },
+      });
+      // Valid JSON: trailing whitespace pads it past the cap.
+      const padded = call + ' '.repeat(2048);
+
+      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [padded]);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(res.statusCode).toBe(413);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
     it('lets a chunked body under the cap through intact to the SDK', async () => {
       setupStaticTokenAuth(TOKEN);
       handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
@@ -1082,6 +1121,20 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     await expect(attempt).rejects.toThrow(ConfigurationError);
     await expect(attempt).rejects.toThrow(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
     await expect(attempt).rejects.toThrow(/VIKUNJA_MCP_HTTP_AUTH_TOKEN/);
+    expect(listenSpy).not.toHaveBeenCalled();
+  });
+
+  it('with an allow-list but no auth, the refusal points at the auth scheme, not the allow-list', async () => {
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
+
+    const attempt = startHttpTransport(
+      newServer,
+      baseHttpConfig({ host: '0.0.0.0', allowedHosts: ['vikunja-mcp:8765'] }),
+    );
+
+    await expect(attempt).rejects.toThrow(/no HTTP auth credential is configured/);
+    await expect(attempt).rejects.toThrow(/Configure an auth scheme, or bind to 127\.0\.0\.1/);
+    await expect(attempt).rejects.not.toThrow(/Set VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=/);
     expect(listenSpy).not.toHaveBeenCalled();
   });
 
