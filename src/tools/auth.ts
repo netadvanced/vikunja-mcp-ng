@@ -68,15 +68,8 @@ const GATEWAY_TOKEN_MODE_DISABLED_SUBCOMMANDS: ReadonlySet<AuthArgs['subcommand'
   'deprovision',
 ]);
 
-/**
- * Whether this server runs in gateway-token mode (`transport=http` with
- * `http.authMode=token`). The config refinement already rejects `token`
- * under stdio; checking the transport too keeps this false there by
- * construction.
- */
 function isGatewayTokenMode(): boolean {
-  const config = ConfigurationManager.getInstance().loadConfiguration();
-  return config.transport === 'http' && config.http.authMode === 'token';
+  return ConfigurationManager.getInstance().isGatewayTokenMode();
 }
 
 function createGatewayTokenModeError(subcommand: string): MCPError {
@@ -438,9 +431,14 @@ export function registerAuthTool(
               // token". Report that accurately instead of attempting (and
               // silently failing) the call or claiming refresh isn't
               // needed.
+              // Gateway-token mode disables connect: the credential is the
+              // operator's, so only the operator can rotate it.
+              const renewal = isGatewayTokenMode()
+                ? 'In this gateway-token mode the JWT is the operator-configured credential: when it expires, the operator sets a new one in VIKUNJA_API_TOKEN (or VIKUNJA_API_TOKEN_FILE) and restarts the server.'
+                : 'When your JWT expires, obtain a new one (e.g. by logging in to Vikunja again) and call vikunja_auth connect with the new token.';
               const response = createStandardResponse(
                 'auth-refresh',
-                "JWT tokens expire and this server cannot refresh them automatically. Vikunja's POST /user/token/refresh endpoint requires a refresh-token cookie issued at login, but this server authenticates with a static Bearer token and holds no such cookie. When your JWT expires, obtain a new one (e.g. by logging in to Vikunja again) and call vikunja_auth connect with the new token.",
+                `JWT tokens expire and this server cannot refresh them automatically. Vikunja's POST /user/token/refresh endpoint requires a refresh-token cookie issued at login, but this server authenticates with a static Bearer token and holds no such cookie. ${renewal}`,
                 { refreshed: false, authType: 'jwt', tokenExpires: true },
                 {
                   reason:
