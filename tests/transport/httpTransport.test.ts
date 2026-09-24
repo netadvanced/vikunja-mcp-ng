@@ -22,7 +22,7 @@ import {
   resolveAllowedHosts,
   bindSafetyProblems,
   formatHostPort,
-  isLoopbackHost,
+  resolveBindTarget,
   type HttpTransportHandle,
 } from '../../src/transport/httpTransport';
 import { setupStaticTokenAuth } from '../../src/transport/staticTokenAuth';
@@ -1452,53 +1452,90 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     );
   }
 
-  it('classifies loopback literals without DNS, and nothing else', async () => {
+  it('classifies loopback literals without DNS, and listens on the literal itself', async () => {
     const lookup = resolvesTo('10.0.0.1');
     for (const host of ['127.0.0.1', '127.9.8.7', '::1', '0:0:0:0:0:0:0:1', '::ffff:127.0.0.1']) {
-      await expect(isLoopbackHost(host, lookup)).resolves.toBe(true);
+      await expect(resolveBindTarget(host, lookup)).resolves.toEqual({
+        listenAddress: host,
+        loopback: true,
+      });
     }
     for (const host of ['0.0.0.0', '::', '::ffff:0.0.0.0', '10.123.0.7', '::ffff:10.0.0.1']) {
-      await expect(isLoopbackHost(host, lookup)).resolves.toBe(false);
+      await expect(resolveBindTarget(host, lookup)).resolves.toEqual({
+        listenAddress: host,
+        loopback: false,
+      });
     }
     expect(lookup).not.toHaveBeenCalled();
   });
 
   it('treats a name as loopback only when every address it resolves to is loopback', async () => {
-    await expect(isLoopbackHost('localhost', resolvesTo('127.0.0.1', '::1'))).resolves.toBe(true);
+    await expect(resolveBindTarget('localhost', resolvesTo('127.0.0.1', '::1'))).resolves.toEqual({
+      listenAddress: '127.0.0.1',
+      loopback: true,
+    });
     // Review finding: /etc/hosts (or a container extra_hosts) can map
     // `localhost` to a routable address, and listen() binds that address.
-    await expect(isLoopbackHost('localhost', resolvesTo('172.17.0.4'))).resolves.toBe(false);
-    await expect(isLoopbackHost('localhost', resolvesTo('127.0.0.1', '10.0.0.1'))).resolves.toBe(
-      false,
-    );
-    await expect(isLoopbackHost('localhost', resolvesTo())).resolves.toBe(false);
-    await expect(isLoopbackHost('localhost', resolvesTo('not-an-ip'))).resolves.toBe(false);
+    await expect(resolveBindTarget('localhost', resolvesTo('172.17.0.4'))).resolves.toEqual({
+      listenAddress: '172.17.0.4',
+      loopback: false,
+    });
+    await expect(
+      resolveBindTarget('localhost', resolvesTo('127.0.0.1', '10.0.0.1')),
+    ).resolves.toMatchObject({ loopback: false });
+    await expect(resolveBindTarget('localhost', resolvesTo('not-an-ip'))).resolves.toMatchObject({
+      loopback: false,
+    });
   });
 
-  it('fails closed when the bind host does not resolve', async () => {
-    const lookup = jest.fn(async () => {
-      throw Object.assign(new Error('getaddrinfo ENOTFOUND nowhere'), { code: 'ENOTFOUND' });
+  it('listens on the first resolved address, the one listen(name) would have picked', async () => {
+    await expect(resolveBindTarget('localhost', resolvesTo('::1', '127.0.0.1'))).resolves.toEqual({
+      listenAddress: '::1',
+      loopback: true,
     });
-    await expect(isLoopbackHost('nowhere.invalid', lookup)).resolves.toBe(false);
-    await expect(isLoopbackHost('[::1]', lookup)).resolves.toBe(false);
+  });
+
+  it('fails closed with a ConfigurationError when the bind host does not resolve', async () => {
+    const lookup = jest.fn(async () => {
+      throw Object.assign(new Error('getaddrinfo ENOTFOUND nowhere.invalid'), {
+        code: 'ENOTFOUND',
+      });
+    });
+    const attempt = resolveBindTarget('nowhere.invalid', lookup);
+    await expect(attempt).rejects.toThrow(ConfigurationError);
+    await expect(attempt).rejects.toThrow(
+      /Could not resolve the bind host nowhere\.invalid: getaddrinfo ENOTFOUND/,
+    );
+  });
+
+  it('fails closed when a name resolves to nothing', async () => {
+    await expect(resolveBindTarget('localhost', resolvesTo())).rejects.toThrow(
+      /Could not resolve the bind host localhost: no addresses/,
+    );
+  });
+
+  it('fails closed instead of hanging when the resolver never answers', async () => {
+    const lookup = jest.fn(() => new Promise<Array<{ address: string }>>(() => undefined));
+    const started = Date.now();
+
+    await expect(resolveBindTarget('slow.example', lookup, 30)).rejects.toThrow(
+      /Could not resolve the bind host slow\.example: no answer within 30 ms/,
+    );
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 
   it('resolves localhost with the real resolver on this machine', async () => {
     // Every mainstream /etc/hosts maps localhost to loopback; this pins the
     // default lookup wiring (all addresses, not just the first).
-    await expect(isLoopbackHost('localhost')).resolves.toBe(true);
+    await expect(resolveBindTarget('localhost')).resolves.toMatchObject({ loopback: true });
   });
 
-  it('a loopback bind has no extra requirements, even with no auth and no allowedHosts', async () => {
-    await expect(bindSafetyProblems(baseHttpConfig(), false)).resolves.toEqual([]);
+  it('a loopback bind has no extra requirements, even with no auth and no allowedHosts', () => {
+    expect(bindSafetyProblems(baseHttpConfig(), false, true)).toEqual([]);
   });
 
-  it('a localhost bind that resolves off-box needs the allow-list and auth like any other', async () => {
-    const problems = await bindSafetyProblems(
-      baseHttpConfig({ host: 'localhost' }),
-      false,
-      resolvesTo('172.17.0.4'),
-    );
+  it('a localhost bind that resolves off-box needs the allow-list and auth like any other', () => {
+    const problems = bindSafetyProblems(baseHttpConfig({ host: 'localhost' }), false, false);
     expect(problems).toHaveLength(2);
     expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
   });
@@ -1520,34 +1557,125 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
     expect(listenSpy).not.toHaveBeenCalled();
   });
 
-  it('a non-loopback bind with auth but no explicit allowedHosts names VIKUNJA_MCP_HTTP_ALLOWED_HOSTS', async () => {
-    const problems = await bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), true);
+  it('startHttpTransport refuses a bind host that does not resolve, before listen()', async () => {
+    setupStaticTokenAuth(`gw_${'d5'.repeat(20)}`);
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
+    const lookup = jest.fn(async () => {
+      throw new Error('getaddrinfo ENOTFOUND nowhere.invalid');
+    });
+
+    await expect(
+      startHttpTransport(
+        newServer,
+        baseHttpConfig({ host: 'nowhere.invalid', authMode: 'token' }),
+        undefined,
+        { lookupHost: lookup },
+      ),
+    ).rejects.toThrow(ConfigurationError);
+    expect(listenSpy).not.toHaveBeenCalled();
+  });
+
+  it('checks and binds the same address: a loopback name is resolved once and listen() gets the address', async () => {
+    // Confirming-review finding: listen(port, name) resolved the name a
+    // second time, so the check and the bind could disagree.
+    setupStaticTokenAuth(`gw_${'e5'.repeat(20)}`);
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const listenSpy = jest.spyOn(http.Server.prototype, 'listen');
+    const lookup = resolvesTo('127.0.0.1', '::1');
+    const config = baseHttpConfig({ host: 'localhost', authMode: 'token' });
+
+    const handle = await startHttpTransport(newServer, config, undefined, { lookupHost: lookup });
+    try {
+      expect(lookup).toHaveBeenCalledTimes(1);
+      expect(listenSpy).toHaveBeenCalledWith(config.port, '127.0.0.1', expect.any(Function));
+      expect(infoSpy).toHaveBeenCalledWith(
+        `Vikunja MCP HTTP transport listening on 127.0.0.1:${config.port}/mcp (http.host localhost)`,
+      );
+      // The default allow-list keeps the name clients send in Host.
+      expect(resolveAllowedHosts(config)).toEqual([`localhost:${config.port}`]);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('a real localhost bind answers a client that sends Host: localhost:<port>', async () => {
+    const token = `gw_${'e6'.repeat(20)}`;
+    setupStaticTokenAuth(token);
+    jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const config = baseHttpConfig({ host: 'localhost', authMode: 'token' });
+
+    const handle = await startHttpTransport(newServer, config);
+    try {
+      const address = handle.httpServer.address() as net.AddressInfo;
+      const res = await new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          {
+            host: 'localhost',
+            port: address.port,
+            method: 'POST',
+            path: '/mcp',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json, text/event-stream',
+              Authorization: `Bearer ${token}`,
+            },
+          },
+          (response) => {
+            response.resume();
+            resolve(response.statusCode ?? 0);
+          },
+        );
+        req.on('error', reject);
+        expect(req.getHeader('host')).toBe(`localhost:${config.port}`);
+        req.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'initialize',
+            params: {
+              protocolVersion: '2025-03-26',
+              capabilities: {},
+              clientInfo: { name: 'localhost-test', version: '0.0.0' },
+            },
+          }),
+        );
+      });
+      expect(res).toBe(200);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('a non-loopback bind with auth but no explicit allowedHosts names VIKUNJA_MCP_HTTP_ALLOWED_HOSTS', () => {
+    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), true, false);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
   });
 
-  it('an explicitly empty allowedHosts list counts as not set', async () => {
-    const problems = await bindSafetyProblems(
+  it('an explicitly empty allowedHosts list counts as not set', () => {
+    const problems = bindSafetyProblems(
       baseHttpConfig({ host: '0.0.0.0', allowedHosts: [] }),
       true,
+      false,
     );
     expect(problems).toHaveLength(1);
   });
 
-  it('a non-loopback bind with neither names both the allow-list and the auth credential', async () => {
-    const problems = await bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), false);
+  it('a non-loopback bind with neither names both the allow-list and the auth credential', () => {
+    const problems = bindSafetyProblems(baseHttpConfig({ host: '0.0.0.0' }), false, false);
     expect(problems).toHaveLength(2);
     expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_ALLOWED_HOSTS/);
     expect(problems.join(' ')).toMatch(/VIKUNJA_MCP_HTTP_AUTH_TOKEN/);
   });
 
-  it('a non-loopback bind with both has no problems', async () => {
-    await expect(
+  it('a non-loopback bind with both has no problems', () => {
+    expect(
       bindSafetyProblems(
         baseHttpConfig({ host: '0.0.0.0', allowedHosts: ['vikunja-mcp:8765'] }),
         true,
+        false,
       ),
-    ).resolves.toEqual([]);
+    ).toEqual([]);
   });
 
   it('startHttpTransport refuses 0.0.0.0 with a token but no allowedHosts, before listen()', async () => {
