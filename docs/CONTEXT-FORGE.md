@@ -9,6 +9,11 @@ replace with your own realm; nothing Keycloak-specific lands in this
 project's code, per `docs/OIDC-RESOURCE-SERVER.md`'s design (any standards-
 compliant OIDC provider works identically from this server's point of view).
 
+**Which mode do I want?** Several users, each with their own Vikunja account: `oidc`
+mode, this whole guide. Exactly one user behind the gateway, no OIDC relationship
+between the gateway and this server: gateway-token mode, see
+[Single-user gateway-token mode](#single-user-gateway-token-mode) (added 2026-09-24).
+
 **Status note (updated 2026-08-11):** this guide has now been walked
 end-to-end against a real Context Forge + Keycloak + Vikunja deployment with
 three distinct users, confirming per-identity isolation through the gateway.
@@ -77,7 +82,7 @@ rules — env always wins over the config file):
 | Purpose | Env var | Example / notes |
 |---|---|---|
 | Transport mode | `VIKUNJA_MCP_TRANSPORT` | `http` (default is `stdio` — must be changed) |
-| Bind host | `VIKUNJA_MCP_HTTP_HOST` | `127.0.0.1` if Context Forge is co-located (default, recommended); `0.0.0.0` only with `allowedHosts` + network policy for a cross-host gateway |
+| Bind host | `VIKUNJA_MCP_HTTP_HOST` | `127.0.0.1` if Context Forge is co-located (default, recommended); `0.0.0.0` only with `allowedHosts` + network policy for a cross-host gateway. A non-loopback bind without an explicit `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` is refused at startup |
 | Bind port | `VIKUNJA_MCP_HTTP_PORT` | `8765` (default) |
 | Request path | `VIKUNJA_MCP_HTTP_PATH` | `/mcp` (default) — this is the path you register as the gateway's upstream URL |
 | Allowed `Host` headers | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` | Comma-separated, exact `host:port` strings; defaults to the bind `host:port` only. Must list the `Host` header **as Context Forge's requests actually carry it** — a gateway running in a container and reaching this server on the host arrives as e.g. `host.docker.internal:8765`, which is not covered by the default. A mismatch is a `403 Invalid Host header` on otherwise-valid requests; see [`OIDC-SETUP.md`](OIDC-SETUP.md) §5.4 |
@@ -95,7 +100,9 @@ rules — env always wins over the config file):
 **Do not set** `VIKUNJA_API_TOKEN` / `VIKUNJA_API_TOKEN_FILE` on an
 `oidc-http` deployment — those are the single-tenant `stdio`-mode
 auto-connect variables and have no per-user meaning here; every user's
-credential comes from the vault instead, via `provision` below.
+credential comes from the vault instead, via `provision` below. (The rule is
+the opposite in [gateway-token mode](#single-user-gateway-token-mode), where
+they are required.)
 
 ## Registering this server in Context Forge
 
@@ -326,6 +333,98 @@ credential, collapsing every caller onto one identity. See the warning under
 discriminator: have two different users call
 `vikunja_auth status` — if both report the *same* linked account, the
 identity never reached this server.
+
+## Single-user gateway-token mode
+
+For a deployment that serves **exactly one person** through Context Forge, with no
+OIDC relationship between the gateway and this server. The gateway authenticates to
+this server with one static bearer token, and every request runs as the one Vikunja
+credential configured on this server, exactly like stdio mode. Design and threat
+model: [`GATEWAY-TOKEN-MODE.md`](GATEWAY-TOKEN-MODE.md).
+
+**Blast radius: anyone holding the static token can do anything the configured Vikunja
+token can do.** That is acceptable only because the one holder is the gateway on a
+private network and the instance serves one person. When a second user appears, move
+to `oidc` mode (the rest of this guide) instead of sharing the token.
+
+### Server configuration
+
+| Purpose | Env var | Example / notes |
+|---|---|---|
+| Transport mode | `VIKUNJA_MCP_TRANSPORT` | `http` |
+| Auth scheme | `VIKUNJA_MCP_HTTP_AUTH_MODE` | `token` |
+| Gateway token | `VIKUNJA_MCP_HTTP_AUTH_TOKEN` (or `_FILE`) | At least 32 characters: `openssl rand -hex 32`. Prefer `_FILE` with a Docker secret |
+| Bind host | `VIKUNJA_MCP_HTTP_HOST` | `0.0.0.0` inside the gateway's private overlay network |
+| Allowed `Host` headers | `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` | Required for a non-loopback bind: the `Host` header Context Forge actually sends, e.g. `vikunja-mcp:8765` for a Swarm service called `vikunja-mcp` |
+| Vikunja URL | `VIKUNJA_URL` | e.g. `https://vikunja.example.com/api/v1` |
+| Vikunja credential | `VIKUNJA_API_TOKEN` (or `_FILE`) | **Required** in this mode. The server refuses to start without it |
+| Read-only (strongly recommended) | `VIKUNJA_MCP_READ_ONLY` | `true`, unless you explicitly want the gateway to write to Vikunja. Cheapest way to bound the blast radius above |
+
+Do **not** set any `VIKUNJA_MCP_OIDC_*` variable, `VIKUNJA_MCP_VAULT_PATH` or
+`VIKUNJA_MCP_ENROLL_ENABLED`: token mode refuses to start with them, rather than
+silently ignoring them.
+
+**The Vikunja credential type decides the tool list Context Forge sees.** A `tk_*` API
+token (narrower, long-lived) hides the JWT-only tools (`vikunja_users`, `vikunja_export`,
+and the opt-in admin-class modules). An `eyJ*` JWT shows them, but expires within hours
+and this server cannot refresh it. Pick deliberately: tools missing from the gateway
+catalog are usually this, not a gateway problem.
+
+A `docker-compose` service for this mode is in the repository's
+`docker-compose.example.yml` (`vikunja-mcp-gateway`).
+
+### Registration
+
+This is the simple Context Forge case: the gateway calls the upstream with its own
+fixed credential, which is exactly what the multi-user section above warns against and
+exactly what is wanted here.
+
+| Context Forge field | Value |
+|---|---|
+| Gateway / upstream URL | `http://vikunja-mcp:8765/mcp` (the service name on the overlay network) |
+| `transport` | `STREAMABLEHTTP` |
+| `authType` | `bearer` |
+| `authToken` | The gateway token (the same value as `VIKUNJA_MCP_HTTP_AUTH_TOKEN`) |
+| `oneTimeAuth` | `false`: Context Forge keeps using this token for real traffic |
+| `passthroughHeaders` | none. Do not pass the caller's `Authorization` through |
+
+```bash
+curl -s -X POST https://context-forge.example.com/v1/gateways \
+  -H "Authorization: Bearer $CF_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d "{
+    \"name\": \"vikunja-mcp-ng\",
+    \"url\": \"http://vikunja-mcp:8765/mcp\",
+    \"transport\": \"STREAMABLEHTTP\",
+    \"authType\": \"bearer\",
+    \"authToken\": \"$VIKUNJA_MCP_GATEWAY_TOKEN\",
+    \"oneTimeAuth\": false
+  }"
+```
+
+Health check path: `/healthz`. `/readyz` works too in this mode: it returns `200` when
+the Vikunja credential is configured and never calls Vikunja. The
+`TOOL_DESCRIPTION_FORBIDDEN_PATTERNS_ENABLED=false` warning above applies unchanged:
+check that registration reports `"reachable": true` and an empty `skippedTools`.
+
+### What changes for the user
+
+- `vikunja_auth connect`, `disconnect`, `status`, `provision` and `deprovision` return a
+  structured error explaining that the Vikunja credential is configured by the operator
+  in this mode. `vikunja_auth info` and `refresh` still work.
+- There is no enrollment and no per-user vault. The provisioning walkthrough above does
+  not apply.
+
+### Troubleshooting
+
+- **Container exits at startup naming `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS`:** the bind is
+  not loopback and no allow-list is set. Set it to the `Host` header the gateway sends.
+- **Container exits naming `VIKUNJA_MCP_HTTP_AUTH_TOKEN` or `VIKUNJA_API_TOKEN`:** the
+  gateway token (32+ characters) or the Vikunja credential is missing.
+- **`401 {"error":"invalid_token"}` on every call:** the registration's `authToken`
+  does not match `VIKUNJA_MCP_HTTP_AUTH_TOKEN`. The response never says why; the server
+  log has a `Gateway request rejected (static token check)` line with the reason.
+- **`403 Invalid Host header`:** add the arriving `host:port` to
+  `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS`, as in the multi-user troubleshooting above.
 
 ## Security notes
 

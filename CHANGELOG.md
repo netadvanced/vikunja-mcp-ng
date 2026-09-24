@@ -8,6 +8,43 @@ pre-1.0 semantics. See [docs/RELEASING.md](docs/RELEASING.md) for what that mean
 
 ## [Unreleased]
 
+### Added
+
+- **gateway-token HTTP auth mode**, for exactly one user behind an MCP gateway such as IBM
+  Context Forge, with no OIDC relationship between the gateway and this server. Opt in with
+  `VIKUNJA_MCP_TRANSPORT=http` plus `VIKUNJA_MCP_HTTP_AUTH_MODE=token` and a shared
+  `VIKUNJA_MCP_HTTP_AUTH_TOKEN` (or `_FILE`, at least 32 characters). The token authenticates
+  the gateway only. Every request runs as the single `VIKUNJA_URL` + `VIKUNJA_API_TOKEN`
+  credential, exactly as in stdio mode, and the server refuses to start without it. Wrong or
+  missing tokens get the same opaque `401 {"error":"invalid_token"}`, compared in constant
+  time. No vault, no enrollment, no RFC 9728 metadata in this mode, and it refuses to start
+  alongside any OIDC, enrollment or vault setting. `vikunja_auth connect`, `disconnect`,
+  `status`, `provision` and `deprovision` return a structured error in this mode; `info` and
+  `refresh` still work. Anyone holding the token can do anything the Vikunja token can do, so
+  the docs strongly recommend `VIKUNJA_MCP_READ_ONLY=true` for this deployment. See
+  `docs/GATEWAY-TOKEN-MODE.md` and the new section in `docs/CONTEXT-FORGE.md`.
+- `/readyz` is mode-aware: in gateway-token mode it reports whether the Vikunja credential is
+  configured (`checks.credential`), without calling Vikunja.
+- The HTTP transport caps the MCP request body at `rateLimiting.default.maxRequestSize`
+  (1 MiB by default) and answers `413` above it, in both auth modes.
+- The HTTP transport closes its listener cleanly on `SIGINT`/`SIGTERM`.
+- The Docker image declares `EXPOSE 8765`, and `docker-compose.example.yml` has a
+  gateway-token service with a `/healthz` healthcheck.
+- `npm run test:e2e:token`, a real-process e2e lane for the new mode.
+
+### Changed
+
+- **HTTP mode now refuses a non-loopback bind without an explicit `Host` allow-list, in
+  oidc mode too.** With `VIKUNJA_MCP_HTTP_HOST` set to anything other than `127.0.0.1`,
+  `localhost` or `::1` (for example `0.0.0.0` in a container), the server exits at startup
+  unless `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` is set. Before, such a deployment started but its
+  allow-list defaulted to the bind address (`0.0.0.0:8765`), a `Host` header no real client
+  sends, so every MCP request was refused with `403` anyway. **Action for oidc users:** if you
+  bind `0.0.0.0` without `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS`, set it to the `Host` header your
+  gateway sends before upgrading. The documented examples already did.
+- The startup error for `transport=http` with no auth configured now names both schemes
+  (OIDC and gateway token).
+
 ## [0.7.0] - 2026-09-08
 
 Promotes the `0.7.0-beta.x` line to stable: OIDC HTTP transport support and the August hardening
