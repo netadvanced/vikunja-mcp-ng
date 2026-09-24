@@ -400,9 +400,13 @@ operation and is rejected. Set 'readOnly' to false in vikunja-mcp.config.json
 
 Notes on scope:
 
-- **`vikunja_auth`** (`connect`/`status`/`refresh`/`disconnect`/`info`) is entirely exempt:
+- **`vikunja_auth`** (`connect`/`status`/`refresh`/`disconnect`/`info`) is exempt:
   those subcommands only manage the MCP server's local session, never a Vikunja
-  resource, so read-only mode never blocks them.
+  resource, so read-only mode never blocks them. One exception: in
+  [gateway-token mode](#gateway-token-mode-single-user-behind-a-gateway) that session is
+  the operator's credential, shared by every caller, so read-only mode also rejects
+  `connect` and `disconnect` there (they are already disabled in that mode; this is a
+  second, independent check).
 - **Dynamic classification**: a small number of subcommands classify themselves based on
   the actual call arguments rather than a fixed table entry: `vikunja_tasks`'/
   `vikunja_task_comments`' dual-purpose `comment` subcommand (creates when text is
@@ -580,7 +584,7 @@ auth mode:
 - `oidc` mode requires ALL of: the `oidc` config block (below) AND a usable credential
   vault (a file path and a master key, below).
 - `token` mode requires ALL of: `VIKUNJA_MCP_HTTP_AUTH_TOKEN` (at least 32 characters)
-  AND a Vikunja credential (`VIKUNJA_URL` + `VIKUNJA_API_TOKEN`).
+  AND a Vikunja credential (`VIKUNJA_URL` or `auth.vikunjaUrl`, plus `VIKUNJA_API_TOKEN`).
 
 Any one missing is a hard startup error, never a silent downgrade to no-auth.
 `transport=stdio` (the default) never reads any of this.
@@ -604,9 +608,9 @@ registration: [`docs/CONTEXT-FORGE.md`](CONTEXT-FORGE.md#single-user-gateway-tok
 | Setting | Config key | Env var | Notes |
 |---|---|---|---|
 | Auth scheme | `http.authMode` | `VIKUNJA_MCP_HTTP_AUTH_MODE` | `token` |
-| Gateway token (required, sensitive) | *(never in the config file)* | `VIKUNJA_MCP_HTTP_AUTH_TOKEN` / `VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE` | At least 32 characters; generate with `openssl rand -hex 32`. The gateway sends it as `Authorization: Bearer <token>` |
-| Vikunja URL (required) | `auth.vikunjaUrl` | `VIKUNJA_URL` | Same as stdio mode |
-| Vikunja credential (required, sensitive) | *(never in the config file)* | `VIKUNJA_API_TOKEN` / `VIKUNJA_API_TOKEN_FILE` | Same as stdio mode. Every request runs as this one Vikunja user |
+| Gateway token (required, sensitive) | *(never in the config file)* | `VIKUNJA_MCP_HTTP_AUTH_TOKEN` / `VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE` | At least 32 characters; generate with `openssl rand -hex 32`. The gateway sends it as `Authorization: Bearer <token>`. Surrounding whitespace (a trailing newline) is trimmed from either form |
+| Vikunja URL (required) | `auth.vikunjaUrl` | `VIKUNJA_URL` | The env var wins over the file. In this mode either works; stdio's auto-connect only reads `VIKUNJA_URL` |
+| Vikunja credential (required, sensitive) | *(never in the config file)* | `VIKUNJA_API_TOKEN` / `VIKUNJA_API_TOKEN_FILE` | Same as stdio mode. Every request runs as this one Vikunja user. An `auth.vikunjaToken` in the config file is ignored, and the startup error says so |
 
 How it works:
 
@@ -620,7 +624,8 @@ How it works:
   `/.well-known/oauth-protected-resource` and `/enroll` paths return `404`.
 - `vikunja_auth connect`, `disconnect`, `status`, `provision` and `deprovision` return a
   structured error: the Vikunja credential is configured by the operator in this mode.
-  `vikunja_auth info` and `refresh` still work.
+  `vikunja_auth info` and `refresh` still work. On a JWT credential, `refresh` says the
+  operator rotates it (new `VIKUNJA_API_TOKEN`, then a restart), not to call `connect`.
 - The mode refuses to start together with any `VIKUNJA_MCP_OIDC_*` variable, with
   `VIKUNJA_MCP_ENROLL_ENABLED=true`, with `VIKUNJA_MCP_VAULT_PATH`, or under
   `transport=stdio`.
@@ -953,7 +958,9 @@ Behavior:
 
 - File contents are read once at startup and **trimmed of surrounding whitespace**
   (trailing newlines from `echo`/`printf`-created secret files are common and would
-  otherwise silently corrupt the token).
+  otherwise silently corrupt the token). The plain variables are used verbatim, with
+  one exception: the gateway token `VIKUNJA_MCP_HTTP_AUTH_TOKEN` is trimmed in both
+  forms. `VIKUNJA_API_TOKEN` stays verbatim so stdio behavior does not change.
 - Setting **both** the plain variable and its `_FILE` variant is a **hard startup
   error**, never a silent precedence choice. This matches the postgres-image
   convention and avoids a class of bug where an operator believes they've moved a
@@ -1313,8 +1320,11 @@ try {
 3. **Invalid Log Level**
    ```text
    Configuration error in validation: Configuration validation failed:
-     - logging.level: Invalid enum value. Expected 'error' | 'warn' | 'info' | 'debug', received 'verbose'
+     - logging.level: Invalid enum value. Expected 'error' | 'warn' | 'info' | 'debug'
    ```
+   The rejected value is never echoed, for any enum setting: a secret pasted into the
+   wrong variable (the gateway token into `VIKUNJA_MCP_HTTP_AUTH_MODE`, say) would
+   otherwise be printed in the startup log.
 
 ## Migration from Legacy Configuration
 
