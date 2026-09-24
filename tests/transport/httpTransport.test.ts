@@ -1119,7 +1119,7 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
 
   it('the no-middleware refusal names both auth schemes', async () => {
     await expect(startHttpTransport(newServer, baseHttpConfig())).rejects.toThrow(
-      /VIKUNJA_MCP_HTTP_AUTH_MODE=token/,
+      /VIKUNJA_MCP_HTTP_AUTH_MODE set to token/,
     );
   });
 });

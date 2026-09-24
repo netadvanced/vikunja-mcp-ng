@@ -171,7 +171,7 @@ describe('staticTokenAuth', () => {
 
       expect(warn).toHaveBeenCalledTimes(1);
       const logged = JSON.stringify(warn.mock.calls[0]);
-      expect(logged).toMatch(/gateway token/i);
+      expect(logged).toMatch(/Gateway request rejected \(static token check\)/);
       expect(logged).not.toContain(TOKEN.slice(0, 8));
     });
 

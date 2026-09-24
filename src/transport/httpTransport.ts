@@ -142,7 +142,7 @@ export function bindSafetyProblems(httpConfig: HttpConfig, authConfigured: boole
   const problems: string[] = [];
   if (!authConfigured) {
     problems.push(
-      'no HTTP auth credential is configured (set VIKUNJA_MCP_HTTP_AUTH_MODE=token with ' +
+      'no HTTP auth credential is configured (set VIKUNJA_MCP_HTTP_AUTH_MODE to token with ' +
         'VIKUNJA_MCP_HTTP_AUTH_TOKEN, or the VIKUNJA_MCP_OIDC_* settings)',
     );
   }
@@ -204,7 +204,7 @@ export async function startHttpTransport(
       'transport',
       'transport=http requires an authentication middleware: the OIDC ' +
         'authentication middleware (VIKUNJA_MCP_OIDC_*, docs/OIDC-RESOURCE-SERVER.md ' +
-        '§3b) or the static gateway token (VIKUNJA_MCP_HTTP_AUTH_MODE=token with ' +
+        '§3b) or the static gateway token (VIKUNJA_MCP_HTTP_AUTH_MODE set to token, with ' +
         'VIKUNJA_MCP_HTTP_AUTH_TOKEN, docs/GATEWAY-TOKEN-MODE.md). Refusing to start ' +
         'an HTTP listener without one: this server must never serve unauthenticated ' +
         'HTTP (deny-mixed-mode rule, §2 "Selection rule").',

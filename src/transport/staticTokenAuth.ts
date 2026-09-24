@@ -76,14 +76,14 @@ export function createStaticTokenAuthMiddleware(deps: { token: string }): OidcAu
     } else {
       const match = BEARER_PATTERN.exec(header.trim());
       if (match === null) {
-        reason = 'Authorization header is not a Bearer credential';
+        reason = 'Authorization header does not use the Bearer scheme';
       } else if (tokenMatches(match[1] as string, token)) {
         return Promise.resolve(true);
       } else {
         reason = 'bearer token does not match';
       }
     }
-    logger.warn(`Gateway token authentication failed: ${reason}`);
+    logger.warn(`Gateway request rejected (static token check): ${reason}`);
     writeUnauthorized(res);
     return Promise.resolve(false);
   };
@@ -93,13 +93,16 @@ export function createStaticTokenAuthMiddleware(deps: { token: string }): OidcAu
  * Validates the configured gateway token and registers the middleware on the
  * transport auth seam. Called by `src/index.ts`'s `main()` before
  * `startHttpTransport`, so a missing or weak token fails startup before any
- * port is bound. The token value never appears in an error message.
+ * port is bound. The token value never appears in an error message. The
+ * error field is `http.authMode`, not the variable name: the log sanitizer
+ * would mask the text after a sensitive-looking `NAME:` prefix.
  */
 export function setupStaticTokenAuth(token: string | undefined): void {
   if (token === undefined || token === '') {
     throw new ConfigurationError(
-      'VIKUNJA_MCP_HTTP_AUTH_TOKEN',
-      'VIKUNJA_MCP_HTTP_AUTH_MODE=token requires the shared gateway token. Set ' +
+      'http.authMode',
+      'Gateway-token mode (VIKUNJA_MCP_HTTP_AUTH_MODE set to token) requires the shared ' +
+        'gateway token. Set ' +
         'VIKUNJA_MCP_HTTP_AUTH_TOKEN (or VIKUNJA_MCP_HTTP_AUTH_TOKEN_FILE) to a random ' +
         `value of at least ${MIN_GATEWAY_TOKEN_LENGTH} characters, e.g. the output of ` +
         '`openssl rand -hex 32`.',
@@ -107,7 +110,7 @@ export function setupStaticTokenAuth(token: string | undefined): void {
   }
   if (token.length < MIN_GATEWAY_TOKEN_LENGTH) {
     throw new ConfigurationError(
-      'VIKUNJA_MCP_HTTP_AUTH_TOKEN',
+      'http.authMode',
       `VIKUNJA_MCP_HTTP_AUTH_TOKEN is ${token.length} characters long; the minimum is ` +
         `${MIN_GATEWAY_TOKEN_LENGTH}. Generate one with \`openssl rand -hex 32\`.`,
     );

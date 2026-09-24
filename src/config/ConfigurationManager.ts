@@ -18,7 +18,13 @@ import type {
   HttpConfig,
   TransportMode,
 } from './types';
-import { Environment, ConfigurationError, ApplicationConfigSchema } from './types';
+import {
+  Environment,
+  ConfigurationError,
+  ApplicationConfigSchema,
+  TOKEN_MODE_WITH_OIDC_MESSAGE,
+  tokenModeOidcConflict,
+} from './types';
 import { readSecretEnv } from './secrets';
 import { logger } from '../utils/logger';
 
@@ -732,6 +738,20 @@ export class ConfigurationManager {
           received: 'received' in err ? err.received : 'unknown',
           expected: 'expected' in err ? err.expected : 'unknown',
         }));
+        // See tokenModeOidcConflict: when the oidc block itself fails to
+        // parse, the cross-field refinement never ran, so report the
+        // conflict here instead of letting it hide behind the oidc errors.
+        if (
+          tokenModeOidcConflict(rawConfig) &&
+          !errors.some((e) => e.message === TOKEN_MODE_WITH_OIDC_MESSAGE)
+        ) {
+          errors.unshift({
+            path: 'http.authMode',
+            message: TOKEN_MODE_WITH_OIDC_MESSAGE,
+            received: 'token',
+            expected: 'unknown',
+          });
+        }
 
         throw new ConfigurationError(
           'validation',

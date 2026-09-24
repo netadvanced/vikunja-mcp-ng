@@ -154,10 +154,10 @@ async function main(): Promise<void> {
       setupStaticTokenAuth(readSecretEnv('VIKUNJA_MCP_HTTP_AUTH_TOKEN'));
       if (!authManager.isAuthenticated()) {
         throw new ConfigurationError(
-          'auth',
-          'VIKUNJA_MCP_HTTP_AUTH_MODE=token serves the single Vikunja credential the ' +
-            'operator configures, and none is set. Set VIKUNJA_URL and VIKUNJA_API_TOKEN ' +
-            '(or VIKUNJA_API_TOKEN_FILE).',
+          'http.authMode',
+          'Gateway-token mode (VIKUNJA_MCP_HTTP_AUTH_MODE set to token) serves the single ' +
+            'Vikunja credential the operator configures, and none is set. Set VIKUNJA_URL ' +
+            'and VIKUNJA_API_TOKEN (or VIKUNJA_API_TOKEN_FILE).',
         );
       }
     } else if (appConfig.oidc) {
