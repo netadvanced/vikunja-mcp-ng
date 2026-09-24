@@ -25,23 +25,31 @@ is unaffected.
 - **Gateway-token HTTP auth mode**, for exactly one user behind an MCP gateway such as IBM
   Context Forge, with no OIDC relationship between the gateway and this server. Opt in with
   `VIKUNJA_MCP_TRANSPORT=http` plus `VIKUNJA_MCP_HTTP_AUTH_MODE=token` and a shared
-  `VIKUNJA_MCP_HTTP_AUTH_TOKEN` (or `_FILE`, at least 32 characters). The token authenticates
-  the gateway only. Every request runs as the single `VIKUNJA_URL` + `VIKUNJA_API_TOKEN`
-  credential, exactly as in stdio mode, and the server refuses to start without it. Wrong or
-  missing tokens get the same opaque `401 {"error":"invalid_token"}`, compared in constant
-  time, and a too-short configured token is rejected at startup without its length appearing
-  in the error. No vault, no enrollment, no RFC 9728 metadata in this mode, and it refuses to
-  start alongside any OIDC, enrollment or vault setting. `vikunja_auth connect`, `disconnect`,
-  `status`, `provision` and `deprovision` return a structured error in this mode; `info` and
-  `refresh` still work. Anyone holding the token can do anything the Vikunja token can do, so
+  `VIKUNJA_MCP_HTTP_AUTH_TOKEN` (or `_FILE`, at least 32 characters). Both forms of the token
+  are trimmed, so a trailing newline does not turn every request into a `401`. The token
+  authenticates the gateway only. Every request runs as the single Vikunja credential, exactly
+  as in stdio mode, and the server refuses to start without it. The Vikunja URL comes from
+  `VIKUNJA_URL` or, if that is unset, from `auth.vikunjaUrl` in the config file. The Vikunja
+  token is only read from `VIKUNJA_API_TOKEN` (or `_FILE`); an `auth.vikunjaToken` in the config
+  file is reported as ignored. Wrong or missing tokens get the same opaque
+  `401 {"error":"invalid_token"}`, compared in constant time, and a too-short configured token
+  is rejected at startup without its length appearing in the error. No vault, no enrollment,
+  no RFC 9728 metadata in this mode, and it refuses to start alongside any OIDC, enrollment or
+  vault setting. `vikunja_auth connect`, `disconnect`, `status`, `provision` and `deprovision`
+  return a structured error in this mode; `info` and `refresh` still work. On a JWT credential,
+  `refresh` says the operator rotates the token and restarts the server, instead of pointing at
+  the disabled `connect`. Anyone holding the token can do anything the Vikunja token can do, so
   the docs strongly recommend `VIKUNJA_MCP_READ_ONLY=true` for this deployment. See
   `docs/GATEWAY-TOKEN-MODE.md` and the new section in `docs/CONTEXT-FORGE.md`.
 - `/readyz` is mode-aware: in gateway-token mode it reports whether the Vikunja credential is
   configured (`checks.credential`), without calling Vikunja.
 - **Request body cap.** The HTTP transport caps the MCP request body at
   `rateLimiting.default.maxRequestSize` (1 MiB by default) and answers `413` above it, in both
-  auth modes. A chunked body that crosses the cap is never dispatched to a tool, even if the
-  client keeps sending after the `413`.
+  auth modes. The server reads the body itself, after authentication, so the cap does not
+  depend on how the MCP SDK reads it: an over-cap request never reaches the SDK, and a chunked
+  body that crosses the cap is never dispatched to a tool, even if the client keeps sending
+  after the `413`. The `413` closes the connection promptly (tests pin this), and nothing is
+  written to stderr (no stray `ERR_HTTP_HEADERS_SENT` line).
 - **Signal handling.** On `SIGINT`/`SIGTERM` (what `docker stop` sends) the HTTP transport closes
   its listener and exits 0 instead of being killed by the signal. This is not a drain: in-flight
   requests are cut, so shutdown cannot hang.
@@ -52,13 +60,25 @@ is unaffected.
 ### Changed
 
 - **HTTP mode now refuses a non-loopback bind without an explicit `Host` allow-list, in
-  oidc mode too.** With `VIKUNJA_MCP_HTTP_HOST` set to anything other than `127.0.0.1`,
-  `localhost` or `::1` (for example `0.0.0.0` in a container), the server exits at startup
-  unless `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` is set. Before, such a deployment started but its
+  oidc mode too.** With `VIKUNJA_MCP_HTTP_HOST` set to anything that is not a loopback
+  address (`127.0.0.1`, `::1`, or a name such as `localhost` that resolves only to loopback),
+  for example `0.0.0.0` in a container, the server exits at startup unless
+  `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` is set. Before, such a deployment started but its
   allow-list defaulted to the bind address (`0.0.0.0:8765`), a `Host` header no real client
   sends, so every MCP request was refused with `403` anyway. **Action for oidc users:** if you
   bind `0.0.0.0` without `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS`, set it to the `Host` header your
   gateway sends before upgrading. The documented examples already did.
+- **A named bind host is resolved once, and the listener binds the resolved address.** With
+  `VIKUNJA_MCP_HTTP_HOST=localhost` (or any other name), the server looks the name up once at
+  startup, with a 5 second timeout, and uses that address both for the loopback check above
+  and for the bind, so the two cannot disagree. A `localhost` that maps to a routable address
+  now needs `VIKUNJA_MCP_HTTP_ALLOWED_HOSTS` like any other non-loopback bind. If the name does
+  not resolve, startup fails with a clear error naming `VIKUNJA_MCP_HTTP_HOST`. The startup log
+  shows both the address and the configured name.
+- A bracketed IPv6 bind host (`VIKUNJA_MCP_HTTP_HOST=[::1]`) is refused at startup, with a
+  message to write `::1` instead.
+- A POST body that is not valid JSON still gets `400` with JSON-RPC error `-32700`, but the
+  message now reads "Parse error: Invalid JSON-RPC message".
 - The startup error for `transport=http` with no auth configured now names both schemes
   (OIDC and gateway token). Startup errors about the auth mode are worded so the log
   sanitizer no longer masks them to `[REDACTED]`, and a token-mode/OIDC conflict is reported
@@ -79,6 +99,20 @@ is unaffected.
   `NODE_EXTRA_CA_CERTS` to the child. The production rule is unchanged. The lane also takes an
   OS-assigned free port instead of a random one that could collide with the e2e stacks'
   published ports.
+
+### Security
+
+- Config validation errors no longer echo the rejected value of an enum setting. A secret pasted
+  into the wrong variable (for example the gateway token into `VIKUNJA_MCP_HTTP_AUTH_MODE`) is
+  no longer printed in the startup log.
+- `VIKUNJA_MCP_READ_ONLY` now also rejects `vikunja_auth connect` and `disconnect` in
+  gateway-token mode, as a second check behind the mode's own gate.
+
+### Documentation
+
+- `docs/CONTEXT-FORGE.md` explains that Context Forge's tool-description filter (in v1.0.10 it
+  forbids `&&`, `||` and `$(` by default) drops the `vikunja_filters` tool, and recommends
+  setting `TOOL_DESCRIPTION_FORBIDDEN_PATTERNS='["$("]'` on the gateway.
 
 ### Internal
 
