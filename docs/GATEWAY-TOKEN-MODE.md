@@ -738,13 +738,18 @@ The operator answered the open questions before implementation started:
 - `startHttpTransport` takes an optional 4th `options` argument (`maxBodyBytes`,
   `isCredentialConfigured`) rather than reading application config itself.
 - **Expected stderr noise when a chunked body trips the cap.** The 413 is written from
-  the byte counter while the SDK is still handling the request. When the SDK then tries
-  to write its own response, Node throws `ERR_HTTP_HEADERS_SENT`, which reaches the
-  listener's catch and is logged as "Unhandled error while handling HTTP MCP request"
-  with a stack trace. It is harmless: nothing hangs, the message is not dispatched, no
-  secret is logged, and the client already has its 413. The design is kept on purpose:
-  requiring `Content-Length` instead would break chunked clients, and the cap also
-  applies in oidc mode.
+  the byte counter while the SDK is still handling the request. `@hono/node-server`
+  (the SDK's Node adapter) then tries to write the SDK's own response, `writeHead`
+  throws `ERR_HTTP_HEADERS_SENT`, and hono catches that itself in
+  `handleResponseError` and prints it with a bare `console.error`: one error object per
+  over-cap chunked request, without this server's `[ERROR]` log prefix. It never reaches
+  this server's code (`transport.handleRequest` resolves normally, measured 50 of 50),
+  so it cannot be caught or downgraded here, and the SDK exposes no error hook for its
+  adapter. It is harmless: nothing hangs, the message is not dispatched, no secret is
+  printed, and the client already has its 413. The design is kept on purpose: requiring
+  `Content-Length` instead would break chunked clients, and the cap also applies in
+  oidc mode. Tests pin that this server's own logger stays silent in this case and that
+  a genuine `handleRequest` failure is still logged and answered with `500`.
 - **Token plus an incomplete OIDC block (§9 item 10).** Zod skips `superRefine` when the
   `oidc` block itself fails to parse, so with only `VIKUNJA_MCP_OIDC_ISSUER` set the
   conflict was hidden behind "oidc.audience: Invalid input". `ConfigurationManager`

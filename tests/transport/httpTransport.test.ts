@@ -13,6 +13,8 @@
 
 import * as http from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { logger } from '../../src/utils/logger';
 import {
   startHttpTransport,
   resolveAllowedHosts,
@@ -1010,6 +1012,43 @@ describe('httpTransport: gateway-token mode', () => {
 
       expect(res.statusCode).toBe(413);
       expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('does not log an error when the SDK writes after a chunked over-cap 413', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+      jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+
+      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
+        INITIALIZE_BODY + ' '.repeat(2048),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(res.statusCode).toBe(413);
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('still logs (and answers 500) when handleRequest fails for any other reason', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+      jest
+        .spyOn(StreamableHTTPServerTransport.prototype, 'handleRequest')
+        .mockRejectedValue(new Error('boom'));
+      handle = await startHttpTransport(newServer, tokenConfig());
+
+      const res = await request(getPort(handle), {
+        method: 'POST',
+        headers: mcpHeaders(`Bearer ${TOKEN}`),
+        body: INITIALIZE_BODY,
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Unhandled error while handling HTTP MCP request:',
+        expect.objectContaining({ message: 'boom' }),
+      );
     });
 
     it('lets a chunked body under the cap through intact to the SDK', async () => {
