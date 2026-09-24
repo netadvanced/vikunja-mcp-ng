@@ -431,6 +431,11 @@ function readBodyWithinCap(
   if (declaredLength !== undefined && Number(declaredLength) > maxBodyBytes) {
     return Promise.resolve({ status: 'too_large' });
   }
+  // The client may have left while authentication ran: a destroyed request
+  // emits no further events, so waiting on it would never settle.
+  if (req.destroyed) {
+    return Promise.resolve({ status: 'aborted' });
+  }
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let received = 0;
@@ -465,7 +470,8 @@ function readBodyWithinCap(
  * the body itself.
  */
 function parseJsonBody(body: Buffer): unknown {
-  const text = body.toString('utf-8');
+  // TextDecoder strips a leading byte order mark, as the SDK's `req.json()` does.
+  const text = new TextDecoder().decode(body);
   try {
     return JSON.parse(text) as unknown;
   } catch {

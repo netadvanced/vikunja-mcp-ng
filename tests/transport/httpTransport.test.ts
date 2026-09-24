@@ -1154,6 +1154,56 @@ describe('httpTransport: gateway-token mode', () => {
       expect(factory).not.toHaveBeenCalled();
     });
 
+    it('does not wait on a body whose client left while authentication was running', async () => {
+      // Verifier finding: once the request is destroyed, no data, end or
+      // close event ever comes again, so a reader attached after that would
+      // wait forever (the listeners stay on the request).
+      let seen: http.IncomingMessage | undefined;
+      setOidcAuthMiddleware(async (req) => {
+        seen = req;
+        await new Promise<void>((resolve) => {
+          const poll = setInterval(() => {
+            if (req.destroyed) {
+              clearInterval(poll);
+              resolve();
+            }
+          }, 5);
+        });
+        return true;
+      });
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      const port = getPort(handle);
+
+      await new Promise<void>((resolve) => {
+        const socket = net.connect(port, '127.0.0.1', () => {
+          socket.write(rawHead(port, 'Content-Length: 5\r\n') + 'hello');
+          setTimeout(() => socket.destroy(), 50);
+        });
+        socket.on('close', () => resolve());
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(seen?.listenerCount('data')).toBe(0);
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it('accepts a JSON body that starts with a UTF-8 byte order mark', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 4096,
+      });
+
+      const res = await request(getPort(handle), {
+        method: 'POST',
+        headers: mcpHeaders(`Bearer ${TOKEN}`),
+        body: `\uFEFF${INITIALIZE_BODY}`,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('"serverInfo"');
+    });
+
     it('caps the body no matter how the SDK reads it (no data listener ever attached)', async () => {
       // Review finding 2: the old counter only started when the SDK attached
       // a `data` listener. A reader that uses async iteration (as a web

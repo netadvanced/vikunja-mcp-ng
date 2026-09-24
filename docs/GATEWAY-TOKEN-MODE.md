@@ -723,8 +723,11 @@ The operator answered the open questions before implementation started:
   is handed to the SDK as `handleRequest(req, res, parsedBody)`, the SDK's documented
   pre-parsed body argument, so the SDK never reads the stream. Text that is not JSON is
   passed as the raw string, which the SDK answers with `400` / `-32700` after its own
-  `Accept` and `Content-Type` checks, as before. GET and DELETE carry no JSON-RPC body
-  and get no `parsedBody`.
+  `Accept` and `Content-Type` checks, as before (a leading UTF-8 byte order mark is
+  stripped, as the SDK's own `req.json()` did). GET and DELETE carry no JSON-RPC body
+  and get no `parsedBody`. A client that disconnects while authentication is still
+  running (a slow JWKS fetch in oidc mode) is dropped without waiting on its body: a
+  destroyed request emits no further events.
 
   This replaces the first implementation, which hooked a byte counter onto the SDK's
   own `data` listener (via `newListener`) and dropped any message the SDK still parsed
