@@ -89,8 +89,8 @@ export interface HttpTransportOptions {
   /**
    * Request-body cap on the MCP path, in bytes; larger bodies get `413`.
    * `src/index.ts` passes `rateLimiting.default.maxRequestSize`. The SDK's
-   * `StreamableHTTPServerTransport` (1.30.0) has no size option of its own
-   * and reads the whole body with `req.json()`.
+   * `StreamableHTTPServerTransport` (1.30.0) has no size option of its own,
+   * so this server reads the body itself (`readBodyWithinCap`).
    */
   maxBodyBytes?: number;
   /**
@@ -408,60 +408,69 @@ interface RequestHandlerContext {
   isCredentialConfigured: () => boolean;
 }
 
-/** Whether a chunked body has passed the cap (set by `enforceBodyLimit`). */
-interface BodyLimitState {
-  exceeded: boolean;
-}
+/** Outcome of reading a request body under the cap. */
+type BodyReadResult =
+  | { status: 'ok'; body: Buffer }
+  | { status: 'too_large' }
+  | { status: 'aborted' };
 
 /**
  * Request-body cap for the MCP path (docs/GATEWAY-TOKEN-MODE.md §4.1).
- * Returns `undefined` after answering `413` when the declared
- * `Content-Length` is over the cap. For a chunked body (no `Content-Length`;
- * Node's parser already enforces a declared length), it counts bytes as the
- * SDK reads them, answers `413` once the count passes the cap, and sets
- * `exceeded` on the returned state. The caller must then drop any message
- * the SDK still parses: the counter runs before the body's `end`, but
- * nothing guarantees the socket is torn down before the SDK dispatches.
- *
- * The counter attaches only when the SDK attaches its own `data` listener
- * (`newListener`), in the same tick. Attaching earlier would either start
- * the stream flowing before the SDK reads (chunks lost to it) or, with an
- * explicit `pause()`, leave it paused for good: `@hono/node-server`'s body
- * reader relies on `on('data')` auto-resuming the stream.
+ * Reads the whole body before the SDK sees the request, counting every
+ * byte whatever the framing, and stops at the cap. A declared
+ * `Content-Length` over the cap is refused without reading at all. The
+ * caller hands the SDK the parsed body (`handleRequest`'s `parsedBody`
+ * argument), so the SDK never reads the stream and the cap does not depend
+ * on how it would have. `aborted` means the client went away mid-body.
  */
-function enforceBodyLimit(
+function readBodyWithinCap(
   req: http.IncomingMessage,
-  res: http.ServerResponse,
   maxBodyBytes: number,
-): BodyLimitState | undefined {
-  const state: BodyLimitState = { exceeded: false };
+): Promise<BodyReadResult> {
   const declaredLength = req.headers['content-length'];
-  if (declaredLength !== undefined) {
-    if (Number(declaredLength) > maxBodyBytes) {
-      sendJson(res, 413, { error: 'payload_too_large' }, { Connection: 'close' });
-      return undefined;
-    }
-    return state;
+  if (declaredLength !== undefined && Number(declaredLength) > maxBodyBytes) {
+    return Promise.resolve({ status: 'too_large' });
   }
-  let received = 0;
-  const countBytes = (chunk: Buffer): void => {
-    received += chunk.length;
-    if (received > maxBodyBytes) {
-      state.exceeded = true;
-      req.removeListener('data', countBytes);
-      sendJson(res, 413, { error: 'payload_too_large' }, { Connection: 'close' });
-      // Stop reading the rest of the body once the answer is on the wire.
-      res.once('finish', () => req.destroy());
-    }
-  };
-  const startCounting = (event: string | symbol): void => {
-    if (event === 'data') {
-      req.removeListener('newListener', startCounting);
-      req.on('data', countBytes);
-    }
-  };
-  req.on('newListener', startCounting);
-  return state;
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let received = 0;
+    const settle = (result: BodyReadResult): void => {
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onAbort);
+      req.removeListener('close', onAbort);
+      resolve(result);
+    };
+    const onData = (chunk: Buffer): void => {
+      received += chunk.length;
+      if (received > maxBodyBytes) {
+        settle({ status: 'too_large' });
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = (): void => settle({ status: 'ok', body: Buffer.concat(chunks) });
+    const onAbort = (): void => settle({ status: 'aborted' });
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onAbort);
+    req.on('close', onAbort);
+  });
+}
+
+/**
+ * The body as the SDK's `parsedBody`. Text that is not JSON is passed as
+ * the raw string, which the SDK rejects as `400` / `-32700` after its own
+ * `Accept` and `Content-Type` checks, the same order it uses when it reads
+ * the body itself.
+ */
+function parseJsonBody(body: Buffer): unknown {
+  const text = body.toString('utf-8');
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
 }
 
 async function handleIncomingRequest(
@@ -579,10 +588,19 @@ async function handleIncomingRequest(
 
   // Only authenticated callers get this far, so an unauthenticated caller
   // always sees 401, never 413.
-  const bodyLimit = enforceBodyLimit(req, res, ctx.maxBodyBytes);
-  if (bodyLimit === undefined) {
+  const bodyRead = await readBodyWithinCap(req, ctx.maxBodyBytes);
+  if (bodyRead.status === 'too_large') {
+    // `Connection: close` makes Node close the socket once the 413 is
+    // written, even while the client is still sending (measured on Node 22
+    // and 25; the tests pin it).
+    sendJson(res, 413, { error: 'payload_too_large' }, { Connection: 'close' });
     return;
   }
+  if (bodyRead.status === 'aborted') {
+    return;
+  }
+  // Only POST carries JSON-RPC messages; the SDK reads no body for GET or DELETE.
+  const parsedBody = req.method === 'POST' ? parseJsonBody(bodyRead.body) : undefined;
 
   // Fresh transport + server per request (stateless mode requires it — see
   // the module header). `sessionIdGenerator` is deliberately omitted (not
@@ -619,15 +637,7 @@ async function handleIncomingRequest(
       // a functional mismatch (see other `as unknown as` casts in this codebase
       // for the same accommodation pattern).
       await mcpServer.connect(transport as unknown as Transport);
-      // Never dispatch a message whose body passed the cap: the caller has
-      // already been told 413, so running the tool would be a silent write.
-      const dispatch = transport.onmessage;
-      transport.onmessage = (message, extra): void => {
-        if (!bodyLimit.exceeded) {
-          dispatch?.(message, extra);
-        }
-      };
-      await transport.handleRequest(req, res);
+      await transport.handleRequest(req, res, parsedBody);
     } finally {
       // Tear down this request's server. `handleRequest` has already fully
       // written the response (including any SSE stream) by the time it

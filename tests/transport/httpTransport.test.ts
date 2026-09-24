@@ -12,6 +12,7 @@
  */
 
 import * as http from 'node:http';
+import * as net from 'node:net';
 import * as os from 'node:os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -977,10 +978,9 @@ describe('httpTransport: gateway-token mode', () => {
     });
 
     it('never dispatches a valid over-cap chunked message, even when it arrives in one read', async () => {
-      // Review finding: nothing guarantees the deferred req.destroy() runs
-      // before the SDK finishes reading the body, parses it and dispatches
-      // the message. Simulate the worst case (the destroy never lands) and
-      // require that the tool still never runs.
+      // Earlier review finding: the tool must never run for a body the
+      // caller was told is too large, even if the connection is never torn
+      // down. Simulate that worst case (destroy does nothing).
       setupStaticTokenAuth(TOKEN);
       jest.spyOn(console, 'error').mockImplementation(() => undefined);
       jest.spyOn(http.IncomingMessage.prototype, 'destroy').mockImplementation(function (
@@ -1013,23 +1013,6 @@ describe('httpTransport: gateway-token mode', () => {
 
       expect(res.statusCode).toBe(413);
       expect(handler).not.toHaveBeenCalled();
-    });
-
-    it('does not log an error when the SDK writes after a chunked over-cap 413', async () => {
-      setupStaticTokenAuth(TOKEN);
-      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
-      jest.spyOn(console, 'error').mockImplementation(() => undefined);
-      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
-        maxBodyBytes: 1024,
-      });
-
-      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
-        INITIALIZE_BODY + ' '.repeat(2048),
-      ]);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect(res.statusCode).toBe(413);
-      expect(errorSpy).not.toHaveBeenCalled();
     });
 
     it('still logs (and answers 500) when handleRequest fails for any other reason', async () => {
@@ -1068,6 +1051,217 @@ describe('httpTransport: gateway-token mode', () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.body).toContain('"serverInfo"');
+    });
+
+    /**
+     * Raw-socket POST: sends `head` (request line + headers, no body), then
+     * keeps trickling one body byte every 50 ms until the server closes the
+     * socket or `giveUpMs` passes. Reports what came back and when.
+     */
+    function trickle(
+      port: number,
+      head: string,
+      giveUpMs = 2000,
+    ): Promise<{ response: string; closedAfterMs: number | undefined }> {
+      return new Promise((resolve) => {
+        const started = Date.now();
+        let response = '';
+        let timer: NodeJS.Timeout | undefined;
+        const socket = net.connect(port, '127.0.0.1', () => {
+          socket.write(head);
+          timer = setInterval(() => {
+            if (!socket.destroyed) socket.write('x');
+          }, 50);
+        });
+        const giveUp = setTimeout(() => {
+          clearInterval(timer);
+          socket.destroy();
+          resolve({ response, closedAfterMs: undefined });
+        }, giveUpMs);
+        socket.on('data', (chunk: Buffer) => {
+          response += chunk.toString('utf-8');
+        });
+        socket.on('error', () => undefined);
+        socket.on('close', () => {
+          clearInterval(timer);
+          clearTimeout(giveUp);
+          resolve({ response, closedAfterMs: Date.now() - started });
+        });
+      });
+    }
+
+    function rawHead(port: number, extraHeaders: string): string {
+      return (
+        `POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nAuthorization: Bearer ${TOKEN}\r\n` +
+        'Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\n' +
+        `${extraHeaders}\r\n`
+      );
+    }
+
+    it('closes the connection after a Content-Length 413 while the client is still sending', async () => {
+      // Review finding 1: the claim was that the socket stays open until
+      // requestTimeout. Measured on Node 22 and 25 it does not; this pins it.
+      setupStaticTokenAuth(TOKEN);
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      const port = getPort(handle);
+
+      const { response, closedAfterMs } = await trickle(
+        port,
+        rawHead(port, 'Content-Length: 1000000000\r\n'),
+      );
+
+      expect(response).toMatch(/^HTTP\/1\.1 413 /);
+      expect(response).toContain('{"error":"payload_too_large"}');
+      expect(closedAfterMs).toBeDefined();
+      expect(closedAfterMs).toBeLessThan(1000);
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it('closes the connection after a chunked 413 while the client is still sending', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      const port = getPort(handle);
+
+      const { response, closedAfterMs } = await trickle(
+        port,
+        rawHead(port, 'Transfer-Encoding: chunked\r\n') + `800\r\n${'x'.repeat(0x800)}\r\n`,
+      );
+
+      expect(response).toMatch(/^HTTP\/1\.1 413 /);
+      expect(response).toContain('{"error":"payload_too_large"}');
+      expect(closedAfterMs).toBeDefined();
+      expect(closedAfterMs).toBeLessThan(1000);
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it('builds no MCP server when the client hangs up mid-body', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      const port = getPort(handle);
+
+      await new Promise<void>((resolve) => {
+        const socket = net.connect(port, '127.0.0.1', () => {
+          socket.write(rawHead(port, 'Content-Length: 100\r\n') + 'x'.repeat(10));
+          setTimeout(() => socket.destroy(), 50);
+        });
+        socket.on('close', () => resolve());
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(factory).not.toHaveBeenCalled();
+    });
+
+    it('caps the body no matter how the SDK reads it (no data listener ever attached)', async () => {
+      // Review finding 2: the old counter only started when the SDK attached
+      // a `data` listener. A reader that uses async iteration (as a web
+      // stream adapter might) never does, so the cap silently disappeared.
+      setupStaticTokenAuth(TOKEN);
+      const sdkRead = jest
+        .spyOn(StreamableHTTPServerTransport.prototype, 'handleRequest')
+        .mockImplementation(async (req, res) => {
+          let bytes = 0;
+          for await (const chunk of req) {
+            bytes += (chunk as Buffer).length;
+          }
+          if (!res.headersSent) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ bytes }));
+          }
+        });
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 1024,
+      });
+
+      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
+        'x'.repeat(600),
+        'x'.repeat(600),
+        'x'.repeat(600),
+      ]);
+
+      expect(res.statusCode).toBe(413);
+      expect(JSON.parse(res.body)).toEqual({ error: 'payload_too_large' });
+      expect(sdkRead).not.toHaveBeenCalled();
+    });
+
+    it('never hands a chunked over-cap request to the SDK, so nothing is printed to stderr', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 1024 });
+      // After startup: the logger writes its own INFO lines to console.error too.
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const res = await chunkedRequest(getPort(handle), mcpHeaders(`Bearer ${TOKEN}`), [
+        INITIALIZE_BODY + ' '.repeat(2048),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(res.statusCode).toBe(413);
+      expect(factory).not.toHaveBeenCalled();
+      expect(consoleError).not.toHaveBeenCalled();
+    });
+
+    it('answers an under-cap body that is not JSON with the SDK parse error', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 1024,
+      });
+
+      const res = await request(getPort(handle), {
+        method: 'POST',
+        headers: mcpHeaders(`Bearer ${TOKEN}`),
+        body: '{not json',
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toMatchObject({ jsonrpc: '2.0', error: { code: -32700 } });
+    });
+
+    it('still checks Accept before parsing the body, as the SDK does', async () => {
+      setupStaticTokenAuth(TOKEN);
+      handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+        maxBodyBytes: 1024,
+      });
+
+      const res = await request(getPort(handle), {
+        method: 'POST',
+        headers: { ...mcpHeaders(`Bearer ${TOKEN}`), Accept: 'application/json' },
+        body: '{not json',
+      });
+
+      expect(res.statusCode).toBe(406);
+    });
+
+    it('passes GET to the SDK without a parsed body', async () => {
+      setupStaticTokenAuth(TOKEN);
+      const sdkHandle = jest.spyOn(StreamableHTTPServerTransport.prototype, 'handleRequest');
+      handle = await startHttpTransport(newServer, tokenConfig());
+      const port = getPort(handle);
+
+      // A GET may open a long-lived SSE stream: read the status line only.
+      const statusCode = await new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          {
+            host: '127.0.0.1',
+            port,
+            method: 'GET',
+            path: '/mcp',
+            headers: mcpHeaders(`Bearer ${TOKEN}`),
+          },
+          (res) => {
+            resolve(res.statusCode ?? 0);
+            req.destroy();
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+
+      expect(statusCode).not.toBe(413);
+      expect(sdkHandle).toHaveBeenCalledTimes(1);
+      expect(sdkHandle.mock.calls[0]?.[2]).toBeUndefined();
     });
 
     it('defaults the cap to 1 MiB (rateLimiting.default.maxRequestSize)', async () => {
@@ -1228,6 +1422,7 @@ describe('httpTransport: bind safety (docs/GATEWAY-TOKEN-MODE.md §4.4)', () => 
       false,
     );
     await expect(isLoopbackHost('localhost', resolvesTo())).resolves.toBe(false);
+    await expect(isLoopbackHost('localhost', resolvesTo('not-an-ip'))).resolves.toBe(false);
   });
 
   it('fails closed when the bind host does not resolve', async () => {
