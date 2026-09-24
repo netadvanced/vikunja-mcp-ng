@@ -17,6 +17,8 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { z } from 'zod';
 import { logger } from '../../src/utils/logger';
 import {
   startHttpTransport,
@@ -85,7 +87,12 @@ interface RawResponse {
 
 function request(
   port: number,
-  options: { method?: string; path?: string; headers?: Record<string, string>; body?: string } = {},
+  options: {
+    method?: string;
+    path?: string;
+    headers?: Record<string, string>;
+    body?: string | Buffer;
+  } = {},
 ): Promise<RawResponse> {
   return new Promise((resolve, reject) => {
     const req = http.request(
@@ -1285,6 +1292,181 @@ describe('httpTransport: gateway-token mode', () => {
 
       expect(res.statusCode).toBe(406);
     });
+
+    /**
+     * What the SDK answers on its own, reading the body itself (no
+     * `parsedBody`), as this server did before the pre-read. Used as the
+     * reference the pre-read path must match.
+     */
+    async function sdkBaseline(
+      createServer: () => McpServer,
+      headers: Record<string, string>,
+      body: string | Buffer,
+    ): Promise<RawResponse> {
+      const baseline = http.createServer((req, res) => {
+        void (async (): Promise<void> => {
+          const transport = new StreamableHTTPServerTransport({});
+          const server = createServer();
+          await server.connect(transport as unknown as Transport);
+          await transport.handleRequest(req, res);
+          await server.close();
+        })();
+      });
+      await new Promise<void>((resolve) => baseline.listen(0, '127.0.0.1', resolve));
+      try {
+        const address = baseline.address() as net.AddressInfo;
+        return await request(address.port, { method: 'POST', headers, body });
+      } finally {
+        await new Promise<void>((resolve) => baseline.close(() => resolve()));
+      }
+    }
+
+    it('rejects a POST whose Content-Type is not JSON exactly as the SDK does without parsedBody', async () => {
+      // Confirming-review question: does handing the SDK a parsedBody skip
+      // its Content-Type check? In SDK 1.30.0 handlePostRequest checks
+      // Accept, then Content-Type, and only then looks at parsedBody.
+      setupStaticTokenAuth(TOKEN);
+      const factory = jest.fn(newServer);
+      handle = await startHttpTransport(factory, tokenConfig(), undefined, { maxBodyBytes: 4096 });
+      const headers = { ...mcpHeaders(`Bearer ${TOKEN}`), 'Content-Type': 'text/plain' };
+
+      const ours = await request(getPort(handle), {
+        method: 'POST',
+        headers,
+        body: INITIALIZE_BODY,
+      });
+      const reference = await sdkBaseline(newServer, headers, INITIALIZE_BODY);
+
+      expect(reference.statusCode).toBe(415);
+      expect(ours.statusCode).toBe(reference.statusCode);
+      expect(JSON.parse(ours.body)).toEqual(JSON.parse(reference.body));
+      expect(ours.body).toContain('Content-Type must be application/json');
+    });
+
+    describe('body decoding matches the SDK reading the body itself', () => {
+      function echoServer(): McpServer {
+        const server = newServer();
+        server.tool('echo', { text: z.string() }, async ({ text }) => ({
+          content: [{ type: 'text' as const, text }],
+        }));
+        return server;
+      }
+
+      function toolsCall(textBytes: Buffer): Buffer {
+        const [before, after] = JSON.stringify({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: 'echo', arguments: { text: 'SLOT' } },
+        }).split('SLOT');
+        return Buffer.concat([Buffer.from(before ?? ''), textBytes, Buffer.from(after ?? '')]);
+      }
+
+      // Non-fatal UTF-8 decoding (invalid bytes become U+FFFD) and BOM
+      // stripping, the WHATWG "UTF-8 decode" that Request.json() uses too.
+      it.each([
+        ['invalid UTF-8 bytes', toolsCall(Buffer.from([0x61, 0xff, 0xfe, 0xc3, 0x62]))],
+        ['a Latin-1 encoded character', toolsCall(Buffer.from('café', 'latin1'))],
+        [
+          'a leading BOM',
+          Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), toolsCall(Buffer.from('ok'))]),
+        ],
+      ])('%s', async (_label, body) => {
+        setupStaticTokenAuth(TOKEN);
+        handle = await startHttpTransport(echoServer, tokenConfig(), undefined, {
+          maxBodyBytes: 4096,
+        });
+        const headers = mcpHeaders(`Bearer ${TOKEN}`);
+
+        const ours = await request(getPort(handle), { method: 'POST', headers, body });
+        const reference = await sdkBaseline(echoServer, headers, body);
+
+        expect(ours.statusCode).toBe(reference.statusCode);
+        expect(ours.body).toBe(reference.body);
+      });
+
+      it.each([
+        ['a UTF-16LE body', Buffer.from(toolsCall(Buffer.from('ok')).toString('utf-8'), 'utf16le')],
+        ['text that is not JSON', Buffer.from('{not json')],
+      ])('%s: same status and JSON-RPC code, different message text', async (_label, body) => {
+        // Documented difference: with parsedBody the SDK reports a string it
+        // cannot validate as "Invalid JSON-RPC message"; reading the body
+        // itself it said "Invalid JSON". Status and code are what clients act on.
+        setupStaticTokenAuth(TOKEN);
+        handle = await startHttpTransport(echoServer, tokenConfig(), undefined, {
+          maxBodyBytes: 4096,
+        });
+        const headers = mcpHeaders(`Bearer ${TOKEN}`);
+
+        const ours = await request(getPort(handle), { method: 'POST', headers, body });
+        const reference = await sdkBaseline(echoServer, headers, body);
+
+        expect(reference.statusCode).toBe(400);
+        expect(ours.statusCode).toBe(400);
+        expect(JSON.parse(reference.body)).toMatchObject({
+          error: { code: -32700, message: 'Parse error: Invalid JSON' },
+        });
+        expect(JSON.parse(ours.body)).toMatchObject({
+          error: { code: -32700, message: 'Parse error: Invalid JSON-RPC message' },
+        });
+      });
+
+      it('replaces invalid bytes with U+FFFD rather than rejecting the call', async () => {
+        setupStaticTokenAuth(TOKEN);
+        handle = await startHttpTransport(echoServer, tokenConfig(), undefined, {
+          maxBodyBytes: 4096,
+        });
+
+        const res = await request(getPort(handle), {
+          method: 'POST',
+          headers: mcpHeaders(`Bearer ${TOKEN}`),
+          body: toolsCall(Buffer.from([0x61, 0xff, 0x62])),
+        });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.body).toContain('"text":"a�b"');
+      });
+    });
+
+    it.each([
+      'Content-Length: abc',
+      'Content-Length: 5\r\nContent-Length: 6',
+      'Content-Length: 5\r\nContent-Length: 5',
+      'Content-Length: 5, 5',
+      'Content-Length: -1',
+      'Content-Length: 1e3',
+      'Content-Length: +5',
+      'Content-Length: ',
+      'Content-Length: 5\r\nTransfer-Encoding: chunked',
+    ])(
+      'Node rejects a malformed Content-Length (%j) with 400 before this server runs',
+      async (header) => {
+        // readBodyWithinCap compares Number(content-length) with the cap; NaN
+        // would fall through to the byte counter. This pins that such a
+        // header never reaches it: llhttp answers 400 first.
+        const middleware = jest.fn(async () => true);
+        setOidcAuthMiddleware(middleware);
+        handle = await startHttpTransport(newServer, tokenConfig(), undefined, {
+          maxBodyBytes: 1024,
+        });
+        const port = getPort(handle);
+
+        const response = await new Promise<string>((resolve) => {
+          let received = '';
+          const socket = net.connect(port, '127.0.0.1', () => {
+            socket.write(rawHead(port, `${header}\r\n`) + 'hello');
+          });
+          socket.on('data', (chunk: Buffer) => {
+            received += chunk.toString('utf-8');
+          });
+          socket.on('error', () => undefined);
+          socket.on('close', () => resolve(received));
+        });
+
+        expect(response).toMatch(/^HTTP\/1\.1 400 /);
+        expect(middleware).not.toHaveBeenCalled();
+      },
+    );
 
     it('answers every complete body even when authentication is slow (end always precedes close)', async () => {
       // Confirming-review question: could `close` beat `end` on a complete
