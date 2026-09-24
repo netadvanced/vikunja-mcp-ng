@@ -35,6 +35,7 @@
     "test:mcp": "tsx scripts/test-mcp.ts",
     "test:e2e:mcp": "tsx scripts/mcp-e2e.ts",
     "test:e2e:oidc": "tsx scripts/oidc-e2e.ts",
+    "test:e2e:token": "tsx scripts/token-e2e.ts",
     "test:matrix": "tsx scripts/test-matrix.ts",
     "watch:upstream": "tsx scripts/upstream-watch.ts",
     "battle": "tsx scripts/battle/run-scenario.ts",
