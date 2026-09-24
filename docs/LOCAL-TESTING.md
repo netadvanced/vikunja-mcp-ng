@@ -907,10 +907,14 @@ instead of the default `stdio` transport. It:
 
 1. Runs `npm run build`.
 2. Starts an in-process, loopback-only **mock OIDC issuer**: a real RSA
-   keypair plus a tiny HTTP server serving its JWKS document, reusing the
+   keypair plus a tiny HTTPS server serving its JWKS document, reusing the
    exact same signing/JWKS helpers the unit test suites use
    (`tests/auth/oidc/helpers.ts`), per the design's decision D9 ("e2e
-   identity provider = mock OIDC issuer as the CI default").
+   identity provider = mock OIDC issuer as the CI default"). The server only
+   accepts an `https://` JWKS URI, so the lane generates a one-day
+   self-signed certificate for `127.0.0.1` at runtime (needs the `openssl`
+   CLI; nothing is committed) and the spawned server trusts it through
+   `NODE_EXTRA_CA_CERTS`. The production https rule is not relaxed.
 3. Spawns `dist/index.js` as a real child process in `oidc-http` mode
    (`VIKUNJA_MCP_TRANSPORT=http`), pointed at that mock issuer, with a fresh
    temporary credential vault file, and, for real Vikunja credentials,
