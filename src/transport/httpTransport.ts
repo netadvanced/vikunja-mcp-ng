@@ -22,12 +22,15 @@
  * requests correct (§3d ALS context-integrity property).
  *
  * This module builds the transport plumbing only; it does NOT validate bearer
- * tokens itself — that is the OIDC middleware registered on
- * `src/transport/oidcMiddlewareSeam.ts` (item H1b, wired in via
- * src/transport/oidcHttpAuth.ts). Per the spec's deny-mixed-mode rule (§2
- * "Selection rule": "Any missing → hard startup error"), `startHttpTransport`
- * refuses to start whenever no OIDC middleware has been registered — never
- * serve unauthenticated HTTP.
+ * tokens itself. That is the auth middleware registered on
+ * `src/transport/oidcMiddlewareSeam.ts`: the OIDC middleware
+ * (src/transport/oidcHttpAuth.ts) in `oidc` auth mode, or the static
+ * gateway-token middleware (src/transport/staticTokenAuth.ts,
+ * docs/GATEWAY-TOKEN-MODE.md) in `token` auth mode. Per the spec's
+ * deny-mixed-mode rule (§2 "Selection rule": "Any missing → hard startup
+ * error"), `startHttpTransport` refuses to start whenever no middleware has
+ * been registered, and refuses a non-loopback bind that lacks an explicit
+ * `Host` allow-list (`bindSafetyProblems`). Never serve unauthenticated HTTP.
  *
  * **Per-request cost (item H2b, profiled 2026-07-21):** re-running
  * `registerTools()` against a fresh `McpServer` on every request — the thing
@@ -73,6 +76,30 @@ import { logger } from '../utils/logger';
  */
 export type McpServerFactory = () => McpServer | Promise<McpServer>;
 
+/**
+ * Optional knobs for `startHttpTransport` that do not belong in `HttpConfig`
+ * because they come from elsewhere in the application config or state.
+ */
+export interface HttpTransportOptions {
+  /**
+   * Request-body cap on the MCP path, in bytes; larger bodies get `413`.
+   * `src/index.ts` passes `rateLimiting.default.maxRequestSize`. The SDK's
+   * `StreamableHTTPServerTransport` (1.30.0) has no size option of its own
+   * and reads the whole body with `req.json()`.
+   */
+  maxBodyBytes?: number;
+  /**
+   * gateway-token mode `/readyz`: whether the process-global Vikunja
+   * credential is configured. Must not call Vikunja (an unauthenticated
+   * probe must never trigger outbound requests, issue #373). When omitted in
+   * token mode, readiness fails closed.
+   */
+  isCredentialConfigured?: () => boolean;
+}
+
+/** Default request-body cap: `rateLimiting.default.maxRequestSize`'s default (1 MiB). */
+export const DEFAULT_MAX_BODY_BYTES = 1048576;
+
 /** Handle returned by `startHttpTransport`, letting callers (and tests) shut the listener down cleanly. */
 export interface HttpTransportHandle {
   readonly httpServer: http.Server;
@@ -91,6 +118,38 @@ export function resolveAllowedHosts(httpConfig: HttpConfig): string[] {
     return httpConfig.allowedHosts;
   }
   return [`${httpConfig.host}:${httpConfig.port}`];
+}
+
+const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'];
+
+/** Whether a bind host only accepts connections from this machine (or container). */
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.includes(host);
+}
+
+/**
+ * Reasons a bind must not start (docs/GATEWAY-TOKEN-MODE.md §4.4), in every
+ * auth mode. A loopback bind has no extra requirements. Anything else is
+ * reachable from outside this container and needs both an auth credential
+ * and an explicit `Host` allow-list: without the list, `resolveAllowedHosts`
+ * falls back to the bind address itself (e.g. `0.0.0.0:8765`), a `Host`
+ * header no real client sends. Returns an empty list when the bind is safe.
+ */
+export function bindSafetyProblems(httpConfig: HttpConfig, authConfigured: boolean): string[] {
+  if (isLoopbackHost(httpConfig.host)) {
+    return [];
+  }
+  const problems: string[] = [];
+  if (!authConfigured) {
+    problems.push(
+      'no HTTP auth credential is configured (set VIKUNJA_MCP_HTTP_AUTH_MODE=token with ' +
+        'VIKUNJA_MCP_HTTP_AUTH_TOKEN, or the VIKUNJA_MCP_OIDC_* settings)',
+    );
+  }
+  if (!httpConfig.allowedHosts || httpConfig.allowedHosts.length === 0) {
+    problems.push('VIKUNJA_MCP_HTTP_ALLOWED_HOSTS is not set');
+  }
+  return problems;
 }
 
 function sendJson(
@@ -114,28 +173,41 @@ function sendJson(
 /**
  * Start the opt-in Streamable HTTP transport.
  *
- * Throws `ConfigurationError` synchronously (before any listener is opened)
- * when no OIDC authentication middleware is registered — this server must
- * never serve unauthenticated HTTP. Until an OIDC middleware is registered
- * via `setOidcAuthMiddleware()` (src/transport/oidcHttpAuth.ts), `http` mode
- * is structurally unable to start; only `transport=stdio` (the default) is
- * supported.
+ * Throws `ConfigurationError` (before any listener is opened) when the bind
+ * is unsafe (`bindSafetyProblems`) or when no authentication middleware is
+ * registered on the seam. This server must never serve unauthenticated
+ * HTTP: without a middleware registered via `setOidcAuthMiddleware()` (by
+ * src/transport/oidcHttpAuth.ts or src/transport/staticTokenAuth.ts), `http`
+ * mode is structurally unable to start.
  */
 export async function startHttpTransport(
   createMcpServer: McpServerFactory,
   httpConfig: HttpConfig,
   oidc?: Pick<OidcConfig, 'issuer' | 'jwksUri'>,
+  options: HttpTransportOptions = {},
 ): Promise<HttpTransportHandle> {
   const authMiddleware = getOidcAuthMiddleware();
+
+  const bindProblems = bindSafetyProblems(httpConfig, authMiddleware !== undefined);
+  if (bindProblems.length > 0) {
+    throw new ConfigurationError(
+      'http.host',
+      `Refusing to listen on ${httpConfig.host}: ${bindProblems.join('; ')}. A server ` +
+        'reachable from outside this container needs a Host allow-list and an auth ' +
+        `credential. Set VIKUNJA_MCP_HTTP_ALLOWED_HOSTS=vikunja-mcp:${httpConfig.port} ` +
+        '(the Host header the gateway actually sends), or bind to 127.0.0.1.',
+    );
+  }
+
   if (!authMiddleware) {
     throw new ConfigurationError(
       'transport',
-      'transport=http requires the OIDC authentication middleware to be ' +
-        'registered (docs/OIDC-RESOURCE-SERVER.md §3b, item H1b). Refusing ' +
-        'to start an HTTP listener without it — this server must never ' +
-        'serve unauthenticated HTTP (deny-mixed-mode rule, §2 "Selection ' +
-        'rule"). Only transport=stdio is supported until that middleware is ' +
-        'configured.',
+      'transport=http requires an authentication middleware: the OIDC ' +
+        'authentication middleware (VIKUNJA_MCP_OIDC_*, docs/OIDC-RESOURCE-SERVER.md ' +
+        '§3b) or the static gateway token (VIKUNJA_MCP_HTTP_AUTH_MODE=token with ' +
+        'VIKUNJA_MCP_HTTP_AUTH_TOKEN, docs/GATEWAY-TOKEN-MODE.md). Refusing to start ' +
+        'an HTTP listener without one: this server must never serve unauthenticated ' +
+        'HTTP (deny-mixed-mode rule, §2 "Selection rule").',
     );
   }
 
@@ -153,6 +225,8 @@ export async function startHttpTransport(
       oidcIssuer: oidc?.issuer,
       jwksUri: oidc?.jwksUri,
       jwksReachabilityCache,
+      maxBodyBytes: options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
+      isCredentialConfigured: options.isCredentialConfigured ?? ((): boolean => false),
     }).catch((error) => {
       logger.error('Unhandled error while handling HTTP MCP request:', error);
       sendJson(res, 500, { error: 'internal_error' });
@@ -275,6 +349,54 @@ interface RequestHandlerContext {
   oidcIssuer: string | undefined;
   jwksUri: string | undefined;
   jwksReachabilityCache: JwksReachabilityCache;
+  maxBodyBytes: number;
+  isCredentialConfigured: () => boolean;
+}
+
+/**
+ * Request-body cap for the MCP path (docs/GATEWAY-TOKEN-MODE.md §4.1).
+ * Returns `false` after answering `413` when the declared `Content-Length`
+ * is over the cap. For a chunked body (no `Content-Length`; Node's parser
+ * already enforces a declared length), it counts bytes as the SDK reads
+ * them and answers `413` once the count passes the cap.
+ *
+ * The counter attaches only when the SDK attaches its own `data` listener
+ * (`newListener`), in the same tick. Attaching earlier would either start
+ * the stream flowing before the SDK reads (chunks lost to it) or, with an
+ * explicit `pause()`, leave it paused for good: `@hono/node-server`'s body
+ * reader relies on `on('data')` auto-resuming the stream.
+ */
+function enforceBodyLimit(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  maxBodyBytes: number,
+): boolean {
+  const declaredLength = req.headers['content-length'];
+  if (declaredLength !== undefined) {
+    if (Number(declaredLength) > maxBodyBytes) {
+      sendJson(res, 413, { error: 'payload_too_large' }, { Connection: 'close' });
+      return false;
+    }
+    return true;
+  }
+  let received = 0;
+  const countBytes = (chunk: Buffer): void => {
+    received += chunk.length;
+    if (received > maxBodyBytes) {
+      req.removeListener('data', countBytes);
+      sendJson(res, 413, { error: 'payload_too_large' }, { Connection: 'close' });
+      // Stop reading the rest of the body once the answer is on the wire.
+      res.once('finish', () => req.destroy());
+    }
+  };
+  const startCounting = (event: string | symbol): void => {
+    if (event === 'data') {
+      req.removeListener('newListener', startCounting);
+      req.on('data', countBytes);
+    }
+  };
+  req.on('newListener', startCounting);
+  return true;
 }
 
 async function handleIncomingRequest(
@@ -294,6 +416,17 @@ async function handleIncomingRequest(
     return;
   }
   if (req.method === 'GET' && pathname === '/readyz') {
+    // gateway-token mode has no vault and no JWKS: it is ready when the
+    // operator's process-global Vikunja credential is configured. Never
+    // calls Vikunja from here (unauthenticated probe, issue #373).
+    if (ctx.httpConfig.authMode === 'token') {
+      if (ctx.isCredentialConfigured()) {
+        sendJson(res, 200, { status: 'ok' });
+      } else {
+        sendJson(res, 503, { status: 'not_ready', checks: { credential: 'missing' } });
+      }
+      return;
+    }
     const vault = getActiveVaultStore();
     // A vault degraded load (#266 — unreadable/malformed file) means writes
     // are refused and reads may be silently incomplete; §3a is explicit that
@@ -369,13 +502,19 @@ async function handleIncomingRequest(
   try {
     authorized = await ctx.authMiddleware(req, res);
   } catch (error) {
-    logger.warn('OIDC authentication middleware threw unexpectedly:', error);
+    logger.warn('HTTP authentication middleware threw unexpectedly:', error);
     sendJson(res, 401, { error: 'invalid_token' });
     return;
   }
 
   if (!authorized) {
     // Middleware already wrote the 401/403 response; nothing more to do.
+    return;
+  }
+
+  // Only authenticated callers get this far, so an unauthenticated caller
+  // always sees 401, never 413.
+  if (!enforceBodyLimit(req, res, ctx.maxBodyBytes)) {
     return;
   }
 
